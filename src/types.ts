@@ -1,26 +1,3 @@
-export interface Conversation {
-  id: string
-  title: string
-  created_at: string
-  updated_at: string
-  message_count: number
-}
-
-export interface Message {
-  id: string
-  conversation_id: string
-  role: 'user' | 'assistant' | 'thought' | 'action' | 'observation' | 'reasoning'
-  content: string
-  metadata?: {
-    tool_name?: string
-    tool_input?: Record<string, unknown>
-    tool_output?: string
-    tokens?: number
-    duration_ms?: number
-  }
-  created_at: string
-}
-
 export interface LLMSettings {
   api_url: string
   api_key: string

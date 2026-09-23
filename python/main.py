@@ -68,11 +68,10 @@ from fastapi.responses import JSONResponse
 import deps
 from errors import InkCubeError
 from db.database import Database
-from agent.react_agent import ReactAgent
 from agent.task_agent import TaskAgent
 from knowledge.model_manager import ModelManager
 from watchdog import start_watchdog
-from routers import chat, conversations, settings, models, knowledge, health, system, tasks, skills
+from routers import settings, models, knowledge, health, system, tasks, skills
 
 
 @asynccontextmanager
@@ -83,7 +82,6 @@ async def lifespan(app: FastAPI):
 
     deps.db = Database(db_path)
     deps.db.initialize()
-    deps.agent = ReactAgent(deps.db)
     deps.task_agent = TaskAgent(deps.db)
     deps.model_manager = ModelManager()
 
@@ -156,8 +154,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat.router)
-app.include_router(conversations.router)
 app.include_router(settings.router)
 app.include_router(models.router)
 app.include_router(knowledge.router)

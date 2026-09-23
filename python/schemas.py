@@ -1,11 +1,6 @@
 from pydantic import BaseModel
 
 
-class ChatRequest(BaseModel):
-    conversation_id: str
-    message: str
-
-
 class SettingsModel(BaseModel):
     api_url: str = "https://open.bigmodel.cn/api/paas/v4/"
     api_key: str = ""

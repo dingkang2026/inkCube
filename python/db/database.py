@@ -21,31 +21,10 @@ class Database:
 
     def _create_tables(self):
         self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                project_id TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                metadata TEXT,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-            );
-
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation
-                ON messages(conversation_id, created_at);
 
             -- Task agent tables
             CREATE TABLE IF NOT EXISTS tasks (
@@ -122,8 +101,6 @@ class Database:
         """)
         self.conn.commit()
 
-        # Migrate existing databases: add columns if missing
-        self._migrate_add_column("conversations", "project_id", "TEXT")
         self._migrate_add_column("images", "context_text", "TEXT")
 
         # Migrate: files table - image tracking
@@ -186,91 +163,6 @@ class Database:
 
     def _uuid(self) -> str:
         return str(uuid.uuid4())
-
-    # ── Conversations ──
-
-    def list_conversations(self) -> list[dict]:
-        cursor = self.conn.execute(
-            """SELECT c.*, COUNT(m.id) as message_count
-               FROM conversations c
-               LEFT JOIN messages m ON c.id = m.conversation_id
-               GROUP BY c.id
-               ORDER BY c.updated_at DESC"""
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
-    def create_conversation(self, project_id: str | None = None) -> dict:
-        now = self._now()
-        conv_id = self._uuid()
-        self.conn.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?)",
-            (conv_id, "新对话", now, now, project_id),
-        )
-        self.conn.commit()
-        return {
-            "id": conv_id,
-            "title": "新对话",
-            "created_at": now,
-            "updated_at": now,
-            "project_id": project_id,
-            "message_count": 0,
-        }
-
-    def rename_conversation(self, conv_id: str, title: str):
-        self.conn.execute(
-            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-            (title, self._now(), conv_id),
-        )
-        self.conn.commit()
-
-    def delete_conversation(self, conv_id: str):
-        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
-        self.conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
-        self.conn.commit()
-
-    def update_conversation_title_from_message(self, conv_id: str, message: str):
-        cursor = self.conn.execute(
-            "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
-            (conv_id,),
-        )
-        count = cursor.fetchone()["cnt"]
-        if count <= 1:
-            title = message[:30] + ("..." if len(message) > 30 else "")
-            self.conn.execute(
-                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-                (title, self._now(), conv_id),
-            )
-            self.conn.commit()
-
-    # ── Messages ──
-
-    def get_messages(self, conv_id: str) -> list[dict]:
-        cursor = self.conn.execute(
-            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
-            (conv_id,),
-        )
-        results = []
-        for row in cursor.fetchall():
-            msg = dict(row)
-            if msg.get("metadata"):
-                msg["metadata"] = json.loads(msg["metadata"])
-            results.append(msg)
-        return results
-
-    def save_message(self, conv_id: str, role: str, content: str, metadata: dict | None = None):
-        now = self._now()
-        msg_id = self._uuid()
-        meta_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
-        self.conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (msg_id, conv_id, role, content, meta_json, now),
-        )
-        self.conn.execute(
-            "UPDATE conversations SET updated_at = ? WHERE id = ?",
-            (now, conv_id),
-        )
-        self.conn.commit()
-        return msg_id
 
     # ── Settings ──
 

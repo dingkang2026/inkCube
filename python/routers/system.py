@@ -62,7 +62,6 @@ async def get_data_usage():
         "data_dir": "/path/to/data",
         "categories": {
             "logs": {"size": bytes, "count": 0},
-            "conversations": {"size": bytes, "count": N},
             "knowledge": {"size": bytes, "count": N},
             "settings": {"size": bytes, "count": N},
             "models": {"size": bytes, "count": 0},
@@ -75,11 +74,6 @@ async def get_data_usage():
     # Logs
     logs_dir = os.path.join(data_dir, "logs")
     logs_size = _dir_size(logs_dir)
-
-    # Conversations (estimate: row count * avg row size ~500 bytes)
-    conv_count = _count_rows("conversations")
-    msg_count = _count_rows("messages")
-    conv_size = (conv_count + msg_count) * 500
 
     # Knowledge: files on disk + chroma vectors
     files_dir = os.path.join(data_dir, "files")
@@ -97,13 +91,12 @@ async def get_data_usage():
     models_dir = os.path.join(data_dir, "models")
     models_size = _dir_size(models_dir)
 
-    total = logs_size + conv_size + knowledge_size + settings_size + models_size
+    total = logs_size + knowledge_size + settings_size + models_size
 
     return {
         "data_dir": data_dir,
         "categories": {
             "logs": {"size": logs_size, "count": 0},
-            "conversations": {"size": conv_size, "count": conv_count, "message_count": msg_count},
             "knowledge": {
                 "size": knowledge_size,
                 "count": project_count,
@@ -121,12 +114,10 @@ async def get_data_usage():
 async def clean_data_category(category: str):
     """Clean a specific data category.
 
-    Categories: logs, conversations, knowledge, settings, models
+    Categories: logs, knowledge, settings, models
     """
     if category == "logs":
         return _clean_logs()
-    elif category == "conversations":
-        return _clean_conversations()
     elif category == "knowledge":
         return await _clean_knowledge()
     elif category == "settings":
@@ -166,21 +157,6 @@ def _clean_logs() -> dict:
         logger.error("Failed to clean logs: %s", e)
         return {"success": False, "message": str(e)}
     return {"success": True, "cleaned_bytes": cleaned}
-
-
-def _clean_conversations() -> dict:
-    """Delete all conversations and messages."""
-    try:
-        db = deps.db
-        # Delete messages first (in case cascade is slow)
-        db.conn.execute("DELETE FROM messages")
-        db.conn.execute("DELETE FROM conversations")
-        db.conn.commit()
-        logger.info("Cleaned all conversations and messages")
-        return {"success": True}
-    except Exception as e:
-        logger.error("Failed to clean conversations: %s", e)
-        return {"success": False, "message": str(e)}
 
 
 async def _clean_knowledge() -> dict:

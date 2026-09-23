@@ -3,8 +3,6 @@ import { TitleBar } from './components/layout/TitleBar'
 import { AboutDialog } from './components/layout/AboutDialog'
 import { Sidebar } from './components/layout/Sidebar'
 import { ResizeHandle } from './components/layout/ResizeHandle'
-import { ConversationList } from './features/chat/ConversationList'
-import { ChatView } from './features/chat/ChatView'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { LogViewer } from './features/settings/LogViewer'
 import { KnowledgePage } from './features/knowledge/KnowledgePage'
@@ -12,8 +10,6 @@ import { ProjectList } from './features/knowledge/ProjectList'
 import { HomePage } from './features/home/HomePage'
 import { TaskPage } from './features/task/TaskPage'
 import { TaskList } from './features/task/TaskList'
-import { useConversations } from './features/chat/useConversations'
-import { useChat } from './features/chat/useChat'
 import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
 import { useSettings } from './features/settings/useSettings'
@@ -21,16 +17,6 @@ import { useResizeHandle } from './hooks/useResizeHandle'
 import type { Project } from './features/knowledge/types'
 
 export default function App() {
-  const {
-    conversations, activeId, setActiveId, loadConversations,
-    handleNewChat, handleDeleteConversation, handleRenameConversation,
-  } = useConversations()
-
-  const {
-    messages, isGenerating, streamContent, streamSteps,
-    handleSendMessage, handleStopGenerate,
-  } = useChat(activeId, useCallback(() => loadConversations(), []))
-
   const { settings, handleSaveSettings } = useSettings()
   const sidebar = useResizeHandle(260, 200, 480)
 
@@ -165,16 +151,15 @@ export default function App() {
     }
   }
 
-  // ── Keyboard shortcuts: Ctrl+1~5 for navigation ──
+  // ── Keyboard shortcuts: Ctrl+1~3 for navigation ──
   useEffect(() => {
     const NAV_KEYS: Record<string, string> = {
-      '1': 'home', '2': 'insights', '3': 'knowledge', '4': 'tasks', '5': 'reports',
+      '1': 'home', '2': 'tasks', '3': 'projects',
     }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.shiftKey && !e.altKey && NAV_KEYS[e.key]) {
         e.preventDefault()
         const target = NAV_KEYS[e.key]
-        if (target === 'reports') return
         handleNavChange(target)
       }
     }
@@ -227,17 +212,7 @@ export default function App() {
               onNavChange={handleNavChange}
               onOpenSettings={() => setSettingsOpen(true)}
             >
-              {activeNav === 'insights' && (
-                <ConversationList
-                  conversations={conversations}
-                  activeId={activeId}
-                  onSelect={setActiveId}
-                  onNew={handleNewChat}
-                  onDelete={handleDeleteConversation}
-                  onRename={handleRenameConversation}
-                />
-              )}
-              {activeNav === 'knowledge' && (
+              {activeNav === 'projects' && (
                 <ProjectList
                   projects={projects}
                   selectedProject={selectedProjectId}
@@ -282,17 +257,14 @@ export default function App() {
           />
         ) : activeNav === 'home' ? (
           <HomePage
-            conversations={conversations}
             projects={projects}
             onNavigate={handleNavChange}
             onOpenSettings={() => setSettingsOpen(true)}
-            onSelectConversation={setActiveId}
             onSelectProject={(id) => {
               setSelectedProjectId(id)
             }}
-            onNewChat={handleNewChat}
           />
-        ) : activeNav === 'knowledge' ? (
+        ) : activeNav === 'projects' ? (
           <KnowledgePage
             selectedProject={selectedProject}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -321,15 +293,7 @@ export default function App() {
             onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
           />
         ) : (
-          <ChatView
-            messages={messages}
-            isGenerating={isGenerating}
-            streamContent={streamContent}
-            streamSteps={streamSteps}
-            onSendMessage={handleSendMessage}
-            onStopGenerate={handleStopGenerate}
-            conversationTitle={conversations.find((c) => c.id === activeId)?.title}
-          />
+          <div />
         )}
       </div>
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
