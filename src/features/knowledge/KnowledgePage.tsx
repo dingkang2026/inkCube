@@ -1,10 +1,9 @@
 /** src/features/knowledge/KnowledgePage.tsx */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { BookOpen, Search, MessageCircle, Image as ImageIcon, FileText } from 'lucide-react'
+import { BookOpen, Search, Image as ImageIcon, FileText } from 'lucide-react'
 import { FileUploader } from './FileUploader'
 import { ImageGallery } from './ImageGallery'
-import { ChatPanel } from './ChatPanel'
 import { SearchBar } from './SearchBar'
 import { SearchResultList } from './SearchResultList'
 import { ToastProvider, useToast } from './Toast'
@@ -16,6 +15,8 @@ interface KnowledgePageProps {
   selectedProject: Project | null
   onOpenSettings?: () => void
   onProjectDataChanged?: () => void
+  /** When true, hide project name/description header (used when embedded in ProjectDetailPage) */
+  compact?: boolean
 }
 
 type OutputTab = 'search' | 'images'
@@ -28,15 +29,15 @@ const STATUS_FILTERS: { key: FileStatusFilter; labelKey: string }[] = [
   { key: 'error', labelKey: 'knowledge.filterError' },
 ]
 
-export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged }: KnowledgePageProps) {
+export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact }: KnowledgePageProps) {
   return (
     <ToastProvider>
-      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} />
+      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} />
     </ToastProvider>
   )
 }
 
-function KnowledgePageInner({ selectedProject, onProjectDataChanged }: KnowledgePageProps) {
+function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact }: KnowledgePageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const [files, setFiles] = useState<FileRecord[]>([])
@@ -50,9 +51,6 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
   const [statusFilter, setStatusFilter] = useState<FileStatusFilter>('all')
   const [filenameSearch, setFilenameSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
-  const [chatOpen, setChatOpen] = useState(false)
-  const [chatFileId, setChatFileId] = useState<string | undefined>(undefined)
-  const [chatFilename, setChatFilename] = useState<string | undefined>(undefined)
   const [initialLoading, setInitialLoading] = useState(true)
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null)
 
@@ -159,9 +157,6 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
   useEffect(() => {
     if (selectedProject) {
       setSelectedFileId(null)
-      setChatOpen(false)
-      setChatFileId(undefined)
-      setChatFilename(undefined)
     }
   }, [selectedProject?.id])
 
@@ -292,39 +287,11 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
     if (selectedFileId && idSet.has(selectedFileId)) {
       setSelectedFileId(null)
     }
-    // Close chat if it was scoped to the deleted file
-    if (chatFileId && idSet.has(chatFileId)) {
-      setChatOpen(false)
-      setChatFileId(undefined)
-      setChatFilename(undefined)
-    }
     // Refresh recent chunks (may contain chunks from deleted file)
     if (selectedProject) {
       loadRecentChunks(selectedProject.id)
     }
-  }, [selectedFileId, chatFileId, selectedProject, loadRecentChunks])
-
-  const handleOpenChat = (fileId?: string) => {
-    if (fileId) {
-      const file = files.find(f => f.id === fileId)
-      setChatFileId(fileId)
-      setChatFilename(file?.filename)
-    } else {
-      setChatFileId(undefined)
-      setChatFilename(undefined)
-    }
-    setChatOpen(true)
-  }
-
-  const handleCloseChat = () => {
-    setChatOpen(false)
-  }
-
-  const handleSwitchScope = () => {
-    // Switch from single-file to project-wide
-    setChatFileId(undefined)
-    setChatFilename(undefined)
-  }
+  }, [selectedFileId, selectedProject, loadRecentChunks])
 
   if (!selectedProject) {
     return (
@@ -342,38 +309,40 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
 
   return (
     <div className={s.page}>
-      {/* Project header */}
-      <div className={s.projectHeader}>
-        <div className={s.projectInfoRow}>
-          <div className={s.projectInfo}>
-            <h3 className={s.projectName}>{selectedProject.name}</h3>
-            <div className={s.projectStats}>
-              <span className={s.statBadge}>
-                <span className={s.statNum}>{selectedProject.file_count}</span>
-                {t('knowledge.files')}
-              </span>
-              <span className={s.statDivider} />
-              <span className={s.statBadge}>
-                <span className={s.statNum}>{selectedProject.chunk_count}</span>
-                {t('knowledge.chunks')}
-              </span>
-              {processingCount > 0 && (
-                <>
-                  <span className={s.statDivider} />
-                  <span className={s.statProcessing}>
-                    {t('knowledge.processingStatus', { done: processingTotal - processingCount, total: processingTotal })}
-                  </span>
-                </>
-              )}
+      {/* Project header — hidden in compact mode (already shown in ProjectDetailPage header) */}
+      {!compact && (
+        <div className={s.projectHeader}>
+          <div className={s.projectInfoRow}>
+            <div className={s.projectInfo}>
+              <h3 className={s.projectName}>{selectedProject.name}</h3>
+              <div className={s.projectStats}>
+                <span className={s.statBadge}>
+                  <span className={s.statNum}>{selectedProject.file_count}</span>
+                  {t('knowledge.files')}
+                </span>
+                <span className={s.statDivider} />
+                <span className={s.statBadge}>
+                  <span className={s.statNum}>{selectedProject.chunk_count}</span>
+                  {t('knowledge.chunks')}
+                </span>
+                {processingCount > 0 && (
+                  <>
+                    <span className={s.statDivider} />
+                    <span className={s.statProcessing}>
+                      {t('knowledge.processingStatus', { done: processingTotal - processingCount, total: processingTotal })}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
+          {selectedProject.description && (
+            <p className={s.projectDesc}>{selectedProject.description}</p>
+          )}
         </div>
-        {selectedProject.description && (
-          <p className={s.projectDesc}>{selectedProject.description}</p>
-        )}
-      </div>
+      )}
 
-      {/* Main area: Input | Output + Chat */}
+      {/* Main area: Input | Output */}
       <div className={s.mainArea}>
         {/* ── Input panel (left) ── */}
         <div className={s.inputPanel}>
@@ -443,7 +412,6 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
                 hasMore={hasMore}
                 onLoadMore={loadMoreFiles}
                 loadingMore={loadingMore}
-                onOpenChat={handleOpenChat}
                 selectedFileId={selectedFileId}
                 onSelectFile={setSelectedFileId}
                 onDeleteFile={handleDeleteFile}
@@ -466,9 +434,6 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
               onClick={() => setOutputTab('images')}
             >
               <ImageIcon size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />{t('knowledge.tabImages')}
-            </button>
-            <button className={s.chatTabBtn} onClick={() => handleOpenChat()} title={t('knowledge.chatWithAll')}>
-              <MessageCircle size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />{t('knowledge.chatBtnLabel')}
             </button>
             {selectedFileId && (
               <span className={s.scopeIndicator}>
@@ -513,17 +478,6 @@ function KnowledgePageInner({ selectedProject, onProjectDataChanged }: Knowledge
           </div>
         </div>
 
-        {/* Chat panel — slides in/out via CSS transition */}
-        <div className={`${s.chatContainer} ${chatOpen ? s.chatContainerOpen : ''}`}>
-          <ChatPanel
-            projectId={selectedProject.id}
-            projectName={selectedProject.name}
-            fileId={chatFileId}
-            filename={chatFilename}
-            onClose={handleCloseChat}
-            onSwitchScope={handleSwitchScope}
-          />
-        </div>
       </div>
     </div>
   )

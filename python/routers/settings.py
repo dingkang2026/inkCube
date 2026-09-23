@@ -14,7 +14,7 @@ async def get_settings():
 @router.post("/settings")
 async def save_settings(settings: SettingsModel):
     deps.db.save_settings(settings.model_dump())
-    deps.agent.update_settings(settings.model_dump())
+    deps.task_agent.update_settings(settings.model_dump())
 
     # Update worker concurrency if changed
     if deps.worker:

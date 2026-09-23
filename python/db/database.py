@@ -566,12 +566,15 @@ class Database:
                 venv_existed = os.path.isfile(venv_python_path)
                 venv_path = create_venv(task_dir)
                 # Only preinstall when venv is newly created (skip if already existed)
+                # Run preinstall in background thread so task creation returns immediately
                 if not venv_existed:
-                    try:
-                        preinstall_packages(venv_python_path)
-                    except Exception as pe:
-                        import logging
-                        logging.getLogger(__name__).warning("Package preinstall failed for task %s: %s", task_id, pe)
+                    import threading
+                    t = threading.Thread(
+                        target=preinstall_packages,
+                        args=(venv_python_path,),
+                        daemon=True,
+                    )
+                    t.start()
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning("venv creation failed for task %s: %s", task_id, e)

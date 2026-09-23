@@ -31,7 +31,8 @@
   "nav": {
     "home": "Home",
     "tasks": "Tasks",
-    "projects": "Projects"
+    "projects": "Projects",
+    "toggleSidebar": "Toggle Sidebar"
   },
   "userBar": {
     "settings": "Settings"
@@ -285,6 +286,7 @@
   },
   "task": {
     "newTask": "New Task",
+    "creating": "Creating...",
     "newTaskWithDir": "New task with directory",
     "newTaskDefault": "Use default workspace",
     "workspaceDir": "Workspace",
@@ -477,5 +479,156 @@
     "installConfirmOk": "Install",
     "builtinTitle": "Builtin Tools",
     "externalTitle": "External Skills"
+  },
+  "baseLib": {
+    "title": "Base Libraries",
+    "recruitmentLib": "Recruitment Library",
+    "recruitmentLibDesc": "Policies, parks, industry support materials",
+    "investmentLib": "Investment Library",
+    "investmentLibDesc": "Valuation benchmarks, regulations, industry data",
+    "myLib": "My Library",
+    "myLibDesc": "User-defined base library",
+    "preset": "Preset",
+    "addCustom": "New Library",
+    "tabMaterials": "Files",
+    "tabWiki": "Wiki",
+    "back": "Back",
+    "notFound": "Base library not found",
+    "statusDone": "Done",
+    "statusProcessing": "Processing",
+    "statusPending": "Pending",
+    "uploadHint": "Click or drag files to upload to base library"
+  },
+  "project": {
+    "tab": {
+      "materials": "Files",
+      "wiki": "Wiki",
+      "reports": "Reports",
+      "forms": "Forms"
+    },
+    "type": {
+      "recruitment": "Recruitment",
+      "investment": "Investment Analysis",
+      "general": "General"
+    },
+    "stage": {
+      "investmentBefore": "Pre-Investment",
+      "investmentDuring": "During Investment",
+      "investmentAfter": "Post-Investment",
+      "recruitmentBefore": "Pre-Recruitment",
+      "recruitmentDuring": "During Recruitment",
+      "recruitmentAfter": "Post-Recruitment"
+    },
+    "report": {
+      "newReport": "New Report",
+      "templateManagement": "Template Management",
+      "selectTemplate": "Select Report Template",
+      "chapters": "chapters",
+      "template": "Template",
+      "completed": "Completed",
+      "failed": "Failed",
+      "open": "Open",
+      "export": "Export",
+      "totalReports": "{{count}} reports in total",
+      "exportSuccess": "{{title}} exported as {{format}}",
+      "filter": {
+        "all": "All",
+        "dueDiligence": "Due Diligence",
+        "industryResearch": "Industry Research",
+        "investmentAnalysis": "Investment Analysis",
+        "recruitmentPlan": "Recruitment Plan"
+      },
+      "wizard": {
+        "back": "Back",
+        "newReport": "New Report",
+        "searchTemplate": "Search templates...",
+        "customTemplates": "Custom Templates",
+        "createTemplate": "Create New Template",
+        "template": "Template",
+        "outputFormat": "Output Format",
+        "knowledgeSources": "Knowledge Sources",
+        "projectKb": "Project Knowledge Base",
+        "recruitmentLib": "Recruitment Library",
+        "investmentLib": "Investment Library",
+        "customLib": "Custom Library",
+        "autoIncluded": "Auto-included",
+        "autoMatched": "Auto-matched",
+        "outline": "Report Outline",
+        "addChapter": "Add Chapter",
+        "removeChapter": "Remove Chapter",
+        "newChapter": "New Chapter",
+        "supplementary": "Supplementary Notes",
+        "supplementaryPlaceholder": "Enter additional requirements, e.g. focus on specific aspects...",
+        "startGenerate": "Start Generating",
+        "cancel": "Cancel",
+        "generationProgress": "Generation Progress",
+        "done": "Done",
+        "generating": "Generating...",
+        "realtimePreview": "Real-time Preview",
+        "waitingGeneration": "Waiting for generation...",
+        "finishAndReturn": "Finish & Return",
+        "generatedReport": "Generated Report"
+      },
+      "preview": {
+        "backToList": "Back to List",
+        "editOutline": "Edit Outline",
+        "regenerateChapter": "Regenerate Chapter",
+        "sources": "This report cites {{total}} fragments from {{count}} documents",
+        "fragments": "fragments",
+        "exportSuccess": "{{title}} exported as {{format}}",
+        "chapterRegenerated": "Chapter {{chapter}} has been regenerated",
+        "regenerating": "Regenerating {{chapter}}..."
+      }
+    },
+    "wiki": {
+      "title": "Project Wiki",
+      "description": "LLM compiles project documents into structured, interlinked Wiki pages for knowledge accumulation",
+      "suggestedStructure": "Suggested Wiki structure (by project type)",
+      "comingSoon": "Wiki feature coming soon"
+    },
+    "forms": {
+      "newForm": "New Form",
+      "availableTemplates": "Available Templates",
+      "myForms": "My Forms",
+      "completed": "Completed",
+      "filling": "Filling",
+      "open": "Open",
+      "export": "Export",
+      "back": "Back",
+      "cancel": "Cancel",
+      "extracting": "Extracting data from knowledge base...",
+      "fillComplete": "Data filled. You can edit manually.",
+      "confirmExport": "Confirm & Export",
+      "exportSuccess": "{{name}} exported"
+    },
+    "chat": {
+      "title": "Knowledge Q&A",
+      "placeholder": "Ask a question based on project knowledge...",
+      "mockResponse": "Based on analysis of project knowledge base and associated libraries, this information needs further verification. Please refer to relevant materials for a more accurate answer.",
+      "close": "Close"
+    },
+    "template": {
+      "back": "Back",
+      "management": "Template Management",
+      "backToList": "Back to List",
+      "presetTemplates": "Preset Templates",
+      "customTemplates": "My Custom Templates",
+      "noCustom": "No custom templates yet. Copy a preset template to start editing.",
+      "view": "View",
+      "copy": "Copy",
+      "export": "Export",
+      "delete": "Delete",
+      "createCustom": "New Custom Template",
+      "importTemplate": "Import Template",
+      "enterName": "Enter template name",
+      "importMock": "Template import (Mock: would open file picker)",
+      "exportMock": "Template {{name}} exported",
+      "category": "Category",
+      "chapterStructure": "Chapter Structure",
+      "noChapters": "No chapters yet. Edit to add.",
+      "sampleChapter1": "Overview & Background",
+      "sampleChapter2": "Detailed Analysis",
+      "sampleChapter3": "Summary & Recommendations"
+    }
   }
 }

@@ -294,24 +294,6 @@
   border-bottom-color: var(--accent);
 }
 
-/* ── Chat button in tab bar (right after images tab, looks like a third tab) ── */
-.chatTabBtn {
-  padding: 10px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.chatTabBtn:hover {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
 /* ── Scope indicator (selected file in output) ── */
 .scopeIndicator {
   display: inline-flex;
@@ -421,18 +403,4 @@
 /* ── Skeleton wrapper ── */
 .skeletonWrap {
   padding: 12px 0;
-}
-
-/* ── Chat slide container ── */
-.chatContainer {
-  width: 0;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-left: none;
-  transition: width 0.25s ease;
-}
-
-.chatContainerOpen {
-  width: 360px;
-  border-left: 1px solid var(--border);
 }

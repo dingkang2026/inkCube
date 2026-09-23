@@ -5,8 +5,11 @@ import { Sidebar } from './components/layout/Sidebar'
 import { ResizeHandle } from './components/layout/ResizeHandle'
 import { SettingsPage } from './features/settings/SettingsPage'
 import { LogViewer } from './features/settings/LogViewer'
+import { ProjectDetailPage } from './features/project/ProjectDetailPage'
+import { ProjectSidebar } from './features/project/ProjectSidebar'
+import { BaseLibFooter } from './features/project/BaseLibFooter'
+import { BaseLibDetailPage } from './features/project/BaseLibDetailPage'
 import { KnowledgePage } from './features/knowledge/KnowledgePage'
-import { ProjectList } from './features/knowledge/ProjectList'
 import { HomePage } from './features/home/HomePage'
 import { TaskPage } from './features/task/TaskPage'
 import { TaskList } from './features/task/TaskList'
@@ -15,6 +18,8 @@ import { useTaskChat } from './features/task/useTaskChat'
 import { useSettings } from './features/settings/useSettings'
 import { useResizeHandle } from './hooks/useResizeHandle'
 import type { Project } from './features/knowledge/types'
+import type { ProjectType } from './features/project/types'
+import { setProjectExtState } from './features/project/types'
 
 export default function App() {
   const { settings, handleSaveSettings } = useSettings()
@@ -24,6 +29,7 @@ export default function App() {
   const {
     tasks, archivedTasks, currentTasks, activeTab, setActiveTab,
     activeTaskId, setActiveTaskId, loadTasks, loading: tasksLoading,
+    creating: taskCreating,
     handleCreateTask, handleCreateTaskWithDir, handleDeleteTask, handleRenameTask,
     handleArchiveTask, handleUnarchiveTask, handleExportTask, handleSetTaskMode,
   } = useTasks()
@@ -55,6 +61,7 @@ export default function App() {
   // ── Knowledge base state ──
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [selectedBaseLibId, setSelectedBaseLibId] = useState<string | null>(null)
 
   const loadProjects = useCallback(async () => {
     try {
@@ -68,6 +75,13 @@ export default function App() {
   useEffect(() => {
     loadProjects()
   }, [loadProjects])
+
+  // Auto-select first project when navigating to projects tab (so KnowledgePage features are immediately accessible)
+  useEffect(() => {
+    if (activeNav === 'projects' && projects.length > 0 && !selectedProjectId && !selectedBaseLibId) {
+      setSelectedProjectId(projects[0].id)
+    }
+  }, [activeNav, projects, selectedProjectId, selectedBaseLibId])
 
   // Poll task status for concurrent limit
   useEffect(() => {
@@ -102,7 +116,13 @@ export default function App() {
     : null
 
   const handleProjectSelect = (projectId: string) => {
+    setSelectedBaseLibId(null)
     setSelectedProjectId((prev) => (prev === projectId ? null : projectId))
+  }
+
+  const handleBaseLibSelect = (baseLibId: string) => {
+    setSelectedProjectId(null)
+    setSelectedBaseLibId((prev) => (prev === baseLibId ? null : baseLibId))
   }
 
   const handleDeleteProject = async (projectId: string) => {
@@ -116,11 +136,15 @@ export default function App() {
     }
   }
 
-  const handleCreateProject = async (name: string, description?: string) => {
+  const handleCreateProject = async (name: string, description?: string, type?: ProjectType) => {
     const result: any = await window.electronAPI.invoke('knowledge:createProject', { name, description })
     await loadProjects()
     // Auto-select the newly created project
     if (result?.id) {
+      // Set project type if specified
+      if (type) {
+        setProjectExtState(result.id, type)
+      }
       setSelectedProjectId(result.id)
     }
   }
@@ -211,15 +235,21 @@ export default function App() {
               activeNav={activeNav}
               onNavChange={handleNavChange}
               onOpenSettings={() => setSettingsOpen(true)}
+              footer={
+                <BaseLibFooter
+                  selectedBaseLib={selectedBaseLibId}
+                  onSelectBaseLib={handleBaseLibSelect}
+                />
+              }
             >
               {activeNav === 'projects' && (
-                <ProjectList
+                <ProjectSidebar
                   projects={projects}
                   selectedProject={selectedProjectId}
-                  onSelect={handleProjectSelect}
-                  onDelete={handleDeleteProject}
-                  onRename={handleRenameProject}
-                  onCreate={handleCreateProject}
+                  onSelectProject={handleProjectSelect}
+                  onDeleteProject={handleDeleteProject}
+                  onRenameProject={handleRenameProject}
+                  onCreateProject={handleCreateProject}
                 />
               )}
               {activeNav === 'tasks' && (
@@ -228,6 +258,7 @@ export default function App() {
                   activeTaskId={activeTaskId}
                   activeTab={activeTab}
                   loading={tasksLoading}
+                  creating={taskCreating}
                   onSelect={setActiveTaskId}
                   onNew={() => handleCreateTask()}
                   onNewWithDir={handleNewTaskWithDir}
@@ -255,6 +286,12 @@ export default function App() {
             onSave={handleSaveSettings}
             onClose={() => setSettingsOpen(false)}
           />
+        ) : selectedBaseLibId ? (
+          /* Base library is parallel to projects — accessible from any nav */
+          <BaseLibDetailPage
+            baseLibId={selectedBaseLibId}
+            onBack={() => setSelectedBaseLibId(null)}
+          />
         ) : activeNav === 'home' ? (
           <HomePage
             projects={projects}
@@ -265,11 +302,19 @@ export default function App() {
             }}
           />
         ) : activeNav === 'projects' ? (
-          <KnowledgePage
-            selectedProject={selectedProject}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onProjectDataChanged={loadProjects}
-          />
+          selectedProject ? (
+            <ProjectDetailPage
+              project={selectedProject}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onProjectDataChanged={loadProjects}
+            />
+          ) : (
+            <KnowledgePage
+              selectedProject={null}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onProjectDataChanged={loadProjects}
+            />
+          )
         ) : activeNav === 'tasks' ? (
           <TaskPage
             taskId={activeTaskId}

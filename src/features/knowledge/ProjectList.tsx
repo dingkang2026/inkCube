@@ -3,6 +3,8 @@ import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Folder, MoreVertical } from 'lucide-react'
 import type { Project } from './types'
+import type { ProjectType } from '../project/types'
+import { PROJECT_TYPE_CONFIG } from '../project/types'
 import s from './ProjectList.module.css'
 
 interface ProjectListProps {
@@ -11,7 +13,7 @@ interface ProjectListProps {
   onSelect: (projectId: string) => void
   onDelete: (projectId: string) => void
   onRename?: (projectId: string, name: string) => void
-  onCreate?: (name: string, description?: string) => void
+  onCreate?: (name: string, description?: string, type?: ProjectType) => void
 }
 
 export function ProjectList({
@@ -26,6 +28,7 @@ export function ProjectList({
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDesc, setNewProjectDesc] = useState('')
+  const [newProjectType, setNewProjectType] = useState<ProjectType>('general')
   const [creating, setCreating] = useState(false)
   const [confirmingProjectId, setConfirmingProjectId] = useState<string | null>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -79,9 +82,10 @@ export function ProjectList({
     if (!newProjectName.trim() || !onCreate || creating) return
     setCreating(true)
     try {
-      await onCreate(newProjectName.trim(), newProjectDesc.trim() || undefined)
+      await onCreate(newProjectName.trim(), newProjectDesc.trim() || undefined, newProjectType)
       setNewProjectName('')
       setNewProjectDesc('')
+      setNewProjectType('general')
       setShowCreateModal(false)
     } finally {
       setCreating(false)
@@ -197,6 +201,15 @@ export function ProjectList({
               value={newProjectDesc}
               onChange={(e) => setNewProjectDesc(e.target.value)}
             />
+            <select
+              className={s.input}
+              value={newProjectType}
+              onChange={(e) => setNewProjectType(e.target.value as ProjectType)}
+            >
+              {(Object.entries(PROJECT_TYPE_CONFIG) as [ProjectType, { labelKey: string }][]).map(([key, cfg]) => (
+                <option key={key} value={key}>{t(cfg.labelKey)}</option>
+              ))}
+            </select>
             <div className={s.modalActions}>
               <button className={s.btnCancel} onClick={() => setShowCreateModal(false)}>
                 {t('knowledge.cancel')}

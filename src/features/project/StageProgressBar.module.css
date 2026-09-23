@@ -1,0 +1,77 @@
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stageItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+  background: transparent;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.dotActive {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.dotCompleted {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+
+.labelActive {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.labelCompleted {
+  color: var(--text-secondary);
+}
+
+.advanceBtn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.advanceBtn:hover {
+  background: var(--accent);
+  color: white;
+}

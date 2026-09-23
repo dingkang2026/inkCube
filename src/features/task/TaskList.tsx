@@ -10,6 +10,7 @@ interface TaskListProps {
   activeTaskId: string | null
   activeTab: TaskTab
   loading?: boolean
+  creating?: boolean
   onSelect: (id: string) => void
   onNew: () => void
   onNewWithDir?: () => void
@@ -28,6 +29,7 @@ export function TaskList({
   activeTaskId,
   activeTab,
   loading = false,
+  creating = false,
   onSelect,
   onNew,
   onNewWithDir,
@@ -48,17 +50,17 @@ export function TaskList({
         <button
           className={styles.newBtn}
           onClick={onNew}
-          disabled={!canCreateTask}
-          title={canCreateTask ? '' : '已达到最大并发任务数限制'}
+          disabled={!canCreateTask || creating}
+          title={creating ? t('task.creating') : canCreateTask ? '' : '已达到最大并发任务数限制'}
         >
           <span className={styles.newIcon}>+</span>
-          {t('task.newTask')}
+          {creating ? t('task.creating') : t('task.newTask')}
         </button>
         {onNewWithDir && (
           <button
             className={styles.newDirBtn}
             onClick={onNewWithDir}
-            disabled={!canCreateTask}
+            disabled={!canCreateTask || creating}
             title={t('task.selectDirectory')}
           >
             <FolderOpen size={16} />

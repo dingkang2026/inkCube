@@ -9,6 +9,7 @@ export function useTasks() {
   const [activeTab, setActiveTab] = useState<TaskTab>('active')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
 
   const loadTasks = async () => {
     setLoading(true)
@@ -29,6 +30,8 @@ export function useTasks() {
   }, [])
 
   const handleCreateTask = useCallback(async (mode: 'coding' | 'general' = 'coding') => {
+    if (creating) return
+    setCreating(true)
     try {
       const res = await window.electronAPI.invoke('tasks:create', { title: '新任务', mode }) as Task & { error?: string }
       if (res.error) {
@@ -40,13 +43,17 @@ export function useTasks() {
       setActiveTab('active')
     } catch (err) {
       console.error('Create task failed:', err)
+    } finally {
+      setCreating(false)
     }
-  }, [])
+  }, [creating])
 
   const handleCreateTaskWithDir = useCallback(async (dirPath: string, mode: 'coding' | 'general' = 'coding') => {
+    if (creating) return
     // Extract folder name as default title
     const parts = dirPath.replace(/[\/\\]+$/, '').split(/[\/\\]/)
     const folderName = parts[parts.length - 1] || '新任务'
+    setCreating(true)
     try {
       const res = await window.electronAPI.invoke('tasks:create', { title: folderName, workspacePath: dirPath, mode }) as Task & { error?: string }
       if (res.error) {
@@ -58,8 +65,10 @@ export function useTasks() {
       setActiveTab('active')
     } catch (err) {
       console.error('Create task with dir failed:', err)
+    } finally {
+      setCreating(false)
     }
-  }, [])
+  }, [creating])
 
   const handleDeleteTask = useCallback(
     async (id: string) => {
@@ -153,6 +162,7 @@ export function useTasks() {
     setActiveTaskId,
     loadTasks,
     loading,
+    creating,
     handleCreateTask,
     handleCreateTaskWithDir,
     handleDeleteTask,

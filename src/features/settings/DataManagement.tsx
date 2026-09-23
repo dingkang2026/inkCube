@@ -10,7 +10,6 @@ import s from './DataManagement.module.css'
 interface CategoryUsage {
   size: number
   count: number
-  message_count?: number
   file_count?: number
   image_count?: number
 }
@@ -23,7 +22,6 @@ interface DataUsage {
 
 const CATEGORIES = [
   { key: 'logs', icon: '📋', colorClass: 'logs' },
-  { key: 'conversations', icon: '💬', colorClass: 'conversations' },
   { key: 'knowledge', icon: '📚', colorClass: 'knowledge' },
   { key: 'settings', icon: '⚙️', colorClass: 'settings' },
   { key: 'models', icon: '🤖', colorClass: 'models' },
@@ -95,8 +93,8 @@ export function DataManagement() {
 
     setCleaning('all')
     try {
-      // Clean in order: conversations → knowledge → settings → models → logs
-      for (const cat of ['conversations', 'knowledge', 'settings', 'models', 'logs']) {
+      // Clean in order: knowledge → settings → models → logs
+      for (const cat of ['knowledge', 'settings', 'models', 'logs']) {
         const result = await window.electronAPI.invoke('system:cleanData', cat) as { success?: boolean; message?: string }
         if (!result.success) {
           console.warn(`Failed to clean ${cat}:`, result.message)
@@ -196,8 +194,6 @@ function getCategoryDesc(t: (key: string, opts?: Record<string, unknown>) => str
   switch (key) {
     case 'logs':
       return t('data.desc_logs')
-    case 'conversations':
-      return t('data.desc_conversations', { count: cat.count, msgCount: cat.message_count || 0 })
     case 'knowledge':
       return t('data.desc_knowledge', {
         projects: cat.count,

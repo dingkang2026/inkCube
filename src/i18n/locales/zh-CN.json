@@ -31,7 +31,8 @@
   "nav": {
     "home": "首页",
     "tasks": "任务",
-    "projects": "项目"
+    "projects": "项目",
+    "toggleSidebar": "切换侧边栏"
   },
   "userBar": {
     "settings": "设置"
@@ -285,6 +286,7 @@
   },
   "task": {
     "newTask": "新建任务",
+    "creating": "创建中...",
     "newTaskWithDir": "选择工作目录新建",
     "newTaskDefault": "使用默认工作区",
     "workspaceDir": "工作目录",
@@ -477,5 +479,156 @@
     "installConfirmOk": "确认安装",
     "builtinTitle": "内置 Tool",
     "externalTitle": "外部 Skill"
+  },
+  "baseLib": {
+    "title": "基础库",
+    "recruitmentLib": "招商基础库",
+    "recruitmentLibDesc": "政策、园区、产业扶持等基础资料",
+    "investmentLib": "投资基础库",
+    "investmentLibDesc": "估值基准、法规、行业数据等",
+    "myLib": "我的资料库",
+    "myLibDesc": "用户自定义基础库",
+    "preset": "预置",
+    "addCustom": "新建基础库",
+    "tabMaterials": "资料",
+    "tabWiki": "Wiki",
+    "back": "返回",
+    "notFound": "基础库未找到",
+    "statusDone": "已完成",
+    "statusProcessing": "处理中",
+    "statusPending": "待处理",
+    "uploadHint": "点击或拖拽文件上传到基础库"
+  },
+  "project": {
+    "tab": {
+      "materials": "资料",
+      "wiki": "Wiki",
+      "reports": "报告",
+      "forms": "填表"
+    },
+    "type": {
+      "recruitment": "招商引资",
+      "investment": "投资分析",
+      "general": "通用"
+    },
+    "stage": {
+      "investmentBefore": "投前",
+      "investmentDuring": "投中",
+      "investmentAfter": "投后",
+      "recruitmentBefore": "招商前",
+      "recruitmentDuring": "招商中",
+      "recruitmentAfter": "招商后"
+    },
+    "report": {
+      "newReport": "新建报告",
+      "templateManagement": "模板管理",
+      "selectTemplate": "选择报告模板",
+      "chapters": "个章节",
+      "template": "模板",
+      "completed": "已完成",
+      "failed": "失败",
+      "open": "打开",
+      "export": "导出",
+      "totalReports": "共 {{count}} 份报告",
+      "exportSuccess": "{{title}} 已导出为 {{format}}",
+      "filter": {
+        "all": "全部",
+        "dueDiligence": "尽调类",
+        "industryResearch": "行业研究",
+        "investmentAnalysis": "投资分析",
+        "recruitmentPlan": "招商方案"
+      },
+      "wizard": {
+        "back": "返回",
+        "newReport": "新建报告",
+        "searchTemplate": "搜索模板...",
+        "customTemplates": "自定义模板",
+        "createTemplate": "创建新模板",
+        "template": "模板",
+        "outputFormat": "输出格式",
+        "knowledgeSources": "知识来源",
+        "projectKb": "项目知识库",
+        "recruitmentLib": "招商基础库",
+        "investmentLib": "投资基础库",
+        "customLib": "自定义基础库",
+        "autoIncluded": "自动包含",
+        "autoMatched": "自动匹配",
+        "outline": "报告大纲",
+        "addChapter": "添加章节",
+        "removeChapter": "删除章节",
+        "newChapter": "新章节",
+        "supplementary": "补充说明",
+        "supplementaryPlaceholder": "输入补充要求，如重点突出某方面内容...",
+        "startGenerate": "开始生成",
+        "cancel": "取消",
+        "generationProgress": "生成进度",
+        "done": "完成",
+        "generating": "生成中...",
+        "realtimePreview": "实时预览",
+        "waitingGeneration": "等待生成...",
+        "finishAndReturn": "完成并返回",
+        "generatedReport": "生成报告"
+      },
+      "preview": {
+        "backToList": "返回列表",
+        "editOutline": "编辑大纲",
+        "regenerateChapter": "重新生成章节",
+        "sources": "本报告引用了 {{count}} 个文档的 {{total}} 个片段",
+        "fragments": "个片段",
+        "exportSuccess": "{{title}} 已导出为 {{format}}",
+        "chapterRegenerated": "章节 {{chapter}} 已重新生成",
+        "regenerating": "正在重新生成 {{chapter}}..."
+      }
+    },
+    "wiki": {
+      "title": "项目 Wiki",
+      "description": "LLM 将项目文档编译为结构化、互相链接的 Wiki 页面，实现知识沉淀",
+      "suggestedStructure": "建议 Wiki 结构（按项目类型）",
+      "comingSoon": "Wiki 功能即将推出"
+    },
+    "forms": {
+      "newForm": "新建表格",
+      "availableTemplates": "可用模板",
+      "myForms": "我的表格",
+      "completed": "已完成",
+      "filling": "填充中",
+      "open": "打开",
+      "export": "导出",
+      "back": "返回",
+      "cancel": "取消",
+      "extracting": "正在从知识库提取数据...",
+      "fillComplete": "数据填充完成，可手动修改",
+      "confirmExport": "确认导出",
+      "exportSuccess": "{{name}} 已导出"
+    },
+    "chat": {
+      "title": "知识问答",
+      "placeholder": "输入问题，基于项目知识库回答...",
+      "mockResponse": "根据项目知识库和关联基础库的资料分析，该信息需要进一步检索确认。建议查阅相关资料获取更准确的答案。",
+      "close": "关闭"
+    },
+    "template": {
+      "back": "返回",
+      "management": "模板管理",
+      "backToList": "返回列表",
+      "presetTemplates": "预置模板",
+      "customTemplates": "我的自定义模板",
+      "noCustom": "暂无自定义模板，可从预置模板复制后编辑",
+      "view": "查看",
+      "copy": "复制",
+      "export": "导出",
+      "delete": "删除",
+      "createCustom": "新建自定义模板",
+      "importTemplate": "导入模板",
+      "enterName": "请输入模板名称",
+      "importMock": "模板导入功能（Mock：将打开文件选择器）",
+      "exportMock": "模板 {{name}} 已导出",
+      "category": "分类",
+      "chapterStructure": "章节结构",
+      "noChapters": "暂无章节，请编辑添加",
+      "sampleChapter1": "概述与背景",
+      "sampleChapter2": "详细分析",
+      "sampleChapter3": "总结与建议"
+    }
   }
 }

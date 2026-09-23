@@ -102,7 +102,7 @@ export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout }: { onO
 
   return (
     <div className={s.titleBar} ref={barRef}>
-      <div className={s.brand}>{t('sidebar.logo')}</div>
+      <div className={s.brand}>{t('app.title')}</div>
       <div className={s.menus}>
         {menus.map((menu, i) => (
           <div key={menu.label} className={s.menuGroup}>
@@ -136,7 +136,7 @@ export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout }: { onO
       </div>
 
       <div className={s.actions}>
-        <button className={s.actionBtn} onClick={onToggleSidebar} title={t('chat.toggleSidebar')}>
+        <button className={s.actionBtn} onClick={onToggleSidebar} title={t('nav.toggleSidebar')}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
             <rect x="1" y="2" width="12" height="10" rx="1" />
             <line x1="5" y1="2" x2="5" y2="12" />
