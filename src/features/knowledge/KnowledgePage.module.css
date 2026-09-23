@@ -1,0 +1,438 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+  background: var(--bg-primary);
+}
+
+/* ── Project header ── */
+.projectHeader {
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.projectInfoRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.projectInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* chatBtn moved to output tab bar as chatTabBtn */
+
+.projectName {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.projectDesc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.projectStats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.statBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+}
+
+.statProcessing {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
+  animation: processingFade 1.5s ease-in-out infinite;
+}
+
+@keyframes processingFade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.statNum {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-right: 3px;
+}
+
+.statDivider {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* ── Main area (horizontal: input | output | chat) ── */
+.mainArea {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Input panel (left: files) ── */
+.inputPanel {
+  width: 320px;
+  min-width: 260px;
+  max-width: 400px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.inputHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.inputSearchForm {
+  width: 100%;
+}
+
+.inputSearchWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  transition: border-color 0.15s;
+}
+
+.inputSearchWrap:focus-within {
+  border-color: var(--accent);
+}
+
+.inputSearchIcon {
+  font-size: 14px;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.inputSearchInput {
+  flex: 1;
+  padding: 9px 0;
+  border: none;
+  font-size: 14px;
+  background: transparent;
+  color: var(--text-primary);
+  outline: none;
+  min-width: 0;
+}
+
+.inputSearchInput::placeholder {
+  color: var(--text-muted);
+}
+
+.inputSearchClear {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.inputSearchClear:hover {
+  background: var(--text-muted);
+  color: var(--bg-primary);
+}
+
+/* ── Status filter segments ── */
+.statusFilter {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.statusFilterBtn {
+  flex: 1;
+  padding: 5px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.statusFilterBtn:last-child {
+  border-right: none;
+}
+
+.statusFilterBtn:hover {
+  background: var(--bg-hover);
+}
+
+.statusFilterBtnActive {
+  color: var(--accent);
+  background: var(--bg-secondary);
+}
+
+.inputContent {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── Upload zone (always visible) ── */
+.uploadZone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+
+.uploadZone:hover {
+  background: var(--bg-hover);
+}
+
+.uploadZoneDragOver {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: var(--accent);
+}
+
+.uploadText {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 0.12s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.uploadZone:hover .uploadText {
+  color: var(--accent);
+}
+
+/* ── Output panel (right: search + images) ── */
+.outputPanel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.outputTabBar {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.outputTab {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.outputTab:hover {
+  color: var(--text-primary);
+}
+
+.outputTabActive {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Chat button in tab bar (right after images tab, looks like a third tab) ── */
+.chatTabBtn {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.chatTabBtn:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Scope indicator (selected file in output) ── */
+.scopeIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+  border-radius: 12px;
+  max-width: 200px;
+}
+
+.scopeIndicator span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scopeClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+
+.scopeClear:hover {
+  background: rgba(37, 99, 235, 0.15);
+}
+
+.outputContent {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.searchPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px;
+}
+
+.imagePanel {
+  padding: 16px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ── Empty states ── */
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 40px;
+}
+
+.emptyState h3 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.emptyState p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 320px;
+}
+
+.emptySearch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.emptySearch p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.emptyIcon {
+  font-size: 36px;
+  opacity: 0.6;
+  margin-bottom: 4px;
+}
+
+/* ── Skeleton wrapper ── */
+.skeletonWrap {
+  padding: 12px 0;
+}
+
+/* ── Chat slide container ── */
+.chatContainer {
+  width: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-left: none;
+  transition: width 0.25s ease;
+}
+
+.chatContainerOpen {
+  width: 360px;
+  border-left: 1px solid var(--border);
+}

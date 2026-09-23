@@ -1,0 +1,40 @@
+appId: com.inkcube.app
+productName: 墨方 InkCube
+
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - "electron/**/*"
+  - "dist-renderer/**/*"
+  - "package.json"
+
+extraResources:
+  - from: "resources/python/"
+    to: "python/"
+    filter:
+      - "**/*"
+  - from: "resources/tools/"
+    to: "tools/"
+    filter:
+      - "**/*"
+
+win:
+  target: nsis
+  icon: resources/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: true
+  createDesktopShortcut: true
+  shortcutName: 墨方 InkCube
+
+mac:
+  target: dmg
+  icon: resources/icon.icns
+
+linux:
+  target: AppImage
+  icon: resources/icon.png

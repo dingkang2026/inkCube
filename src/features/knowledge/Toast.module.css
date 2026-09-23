@@ -1,0 +1,169 @@
+/* ── Toast container ── */
+.container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+/* ── Toast item ── */
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  pointer-events: auto;
+  animation: slideIn 0.25s ease;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  max-width: 360px;
+}
+
+.exiting {
+  opacity: 0;
+  transform: translateX(20px);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── Type variants ── */
+.success {
+  background: var(--bg-success);
+  color: var(--text-success);
+  border: 1px solid var(--text-success);
+}
+
+.error {
+  background: var(--bg-danger);
+  color: var(--text-danger);
+  border: 1px solid var(--text-danger);
+}
+
+.info {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+.warning {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+}
+
+/* ── Icon ── */
+.icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.success .icon {
+  background: var(--text-success);
+  color: #fff;
+}
+
+.error .icon {
+  background: var(--text-danger);
+  color: #fff;
+}
+
+.info .icon {
+  background: var(--accent);
+  color: #fff;
+}
+
+.warning .icon {
+  background: #f59e0b;
+  color: #fff;
+}
+
+/* ── Body ── */
+.body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── Message ── */
+.message {
+  line-height: 1.4;
+}
+
+/* ── Suggestion ── */
+.suggestion {
+  font-size: 12px;
+  opacity: 0.85;
+  font-weight: 400;
+}
+
+/* ── Actions row ── */
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.actionBtn {
+  font-size: 12px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  text-decoration: underline;
+  color: inherit;
+}
+
+.detailToggle {
+  font-size: 11px;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  opacity: 0.7;
+  color: inherit;
+}
+
+.detailToggle:hover {
+  opacity: 1;
+}
+
+/* ── Detail expand ── */
+.detail {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+  line-height: 1.4;
+}

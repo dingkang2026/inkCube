@@ -1,0 +1,23 @@
+.resizeHandle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.resizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 1px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.resizeHandle:hover::after {
+  background: var(--accent);
+}

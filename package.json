@@ -1,0 +1,42 @@
+{
+  "name": "inkcube",
+  "version": "0.1.0",
+  "description": "墨方 InkCube - 本地知识库 + 文档生成智能助手",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
+    "dev:vite": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
+    "build": "vite build",
+    "pack": "npm run build && electron-builder",
+    "python:dev": "cd python && uvicorn main:app --reload --host 127.0.0.1 --port 8765",
+    "python:debug": "cd python && python -m debugpy --listen 5678 --wait-for-client -m uvicorn main:app --host 127.0.0.1 --port 8765",
+    "dev:debug": "concurrently -k \"npm:python:debug\" \"npm:dev:vite\" \"npm:dev:electron\""
+  },
+  "dependencies": {
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "better-sqlite3": "^13.0.3",
+    "i18next": "^26.4.2",
+    "lucide-react": "^1.47.0",
+    "mermaid": "^12.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-i18next": "^17.0.14",
+    "react-markdown": "^9.0.1",
+    "react-syntax-highlighter": "^16.1.1",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "wait-on": "^8.0.1"
+  }
+}

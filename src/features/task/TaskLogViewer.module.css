@@ -1,0 +1,112 @@
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: var(--bg-overlay, rgba(0, 0, 0, 0.3));
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 16px;
+}
+
+.panel {
+  background: var(--bg-primary, #fff);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 800px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-primary, #e0e0e0);
+  flex-shrink: 0;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.meta {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  flex: 1;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.autoRefreshLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+}
+
+.autoRefreshLabel input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+}
+
+.refreshBtn,
+.closeBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.refreshBtn:hover,
+.closeBtn:hover {
+  background: var(--bg-hover, #f0f0f0);
+}
+
+.closeBtn {
+  font-size: 14px;
+  color: var(--text-secondary, #888);
+}
+
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 0;
+}
+
+.empty {
+  text-align: center;
+  color: var(--text-secondary, #888);
+  padding: 40px 0;
+  font-size: 14px;
+}
+
+.logPre {
+  margin: 0;
+  padding: 0 14px;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.logLine {
+  padding: 1px 0;
+}
+
+.logLine:hover {
+  background: var(--bg-hover, #f5f5f5);
+}

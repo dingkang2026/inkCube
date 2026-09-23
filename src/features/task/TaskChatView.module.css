@@ -1,0 +1,349 @@
+.window {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  background: var(--bg-primary);
+  position: relative;
+}
+
+.window.dragOver {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* ── Drag & Drop overlay ── */
+
+.dropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(var(--accent-rgb, 59, 130, 246), 0.08);
+  backdrop-filter: blur(2px);
+  border-radius: var(--radius-md);
+  pointer-events: none;
+}
+
+.dropIcon {
+  font-size: 48px;
+  animation: dropBounce 1s ease-in-out infinite;
+}
+
+.dropText {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+@keyframes dropBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.emptyLogo {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+
+.emptyGreeting {
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.emptyHint {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.quickActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin-top: 24px;
+  max-width: 600px;
+}
+
+.quickCard {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.quickCard:hover {
+  border-color: var(--accent);
+  background: var(--bg-primary);
+}
+
+.uploadBtn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.uploadBtn:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--bg-tertiary);
+}
+
+.uploadBtn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Input area */
+.inputArea {
+  position: relative;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.wrapper {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  transition: border-color 0.15s;
+}
+
+.wrapper:focus-within {
+  border-color: var(--accent);
+}
+
+/* Input row (upload btn + textarea + send btn) */
+.inputRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.textarea {
+  flex: 1;
+  border: none;
+  background: none;
+  resize: none;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+  min-height: 24px;
+  max-height: 200px;
+}
+
+.sendBtn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.sendBtn:hover {
+  background: var(--accent-hover);
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.stopBtn {
+  background: var(--error);
+}
+
+.pauseBtn {
+  background: var(--warning, #f59e0b);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin-top: 6px;
+}
+
+.slashHint {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* ── Slash command autocomplete popup ── */
+
+.slashPopup {
+  position: absolute;
+  bottom: 100%;
+  left: 24px;
+  right: 24px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 50;
+  margin-bottom: 4px;
+}
+
+.slashItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.slashItem:hover,
+.slashItemActive {
+  background: var(--bg-tertiary);
+}
+
+.slashName {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.slashDesc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Shell confirmation card ── */
+
+.shellConfirm {
+  margin: 8px 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--accent, #3b82f6);
+  border-radius: var(--radius-md);
+  background: rgba(var(--accent-rgb, 59, 130, 246), 0.06);
+}
+
+.shellConfirmHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.shellConfirmIcon {
+  font-size: 16px;
+}
+
+.shellConfirmTimer {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.shellConfirmCmd {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.shellConfirmActions {
+  display: flex;
+  gap: 8px;
+}
+
+.shellConfirmAllow {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid var(--accent, #3b82f6);
+  border-radius: var(--radius-sm);
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.shellConfirmAllow:hover {
+  opacity: 0.85;
+}
+
+.shellConfirmSession {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid var(--accent, #3b82f6);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent, #3b82f6);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.shellConfirmSession:hover {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 10%, transparent);
+}
+
+.shellConfirmDeny {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.shellConfirmDeny:hover {
+  background: var(--bg-tertiary);
+}

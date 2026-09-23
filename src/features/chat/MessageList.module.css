@@ -1,0 +1,152 @@
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.message {
+  display: flex;
+  gap: 12px;
+  max-width: 80%;
+}
+
+.message.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.message.assistant {
+  align-self: flex-start;
+}
+
+.avatar {
+  font-size: 20px;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bubble {
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  line-height: 1.6;
+  position: relative;
+}
+
+.bubbleWrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.userBubble {
+  background: var(--user-bubble);
+  color: var(--user-text);
+  border-top-right-radius: 4px;
+}
+
+.assistantBubble {
+  background: var(--bg-secondary);
+  border-top-left-radius: 4px;
+}
+
+.assistantBubble.thinking {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ── Time row + copy button ── */
+
+.timeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.timeRowUser {
+  justify-content: flex-end;
+}
+
+.time {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.copyBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.copyBtn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.streamingCursor {
+  animation: blink 1s step-end infinite;
+  color: var(--accent);
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Thinking / Action blocks */
+.thinkingBlock,
+.actionBlock {
+  margin: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.thinkingBlock summary,
+.actionBlock summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.blockContent {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.blockContent pre {
+  font-size: 11px;
+  margin: 4px 0;
+}
+
+.toolOutput {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.toolOutput.thinking {
+  color: var(--text-secondary);
+  font-style: italic;
+}

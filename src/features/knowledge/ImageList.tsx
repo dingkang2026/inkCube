@@ -1,0 +1,172 @@
+/** src/features/knowledge/ImageList.tsx */
+import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
+import { X, RefreshCw, Package } from 'lucide-react'
+import type { ImageRecord } from './types'
+import { IMAGE_CATEGORIES } from './types'
+import { useToast } from './Toast'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
+import s from './ImageList.module.css'
+
+interface ImageListProps {
+  projectId: string
+  fileId: string
+  onClose: () => void
+}
+
+export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
+  const { t } = useTranslation()
+  const showToast = useToast()
+  const handleError = useErrorHandler()
+  const [images, setImages] = useState<ImageRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [statusFilter, setStatusFilter] = useState('active')
+
+  const loadImages = async () => {
+    setLoading(true)
+    try {
+      const result: any = await window.electronAPI.invoke('knowledge:getImages', { projectId, fileId })
+      setImages(result.images || [])
+    } catch (err) {
+      console.error('Failed to load images:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { loadImages() }, [fileId])
+
+  const handleRetry = async (imageId: string, force = false) => {
+    try {
+      await window.electronAPI.invoke('knowledge:retryImage', { projectId, imageId, force })
+      loadImages()
+      showToast(force ? t('knowledge.retryForceSubmitted') : t('knowledge.retrySubmitted'), 'success')
+    } catch (err: any) {
+      handleError(err)
+    }
+  }
+
+  const handleChangeCategory = async (imageId: string, category: string) => {
+    try {
+      await window.electronAPI.invoke('knowledge:updateImageCategory', { projectId, imageId, category })
+      setImages(prev => prev.map(i => i.id === imageId ? { ...i, category } : i))
+    } catch (err) {
+      console.error('Update category failed:', err)
+    }
+  }
+
+  const handleArchive = async (imageId: string) => {
+    if (!confirm(t('knowledge.confirmArchive'))) return
+    try {
+      await window.electronAPI.invoke('knowledge:archiveImage', { projectId, imageId })
+      setImages(prev => prev.map(i =>
+        i.id === imageId ? { ...i, status: 'archived' as const, vlm_description: null, error_message: '手动归档' } : i
+      ))
+    } catch (err) {
+      console.error('Archive failed:', err)
+    }
+  }
+
+  const handleRetryFailed = async () => {
+    try {
+      await window.electronAPI.invoke('knowledge:retryFailedImages', { projectId, fileId })
+      loadImages()
+      showToast(t('knowledge.retrySubmitted'), 'success')
+    } catch (err: any) {
+      handleError(err)
+    }
+  }
+
+  // Filter images by status
+  const archivedCount = images.filter(img => img.status === 'archived').length
+  const filteredImages = images.filter(img => {
+    if (statusFilter === 'active' && img.status === 'archived') return false
+    if (statusFilter === 'archived' && img.status !== 'archived') return false
+    if (statusFilter === 'error' && img.status !== 'error') return false
+    return true
+  })
+
+  return (
+    <div className={s.container}>
+      <div className={s.header}>
+        <h4 className={s.title}>{t('knowledge.imageList')}</h4>
+        <button className={s.closeBtn} onClick={onClose}><X size={16} /></button>
+      </div>
+
+      {/* Status filter tabs */}
+      <div className={s.filterBar}>
+        {[
+          { value: 'active', label: t('knowledge.statusFilter_active') },
+          { value: 'archived', label: `${t('knowledge.imgStatus_archived')}${archivedCount > 0 ? ` (${archivedCount})` : ''}` },
+          { value: 'error', label: t('knowledge.imgStatus_error') },
+          { value: 'all', label: t('knowledge.statusFilter_all') },
+        ].map(opt => (
+          <button
+            key={opt.value}
+            className={`${s.filterTab} ${statusFilter === opt.value ? s.filterTabActive : ''}`}
+            onClick={() => setStatusFilter(opt.value)}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className={s.loading}>{t('knowledge.loadingImages')}</div>
+      ) : filteredImages.length === 0 ? (
+        <div className={s.empty}>{t('knowledge.noImages')}</div>
+      ) : (
+        <>
+          {filteredImages.map(img => (
+            <div key={img.id} className={s.imageItem}>
+              <div className={s.imageInfo}>
+                <span className={s.pageNo}>P{img.page_no ?? '?'}</span>
+                <span className={`${s.statusBadge} ${s[`status_${img.status}`] || ''}`}>
+                  {t(`knowledge.imgStatus_${img.status}`)}
+                </span>
+                <select
+                  className={s.categorySelect}
+                  value={img.category || 'uncategorized'}
+                  onChange={(e) => handleChangeCategory(img.id, e.target.value)}
+                  title={t('knowledge.changeCategory')}
+                >
+                  {IMAGE_CATEGORIES.map(cat => (
+                    <option key={cat} value={cat}>{t(`knowledge.category_${cat}`)}</option>
+                  ))}
+                </select>
+                {img.vlm_description && (
+                  <p className={s.description}>{img.vlm_description.slice(0, 120)}...</p>
+                )}
+                {img.error_message && (
+                  <p className={s.error}>{img.error_message}</p>
+                )}
+              </div>
+              <div className={s.imageActions}>
+                {/* Retry: always force — user explicitly requested */}
+                {(img.status === 'error' || img.status === 'archived') && (
+                  <button
+                    className={s.actionBtn}
+                    onClick={() => handleRetry(img.id, true)}
+                    title={t('knowledge.retry')}
+                  >
+                    <RefreshCw size={13} />
+                  </button>
+                )}
+                {img.status !== 'archived' && (
+                  <button className={s.actionBtn} onClick={() => handleArchive(img.id)} title={t('knowledge.archiveImage')}>
+                    <Package size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {(filteredImages.some(i => i.status === 'error') || filteredImages.some(i => i.status === 'archived')) && (
+            <button className={s.retryAllBtn} onClick={handleRetryFailed}>
+              <RefreshCw size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />{t('knowledge.retryAllFailed')}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

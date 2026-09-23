@@ -1,0 +1,107 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.description {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.modeCard {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.modeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modeLabel {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.modeBadge {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 10px;
+  border-radius: 10px;
+}
+
+.modeBadge.cpu {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.modeBadge.gpu {
+  background: #f0fdf4;
+  color: var(--success);
+}
+
+.modeDesc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.downloadSection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.downloadInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.downloadSize {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.downloadReq {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.downloadingBadge {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

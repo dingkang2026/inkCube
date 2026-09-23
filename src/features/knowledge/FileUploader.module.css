@@ -1,0 +1,430 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── File list ── */
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.fileListHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.selectAllLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.selectAllLabel input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.refreshBtn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.refreshBtn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.fileItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+  position: relative;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.fileItem:last-child {
+  border-bottom: none;
+}
+
+.fileItem:hover {
+  background: var(--bg-hover);
+}
+
+/* ── Parsing pulse ── */
+.fileItemParsing {
+  box-shadow: inset 2px 0 0 var(--accent);
+  animation: parsingPulse 2s ease-in-out infinite;
+  padding-bottom: 16px;
+}
+
+@keyframes parsingPulse {
+  0%, 100% { background: transparent; }
+  50% { background: rgba(37, 99, 235, 0.04); }
+}
+
+.fileItemSelected {
+  background: rgba(37, 99, 235, 0.05);
+}
+
+.fileItemActive {
+  background: rgba(37, 99, 235, 0.08);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.fileItemActive:hover {
+  background: rgba(37, 99, 235, 0.10);
+}
+
+.fileCheckbox {
+  accent-color: var(--accent);
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.fileIcon {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+}
+
+.fileInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.filename {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileMeta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.fileType {
+  font-weight: 500;
+}
+
+.metaDot {
+  font-size: 8px;
+}
+
+/* ─ File parsing progress — bottom bar ── */
+.progressRow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 4px;
+  z-index: 1;
+}
+
+.progressTrack {
+  flex: 1;
+  height: 3px;
+  background: var(--bg-tertiary);
+  border-radius: 1.5px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 1.5px;
+  transition: width 0.3s ease;
+}
+
+.progressText {
+  font-size: 10px;
+  color: var(--text-muted);
+  min-width: 28px;
+  text-align: right;
+}
+
+/* ── Status dot indicators ── */
+.statusDot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dotDone {
+  background: var(--text-success);
+  box-shadow: 0 0 0 2px var(--bg-success);
+}
+
+.dotError {
+  background: var(--text-danger);
+  box-shadow: 0 0 0 2px var(--bg-danger);
+}
+
+.dotParsing {
+  background: var(--accent);
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+  50% { opacity: 0.5; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1); }
+}
+
+.dotPending {
+  background: var(--text-muted);
+  box-shadow: 0 0 0 2px var(--bg-muted);
+}
+
+/* ── Empty ── */
+.emptyFiles {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.emptyFiles p {
+  margin: 0;
+}
+
+/* ── Hover menu button (⋯) ── */
+.menuBtnWrap {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%) translateX(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 2;
+}
+
+.fileItem:hover .menuBtnWrap {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+  pointer-events: auto;
+}
+
+.menuBtn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.menuBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Dropdown menu ── */
+.dropdownMenu {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  min-width: 130px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  padding: 4px 2px 2px;
+  z-index: 10;
+}
+
+.dropdownMenuOpen {
+  display: block;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.12s;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.menuItem:hover {
+  background: var(--bg-hover);
+}
+
+.menuItemDanger {
+  color: var(--text-danger, #dc2626);
+}
+
+.menuItemDanger:hover {
+  background: var(--bg-danger, #fef2f2);
+}
+
+/* ── Inline delete confirmation ── */
+.inlineConfirm {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.confirmCancelBtn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.confirmCancelBtn:hover {
+  background: var(--bg-hover);
+}
+
+.confirmDeleteBtn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--error, #dc2626);
+  border-radius: 4px;
+  background: var(--error, #dc2626);
+  color: white;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.confirmDeleteBtn:hover {
+  opacity: 0.85;
+}
+
+.loadMoreBtn,
+.retryAllBtn {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin-top: 4px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.loadMoreBtn:hover,
+.retryAllBtn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Batch actions bar ── */
+.batchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.batchCount {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-right: auto;
+}
+
+.batchBtn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.batchBtn:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.batchBtn:first-of-type {
+  color: var(--text-danger, #dc2626);
+}
+
+.batchBtn:first-of-type:hover {
+  border-color: var(--text-danger, #dc2626);
+  background: var(--bg-danger, #fef2f2);
+}

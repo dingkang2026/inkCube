@@ -1,0 +1,107 @@
+.form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inputWrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  transition: border-color 0.15s;
+}
+
+.inputWrap:focus-within {
+  border-color: var(--accent);
+}
+
+.searchIcon {
+  font-size: 14px;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.input {
+  flex: 1;
+  padding: 9px 0;
+  border: none;
+  font-size: 14px;
+  background: transparent;
+  color: var(--text-primary);
+  outline: none;
+  min-width: 0;
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.input:disabled {
+  opacity: 0.5;
+}
+
+.clearBtn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.clearBtn:hover {
+  background: var(--text-muted);
+  color: var(--bg-primary);
+}
+
+/* ── Keyboard shortcut hint ── */
+.shortcutHint {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.inputWrap:focus-within .shortcutHint {
+  opacity: 0;
+}
+
+.searchBtn {
+  padding: 9px 18px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.searchBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.searchBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

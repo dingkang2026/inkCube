@@ -1,0 +1,1947 @@
+# 知识库功能设计文档
+
+> 版本: 0.4.0 | 日期: 2026-09-16 | 状态: 设计中（Docling 验证完成，核心管线已实现）
+
+## 1. 概述
+
+为墨方添加基于项目的知识库功能。用户上传文档，系统解析文本和图片，经 Embedding 后存入向量数据库。Chat 时，ReAct Agent 通过 `knowledge_search` 工具检索相关知识，实现 RAG。
+
+### 1.1 核心流程
+
+```
+文件上传 → DocumentParser → HybridChunker 分块 → bge-m3 embedding → ChromaDB
+           ├─ Office → PDF 转换（两级策略）
+           ├─ 版面分析 + OCR + 表格识别
+           ├─ 图片提取 + ImageContext（前后文窗口）
+           └─ Markdown 导出（保留表格结构）
+
+用户提问 → Agent → knowledge_search tool → dense 向量检索 + FTS → RRF 融合 → 上下文
+         → LLM 基于上下文生成回答（表格用 Markdown 格式）
+```
+
+**关键变更（v0.4.0）：**
+- 使用 Docling 原生 **HybridChunker** 而非自定义 chunker
+- ChromaDB 存储 **纯文本用于 embedding** + **Markdown 用于 RAG 展示**
+- 图片上下文通过 `ImageContext` 8 字段完整描述（含 before/after_text）
+- Sparse 向量不单独建 collection，改用 ChromaDB 内置 FTS
+
+### 1.2 技术选型
+
+| 组件 | 选型 | 说明 |
+|------|------|------|
+| 文件解析 | Docling 2.127.0+ | IBM 开源，统一接口处理 PDF / DOCX / PPTX / XLSX / HTML / 图片 |
+| 版面分析 | docling-layout-heron | Docling 内置，RT-DETR/Heron 架构，识别文本/表格/图片/标题区域 |
+| 表格识别 | TableFormer V2 | Docling 内置，表格结构还原（单元格行列） |
+| OCR | RapidOCR | ONNX Runtime 推理，扫描 PDF / 图片文字识别（必选） |
+| 分块器 | **HybridChunker** | Docling 官方推荐，token-aware + contextualize + merge_peers |
+| Embedding 模型 | BAAI/bge-m3 | 本地运行，dense (1024维) + sparse 双输出 |
+| 向量数据库 | ChromaDB | 嵌入式，Python 原生，支持 dense 向量 + FTS |
+| 图片存储 | 本地文件系统 | `%APPDATA%/InkCube/images/` |
+| VLM | **外部 API** | OpenAI 兼容格式，默认智谱 GLM-4V；结合 ImageContext 前后文生成描述（无本地兜底） |
+| 检索策略 | **Dense + FTS + RRF** | 语义检索 + 全文搜索双路融合（sparse 不单独存 collection） |
+| 推理框架 | PyTorch (CPU) + ONNX Runtime | PyTorch 用于 Layout/TableFormer/bge-m3，ONNX 用于 RapidOCR |
+| 模型管理 | 内置模型管理器 | 多源下载 + 断点续传 + 手动放置兜底 |
+
+### 1.3 推理框架说明
+
+| 模型 | 推理框架 | 说明 |
+|------|---------|------|
+| docling-layout-heron | PyTorch (Transformers) | 默认用 Transformers 引擎，也支持 ONNX Runtime |
+| TableFormer V2 | PyTorch | `from_pretrained()` + `torch.no_grad()` + `model.generate()` |
+| bge-m3 | PyTorch | FlagEmbedding → transformers → PyTorch |
+| RapidOCR | ONNX Runtime | 包名 `rapidocr-onnxruntime`，不依赖 PyTorch |
+
+**PyTorch 策略：默认 CPU，GPU 可选升级。**
+
+- 开发和打包默认使用 CPU 版 PyTorch（`torch`），控制安装包体积
+- 有 NVIDIA GPU 的用户可在设置中下载 GPU 版后端（`torch[cuda]`）
+- GPU 版作为独立 Python binary（`inkcube-agent-gpu.exe`），由 `python-manager.js` 按设置切换
+- P0 阶段仅出 CPU 版，GPU 加速作为后续优化
+
+---
+
+## 2. 数据模型
+
+### 2.1 SQLite 表（新增）
+
+```sql
+-- 项目（知识库容器）
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 上传的文件
+CREATE TABLE files (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    file_type TEXT NOT NULL,           -- pdf / docx / pptx / txt / md / png / jpg
+    file_size INTEGER NOT NULL,
+    file_hash TEXT NOT NULL,           -- SHA256，用于去重
+    status TEXT DEFAULT 'pending',     -- pending / parsing / done / error
+    error_message TEXT,
+    chunk_count INTEGER DEFAULT 0,
+    image_count INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 文件解析出的图片
+CREATE TABLE images (
+    id TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    
+    -- 位置信息
+    page_no INTEGER,                       -- 页码（如有）
+    caption TEXT,                          -- 图注文本
+    
+    -- 物理属性（配图决策用）
+    file_path TEXT NOT NULL,               -- 图片在本地的存储路径
+    width INTEGER,                         -- 像素宽度
+    height INTEGER,                        -- 像素高度
+    dpi INTEGER,                           -- DPI 分辨率
+    
+    -- VLM 描述（语义检索用，冗余存储便于查询）
+    vlm_description TEXT,                  -- VLM 生成的描述
+    vlm_status TEXT DEFAULT 'pending',     -- pending / done / error
+    
+    -- 上下文窗口（JSON 格式存储）
+    context_before TEXT,                   -- 前 N 段文本 JSON array
+    context_after TEXT,                    -- 后 N 段文本 JSON array
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 对话关联项目（可选，NULL 表示全局对话）
+ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id);
+```
+
+### 2.2 ChromaDB Collections
+
+**每个项目创建一个 collection**（不再分 dense/sparse 两对）：
+
+```
+project_{id}    — 存储 dense embedding (1024维, bge-m3) + metadata
+```
+
+**每条记录的完整结构：**
+
+```python
+{
+    "id": "chunk_001",                    # ChromaDB document ID
+    "embedding": [...],                   # 1024 维 dense 向量
+    
+    # 用于检索的字段
+    "content": "contextualized 文本",      # 纯文本，用于 embedding + FTS
+    
+    # 用于展示的字段（metadata，不参与 embedding）
+    "markdown_content": "| 列1 | 列2 |...",  # 保留 Markdown 格式（表格等结构化内容）
+    "content_type": "table",              # heading / paragraph / table / figure / caption / list
+    "section_path": "第三章 > 3.2 财务分析",  # Docling 标题层级路径
+    "filename": "CIM.pdf",
+    "page": 15,                           # 页码（如有）
+    "file_id": "xxx",                     # SQLite files.id
+    "chunk_index": 0,                     # HybridChunker 分块序号
+    
+    # 图片专属字段（仅 content_type="figure" 时存在，用于关联 SQLite）
+    "image_id": "img_xxx_0",              # 关联 SQLite images.id
+}
+```
+
+**字段来源说明：**
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `id` | 自动生成 | `chunk_{file_id}_{index}` 确保唯一性 |
+| `embedding` | bge-m3.encode(contextualized) | 1024 维 dense 向量 |
+| `content` | `chunker.contextualize(chunk)` | HybridChunker 生成的带上下文纯文本，用于 embedding 和 FTS |
+| `markdown_content` | `chunk.export_to_markdown()` | 保留表格等 Markdown 结构，用于 RAG 检索后展示给 LLM |
+| `content_type` | 从 chunk.doc_items 推导 | 基于 Docling 元素类型映射：TitleItem→"heading", TextItem→"paragraph", TableItem→"table", PictureItem→"figure", CaptionItem→"caption", ListItem→"list" |
+| `section_path` | `chunk.meta.headings` 拼接 | 如 `["第三章", "3.2 财务分析"]` → `"第三章 > 3.2 财务分析"` |
+| `filename` | 上传文件名 | 便于用户识别来源 |
+| `page` | Docling 页面信息 | 从元素所在页面提取 |
+| `file_id` | 文件上传时生成 | SQLite files.id |
+| `chunk_index` | HybridChunker 分块序号 | 从 0 开始递增 |
+| `image_id` | 从 ImageContext 提取 | 关联 SQLite images.id，格式：`img_{file_id}_{idx}` |
+
+**关键设计原则：**
+
+- **ChromaDB 只存语义相关信息**：width/height/dpi 等物理属性不存入 ChromaDB，因为 LLM 不需要这些信息生成回答
+- **SQLite 管理结构化元数据**：图片的物理属性（尺寸、DPI、路径）存储在 SQLite images 表，支持精确查询和配图决策
+- **通过 image_id 关联**：ChromaDB 的 `image_id` 字段关联 SQLite images.id，检索时可通过 JOIN 获取完整元数据
+- **移除冗余字段**：删除 `source_type`（与 `content_type` 语义重叠）和 `image_ref`（LLM 无法渲染 Markdown 图片）
+
+**`content_type` 推导逻辑（在 chunker.py 中实现）：**
+
+```python
+def infer_content_type(chunk) -> str:
+    """根据 chunk 包含的 Docling 元素类型推导 content_type"""
+    if not hasattr(chunk, "doc_items") or not chunk.doc_items:
+        return "paragraph"  # 默认
+    
+    # 统计元素类型
+    type_counts = {}
+    for item in chunk.doc_items:
+        item_type = type(item).__name__
+        type_counts[item_type] = type_counts.get(item_type, 0) + 1
+    
+    # 按优先级返回主导类型
+    priority = {
+        "TitleItem": "heading",
+        "SectionHeaderItem": "heading",
+        "TableItem": "table",
+        "PictureItem": "figure",
+        "CaptionItem": "caption",
+        "ListItem": "list",
+        "TextItem": "paragraph",
+    }
+    
+    for doc_type, content_type in priority.items():
+        if doc_type in type_counts:
+            return content_type
+    
+    return "paragraph"
+```
+
+**关键设计决策：**
+
+- **`content` 用于 embedding + FTS**：ChromaDB 内置全文搜索基于此字段
+- **`markdown_content` 用于 RAG 展示**：当 `content_type == "table"` 时，LLM 接收 Markdown 格式而非纯文本
+- **Sparse 向量不单独存储**：bge-m3 的 sparse 输出用于 FTS 权重计算，但不建独立 collection（ChromaDB 不支持稀疏向量检索）
+- **`content_type` 支持过滤**：检索时可指定 `where={"content_type": "table"}` 只搜表格
+
+### 2.3 存储目录
+
+```
+%APPDATA%/InkCube/
+├── files/                       # 原始上传文件（保留源文件，支持重新处理）
+│   └── {file_id}/
+│       └── 报告.pdf
+├── data/
+│   ├── inkcube.db               # SQLite（项目、文件元数据）
+│   └── chroma/                  # ChromaDB 持久化目录
+│       ├── project_xxx_dense/
+│       └── project_xxx_sparse/
+├── images/                      # 从文档中提取的图片
+│   └── {file_id}/
+│       ├── page_3_img_1.png
+│       └── page_5_img_1.jpg
+├── models/                      # AI 模型（由模型管理器下载）
+│   ├── bge-m3/                              # ~4.4GB
+│   ├── docling-project--docling-layout-heron/  # ~164MB，目录名 = HF {org}--{model}
+│   ├── docling-project--TableFormerV2/         # ~200MB
+│   └── RapidOcr/                               # ~30MB，ONNX 模型权重文件
+└── ...
+```
+
+---
+
+## 3. 模块设计
+
+### 3.1 新增 Python 模块
+
+```
+python/
+├── knowledge/                   # 知识库核心模块
+│   ├── __init__.py
+│   ├── model_manager.py         # 模型下载、检测、管理
+│   ├── embedding.py             # bge-m3 模型封装
+│   ├── vector_store.py          # ChromaDB 操作封装
+│   ├── file_parser.py           # Docling 文件解析（文本 + 图片提取）
+│   ├── vlm_client.py            # VLM API 调用
+│   ├── chunker.py               # 文本分块
+│   ├── retrieval.py             # Hybrid 检索 + RRF
+│   └── pipeline.py              # 文件处理流水线（编排上述模块）
+├── tools/
+│   └── knowledge_search.py      # ReAct 工具
+├── routers/
+│   ├── projects.py              # 项目 + 文件 + 图片 + Chat API
+│   └── models.py                # 模型管理 API
+```
+
+### 3.2 各模块职责
+
+#### model_manager.py — 模型管理
+
+```python
+class ModelManager:
+    """模型下载、检测、管理。前端通过 API 调用，用户可在设置面板操作。"""
+
+    # 模型注册表
+    # 目录名必须与 Docling 在 artifacts_path 下查找的路径完全一致
+    MODELS = {
+        "bge-m3": {
+            "category": "embedding",
+            "dir_name": "bge-m3",
+            "size": "~4.4GB",               # 实测（含 PyTorch + ONNX 双权重）
+            "sources": [
+                "huggingface:BAAI/bge-m3",
+                "hf-mirror:BAAI/bge-m3",
+                "modelscope:BAAI/bge-m3",
+            ],
+            "framework": "pytorch",
+            "required": True,
+        },
+        "docling-layout-heron": {
+            "category": "document_parsing",
+            "dir_name": "docling-project--docling-layout-heron",  # Docling 按此路径查找
+            "size": "~164MB",
+            "sources": [
+                "huggingface:docling-project/docling-layout-heron",
+                "hf-mirror:docling-project/docling-layout-heron",
+            ],
+            "framework": "pytorch",
+            "required": True,
+        },
+        "tableformer-v2": {
+            "category": "document_parsing",
+            "dir_name": "docling-project--TableFormerV2",
+            "size": "~200MB",
+            "sources": [
+                "huggingface:docling-project/TableFormerV2",
+                "hf-mirror:docling-project/TableFormerV2",
+            ],
+            "framework": "pytorch",
+            "required": True,
+        },
+        "rapidocr": {
+            "category": "ocr",
+            "dir_name": "RapidOcr",
+            "size": "~30MB",                 # ONNX 模型权重文件（det + rec + cls）
+            "sources": [
+                "docling-tools:rapidocr",   # 通过 RapidOcrModel.download_models() 下载
+            ],
+            "framework": "onnx",
+            "required": True,
+        },
+    }
+
+    def check_status(self) -> dict:
+        """检测各模型下载状态，返回 {model_name: {downloaded, path, size}}"""
+        ...
+
+    async def download(self, model_name: str, progress_callback: Callable = None) -> bool:
+        """
+        按 sources 列表依次尝试下载：
+        1. HuggingFace (huggingface.co)
+        2. HF 镜像 (hf-mirror.com)
+        3. ModelScope (modelscope.cn)
+        支持断点续传，下载完成后校验 SHA256
+        """
+        ...
+
+    def verify(self, model_name: str) -> bool:
+        """校验模型完整性（SHA256 / 关键文件存在性）"""
+        ...
+
+    def get_model_path(self, model_name: str) -> str:
+        """返回模型本地路径，供其他模块加载"""
+        ...
+```
+
+- 存储路径：`%APPDATA%/InkCube/models/{dir_name}/`，`dir_name` 必须与 Docling 查找的路径一致
+- 模型按类别分组展示在前端设置面板：Embedding / 文档解析 / OCR
+- 总大小约 4.8 GB（bge-m3 4.4GB + layout-heron 164MB + TableFormerV2 200MB + RapidOCR 30MB）
+- 手动放置兜底：用户可将模型文件放入对应目录，管理器检测到后标记为已下载
+- GPU 版 PyTorch 后端作为独立下载项（`torch[cuda]`），不影响模型管理器
+
+#### embedding.py — Embedding 服务
+
+```python
+class EmbeddingService:
+    """bge-m3 模型封装，单例模式，延迟加载"""
+
+    def __init__(self, model_name: str = "BAAI/bge-m3"):
+        self._model = None  # 延迟加载
+
+    def _load(self):
+        from FlagEmbedding import BGEM3FlagModel
+        self._model = BGEM3FlagModel(model_name, use_fp16=True)
+
+    def encode(self, texts: list[str]) -> dict:
+        """返回 {"dense": np.ndarray, "sparse": scipy.sparse.csr_matrix}"""
+        ...
+
+    def encode_query(self, query: str) -> dict:
+        """查询编码（可能使用不同参数）"""
+        ...
+```
+
+- 首次调用时加载模型（~10s），后续复用
+- 模型缓存路径：`%APPDATA%/InkCube/models/bge-m3/`
+- 首次使用需下载（~2.2GB），后续离线可用
+
+#### vector_store.py — ChromaDB 封装（单 collection + FTS）
+
+```python
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+
+class VectorStore:
+    """
+    ChromaDB 封装，每个项目一个 collection。
+    
+    关键设计：
+    - 单 collection 存储 dense embedding + metadata
+    - 利用 ChromaDB 内置 FTS（Full-Text Search）进行关键词匹配
+    - 不支持 sparse 向量原生存储
+    """
+    
+    def __init__(self, persist_dir: str):
+        self.client = chromadb.PersistentClient(
+            path=persist_dir,
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+            )
+        )
+
+    def get_or_create_collection(self, project_id: str) -> Collection:
+        """
+        获取或创建项目的 collection。
+        
+        Collection 命名规范：project_{id}
+        例如：project_abc123
+        
+        配置 HNSW 索引参数以优化 dense 向量检索性能。
+        """
+        collection_name = f"project_{project_id}"
+        
+        # 检查是否已存在
+        existing = self.client.list_collections()
+        if any(c.name == collection_name for c in existing):
+            return self.client.get_collection(collection_name)
+        
+        # 创建新 collection
+        collection = self.client.create_collection(
+            name=collection_name,
+            metadata={
+                "hnsw:space": "cosine",           # 余弦相似度
+                "hnsw:construction_ef": 128,       # 构建时 EF
+                "hnsw:search_ef": 64,              # 搜索时 EF
+            }
+        )
+        
+        # 启用 FTS（ChromaDB 0.5+ 内置支持）
+        # FTS 基于 content 字段建立倒排索引
+        collection.metadata["fts_enabled"] = True
+        
+        return collection
+
+    def add_documents(self, project_id: str, ids: list[str], 
+                     documents: list[str], embeddings: list[list[float]],
+                     metadatas: list[dict]) -> None:
+        """
+        批量添加文档到 collection。
+        
+        Args:
+            project_id: 项目 ID
+            ids: ChromaDB document IDs (e.g., ["chunk_xxx_0", "chunk_xxx_1"])
+            documents: 纯文本内容列表（用于 embedding 和 FTS）
+            embeddings: dense 向量列表（1024 维）
+            metadatas: metadata 列表，包含：
+                - content: 纯文本（同 documents）
+                - markdown_content: Markdown 格式（表格等结构化内容）
+                - content_type: heading/paragraph/table/figure/caption/list
+                - source_type: text/image/table
+                - section_path: 标题路径
+                - filename, page, file_id, chunk_index 等
+        """
+        collection = self.get_or_create_collection(project_id)
+        
+        collection.add(
+            ids=ids,
+            documents=documents,      # 用于 FTS
+            embeddings=embeddings,    # 用于 dense 向量检索
+            metadatas=metadatas,
+        )
+
+    def search_dense(self, project_id: str, query_vector: list[float], 
+                    top_k: int, where: dict | None = None) -> list[dict]:
+        """
+        Dense 向量检索。
+        
+        Args:
+            query_vector: 1024 维 dense 向量
+            top_k: 返回结果数
+            where: 可选过滤条件（如 {"content_type": "table"}）
+        
+        Returns:
+            List[dict] 包含 id, document, metadata, distance, _score
+        """
+        collection = self.get_or_create_collection(project_id)
+        
+        results = collection.query(
+            query_embeddings=[query_vector],
+            n_results=top_k,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+        
+        # 转换为统一格式
+        formatted = []
+        if results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                formatted.append({
+                    "id": doc_id,
+                    "content": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "distance": results["distances"][0][i],
+                    "_score": 1.0 / (1.0 + results["distances"][0][i]),  # 转换为分数
+                })
+        
+        return formatted
+
+    def search_fts(self, project_id: str, query: str, 
+                  top_k: int, where: dict | None = None) -> list[dict]:
+        """
+        Full-Text Search（全文搜索）。
+        
+        ChromaDB 0.5+ 内置 FTS，基于 documents 字段建立倒排索引。
+        支持 BM25 评分和布尔查询语法。
+        
+        Args:
+            query: 搜索查询（支持布尔语法，如 "AND", "OR", "NOT"）
+            top_k: 返回结果数
+            where: 可选过滤条件
+        
+        Returns:
+            List[dict] 包含 id, document, metadata, _score
+        """
+        collection = self.get_or_create_collection(project_id)
+        
+        # ChromaDB FTS API（0.5+）
+        results = collection.query(
+            query_texts=[query],  # FTS 基于文本
+            n_results=top_k,
+            where=where,
+            include=["documents", "metadatas"],
+        )
+        
+        # 转换为统一格式
+        formatted = []
+        if results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                formatted.append({
+                    "id": doc_id,
+                    "content": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "_score": 1.0,  # TODO: 从 FTS 提取真实 BM25 分数
+                })
+        
+        return formatted
+
+    def delete_project(self, project_id: str):
+        """删除项目相关的所有 collection"""
+        collection_name = f"project_{project_id}"
+        try:
+            self.client.delete_collection(collection_name)
+        except ValueError:
+            pass  # Collection 不存在，忽略
+```
+
+**关键设计决策：**
+
+- **单 collection 设计**：每个项目一个 collection，不再分 dense/sparse 两对
+- **FTS 替代 sparse**：ChromaDB 不支持 sparse 向量原生存储，使用内置 FTS 实现关键词匹配
+- **HNSW 索引优化**：配置 `hnsw:search_ef=64` 平衡检索速度和准确性
+- **Metadata 过滤**：通过 `where` 参数支持按 content_type、file_id 等字段过滤
+- **分数转换**：dense 检索距离转换为分数 `_score = 1/(1+distance)`，便于 RRF 融合
+
+#### file_parser.py — 文件解析（Docling + Office 两级策略）
+
+```python
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.document import DoclingDocument
+
+class FileParser:
+    def __init__(self, model_dir: str, office_converter=None):
+        """
+        Args:
+            model_dir: 模型存储根目录，Docling 从这里加载 layout/tableformer/OCR 模型
+            office_converter: Office→PDF 转换器（可选），用于两级策略
+        """
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.artifacts_path = model_dir
+        pipeline_options.generate_picture_images = True  # 启用图片裁剪
+        pipeline_options.do_ocr = True                    # 扫描 PDF / 图片 OCR（必选）
+        pipeline_options.do_table_structure = True        # TableFormer 表格识别
+        
+        self.converter = DocumentConverter(
+            format_options={
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        self.office_converter = office_converter
+
+    def parse(self, file_path: str) -> DoclingDocument:
+        """
+        统一接口，自动识别文件类型（PDF/DOCX/PPTX/XLSX/HTML/图片）
+        
+        Office 处理策略（统一转 PDF）：
+        1. Docling 原生解析 Office — 如果文本 >= 50 字符，直接使用
+        2. 如果文本 < 50 字符 → 转 PDF + OCR 管线（完整版面分析）
+           - 优先 MS Office COM（Windows 用户已安装）
+           - 备选 LibreOffice（跨平台）
+        3. 如果转换失败 → 降级到 Docling 原生结果
+        
+        返回 DoclingDocument，包含：
+            - 结构化文本（Markdown 格式）
+            - 表格（结构化，含行列信息）
+            - 图片引用 + ImageContext（前后文窗口）
+            - 页码信息
+        """
+        ext = Path(file_path).suffix.lower()
+        
+        # Office 文件：先尝试原生解析
+        if ext in [".docx", ".pptx", ".xlsx", ".odt", ".odp", ".ods"]:
+            try:
+                result = self.converter.convert(file_path)
+                doc = result.document
+                
+                # 检查文本是否足够
+                text_count = sum(1 for _ in doc.texts)
+                if text_count >= 50:
+                    return doc  # 原生解析成功，直接使用
+                
+                # 文本太少，尝试转换为 PDF + OCR
+                if self.office_converter:
+                    pdf_path = self.office_converter.convert_to_pdf(file_path)
+                    if pdf_path:
+                        result = self.converter.convert(pdf_path)
+                        doc = result.document
+                        # 清理临时 PDF
+                        import os, shutil
+                        os.remove(pdf_path)
+                        shutil.rmtree(Path(pdf_path).parent, ignore_errors=True)
+                
+                return doc
+            
+            except Exception as e:
+                print(f"Docling native parse failed: {e}, trying conversion")
+                
+                # 原生解析失败，尝试转换
+                if self.office_converter:
+                    pdf_path = self.office_converter.convert_to_pdf(file_path)
+                    if pdf_path:
+                        result = self.converter.convert(pdf_path)
+                        doc = result.document
+                        # 清理临时 PDF
+                        import os, shutil
+                        os.remove(pdf_path)
+                        shutil.rmtree(Path(pdf_path).parent, ignore_errors=True)
+                        return doc
+                
+                raise  # 转换也失败，抛出异常
+        
+        # 非 Office 文件：直接解析
+        result = self.converter.convert(file_path)
+        return result.document
+
+    def _is_office_file(self, file_path: str) -> bool:
+        """判断是否为 Office 文件（docx/pptx/xlsx）"""
+        ext = Path(file_path).suffix.lower()
+        return ext in [".docx", ".pptx", ".xlsx"]
+
+    def extract_text(self, doc: DoclingDocument) -> str:
+        """导出 Markdown 格式文本（保留表格结构）"""
+        return doc.export_to_markdown()
+
+    def extract_images_with_context(self, doc: DoclingDocument, output_dir: str, 
+                                     window_size: int = 5) -> list[ImageContext]:
+        """
+        提取文档中的图片及上下文，保存到 output_dir。
+        
+        Args:
+            doc: DoclingDocument
+            output_dir: 图片存储目录
+            window_size: 前后文窗口大小（默认 5，提供更丰富的上下文）
+        
+        Returns:
+            List[ImageContext] 包含 8 个字段：
+            - image_id: 唯一标识
+            - file_id: 来源文件 ID
+            - page: 页码
+            - image_path: 本地存储路径
+            - caption: 图片标题（如有）
+            - before_text: 前 N 段文本
+            - after_text: 后 N 段文本
+            - vlm_description: VLM 生成的描述（待异步填充）
+        """
+        from dataclasses import dataclass, field
+        
+        @dataclass
+        class ImageContext:
+            image_id: str
+            file_id: str
+            page: int
+            image_path: str
+            caption: str | None = None
+            before_text: list[str] = field(default_factory=list)
+            after_text: list[str] = field(default_factory=list)
+            vlm_description: str | None = None
+        
+        results = []
+        for i, pic in enumerate(doc.pictures):
+            # 保存图片
+            img_filename = f"page_{pic.page_no}_img_{i}.png"
+            img_path = Path(output_dir) / img_filename
+            
+            if pic.image:
+                pil_img = pic.image.pil_image()
+                pil_img.save(img_path)
+                
+                # 收集前后文窗口
+                before_texts = self._collect_context(doc, pic, direction="before", window=window_size)
+                after_texts = self._collect_context(doc, pic, direction="after", window=window_size)
+                
+                # 提取 caption（如果有）
+                caption = None
+                if hasattr(pic, "captions") and pic.captions:
+                    caption = pic.captions[0].text if hasattr(pic.captions[0], "text") else None
+                
+                results.append(ImageContext(
+                    image_id=f"{img_path.stem}",
+                    file_id="",  # 由调用方填充
+                    page=pic.page_no,
+                    image_path=str(img_path),
+                    caption=caption,
+                    before_text=before_texts,
+                    after_text=after_texts,
+                    vlm_description=None,  # 后续异步填充
+                ))
+        
+        return results
+    
+    def _collect_context(self, doc, element, direction: str, window: int) -> list[str]:
+        """
+        收集元素的前后文窗口。
+        
+        Args:
+            doc: DoclingDocument
+            element: 目标元素（如 PictureItem）
+            direction: "before" 或 "after"
+            window: 窗口大小（段落数）
+        
+        Returns:
+            前后文文本列表
+        """
+        texts = []
+        elements = doc.texts + doc.tables  # 简化：只考虑文本和表格
+        
+        # 找到目标元素的索引
+        try:
+            idx = elements.index(element)
+        except ValueError:
+            return []
+        
+        # 根据方向收集窗口
+        if direction == "before":
+            start = max(0, idx - window)
+            target_elements = elements[start:idx]
+        else:  # "after"
+            target_elements = elements[idx+1:idx+1+window]
+        
+        for elem in target_elements:
+            if hasattr(elem, "text"):
+                texts.append(elem.text)
+        
+        return texts
+```
+
+**Office 两级转换策略：**
+
+```python
+class OfficeConverter:
+    """
+    Office → PDF 转换器，用于 Docling 原生解析文本太少时的兜底。
+    
+    转换优先级：
+    1. MS Office COM（Windows 用户通常已安装，无需额外软件）
+    2. LibreOffice（跨平台备选，需手动安装）
+    3. 降级到 Docling 原生解析（即使文本少）
+    """
+    
+    def __init__(self):
+        self.ms_office_available = self._check_ms_office()
+        self.libreoffice_path = self._find_libreoffice() if not self.ms_office_available else None
+    
+    def _check_ms_office(self) -> bool:
+        """检测 MS Office 是否可用（Windows registry）"""
+        try:
+            import winreg
+            # 检查 Click-to-Run 版本（Office 2013+）
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Office\ClickToRun\Configuration"
+            )
+            winreg.CloseKey(key)
+            return True
+        except FileNotFoundError:
+            pass
+        
+        try:
+            # 检查传统 MSI 安装版本
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Office\16.0\Common\InstallRoot"
+            )
+            path = winreg.QueryValueEx(key, "Path")[0]
+            winreg.CloseKey(key)
+            return Path(path).joinpath("WINWORD.EXE").exists()
+        except FileNotFoundError:
+            return False
+    
+    def _find_libreoffice(self) -> str | None:
+        """检测 LibreOffice 是否可用（PATH + 常见安装路径）"""
+        import shutil
+        from pathlib import Path
+        
+        # 先查 PATH
+        path = shutil.which("soffice")
+        if path:
+            return path
+        
+        # 再查 Windows 常见安装路径
+        for candidate in [
+            Path(r"C:\Program Files\LibreOffice\program\soffice.exe"),
+            Path(r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"),
+            Path("/usr/bin/soffice"),
+            Path("/usr/bin/libreoffice"),
+        ]:
+            if candidate.is_file():
+                return str(candidate)
+        
+        return None
+    
+    def convert_to_pdf(self, office_path: str) -> str | None:
+        """
+        将 Office 文件转换为 PDF。
+        
+        优先级：MS Office COM > LibreOffice > None
+        
+        Returns:
+            PDF 临时文件路径，失败返回 None
+        """
+        ext = Path(office_path).suffix.lower()
+        if ext not in [".docx", ".pptx", ".xlsx", ".odt", ".odp", ".ods"]:
+            return None
+        
+        # 优先使用 MS Office
+        if self.ms_office_available:
+            return self._convert_via_ms_office(office_path)
+        
+        # 其次使用 LibreOffice
+        if self.libreoffice_path:
+            return self._convert_via_libreoffice(office_path)
+        
+        return None
+    
+    def _convert_via_ms_office(self, office_path: str) -> str | None:
+        """通过 MS Office COM 接口转换（Windows only）"""
+        try:
+            import win32com.client
+            import tempfile
+            from pathlib import Path
+            
+            ext = Path(office_path).suffix.lower()
+            
+            # 根据文件类型选择对应的 Office 应用
+            if ext in [".docx", ".doc", ".rtf"]:
+                app_name = "Word.Application"
+            elif ext in [".pptx", ".ppt"]:
+                app_name = "PowerPoint.Application"
+            elif ext in [".xlsx", ".xls"]:
+                app_name = "Excel.Application"
+            else:
+                return None
+            
+            # 创建 COM 对象
+            app = win32com.client.Dispatch(app_name)
+            app.Visible = False
+            
+            # 打开文档
+            doc = app.Documents.Open(office_path)
+            
+            # 生成临时 PDF 路径
+            tmp_dir = tempfile.mkdtemp(prefix="inkcube_")
+            pdf_path = Path(tmp_dir) / (Path(office_path).stem + ".pdf")
+            
+            # 导出为 PDF
+            doc.ExportAsFixedFormat(
+                OutputFileName=str(pdf_path),
+                ExportFormat=17,  # wdExportFormatPDF
+                OptimizeFor=0,    # wdExportOptimizeForPrint
+            )
+            
+            # 关闭文档和应用
+            doc.Close(False)
+            app.Quit()
+            
+            return str(pdf_path) if pdf_path.exists() else None
+        
+        except Exception as e:
+            print(f"MS Office conversion failed: {e}")
+            return None
+    
+    def _convert_via_libreoffice(self, office_path: str) -> str | None:
+        """通过 LibreOffice 命令行转换"""
+        import tempfile
+        import subprocess
+        from pathlib import Path
+        
+        tmp_dir = tempfile.mkdtemp(prefix="inkcube_")
+        pdf_path = Path(tmp_dir) / (Path(office_path).stem + ".pdf")
+        
+        cmd = [
+            self.libreoffice_path,
+            "--headless",
+            "--convert-to", "pdf",
+            "--outdir", tmp_dir,
+            office_path
+        ]
+        
+        try:
+            subprocess.run(cmd, timeout=120, check=True, 
+                          capture_output=True)
+            return str(pdf_path) if pdf_path.exists() else None
+        except:
+            # 清理临时目录
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
+```
+
+**关键设计决策：**
+
+- **优先使用 MS Office**：Windows 用户通常已安装，无需额外下载 LibreOffice，提升用户体验
+- **LibreOffice 作为备选**：macOS/Linux 用户或没有 MS Office 的用户可安装 LibreOffice
+- **两级策略触发条件**：Docling 原生解析后 `len(doc.texts) < 50` 字符时触发 PDF 转换
+- **图片上下文窗口**：`window_size=5` 提供比默认 `2` 更丰富的上下文信息
+- **ImageContext 8 字段**：完整描述图片来源、位置、前后文，支持后续 VLM 描述填充
+- **OCR 必选**：`do_ocr=True` 对扫描 PDF 和图片至关重要（实测贡献 96% 文本提取）
+
+Docling 支持的格式（统一接口，无需手动分发）：
+
+| 格式 | 文本提取 | 表格识别 | 图片提取 | OCR |
+|------|---------|---------|---------|-----|
+| PDF | ✅ | ✅（TableFormer） | ✅ | ✅（RapidOCR） |
+| DOCX | ✅ | ✅ | ✅ | ❌ |
+| PPTX | ✅ | ✅ | ✅ | ❌ |
+| XLSX | ✅ | — | — | ❌ |
+| HTML | ✅ | — | — | ❌ |
+| PNG/JPG | ✅（OCR） | — | — | ✅（RapidOCR） |
+| TXT/MD | ✅ | — | — | ❌ |
+
+#### vlm_client.py — VLM 调用（外部 API）
+
+```python
+import httpx
+from pathlib import Path
+import base64
+
+class VLMClient:
+    """
+    外部 VLM API 客户端（无本地兜底）。
+    
+    仅支持外部 API（默认智谱 GLM-4V），API 不可用时返回错误标记。
+    """
+
+    def __init__(self, settings: dict):
+        """
+        Args:
+            settings: 包含 vlm_api_url, vlm_api_key, vlm_model
+        """
+        self.api_url = settings.get("vlm_api_url", "")
+        self.api_key = settings.get("vlm_api_key", "")
+        self.model = settings.get("vlm_model", "glm-4v")
+    
+    async def describe_image(self, image_path: str) -> str:
+        """
+        发送图片到外部 VLM API，返回描述文本。
+        
+        API 不可用时返回错误标记，不进行本地降级。
+        """
+        if not self.api_url or not self.api_key:
+            return "[VLM API 未配置]"
+        
+        try:
+            return await self._call_external_api(image_path)
+        except Exception as e:
+            print(f"VLM API call failed: {e}")
+            return f"[VLM 描述失败: {e}]"
+    
+    async def _call_external_api(self, image_path: str) -> str:
+        """调用外部 VLM API（OpenAI 兼容格式）"""
+        # 读取图片并 base64 编码
+        with open(image_path, "rb") as f:
+            image_base64 = base64.b64encode(f.read()).decode("utf-8")
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请详细描述这张图片的内容，包括图表类型、关键数据点、趋势等。"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 300,
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(self.api_url, json=payload, headers=headers)
+            response.raise_for_status()
+            
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+```
+
+**关键设计决策：**
+
+- **纯外部 API**：仅支持外部 VLM API（默认智谱 GLM-4V），无本地模型兜底
+- **错误标记**：API 不可用或调用失败时返回明确的错误标记，便于前端展示和后续重试
+- **配置驱动**：用户必须在设置页配置 API URL/Key/Model，否则无法生成图片描述
+- **异步非阻塞**：VLM 调用失败不影响文件解析主流程，图片元数据仍存入 SQLite
+
+#### chunker.py — HybridChunker 封装
+
+```python
+from docling_core.transforms.chunker import HybridChunker
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+
+class DoclingChunker:
+    """基于 Docling HybridChunker 的分块器，官方推荐方案"""
+
+    def __init__(self, model_path: str, max_tokens: int = 512):
+        """
+        Args:
+            model_path: bge-m3 本地模型路径（用于 tokenizer）
+            max_tokens: 每个 chunk 的最大 token 数
+        """
+        tokenizer = HuggingFaceTokenizer.from_pretrained(
+            model_name=model_path, max_tokens=max_tokens,
+        )
+        self.chunker = HybridChunker(
+            tokenizer=tokenizer,
+            merge_peers=True,           # 相邻小 chunk 自动合并
+            repeat_table_header=True,   # 表格拆分时重复表头
+        )
+    
+    def chunk(self, doc, metadata: dict) -> list[ChunkInfo]:
+        """
+        使用 HybridChunker 分块，提取完整 metadata。
+        
+        Returns:
+            List[ChunkInfo] 包含：
+            - text: 纯文本
+            - contextualized: 带上下文的增强文本（用于 embedding）
+            - markdown: Markdown 格式（保留表格结构，用于 RAG 展示）
+            - headings: 标题路径列表
+            - content_type: 从 doc_items 推导
+        """
+        results = []
+        for i, chunk in enumerate(self.chunker.chunk(doc)):
+            ctx = self.chunker.contextualize(chunk)
+            md_text = chunk.export_to_markdown() if hasattr(chunk, "export_to_markdown") else chunk.text
+            
+            results.append(ChunkInfo(
+                index=i,
+                text=chunk.text,
+                headings=list(chunk.meta.headings) if hasattr(chunk.meta, "headings") and chunk.meta.headings else [],
+                contextualized=ctx,
+                markdown=md_text,
+                content_type=infer_content_type(chunk),
+            ))
+        return results
+
+def infer_content_type(chunk) -> str:
+    """根据 chunk.doc_items 推导内容类型"""
+    # ... 见 2.2 节实现 ...
+```
+
+**关键能力（已验证）：**
+- **Contextualize（上下文增强）**：每个 chunk 自动拼接标题路径，embedding 时包含位置上下文
+- **Tokenization-aware（分词感知）**：基于 bge-m3 tokenizer 实际切分，确保与 embedding 模型一致
+- **merge_peers**：相邻小 chunk 如果 metadata 相同（同一章节），自动合并，避免碎片化
+- **repeat_table_headers**：表格被拆分时，每个子 chunk 都重复表头，保持语义完整
+- **Markdown 导出**：`chunk.export_to_markdown()` 保留表格等结构化格式
+
+**配置参数：**
+- `max_tokens`: 默认 512，可根据文档类型调整（技术文档可增大到 1024）
+- `merge_peers`: 默认 True，减少碎片化
+- `repeat_table_header`: 默认 True，表格可读性更好
+
+#### retrieval.py — Hybrid 检索（Dense + FTS + RRF）
+
+```python
+class HybridRetriever:
+    """
+    混合检索器：结合语义检索（dense）和全文搜索（FTS），通过 RRF 融合排序。
+    
+    ChromaDB 不支持稀疏向量原生存储，因此 sparse 输出不单独建 collection，
+    而是利用 ChromaDB 内置的 FTS（基于 content 字段）进行关键词匹配。
+    """
+    
+    def __init__(self, embedding_service: EmbeddingService, vector_store: VectorStore):
+        self.embedding_service = embedding_service
+        self.vector_store = vector_store
+
+    def retrieve(self, project_id: str, query: str, top_k: int = 5, 
+                 content_type_filter: str | None = None) -> list[RetrievalResult]:
+        """
+        1. bge-m3 编码 query → dense 向量（sparse 输出用于 FTS 权重，但不单独存储）
+        2. dense 向量检索 top_k * 2
+        3. FTS 全文搜索 top_k * 2（基于 content 字段）
+        4. RRF 融合，取 top_k
+        5. 可选：按 content_type 过滤（如只搜表格）
+        
+        Returns:
+            List[RetrievalResult] 包含：
+            - content: 纯文本（用于展示或二次处理）
+            - markdown_content: Markdown 格式（表格等结构化内容优先）
+            - metadata: filename, page, section_path, content_type 等
+        """
+        # Step 1: 编码 query
+        embeddings = self.embedding_service.encode_query([query])
+        dense_vector = embeddings["dense"][0].tolist()
+        
+        # Step 2: Dense 向量检索
+        dense_results = self.vector_store.search_dense(
+            project_id, dense_vector, top_k=top_k * 2,
+            where={"content_type": content_type_filter} if content_type_filter else None,
+        )
+        
+        # Step 3: FTS 全文搜索
+        fts_results = self.vector_store.search_fts(
+            project_id, query, top_k=top_k * 2,
+            where={"content_type": content_type_filter} if content_type_filter else None,
+        )
+        
+        # Step 4: RRF 融合
+        merged_results = self._rrf_merge(dense_results, fts_results, k=60)
+        
+        # Step 5: 取 top_k，构建 RetrievalResult
+        final_results = []
+        for rank, result in enumerate(merged_results[:top_k]):
+            final_results.append(RetrievalResult(
+                content=result.get("content", ""),
+                markdown_content=result.get("markdown_content", result.get("content", "")),
+                filename=result.get("filename", ""),
+                page=result.get("page"),
+                section_path=result.get("section_path", ""),
+                content_type=result.get("content_type", "paragraph"),
+                score=result.get("_score", 0),
+                rank=rank + 1,
+            ))
+        
+        return final_results
+
+    def _rrf_merge(self, dense_results: list, fts_results: list, k: int = 60) -> list:
+        """
+        Reciprocal Rank Fusion (RRF): 融合多路检索结果。
+        
+        公式: score = Σ 1/(k + rank_i)
+        
+        Args:
+            dense_results: dense 向量检索结果列表
+            fts_results: FTS 全文搜索结果列表
+            k: RRF 平滑参数，默认 60
+        
+        Returns:
+            按 RRF 分数降序排列的合并结果
+        """
+        from collections import defaultdict
+        
+        # 建立 doc_id → result 映射
+        doc_map = {}
+        for r in dense_results + fts_results:
+            doc_id = r.get("id")
+            if doc_id:
+                doc_map[doc_id] = r
+        
+        # 计算 RRF 分数
+        scores = defaultdict(float)
+        for rank, result in enumerate(dense_results, 1):
+            doc_id = result.get("id")
+            if doc_id:
+                scores[doc_id] += 1.0 / (k + rank)
+        
+        for rank, result in enumerate(fts_results, 1):
+            doc_id = result.get("id")
+            if doc_id:
+                scores[doc_id] += 1.0 / (k + rank)
+        
+        # 按分数降序排序
+        sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+        
+        return [doc_map[doc_id] for doc_id in sorted_ids if doc_id in doc_map]
+```
+
+**关键设计决策：**
+
+- **不使用 sparse collection**：ChromaDB 不支持稀疏向量原生存储，bge-m3 的 sparse 输出仅用于内部权重计算
+- **FTS 替代 sparse**：利用 ChromaDB 内置全文搜索（基于 `content` 字段）实现关键词匹配
+- **RRF 融合策略**：平衡语义检索（理解同义词）和关键词匹配（精确术语）的优势
+- **content_type 过滤**：支持按内容类型筛选（如 `where={"content_type": "table"}` 只搜表格）
+- **Markdown 优先返回**：当 `content_type == "table"` 时，`markdown_content` 包含完整表格结构，优于纯文本
+
+#### pipeline.py — 处理流水线（HybridChunker + ImageContext）
+
+```python
+import asyncio
+from typing import Callable
+
+class FilePipeline:
+    """
+    编排文件处理的完整流程，支持异步进度回调。
+    
+    核心流程：
+    1. 解析文件 → 文本 + 图片（ImageContext 8 字段）
+    2. HybridChunker 分块 → contextualized 文本 + Markdown
+    3. bge-m3 编码 → dense 向量
+    4. 存入 ChromaDB（content + markdown_content + metadata）
+    5. 图片 → VLM 描述 → 编码 → 存入 ChromaDB
+    6. 更新 SQLite 状态
+    """
+
+    def __init__(self, 
+                 file_parser: FileParser,
+                 chunker: DoclingChunker,
+                 embedding_service: EmbeddingService,
+                 vector_store: VectorStore,
+                 vlm_client: VLMClient | None = None):
+        self.file_parser = file_parser
+        self.chunker = chunker
+        self.embedding_service = embedding_service
+        self.vector_store = vector_store
+        self.vlm_client = vlm_client
+
+    async def process(self, file_id: str, file_path: str, project_id: str,
+                      progress_callback: Callable[[str, int], None] = None) -> None:
+        """
+        处理单个文件的完整流水线。
+        
+        Args:
+            file_id: SQLite files.id
+            file_path: 文件本地路径
+            project_id: 项目 ID
+            progress_callback: 进度回调函数 callback(message, percentage)
+        """
+        try:
+            # Step 1: 解析文件 (0-20%)
+            if progress_callback:
+                progress_callback("解析文件中...", 0)
+            
+            doc = self.file_parser.parse(file_path)
+            
+            # Step 2: 提取图片及上下文 (20-30%)
+            if progress_callback:
+                progress_callback("提取图片...", 20)
+            
+            image_dir = Path(f"%APPDATA%/InkCube/images/{file_id}")
+            image_dir.mkdir(parents=True, exist_ok=True)
+            
+            images = self.file_parser.extract_images_with_context(
+                doc, str(image_dir), window_size=5
+            )
+            
+            # Step 3: HybridChunker 分块 (30-40%)
+            if progress_callback:
+                progress_callback("文本分块...", 30)
+            
+            metadata = {"filename": Path(file_path).name, "file_id": file_id}
+            chunks = self.chunker.chunk(doc, metadata)
+            
+            # Step 4: Embedding + 存入 ChromaDB (40-70%)
+            if progress_callback:
+                progress_callback("生成向量并入库...", 40)
+            
+            texts_to_embed = [chunk.contextualized or chunk.text for chunk in chunks]
+            embeddings = self.embedding_service.encode(texts_to_embed)
+            
+            documents = []
+            ids = []
+            metadatas = []
+            
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings["dense"])):
+                doc_id = f"chunk_{file_id}_{i}"
+                documents.append(chunk.contextualized or chunk.text)
+                ids.append(doc_id)
+                metadatas.append({
+                    "content": chunk.contextualized or chunk.text,
+                    "markdown_content": chunk.markdown or chunk.text,
+                    "content_type": chunk.content_type,
+                    "source_type": "text",
+                    "section_path": " > ".join(chunk.headings) if chunk.headings else "",
+                    "filename": metadata.get("filename", ""),
+                    "page": None,  # TODO: 从 chunk 提取页码
+                    "file_id": file_id,
+                    "chunk_index": i,
+                })
+            
+            self.vector_store.add_documents(project_id, ids, documents, embeddings["dense"].tolist(), metadatas)
+            
+            # Step 5: 图片 VLM 描述 + 入库 (70-95%)
+            if progress_callback:
+                progress_callback("处理图片描述...", 70)
+            
+            if self.vlm_client and images:
+                for img_idx, img_ctx in enumerate(images):
+                    # VLM 描述
+                    description = await self.vlm_client.describe_image(img_ctx.image_path)
+                    img_ctx.vlm_description = description
+                    
+                    # 图片作为独立 chunk 入库
+                    img_doc_id = f"img_{file_id}_{img_idx}"
+                    img_embedding = self.embedding_service.encode([description])
+                    
+                    # 构建 Markdown 引用（仅用于 SQLite 存储，不存入 ChromaDB）
+                    image_ref = f"![{img_ctx.caption or 'Image'}]({img_ctx.image_path})"
+                    
+                    self.vector_store.add_documents(
+                        project_id,
+                        [img_doc_id],
+                        [description],  # VLM 描述作为 content
+                        img_embedding["dense"].tolist(),
+                        [{
+                            "content": description,
+                            "markdown_content": description,  # 图片无结构化格式，同 content
+                            "content_type": "figure",
+                            "section_path": "",
+                            "filename": metadata.get("filename", ""),
+                            "page": img_ctx.page,
+                            "file_id": file_id,
+                            "chunk_index": len(chunks) + img_idx,
+                            "image_id": img_doc_id,  # 关联 SQLite images.id
+                        }]
+                    )
+                    
+                    # 同步更新 SQLite images 表（物理属性）
+                    self._save_image_metadata(
+                        image_id=img_doc_id,
+                        file_id=file_id,
+                        page_no=img_ctx.page,
+                        caption=img_ctx.caption,
+                        file_path=img_ctx.image_path,
+                        width=img_ctx.image_size[0] if img_ctx.image_size else None,
+                        height=img_ctx.image_size[1] if img_ctx.image_size else None,
+                        dpi=img_ctx.image_dpi,
+                        vlm_description=description,
+                        context_before=json.dumps(img_ctx.before_text),
+                        context_after=json.dumps(img_ctx.after_text),
+                    )
+            
+            # Step 6: 更新 SQLite 状态 (95-100%)
+            if progress_callback:
+                progress_callback("完成", 100)
+            
+            self._update_file_status(file_id, status="done", 
+                                     chunk_count=len(chunks), 
+                                     image_count=len(images))
+        
+        except Exception as e:
+            self._update_file_status(file_id, status="error", error_message=str(e))
+            raise
+    
+    def _update_file_status(self, file_id: str, status: str, 
+                           chunk_count: int = 0, image_count: int = 0,
+                           error_message: str = None):
+        """更新 SQLite 中文件的状态"""
+        # TODO: 调用数据库更新逻辑
+        pass
+    
+    def _save_image_metadata(self, image_id: str, file_id: str, page_no: int,
+                            caption: str, file_path: str, width: int, height: int,
+                            dpi: int, vlm_description: str, context_before: str,
+                            context_after: str):
+        """保存图片物理属性到 SQLite images 表。
+        
+        Args:
+            image_id: 图片唯一标识（同 ChromaDB image_id）
+            file_id: 来源文件 ID
+            page_no: 页码
+            caption: 图注
+            file_path: 本地存储路径
+            width: 像素宽度
+            height: 像素高度
+            dpi: DPI 分辨率
+            vlm_description: VLM 生成的描述
+            context_before: JSON 格式的前文窗口
+            context_after: JSON 格式的后文窗口
+        """
+        # SQL: INSERT OR REPLACE INTO images (...) VALUES (...)
+        pass
+```
+
+**关键设计决策：**
+
+- **异步进度回调**：通过 `progress_callback` 向前端 SSE 推送实时进度
+- **图片独立入库**：每张图片的 VLM 描述作为独立 chunk，`source_type="image"` 区分来源
+- **双层存储架构**：
+  - ChromaDB 存语义向量 + 轻量 metadata（image_id, image_ref），用于 RAG 检索
+  - SQLite 存结构化元数据（width/height/dpi/file_path），用于配图决策和前端渲染
+  - 通过 `image_id` 关联两层数据
+- **ImageContext 利用**：`before_text/after_text` 存入 SQLite（JSON 格式），检索时可展示图片前后文
+- **错误隔离**：单文件失败不影响其他文件，捕获异常后更新状态为 `error`
+- **事务安全**：所有 ChromaDB 操作完成后才更新 SQLite 状态，避免部分成功导致数据不一致
+
+#### knowledge_search.py — ReAct 工具
+
+```python
+class KnowledgeSearchTool(BaseTool):
+    name = "knowledge_search"
+    description = "在知识库中搜索相关信息。当用户的问题可能涉及已上传文档的内容时使用。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "搜索查询"},
+        },
+        "required": ["query"]
+    }
+
+    async def execute(self, query: str, **kwargs) -> str:
+        """检索知识库，返回格式化的相关片段"""
+        ...
+```
+
+- Agent 根据当前对话上下文自行决定是否调用
+- 自动获取当前对话关联的 project_id
+- 返回 top-5 相关片段，包含来源文件名和页码
+
+---
+
+## 4. API 设计
+
+### 4.1 新增路由 `routers/projects.py`
+
+```
+# 项目 CRUD
+GET    /projects                       # 项目列表
+POST   /projects                       # 创建项目
+GET    /projects/{id}                  # 项目详情（含文件统计）
+PATCH  /projects/{id}                  # 更新项目
+DELETE /projects/{id}                  # 删除项目（级联删除文件、图片、向量数据）
+
+# 文件管理
+POST   /projects/{id}/files            # 上传文件（multipart，支持批量）
+GET    /projects/{id}/files            # 文件列表（分页、按类型筛选、搜索）
+DELETE /projects/{id}/files/{file_id}  # 删除文件（级联删除图片、向量数据）
+POST   /projects/{id}/files/batch-delete   # 批量删除
+POST   /projects/{id}/files/batch-reprocess # 批量重新处理
+
+# 图片
+GET    /projects/{id}/images           # 项目图片库（分页）
+GET    /projects/{id}/files/{file_id}/images  # 某文件的图片
+GET    /projects/{id}/images/search    # 图片搜索（按 VLM 描述检索）
+
+# 知识库 Chat（单对话，无 session）
+POST   /projects/{id}/chat             # 全库对话（query → RAG → 回答）
+POST   /projects/{id}/files/{file_id}/chat  # 单文件对话
+```
+
+### 4.2 模型管理路由 `routers/models.py`
+
+```
+GET    /models/status                  # 各模型下载状态
+POST   /models/{name}/download         # 下载指定模型（SSE 推送进度）
+POST   /models/download-all            # 一键下载全部模型
+POST   /models/{name}/verify           # 校验模型完整性
+```
+
+### 4.3 文件上传流程
+
+```
+前端                          后端
+ │                              │
+ │── POST /projects/{id}/files ─│
+ │   multipart: file            │
+ │                              │── 保存原始文件到 %APPDATA%/InkCube/files/{file_id}/
+ │                              │── 创建 files 记录 (status=pending)
+ │◄── 202 Accepted ────────────│
+ │    {file_id, status: pending}│
+ │                              │── 后台启动 FilePipeline
+ │                              │
+ │◄── SSE: file_progress ──────│── 解析中...
+ │    {file_id, progress: 30}   │
+ │                              │
+ │◄── SSE: file_progress ──────│── VLM 处理图片...
+ │    {file_id, progress: 70}   │
+ │                              │
+ │◄── SSE: file_done ──────────│── 完成
+ │    {file_id, status: done}   │
+```
+
+### 4.4 Chat 接口变更
+
+`POST /chat` 请求体新增可选字段：
+
+```json
+{
+    "conversation_id": "xxx",
+    "message": "用户消息",
+    "project_id": "yyy"     // 可选，指定知识库上下文
+}
+```
+
+当 `project_id` 存在时，Agent 的 `knowledge_search` 工具自动绑定该项目。
+
+---
+
+## 5. 设置项新增
+
+```python
+class SettingsModel(BaseModel):
+    # ... 现有字段 ...
+
+    # 通用
+    language: str = "zh-CN"           # zh-CN / en-US
+
+    # VLM 配置
+    vlm_api_url: str = "https://open.bigmodel.cn/api/paas/v4/"
+    vlm_api_key: str = ""
+    vlm_model: str = "glm-4v"
+
+    # Embedding 配置（高级）
+    embedding_model: str = "BAAI/bge-m3"
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+```
+
+---
+
+## 6. 应用导航与前端设计
+
+### 6.1 应用导航结构
+
+墨方侧边栏分为四个区域，自上而下：
+
+```
+┌──────────┐
+│ 产业洞察  │  ← 当前 Chat 功能（未来接入 SaaS 产业数据库 + 网络搜索）
+│  ├ 对话1  │
+│  └ 对话2  │
+│          │
+│ 知识库    │  ← 本次开发
+│  ├ 项目A  │
+│  └ 项目B  │
+│          │
+│ 产业报告  │  ← 未来（报告管理生成入口）
+│          │
+│ ──────── │
+│ 👤 Kelvin │  ← 用户信息栏
+│    📊  ⚙  │  ← 用量 + 设置
+└──────────┘
+```
+
+- **产业洞察**：现有 Chat 功能，暂时仅改名，交互不变
+- **知识库**：本次开发重点
+- **产业报告**：预留入口
+- **底部用户栏**：用户名 + 用量图标（API 调用量 / token 消耗 / 存储空间）+ 设置图标
+
+### 6.2 知识库主界面 — 文件库
+
+知识库的核心视图是**文件库**，不是 Chat。
+
+```
+┌──────────┬────────────────────────────────┬──────────────┐
+│ Sidebar  │  项目 A                  [💬] [+上传] │              │
+│          │  项目描述文字                      │              │
+│ 产业洞察  │  ─────────────────────────────── │              │
+│          │  [搜索文件...]  全部|PDF|DOCX|PPTX|图片│              │
+│ 知识库    │                                │              │
+│  ├ 项目A  │  ── 文件视图 ──                  │              │
+│  └ 项目B  │  ☐ CIM.pdf       ✅ 12块 3图    │              │
+│          │  ☐ 财报.pdf      ✅ 45块 8图    │              │
+│ 产业报告  │  ☐ 调研.docx     ⏳ 处理中 60%  │              │
+│          │  ☐ 市场数据.xlsx  ✅ 23块        │              │
+│          │  ☐ 竞品分析.pptx  ✅ 18块 5图    │              │
+│          │  ☐ 会议纪要.docx  ❌ 格式错误    │              │
+│          │  ...                            │              │
+│          │                                │              │
+│          │  ── 已选 2 个文件 ──              │              │
+│          │  [批量删除] [批量重新处理]          │              │
+│          │                                │              │
+│          │  共 237 个文件  < 1 2 3 ... 12 > │              │
+│          │                                │              │
+│ ──────── │                                │              │
+│ 👤 Kelvin │                                │              │
+│    📊  ⚙  │                                │              │
+└──────────┴────────────────────────────────┴──────────────┘
+```
+
+**文件视图功能：**
+
+- 搜索框：按文件名搜索
+- 类型筛选 Tab：全部 / PDF / DOCX / PPTX / 图片
+- 多选 + 批量操作：删除、重新处理
+- 分页：支持 200+ 文件浏览
+- 文件状态：✅ 已处理（显示 chunk 数 + 图片数）/ ⏳ 处理中（进度）/ ❌ 失败（错误信息）
+- 补充上传：随时追加文件，不是一次性的
+- 拖拽上传：支持拖拽文件到窗口
+
+### 6.3 图片库
+
+文件视图和图片视图通过 Tab 切换。
+
+```
+│  [搜索...]  文件|图片                              │
+│                                                    │
+│  ── 图片视图 ──                                     │
+│  ┌────┬────┬────┬────┐                             │
+│  │ 📊 │ 📈 │ 📉 │ 🗺 │                             │
+│  │CIM │CIM │CIM │CIM │                             │
+│  │p.3 │p.5 │p.7 │p.12│                             │
+│  ├────┼────┼────┼────┤                             │
+│  │ 📊 │ 📈 │ 📋 │ 📸 │                             │
+│  │财报 │财报 │调研 │市场 │                             │
+│  │p.2 │p.8 │p.4 │p.1 │                             │
+│  └────┴────┴────┴────┘                             │
+│  [搜索图片描述...]                                   │
+│                                                    │
+│  共 89 张图片  < 1 2 3 ... 5 >                      │
+```
+
+- 缩略图网格，显示来源文件名 + 页码
+- 搜索：按 VLM 描述文本检索（已入向量库）
+- 点击图片可放大查看
+- 图片跟随文件级联删除（删除文件时其图片一并删除）
+
+### 6.4 Chat 面板
+
+Chat 面板从右侧推出，可收起，不占主界面。
+
+```
+┌───────────────────────────────┬──────────────┐
+│                               │  🔍 全库检索  │
+│                               │  [× 关闭]    │
+│                               │              │
+│                               │  ┌──────────┐│
+│                               │  │ 这份报告  ││
+│                               │  │ 的核心   ││
+│                               │  │ 假设是   ││
+│                               │  │ 什么？   ││
+│                               │  │          ││
+│                               │  │ > 根据   ││
+│                               │  │ CIM.pdf  ││
+│                               │  │ 第三章..  ││
+│                               │  │          ││
+│                               │  └──────────┘│
+│                               │  [输入...]    │
+│                               └──────────────┘
+```
+
+**两种作用域：**
+
+| 入口 | 作用域 | Chat 标题 |
+|------|--------|----------|
+| 项目标题栏 💬 按钮 | 全库检索（项目内所有文件） | 🔍 全库检索 |
+| 点击某个文件 | 单文件范围 | 📄 CIM.pdf |
+
+- 单对话，无 session 管理，用完即弃
+- 从全库切到单文件：点击文件后自动切换，标题显示文件名 + 返回按钮
+- 从单文件切回全库：点返回或关闭文件
+- Chat 面板可收起（💬 按钮 toggle）
+
+### 6.5 设置页
+
+设置作为独立功能页，点击侧边栏底部 ⚙ 图标进入。
+
+```
+┌──────────┬───────────────────────────────┐
+│ 设置导航  │                               │
+│          │                               │
+│ 通用     │  ── 通用 ──                    │
+│          │  语言: [中文 ▾]                │
+│          │                               │
+│ 外部模型  │  ── 外部模型 ──                 │
+│  ├ LLM   │                               │
+│  └ VLM   │  LLM API                      │
+│          │  ├ API URL: [____________]    │
+│ 内部模型  │  ├ API Key: [********]        │
+│  ├ Embed │  └ Model:   [gpt-4o    ]     │
+│  ├ 版面   │                               │
+│  ├ 表格   │  VLM API                      │
+│  └ OCR   │  ├ API URL: [____________]    │
+│          │  ├ API Key: [********]        │
+│ GPU 加速  │  └ Model:   [glm-4v    ]     │
+│          │                               │
+│          │  ── 内部模型 ──                 │
+│          │                               │
+│          │  Embedding                     │
+│          │  └ bge-m3     ✅ 已下载 4.4GB  │
+│          │                               │
+│          │  文档解析                        │
+│          │  ├ 版面分析     ✅ 已下载 164MB  │
+│          │  └ 表格识别     ✅ 已下载 200MB  │
+│          │                               │
+│          │  OCR                           │
+│          │  └ RapidOCR   ✅ 已下载 30MB   │
+│          │                               │
+│          │  [一键下载全部]                  │
+│          │                               │
+│          │  ── GPU 加速 ──                │
+│          │  当前：CPU 模式                 │
+│          │  [下载 GPU 后端] (需 NVIDIA GPU) │
+│          │                               │
+└──────────┴───────────────────────────────┘
+```
+
+**设置页结构：**
+
+- **通用**：语言切换（中文 / English），影响菜单文本和界面文案
+- **外部模型**：LLM API 配置 + VLM API 配置（URL / Key / Model）
+- **内部模型**：本地模型管理，按类别分组（Embedding / 文档解析 / OCR），显示下载状态和大小
+- **GPU 加速**：CPU/GPU 模式切换，GPU 后端下载
+
+### 6.6 菜单栏
+
+基于 Electron 默认菜单，最小化定制。菜单语言跟随设置页的语言选项。
+
+| 菜单 | 项目 | 快捷键 | 说明 |
+|------|------|--------|------|
+| **文件** | 关闭 | Ctrl+W | 默认 |
+| | ─ | | |
+| | 设置 | Ctrl+, | 打开设置页 |
+| | 退出 | | 关闭应用 |
+| **编辑** | （系统默认） | | 撤销/重做/剪切/复制/粘贴/全选，跟随 OS 语言 |
+| **视图** | （系统默认） | | 缩放等，Reload/DevTools 仅开发模式显示 |
+| **帮助** | ─ | | |
+| | 关于墨方 | | 版本号、作者信息 |
+
+> Window 菜单删除。Edit/View 保留系统默认项。
+
+### 6.7 新增前端组件
+
+```
+src/components/
+├── sidebar/
+│   ├── Sidebar.tsx              # 侧边栏（导航 + 用户栏）
+│   ├── UserBar.tsx              # 底部用户信息栏（用户名 + 用量 + 设置）
+│   └── NavSection.tsx           # 导航区域（产业洞察/知识库/产业报告）
+├── knowledge/
+│   ├── ProjectView.tsx          # 项目主视图（文件库）
+│   ├── FileLibrary.tsx          # 文件列表（搜索/筛选/分页/批量操作）
+│   ├── ImageGallery.tsx         # 图片库（缩略图网格 + 描述搜索）
+│   ├── FileUpload.tsx           # 拖拽上传组件
+│   ├── ChatPanel.tsx            # 右侧 Chat 面板（全库/单文件切换）
+│   └── FileItem.tsx             # 文件行（状态/选择/操作）
+├── settings/
+│   ├── SettingsPage.tsx         # 设置页
+│   ├── GeneralSettings.tsx      # 通用设置（语言）
+│   ├── ExternalModels.tsx       # 外部模型配置（LLM/VLM）
+│   ├── InternalModels.tsx       # 内部模型管理（下载/状态）
+│   └── GpuSettings.tsx          # GPU 加速设置
+```
+
+---
+
+## 7. 依赖变更
+
+### Python 新增依赖
+
+```
+# 文件解析
+docling>=2.0.0
+
+# 推理框架
+torch>=2.0.0                    # CPU 版（默认）
+transformers>=4.40.0
+onnxruntime>=1.17.0             # RapidOCR 依赖
+rapidocr-onnxruntime>=1.3.0
+
+# Embedding
+FlagEmbedding>=1.2.0
+
+# 向量数据库
+chromadb>=0.5.0
+
+# 图片处理
+Pillow>=10.0.0
+```
+
+### PyInstaller 额外 hidden-import
+
+```
+--hidden-import docling
+--hidden-import torch
+--hidden-import transformers
+--hidden-import chromadb
+--hidden-import FlagEmbedding
+--hidden-import onnxruntime
+--hidden-import rapidocr_onnxruntime
+```
+
+> 注意：AI 模型不打包进二进制，由内置模型管理器在首次使用时下载到本地。
+
+---
+
+## 8. 实现优先级
+
+| 阶段 | 内容 | 说明 | 状态 |
+|------|------|------|------|
+| P0 | 项目 CRUD + 文件上传 + PDF 解析 + HybridChunker 分块 + dense 检索 | 最小可用：文本 RAG 闭环 | ✅ 核心管线已验证（test/doc_parser.py） |
+| P1 | ChromaDB FTS + RRF 融合检索 | 替换原 sparse collection 设计，利用内置 FTS | 🔄 设计中（需调整 vector_store.py） |
+| P2 | Office→PDF 两级转换 + ImageContext 提取 | LibreOffice/MS Office 兜底，window_size=5 | 🔄 设计中（file_parser.py 已更新） |
+| P3 | 图片 VLM 描述（外部 API）+ 图片向量入库 | 多模态支持，异步处理，API 失败时标记错误状态 | 🔄 设计中（vlm_client.py 已更新） |
+| P4 | knowledge_search tool 接入 ReAct Agent | RAG 闭环，Agent 自主调用 | ⏳ 待实现 |
+| P5 | 前端项目管理 UI + 文件上传组件 + Chat 面板 | 完整用户体验 | ⏳ 待实现 |
+| P6 | GPU 加速后端切换 + 模型管理器完善 | torch[cuda] 独立 binary，断点续传优化 | ⏳ 待实现 |
+
+**当前进度：**
+- ✅ Docling 2.127.0 端到端验证完成（31 页真实 PDF，OCR 贡献 96% 文本）
+- ✅ HybridChunker 分块能力验证（contextualize + merge_peers + repeat_table_headers）
+- ✅ 模型管理器基础功能（多源下载 + 目录结构校准 + RapidOCR ONNX 下载）
+- 🔄 设计文档 v0.4.0 修订中（已完成 chunker/retrieval/vlm/pipeline/file_parser 章节）
+- ⏳ ChromaDB 封装实现（需支持 FTS + 单 collection 设计）
+- ⏳ 前端知识库界面 scaffold（ProjectView/FileLibrary/ChatPanel）
+
+---
+
+## 9. 开放问题
+
+1. ~~**模型下载策略**~~：✅ 已通过内置模型管理器解决（多源下载 + 断点续传 + 手动放置兜底）
+2. ~~**大文件处理**~~：✅ 分批处理 — PDF 超过 100 页时分批解析，避免内存溢出
+3. ~~**项目级对话隔离**~~：✅ 已确认 — `knowledge_search` 工具只能搜索当前项目的知识库，Chat API 按 project_id 隔离
+4. ~~**增量更新**~~：✅ 同 hash 跳过 — 基于 file_hash 去重，已存在相同 hash 的文件时直接跳过，不重复处理
+5. **模型管理器修正**（验证发现，需实现时解决）：
+   - ~~**目录结构不统一**~~：✅ 已修正 — 注册表 `dir_name` 统一使用 Docling 预期的 HF 格式（`{org}--{model}`），如 `docling-project--docling-layout-heron`。ModelScope 下载改用 `local_dir` 参数直接写入目标目录，不再产生嵌套结构
+   - ~~**RapidOCR ONNX 模型未下载**~~：✅ 已修正 — 改为通过 `RapidOcrModel.download_models(backend="onnxruntime", local_dir=..., lang="ch")` 下载 3 个 ONNX 文件（det + cls + rec），实测 ~30MB。验证通过：OCR 启用后文本元素从 26 增至 658
+   - **大小估计偏差大**：bge-m3 实际 ~4.4GB（含 PyTorch + ONNX 双权重），原估计 2.2GB。已按实测值校准注册表，实现时需确保进度条基于实际大小计算
+   - **冗余缓存**：下载源切换时（如 HF mirror 失败后回退 ModelScope），前一个源的残留文件不会被自动清理。已添加下载后清理 `.cache/` 和 `.lock/` 的逻辑，但根目录残留文件未处理
+   - **进度条精度**：当前通过轮询目录大小估算进度，受文件大小估计不准和多源切换影响，进度可能跳跃。理想方案是拦截下载库的 tqdm 回调
+
+---
+
+## 10. Docling 解析能力验证（2026-09-16）
+
+使用 Docling 2.127.0 对测试 HTML 文档进行解析验证，确认文档结构提取、分块、图片分离的实际表现。
+
+### 10.1 文档结构提取
+
+Docling 将文档解析为以下结构化元素类型：
+
+| 类型 | 说明 | 验证结果 |
+|------|------|---------|
+| `TitleItem` | 文档标题 | ✅ 正确提取 "InkCube Knowledge Base" |
+| `SectionHeaderItem` | 章节标题（含层级） | ✅ 正确识别 h2 标题及层级关系 |
+| `TextItem` | 正文段落 | ✅ 每段独立提取，保留上下文 |
+| `TableItem` | 表格（结构化） | ✅ 还原为 4×3 单元格矩阵，含表头标记 |
+| `PictureItem` | 图片占位 | ✅ 识别图片位置，alt text 作为 caption |
+| `ListItem` | 列表项 | ✅ 连续列表项合并为一个 group |
+
+### 10.2 分块（Chunking）— HybridChunker
+
+使用 `HybridChunker` 进行语义分块，它是为 embedding 优化的 chunker：
+
+**核心能力**：
+- **Contextualize（上下文增强）**：每个 chunk 自动拼接 metadata（标题路径），embedding 时包含位置上下文
+- **Tokenization-aware（分词感知）**：基于实际 token 数切分，可配置使用 bge-m3 的 tokenizer，确保与 embedding 模型一致
+- **merge_peers**：相邻小 chunk 如果 metadata 相同（同一章节），自动合并，避免碎片化
+- **repeat_table_headers**：表格被拆分时，每个子 chunk 都重复表头，保持语义完整
+
+**配置示例**：
+```python
+from docling_core.transforms.chunker import HybridChunker
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+
+tokenizer = HuggingFaceTokenizer.from_pretrained(
+    model_name="BAAI/bge-m3",
+    max_tokens=8192  # bge-m3 的最大 token 数
+)
+chunker = HybridChunker(
+    tokenizer=tokenizer,
+    merge_peers=True,
+    repeat_table_header=True
+)
+chunks = list(chunker.chunk(doc))
+
+# 每个 chunk 经过 contextualize 后送给 bge-m3 embedding
+for chunk in chunks:
+    contextualized_text = chunker.contextualize(chunk)
+    # embedding = bge_m3.encode(contextualized_text)
+```
+
+**Chunking 选项**（通过 docling-serve API 暴露）：
+- `use_markdown_tables = True`：表格用 markdown 格式（而非 key=value 三元组）
+- `use_markdown_images = True`：图片序列化为 markdown 引用 `![caption](uri)`
+- `image_placeholder`：图片占位符文本
+
+### 10.3 图片提取
+
+**Pipeline 配置**：
+```python
+pipeline_options = PdfPipelineOptions()
+pipeline_options.generate_picture_images = True  # 启用图片裁剪
+pipeline_options.generate_page_images = False     # 不需要整页图片
+# do_picture_classification 已废弃（原 DocumentFigureClassifier 模型不再使用）
+# do_picture_description 已废弃（改用外部 VLM API，非 Docling 内置）
+```
+
+**图片处理流程**：
+1. Docling 识别图片区域，裁剪保存到临时文件
+2. `PictureItem.image` 包含 `ImageRef` 对象（`uri` 指向文件路径）
+3. 调用 `picture.image.pil_image()` 获取 PIL Image 对象
+4. 保存到 `%APPDATA%/InkCube/images/`
+5. 用外部 VLM API（智谱 GLM-4V 等）生成描述文本
+6. 描述文本入 ChromaDB，与文本一起 embedding
+7. 物理属性（width/height/dpi）存入 SQLite images 表
+
+### 10.4 表格处理
+
+- `TableItem.data.table_cells` 包含完整的单元格矩阵（行列位置、是否表头、跨行跨列）
+- `export_to_markdown(doc)` 可导出标准 markdown 表格
+- chunker 将表格序列化为键值对文本，保留表头-数据对应关系
+- `do_table_structure` 默认启用，使用 TableFormer V2 accurate 模式
+
+### 10.5 对设计文档的影响
+
+1. **file_parser.py**：设计基本准确，需补充 `generate_picture_images = True` 配置
+2. **chunker.py**：Docling 原生支持 markdown 格式的 chunk 输出，无需自定义 chunker
+   - `use_markdown_tables = True`：表格用 markdown 格式（而非 key=value 三元组）
+   - `use_markdown_images = True`：图片序列化为 markdown 引用
+   - `image_placeholder`：图片占位符文本
+   - 默认输出格式即为 Markdown
+3. **图片描述**：仅使用外部 VLM API（智谱 GLM-4V 等），无本地模型兜底
+4. **docling-serve 参考**：官方 server 封装暴露了完整的 API 参数（`chunking_options`、`do_ocr`、`table_mode` 等），可作为实现参考
+
+### 10.6 真实 PDF 完整验证（2026-09-16）
+
+使用 31 页真实 PDF（宁庆空天装备 BP）对全部 4 个模型进行端到端验证：
+
+**模型加载**：
+| 模型 | 目录名 | 大小 | 状态 |
+|------|--------|------|------|
+| bge-m3 | `bge-m3/` | 4376.9 MB | ✅ |
+| docling-layout-heron | `docling-project--docling-layout-heron/` | 164 MB | ✅ |
+| tableformer-v2 | `docling-project--TableFormerV2/` | 200.0 MB | ✅ |
+| rapidocr | `RapidOcr/` | 30.3 MB | ✅ |
+
+**解析结果**（`do_ocr=True`, `do_table_structure=True`, `generate_picture_images=True`）：
+- 解析耗时：118.3s
+- 页数：31
+- 文本元素：658（OCR 关闭时仅 26，OCR 贡献了 96% 的文本提取）
+- 表格数：1
+- 图片数：174（均成功裁剪，base64 编码）
+- OCR 警告：部分页面 RapidOCR 返回空结果（可能是纯图片页或低质量扫描区域）
+
+**关键发现**：
+1. `artifacts_path` 必须指向 `models/` 目录（非 `models/{model_name}/`），Docling 按 `{artifacts_path}/{dir_name}/` 查找各模型
+2. `dir_name` 必须严格匹配 HF 格式（`{org}--{model}`），否则报 `Model not found in artifacts_path`
+3. ModelScope 的 `snapshot_download(cache_dir=...)` 产生嵌套结构，`model.safetensors` 不在根目录，Docling 无法加载。已改用 `local_dir` 参数
+4. RapidOCR 3 个 ONNX 文件（det 9.5MB + cls 0.6MB + rec 20.3MB）平铺在 `RapidOcr/` 目录下，Docling 自动发现

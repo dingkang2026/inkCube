@@ -1,0 +1,210 @@
+/**
+ * tool-initializer.js — 首次启动时初始化工具链
+ *
+ * 从安装包 resources/tools/ 复制到 %APPDATA%/InkCube/tools/
+ * 从安装包 resources/tools/python-build-standalone/ 复制到 %APPDATA%/InkCube/python/
+ *
+ * 通过 tool-versions.json 判断是否需要重新解压（版本变化时触发）。
+ */
+const fs = require('fs')
+const path = require('path')
+const { app } = require('electron')
+const { logElectron } = require('./log-utils')
+
+/**
+ * 获取 %APPDATA%/InkCube/ 目录
+ */
+function getAppDataDir() {
+  return app.getPath('userData')
+}
+
+/**
+ * 获取安装包 resources 目录
+ */
+function getResourcesDir() {
+  return process.resourcesPath || path.join(__dirname, '..', 'resources')
+}
+
+/**
+ * 读取 JSON 文件
+ */
+function readJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 写入 JSON 文件
+ */
+function writeJson(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8')
+}
+
+/**
+ * 递归复制目录
+ */
+function copyDirSync(src, dest) {
+  fs.mkdirSync(dest, { recursive: true })
+  const entries = fs.readdirSync(src, { withFileTypes: true })
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name)
+    const destPath = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath)
+    } else {
+      fs.copyFileSync(srcPath, destPath)
+    }
+  }
+}
+
+/**
+ * 检查工具链是否需要初始化/更新。
+ *
+ * 比较逻辑：
+ * - 若 %APPDATA%/InkCube/tool-versions.json 不存在 → 需要初始化
+ * - 若安装包 resources/tools/tool-versions.json 版本更高 → 需要更新
+ * - 否则跳过
+ *
+ * @returns {{ needed: boolean, reason: string }}
+ */
+function checkInitNeeded() {
+  const appDataDir = getAppDataDir()
+  const resourcesDir = getResourcesDir()
+
+  const sourceVersionsPath = path.join(resourcesDir, 'tools', 'tool-versions.json')
+  const targetVersionsPath = path.join(appDataDir, 'tool-versions.json')
+
+  // 源版本文件不存在（开发环境未运行 prepare-tools.ps1）
+  if (!fs.existsSync(sourceVersionsPath)) {
+    return { needed: false, reason: 'source versions not found (dev mode)' }
+  }
+
+  const sourceVersions = readJson(sourceVersionsPath)
+  if (!sourceVersions) {
+    return { needed: false, reason: 'source versions invalid' }
+  }
+
+  // 目标版本文件不存在（首次启动）
+  if (!fs.existsSync(targetVersionsPath)) {
+    return { needed: true, reason: 'first run' }
+  }
+
+  const targetVersions = readJson(targetVersionsPath)
+  if (!targetVersions) {
+    return { needed: true, reason: 'target versions invalid' }
+  }
+
+  // 比较版本号（任意工具版本不同则更新）
+  for (const key of ['uv', 'rg', 'ruff', 'pandoc', 'python']) {
+    if (sourceVersions[key] && sourceVersions[key] !== targetVersions[key]) {
+      return { needed: true, reason: `${key} version changed: ${targetVersions[key]} → ${sourceVersions[key]}` }
+    }
+  }
+
+  return { needed: false, reason: 'versions match' }
+}
+
+/**
+ * 执行工具链初始化/更新。
+ *
+ * 将 resources/tools/ 下的二进制文件复制到 %APPDATA%/InkCube/tools/
+ * 将 resources/tools/python-build-standalone/ 复制到 %APPDATA%/InkCube/python/
+ *
+ * @param {function} [onProgress] - 进度回调 (message: string) => void
+ */
+async function initializeTools(onProgress) {
+  const appDataDir = getAppDataDir()
+  const resourcesDir = getResourcesDir()
+
+  const sourceToolsDir = path.join(resourcesDir, 'tools')
+  const targetToolsDir = path.join(appDataDir, 'tools')
+  const targetPythonDir = path.join(appDataDir, 'python')
+
+  if (!fs.existsSync(sourceToolsDir)) {
+    logElectron('WARN', 'Tool initializer: source tools directory not found')
+    return false
+  }
+
+  // 1. 复制工具二进制
+  if (onProgress) onProgress('正在初始化工具链...')
+  logElectron('INFO', 'Tool initializer: copying tools to ' + targetToolsDir)
+
+  fs.mkdirSync(targetToolsDir, { recursive: true })
+
+  // 复制顶层文件（uv.exe, rg.exe, ruff.exe, pandoc.exe, tool-versions.json）
+  const toolFiles = fs.readdirSync(sourceToolsDir)
+  for (const file of toolFiles) {
+    const srcPath = path.join(sourceToolsDir, file)
+    const stat = fs.statSync(srcPath)
+    if (stat.isFile()) {
+      fs.copyFileSync(srcPath, path.join(targetToolsDir, file))
+      logElectron('INFO', `Tool initializer: copied ${file}`)
+    }
+  }
+
+  // 2. 复制 python-build-standalone
+  const sourcePythonDir = path.join(sourceToolsDir, 'python-build-standalone')
+  if (fs.existsSync(sourcePythonDir)) {
+    if (onProgress) onProgress('正在初始化 Python 运行环境...')
+    logElectron('INFO', 'Tool initializer: copying python-build-standalone to ' + targetPythonDir)
+
+    // 如果已存在先删除（避免残留）
+    if (fs.existsSync(targetPythonDir)) {
+      fs.rmSync(targetPythonDir, { recursive: true, force: true })
+    }
+    copyDirSync(sourcePythonDir, targetPythonDir)
+    logElectron('INFO', 'Tool initializer: python-build-standalone copied')
+  }
+
+  // 3. 写入版本信息
+  const sourceVersions = readJson(path.join(sourceToolsDir, 'tool-versions.json'))
+  if (sourceVersions) {
+    sourceVersions.app_version = app.getVersion()
+    sourceVersions.initialized_at = new Date().toISOString()
+    writeJson(path.join(appDataDir, 'tool-versions.json'), sourceVersions)
+    logElectron('INFO', 'Tool initializer: versions written')
+  }
+
+  return true
+}
+
+/**
+ * 确保工具链已初始化。在 app.whenReady() 中调用。
+ *
+ * @param {function} [onProgress] - 进度回调
+ * @returns {Promise<boolean>} 是否成功（或无需初始化）
+ */
+async function ensureToolsInitialized(onProgress) {
+  const { needed, reason } = checkInitNeeded()
+
+  if (!needed) {
+    logElectron('INFO', `Tool initializer: no init needed (${reason})`)
+    return true
+  }
+
+  logElectron('INFO', `Tool initializer: init needed (${reason})`)
+
+  try {
+    const success = await initializeTools(onProgress)
+    if (success) {
+      logElectron('INFO', 'Tool initializer: initialization complete')
+    } else {
+      logElectron('WARN', 'Tool initializer: initialization skipped (source not found)')
+    }
+    return success
+  } catch (err) {
+    logElectron('ERROR', `Tool initializer: initialization failed: ${err.message}`)
+    return false
+  }
+}
+
+module.exports = {
+  ensureToolsInitialized,
+  checkInitNeeded,
+  getAppDataDir,
+  getResourcesDir,
+}

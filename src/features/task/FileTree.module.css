@@ -1,0 +1,156 @@
+/* ── Unified File Panel (row layout) ── */
+.panel {
+  width: 100%;
+  display: flex;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  height: 100%;
+  min-width: 0;
+}
+
+/* ── Left: tree sub-panel (column: header + tree) ── */
+.treePanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ── Sub-panel header ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.headerTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.iconBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.iconBtn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* ── Tree section ── */
+.treeSection {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+  min-width: 0;
+}
+
+.empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Inner resize handle (between tree and preview) ── */
+.innerHandle {
+  width: 4px;
+  cursor: col-resize;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.innerHandle:hover {
+  background: var(--accent);
+}
+
+/* ── Preview section ── */
+.previewSection {
+  flex-shrink: 0;
+  display: flex;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* ── Tree nodes ── */
+.node {
+  user-select: none;
+}
+
+.nodeRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.1s;
+}
+
+.nodeRow:hover {
+  background: var(--bg-tertiary);
+}
+
+.fileRow {
+  cursor: pointer;
+}
+
+.fileRow:hover {
+  background: rgba(var(--accent-rgb, 59, 130, 246), 0.08);
+}
+
+.fileRow:active {
+  background: rgba(var(--accent-rgb, 59, 130, 246), 0.15);
+}
+
+.fileRowSelected {
+  background: rgba(var(--accent-rgb, 59, 130, 246), 0.12) !important;
+  border-right: 2px solid var(--accent);
+}
+
+.fileRowSelected .name {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.arrow {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.size {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}

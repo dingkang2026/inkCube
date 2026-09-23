@@ -1,0 +1,31 @@
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  min-width: 140px;
+  border-right: 1px solid var(--border);
+}
+
+.item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.item:hover {
+  background: var(--bg-secondary);
+}
+
+.active {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}

@@ -1,0 +1,131 @@
+.container {
+  padding: 12px 0;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.overallBadge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.ok {
+  background: var(--bg-success, #dcfce7);
+  color: var(--text-success, #16a34a);
+}
+
+.degraded {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.refreshBtn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.12s;
+}
+
+.refreshBtn:hover {
+  background: var(--bg-tertiary);
+}
+
+.loading,
+.error {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--text-danger, #dc2626);
+}
+
+.serviceList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.serviceRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotOk {
+  background: var(--text-success, #16a34a);
+}
+
+.dotError {
+  background: var(--text-danger, #dc2626);
+}
+
+.serviceLabel {
+  font-weight: 600;
+  min-width: 80px;
+  color: var(--text-primary);
+}
+
+.serviceMsg {
+  flex: 1;
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fixBtn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+
+.fixBtn:hover {
+  background: var(--bg-tertiary);
+}

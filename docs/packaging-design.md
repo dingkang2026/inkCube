@@ -1,0 +1,560 @@
+# 打包安装方案设计文档
+
+> 版本: 0.3.0 | 日期: 2026-09-22 | 状态: 步骤 1-7/9 已实施（路径抽象层 + 构建脚本 + 初始化逻辑 + API）
+>
+> 关联文档：[task-agent-design.md](task-agent-design.md) §2.1, §3.3, §12.18, §12.19 #6
+
+## 1. 目标与约束
+
+### 1.1 目标
+
+- 所有任务智能体所需工具链（Python / uv / rg / ruff / pandoc）随安装包捆绑分发，用户零配置即可使用
+- LibreOffice 不捆绑，运行时检测并引导安装
+- Windows 平台先行，macOS / Linux 后续跟进
+
+### 1.2 约束
+
+- 安装包体积控制在合理范围（预估 ~170MB，不含模型）
+- 开发阶段仍使用 conda 环境，打包后切换到捆绑版本，业务代码无需修改
+- 跨平台路径差异需统一抽象
+
+---
+
+## 2. 安装包内容
+
+### 2.1 捆绑清单
+
+| 组件 | 大小（原始） | 安装包内（LZMA 压缩预估） | 来源 | 说明 |
+|------|-------------|-------------------------|------|------|
+| Electron + 前端 | ~150MB | ~80-90MB | 已有 | 含 dist-renderer |
+| PyInstaller 后端 (inkcube-agent.exe) | ~50MB | ~30-35MB | 已有 | FastAPI 后端，自带 Python 运行时 |
+| python-build-standalone | ~50MB | ~35-40MB | [indygreg/python-build-standalone](https://github.com/indygreg/python-build-standalone) | 任务 venv 的 Python 发行版 |
+| uv | ~20MB | ~15MB | [astral-sh/uv](https://github.com/astral-sh/uv) | 依赖管理 |
+| ripgrep (rg) | ~5MB | ~4MB | [BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep) | 代码搜索 |
+| ruff | ~15MB | ~12MB | [astral-sh/ruff](https://github.com/astral-sh/ruff) | 代码检查/格式化 |
+| pandoc | ~30MB | ~20MB | [jgm/pandoc](https://github.com/jgm/pandoc) | MD → DOCX 转换 |
+| **合计（不含模型）** | **~320MB** | **~170-180MB** | | |
+
+### 2.2 不捆绑的组件
+
+| 组件 | 原因 | 处理方式 |
+|------|------|---------|
+| LibreOffice (~800MB) | 体积过大，非所有用户需要 | 运行时检测，引导用户安装 |
+| MS Office | 用户已有或自行安装 | 运行时检测 |
+| AI 模型 | 已有独立下载机制 | 不变 |
+
+### 2.3 安装包目录结构
+
+```
+安装包 resources/
+├── python/
+│   ├── inkcube-agent.exe          ← PyInstaller 后端（已有）
+│   └── ...
+├── tools/
+│   ├── python-build-standalone/   ← 预装 Python 发行版
+│   │   ├── python.exe
+│   │   ├── Lib/
+│   │   └── ...
+│   ├── uv.exe
+│   ├── rg.exe
+│   ├── ruff.exe
+│   └── pandoc.exe
+└── ...
+```
+
+---
+
+## 3. 运行时目录结构
+
+安装后，数据写入 `%APPDATA%/InkCube/`：
+
+```
+%APPDATA%/InkCube/
+├── python/                     ← 从安装包解压出来的 python-build-standalone（只读）
+│   ├── python.exe
+│   └── ...
+├── tools/                      ← 从安装包解压出来的工具二进制
+│   ├── uv.exe
+│   ├── rg.exe
+│   ├── ruff.exe
+│   └── pandoc.exe
+├── tool-versions.json          ← 工具版本记录
+├── tasks/
+│   ├── task-abc123/
+│   │   ├── .venv/              ← 基于 python-build-standalone 创建的独立 venv
+│   │   ├── workspace/
+│   │   └── metadata.json
+│   └── ...
+├── skills/                     ← 第三方 Skill（Agent Skills 标准格式 SKILL.md）
+│   ├── hello-world/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   └── pdf-converter/
+│       ├── SKILL.md
+│       └── scripts/
+├── models/
+├── files/
+└── data.db
+```
+
+---
+
+## 4. 路径解析抽象层（核心）
+
+### 4.1 现状问题
+
+当前各工具的路径查找逻辑分散在各个文件中，各自独立实现：
+
+| 文件 | 方法 | 查找逻辑 |
+|------|------|---------|
+| `venv_manager.py` | `_find_uv()` | frozen → exe 旁 resources/ → PATH |
+| `package_manager.py` | `_find_uv()` | PATH → app_dir/resources/ |
+| `code_search.py` | `_find_rg()` | PATH → app_dir/resources/ |
+| `code_lint.py` | `_find_ruff()` | PATH → app_dir/resources/ |
+| `code_format.py` | `_find_ruff()` | PATH → app_dir/resources/ |
+
+问题：
+- 逻辑不统一（有的先查 PATH，有的先查 bundled）
+- 没有环境变量覆盖机制
+- 新增工具需要重复写查找逻辑
+- 开发环境与生产环境切换不灵活
+
+### 4.2 统一方案：`python/tools/tool_resolver.py`
+
+新建统一的路径解析模块，所有工具查找走同一个入口：
+
+```python
+"""统一工具路径解析器。
+
+三级查找策略：
+1. 环境变量覆盖（开发/测试用）
+2. 安装包捆绑路径（生产环境）
+3. 系统 PATH 查找（兜底/开发环境）
+"""
+import os
+import sys
+import shutil
+from pathlib import Path
+
+# 工具注册表：工具名 → (环境变量名, 二进制文件名列表)
+_TOOL_REGISTRY = {
+    "uv":     ("INKCUBE_UV_PATH",     ["uv.exe", "uv"]),
+    "rg":     ("INKCUBE_RG_PATH",     ["rg.exe", "rg"]),
+    "ruff":   ("INKCUBE_RUFF_PATH",   ["ruff.exe", "ruff"]),
+    "pandoc": ("INKCUBE_PANDOC_PATH", ["pandoc.exe", "pandoc"]),
+}
+
+
+def _get_app_data_dir() -> Path:
+    """获取 %APPDATA%/InkCube/ 路径。"""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
+    return Path(base) / "InkCube"
+
+
+def _get_bundled_dir() -> Path:
+    """获取安装包捆绑工具目录。
+
+    生产环境：从 %APPDATA%/InkCube/tools/ 查找
+    开发环境：从项目 resources/tools/ 查找
+    """
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包后：exe 同级目录下的 resources/tools/
+        return Path(sys.executable).parent / "resources" / "tools"
+    # 开发环境：项目根目录/resources/tools/
+    project_root = Path(__file__).resolve().parent.parent.parent
+    return project_root / "resources" / "tools"
+
+
+def resolve_tool(name: str) -> str | None:
+    """解析工具路径，返回绝对路径或 None。
+
+    查找优先级：
+    1. 环境变量 INKCUBE_{NAME}_PATH（开发/测试覆盖）
+    2. 捆绑目录 %APPDATA%/InkCube/tools/{name}.exe
+    3. 开发环境 resources/tools/{name}.exe
+    4. 系统 PATH（shutil.which）
+    """
+    if name not in _TOOL_REGISTRY:
+        raise ValueError(f"未知工具: {name}")
+
+    env_var, bin_names = _TOOL_REGISTRY[name]
+
+    # 1. 环境变量覆盖
+    env_path = os.environ.get(env_var)
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    # 2 & 3. 捆绑路径（生产: %APPDATA%/InkCube/tools/，开发: resources/tools/）
+    bundled_dir = _get_bundled_dir()
+    for bin_name in bin_names:
+        candidate = bundled_dir / bin_name
+        if candidate.is_file():
+            return str(candidate)
+
+    # 生产环境额外检查 %APPDATA%/InkCube/tools/（与 exe 不在同级目录时）
+    if getattr(sys, "frozen", False):
+        app_data_tools = _get_app_data_dir() / "tools"
+        for bin_name in bin_names:
+            candidate = app_data_tools / bin_name
+            if candidate.is_file():
+                return str(candidate)
+
+    # 4. 系统 PATH
+    for bin_name in bin_names:
+        found = shutil.which(bin_name)
+        if found:
+            return found
+
+    return None
+
+
+def resolve_python() -> str | None:
+    """解析 python-build-standalone 的 Python 路径。
+
+    用于创建任务 venv 时作为 --python 参数。
+    注意：这不是后端运行时的 Python（后端用 PyInstaller 内嵌的 Python）。
+
+    查找优先级：
+    1. 环境变量 INKCUBE_PYTHON_PATH
+    2. %APPDATA%/InkCube/python/python.exe（生产环境解压后）
+    3. resources/tools/python-build-standalone/python.exe（开发环境）
+    4. sys.executable（兜底：使用当前 Python）
+    """
+    # 1. 环境变量
+    env_path = os.environ.get("INKCUBE_PYTHON_PATH")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    # 2. 生产环境
+    app_data_python = _get_app_data_dir() / "python"
+    exe_name = "python.exe" if sys.platform == "win32" else "python3"
+    candidate = app_data_python / exe_name
+    if candidate.is_file():
+        return str(candidate)
+
+    # 3. 开发环境
+    project_root = Path(__file__).resolve().parent.parent.parent
+    bundled = project_root / "resources" / "tools" / "python-build-standalone" / exe_name
+    if bundled.is_file():
+        return str(bundled)
+
+    # 4. 兜底
+    return sys.executable
+```
+
+### 4.3 各工具迁移
+
+迁移后，各文件的查找逻辑统一为一行调用：
+
+```python
+# venv_manager.py
+from tools.tool_resolver import resolve_tool, resolve_python
+
+def _find_uv() -> str | None:
+    return resolve_tool("uv")
+
+# create_venv 中使用 resolve_python() 代替 sys.executable
+subprocess.run([uv_path, "venv", venv_path, "--python", resolve_python()], ...)
+```
+
+```python
+# code_search.py
+from tools.tool_resolver import resolve_tool
+
+def _find_rg(self) -> str | None:
+    return resolve_tool("rg")
+```
+
+```python
+# code_lint.py / code_format.py
+from tools.tool_resolver import resolve_tool
+
+def _find_ruff(self) -> str | None:
+    return resolve_tool("ruff")
+```
+
+```python
+# package_manager.py
+from tools.tool_resolver import resolve_tool
+
+def _find_uv(self) -> str | None:
+    return resolve_tool("uv")
+```
+
+### 4.4 开发环境兼容
+
+开发阶段不需要下载捆绑工具，通过环境变量指向 conda 环境：
+
+```powershell
+# 开发时设置环境变量（可选，不设则走 PATH 查找）
+$env:INKCUBE_UV_PATH = "C:\Users\Kelvin\.conda\envs\inkcube\Scripts\uv.exe"
+$env:INKCUBE_RG_PATH = "C:\Users\Kelvin\.conda\envs\inkcube\Scripts\rg.exe"
+$env:INKCUBE_RUFF_PATH = "C:\Users\Kelvin\.conda\envs\inkcube\Scripts\ruff.exe"
+$env:INKCUBE_PYTHON_PATH = "C:\Users\Kelvin\.conda\envs\inkcube\python.exe"
+```
+
+不设环境变量时，走第 4 级 `shutil.which()` 从 PATH 查找，conda 环境激活后自动生效。
+
+---
+
+## 5. 首次启动初始化
+
+### 5.1 流程
+
+安装后首次启动，Electron 主进程在 `app.whenReady()` 中执行初始化：
+
+```
+app.whenReady()
+  → 检查 %APPDATA%/InkCube/tools/ 是否已存在且完整
+  → 若缺失或不完整：
+      从 process.resourcesPath/tools/ 复制到 %APPDATA%/InkCube/tools/
+      从 process.resourcesPath/tools/python-build-standalone/ 复制到 %APPDATA%/InkCube/python/
+      生成 tool-versions.json
+      通知前端显示进度（"正在初始化任务环境..."）
+  → 继续正常的 PythonManager.start() + createWindow()
+```
+
+### 5.2 完整性检查
+
+通过 `tool-versions.json` 判断是否需要重新解压：
+
+```json
+{
+  "python": "3.12.13+20250617",
+  "uv": "0.11.7",
+  "rg": "14.1.1",
+  "ruff": "0.12.0",
+  "pandoc": "3.6.4",
+  "prepared_at": "2026-09-22T00:00:00Z"
+}
+```
+
+当应用更新时，比较版本号，若有变化则重新解压。
+
+---
+
+## 6. pandoc 捆绑方案
+
+### 6.1 为什么捆绑
+
+- pandoc 只有 ~30MB，体积可接受
+- 用户不应为了生成 DOCX 文档还要自行安装工具
+- 当前已有外部依赖检测 UI，如果检测不到只提示安装，体验割裂
+
+### 6.2 捆绑方式
+
+| 平台 | 捆绑内容 | 说明 |
+|------|---------|------|
+| Windows | pandoc 安装包中的 `pandoc.exe` | 单文件，无外部依赖 |
+| macOS | `pandoc` 二进制 | 从 .pkg 中提取 |
+| Linux | `pandoc` 二进制 | 从 .deb/.tar.gz 中提取 |
+
+### 6.3 优先级
+
+运行时 pandoc 查找优先级：
+1. 环境变量 `INKCUBE_PANDOC_PATH`
+2. 捆绑路径 `%APPDATA%/InkCube/tools/pandoc.exe`
+3. 系统 PATH（用户自行安装的更新版本）
+
+如果用户系统已安装 pandoc，优先使用系统版本（可能更新）。但捆绑版本始终可用，保证功能不缺失。
+
+---
+
+## 7. LibreOffice 检测与引导安装
+
+### 7.1 不捆绑的理由
+
+- LibreOffice 约 800MB，放入安装包不可接受
+- 非所有用户都需要 DOCX → PDF 转换
+- 部分用户已有 MS Office
+
+### 7.2 检测逻辑
+
+复用已有的 `ModelManager.check_office_converter()` 和 `GET /system/deps/check` API。
+
+### 7.3 缺失时的用户引导
+
+```
+用户触发 DOCX → PDF 转换
+  → 检测 MS Office → 无
+  → 检测 LibreOffice → 无
+  → 返回错误 + 引导：
+      {
+        "error": "DOCX → PDF 转换需要 MS Office 或 LibreOffice",
+        "suggestion": "请安装以下任一工具：",
+        "options": [
+          {
+            "name": "LibreOffice",
+            "install_command": "winget install TheDocumentFoundation.LibreOffice",
+            "download_url": "https://www.libreoffice.org/download/"
+          },
+          {
+            "name": "MS Office",
+            "download_url": "https://www.microsoft.com/microsoft-365"
+          }
+        ]
+      }
+```
+
+### 7.4 前端 UI
+
+在设置页的"外部工具"面板（`ExternalDepsSettings.tsx`，已实现）中：
+- 显示 LibreOffice 安装状态
+- 缺失时提供"下载安装"按钮 → 打开浏览器跳转下载页
+- 安装完成后提供"重新检测"按钮
+
+---
+
+## 8. 构建脚本
+
+### 8.1 脚本清单
+
+```
+scripts/
+├── prepare-tools.ps1       # 下载工具链到 resources/tools/
+└── build-installer.ps1     # 一键构建安装包（含 PyInstaller 打包后端）
+```
+
+### 8.2 prepare-tools.ps1
+
+```powershell
+# 核心逻辑：
+# 1. 从 GitHub Releases 下载指定版本的工具二进制
+# 2. 解压到 resources/tools/
+# 3. 生成 tool-versions.json
+
+$tools = @{
+    "uv" = @{
+        version = "0.11.7"
+        url = "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip"
+        files = @("uv.exe")
+    }
+    "rg" = @{
+        version = "14.1.1"
+        url = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip"
+        files = @("rg.exe")
+    }
+    "ruff" = @{
+        version = "0.12.0"
+        url = "https://github.com/astral-sh/ruff/releases/download/0.12.0/ruff-x86_64-pc-windows-msvc.zip"
+        files = @("ruff.exe")
+    }
+    "pandoc" = @{
+        version = "3.6.4"
+        url = "https://github.com/jgm/pandoc/releases/download/3.6.4/pandoc-3.6.4-windows-x86_64.zip"
+        files = @("pandoc.exe")
+    }
+}
+# python-build-standalone 单独处理（tar.gz，目录结构不同）
+$pythonStandalone = @{
+    version = "3.12.13+20250617"
+    url = "https://github.com/indygreg/python-build-standalone/releases/download/20250617/cpython-3.12.13+20250617-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+    targetDir = "python-build-standalone"
+}
+```
+
+### 8.3 build-installer.ps1
+
+```powershell
+# 一键构建流程：
+# 1. 下载工具链
+.\scripts\prepare-tools.ps1
+
+# 2. 打包后端
+pip install pyinstaller
+pyinstaller inkcube-agent.spec
+
+# 3. 复制后端 exe 到 resources/python/
+Copy-Item dist\inkcube-agent.exe resources\python\
+
+# 4. 构建安装包
+npm run build
+npx electron-builder --win
+```
+
+### 8.4 electron-builder.yml 修改
+
+```yaml
+extraResources:
+  # 已有：PyInstaller 后端
+  - from: "resources/python/"
+    to: "python/"
+    filter: ["**/*"]
+  # 新增：工具链
+  - from: "resources/tools/"
+    to: "tools/"
+    filter: ["**/*"]
+```
+
+---
+
+## 9. 两个 Python 运行时的关系
+
+安装包内存在两份 Python，职责不同：
+
+| 角色 | 来源 | 用途 | 用户代码可影响？ |
+|------|------|------|----------------|
+| PyInstaller 内嵌 Python | `inkcube-agent.exe` 内部 | 运行 FastAPI 后端 | 否，完全隔离 |
+| python-build-standalone | `%APPDATA%/InkCube/python/` | 创建任务 venv 的"Python 发行版" | 否，venv 隔离 |
+
+注意事项：
+- 两者版本应保持一致（都用 3.12.x），避免行为差异
+- 两者完全独立，不共享 site-packages
+- python-build-standalone 保持只读，不被 `pip install` 污染
+- 任务代码在各自 venv 中执行，venv 基于 python-build-standalone 创建
+
+---
+
+## 10. 实施计划
+
+| 步骤 | 内容 | 预估工作量 | 状态 |
+|------|------|-----------|------|
+| 1 | 新建 `python/tools/tool_resolver.py`，实现统一路径解析 | 半天 | ✅ 已完成 |
+| 2 | 迁移各工具文件（venv_manager / code_search / code_lint / code_format / package_manager / lsp_client / doc_generator）使用 `resolve_tool()` | 半天 | ✅ 已完成 |
+| 3 | 编写 `scripts/prepare-tools.ps1`，自动下载工具链到 `resources/tools/` | 1 天 | ✅ 已完成 |
+| 4 | 修改 `electron-builder.yml`，增加 tools extraResources | 半天 | ✅ 已完成 |
+| 5 | Electron 主进程增加首次启动初始化工具链逻辑 | 1 天 | ✅ 已完成 |
+| 6 | 后端增加 `tool-versions.json` 读写 + 版本检查 API (`GET /system/tools/status`) | 半天 | ✅ 已完成 |
+| 7 | pandoc 捆绑 + 路径解析集成 | 半天 | ✅ 已完成（已迁移 doc_generator 使用 resolve_tool） |
+| 8 | LibreOffice 缺失时的引导安装 UI 完善 | 半天 | 待做 |
+| 9 | 编写 `scripts/build-installer.ps1` 一键构建脚本 | 半天 | ✅ 已完成 |
+| 10 | 完整安装包构建 + 安装/卸载/首次启动/任务执行全流程测试 | 1 天 | 待做 |
+| | **合计** | **~6 天** | **8/10 完成** |
+
+### 已实施文件清单
+
+| 文件 | 说明 |
+|------|------|
+| `python/tools/tool_resolver.py` | 统一工具路径解析器（新建） |
+| `python/tools/venv_manager.py` | 迁移使用 resolve_tool / resolve_python |
+| `python/tools/code_search.py` | 迁移使用 resolve_tool("rg")，移除 shutil_which |
+| `python/tools/code_lint.py` | 迁移使用 resolve_tool("ruff") |
+| `python/tools/code_format.py` | 迁移使用 resolve_tool("ruff") |
+| `python/tools/package_manager.py` | 迁移使用 resolve_tool("uv") |
+| `python/tools/lsp_client.py` | 迁移 _find_tool 使用 resolve_tool |
+| `python/tools/doc_generator.py` | 迁移 pandoc 查找使用 resolve_tool("pandoc") |
+| `python/routers/system.py` | 新增 GET /system/tools/status API |
+| `electron/tool-initializer.js` | 首次启动工具链初始化（新建） |
+| `electron/main.js` | 集成 ensureToolsInitialized 调用 |
+| `electron-builder.yml` | 增加 tools extraResources 配置 |
+| `scripts/prepare-tools.ps1` | 工具链下载脚本（新建） |
+| `scripts/build-installer.ps1` | 一键构建安装包脚本（新建） |
+
+---
+
+## 11. 关键决策记录
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 分发策略 | 全部捆绑（LibreOffice 除外） | 用户零配置，体验一致 |
+| pandoc | 捆绑 | ~30MB 可接受，避免用户自行安装 |
+| LibreOffice | 不捆绑，引导安装 | ~800MB 太大，非所有用户需要 |
+| 平台优先级 | Windows 先行 | 用户群最大，开发环境现成 |
+| 路径解析 | 统一 tool_resolver 模块 | 当前各工具各自查找，逻辑不一致 |
+| 首次初始化 | Electron 主进程解压到 %APPDATA% | 避免写入 Program Files（需管理员权限） |
+| Python 版本 | 两份独立 Python | 后端稳定性 vs 任务隔离性，各取所需 |

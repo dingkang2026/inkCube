@@ -1,0 +1,1394 @@
+# 通用智能体（任务）统一设计文档
+
+> 版本: 1.3.0 | 日期: 2026-09-23 | 状态: Phase 18 实施完成（inline diff + 结构化计划 + DiffCard/PlanCard 前端组件）
+>
+> 本文档整合了 V1（task-agent-design.md）、V2（task-agent-v2-design.md）、V3（task-agent-v3-design.md）、V4（task-agent-v4-design.md）四份设计文档的全部内容，信息无丢失。
+
+---
+
+## 1. 概述
+
+### 1.1 核心定位
+
+在墨方左侧栏新增"任务"菜单项，提供通用编程智能体能力。与现有的产业洞察（chat）、知识库、产业报告并列，是独立功能模块，不干涉已有功能。
+
+- **通用编程智能体**：能写代码、跑代码、迭代调试，面向开发任务
+- **独立模块**：新增菜单入口，不影响现有功能
+- **可扩展**：支持第三方 skill 安装（Agent Skills 行业标准，兼容 60,000+ Skill）
+- **跨平台**：Windows / macOS / Linux 一致体验
+
+### 1.2 技术选型
+
+| 组件 | 选型 | 说明 |
+|------|------|------|
+| Python 运行时 | python-build-standalone | 预装独立 Python，跨平台，随安装包分发 |
+| 依赖管理 | uv | Rust 编写，跨平台，~20MB，随安装包分发 |
+| 代码搜索 | ripgrep (rg) | Rust 编写，~5MB，跨平台预编译二进制 |
+| 代码检查/格式化 | ruff | Rust 编写，~15MB，跨平台预编译二进制 |
+| 后端集成 | 扩展现有 FastAPI | 统一端口 8765，前端无感 |
+| 执行隔离 | 每任务独立 venv | uv 基于预装 Python 创建，依赖隔离 |
+| 记忆 | 会话级 + 自动压缩 | P0 不做跨会话长期记忆 |
+
+### 1.3 演进历程
+
+| 版本 | 综合评分 | 核心里程碑 |
+|------|---------|-----------|
+| **V1** | ~55 分 | 基础架构 + P0/P1 Skill + 前端 UI + 安全机制 + 开源调研 |
+| **V2** | ~76 分 | 统一 Skill 框架 + Function Calling + Token-aware 上下文 + Git 集成 + 流式输出 |
+| **V3** | ~67 分* | apply_diff 编辑 + 日志体系 + LSP 集成 + 批量编辑 + Agent Skills 行业标准 |
+| **V4** | ~80.5 分 | Bug 修复 + 编辑验证循环 + 5 种压缩策略 + 预装包 + 渐进式披露 + 工程优化 |
+
+> *V3 评分下降原因：V4 审计时对 V2/V3 代码做了更严格的逐项核实，发现部分 V2 设计在 V3 中未完全落地。
+
+---
+
+## 2. 系统架构
+
+### 2.1 整体架构
+
+```
+安装包内容（跨平台一致）：
+├── inkcube-agent.exe / .app / AppImage   # PyInstaller 后端（已有）
+├── python-build-standalone/              # 预装 Python（只读，不直接执行用户代码）
+├── uv                                    # 依赖管理
+├── rg                                    # ripgrep 代码搜索
+└── ruff                                  # 代码检查/格式化
+```
+
+```
+运行时架构：
+
+React 前端
+  │  所有请求走同一个端口（8765）
+  ▼
+FastAPI 后端（PyInstaller exe）
+  ├── 已有路由：chat / knowledge / settings / models ...
+  ├── 新增路由：tasks / skills / agent-memory
+  │
+  │  代码执行和 skill 运行时：
+  │  subprocess 调用任务 venv 的 Python
+  ▼
+%APPDATA%/InkCube/（跨平台对应目录）
+├── python/                     ← 预装 python-build-standalone（只读）
+├── tasks/
+│   ├── task-abc123/
+│   │   ├── .venv/              ← uv 基于预装 Python 创建
+│   │   ├── workspace/          ← 任务工作目录
+│   │   └── metadata.json       ← 任务状态
+│   └── task-def456/
+├── skills/                     ← 第三方 Skill（Agent Skills 标准格式）
+│   ├── hello-world/
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   └── pdf-converter/
+├── models/                     ← AI 模型（已有）
+├── files/                      ← 知识库文件（已有）
+└── data.db                     ← 数据库（已有）
+```
+
+### 2.2 执行流程
+
+```
+用户输入任务描述
+  → Agent 规划执行步骤
+  → 调用 skill（code-executor / shell / file-ops / ...）
+  → 后端 subprocess 调用任务 venv 的 Python
+  → 捕获 stdout/stderr/返回值
+  → Agent 分析结果，迭代
+  → 输出最终结果
+```
+
+### 2.3 预装 Python 的角色
+
+预装 Python（python-build-standalone）**只作为 Python 发行版**，不直接用来执行用户代码。所有执行都在任务 venv 里：
+
+```
+创建任务时：uv venv tasks/task-abc123/.venv --python <预装python路径>
+执行代码时：tasks/task-abc123/.venv/Scripts/python.exe -c "用户代码"
+```
+
+好处：预装 Python 保持干净，不被任何 `pip install` 污染；任务间依赖完全隔离。
+
+### 2.4 记忆系统
+
+- **工作记忆**：当前任务的上下文、中间结果，存在内存中
+- **会话记忆**：跨轮对话的上下文，存在 SQLite 中
+- **自动压缩**：长对话达到阈值时自动摘要（见 §5），避免 context overflow
+- P0 不做跨会话长期记忆，不做隐式记忆提取
+
+---
+
+## 3. Skill 框架与工具系统
+
+### 3.1 Skill vs Tool 概念区分
+
+Skill 是工作流驱动的复合能力（编排 + 领域知识 + 脚本），Tool 是原子函数调用。内置 skill 大部分封装现成工具，提供薄包装让 agent 能调用。
+
+### 3.2 两模式并存架构（最终设计）
+
+```
+┌────────────────────────────────────────────────────────┐
+│                    Skill Registry                       │
+│                                                        │
+│  ┌── 内置 Tool（python/tools/）──┐  ┌── Agent Skills ─┐ │
+│  │ BaseTool 子类，in-process     │  │ SKILL.md +      │ │
+│  │ 通过 BuiltinToolAdapter 注册  │  │ scripts/，       │ │
+│  │                              │  │ 任务 venv 运行   │ │
+│  │ code_executor, shell,        │  │ 行业标准格式     │ │
+│  │ file_ops, code_search, ...   │  │ （60,000+ 可用） │ │
+│  └──────────────────────────────┘  └────────────────┘ │
+│                                                        │
+│  统一：                                                  │
+│  • SkillRegistry 是唯一入口，agent 只跟它打交道          │
+│  • 自动生成 function calling tools 列表                  │
+│  • 统一执行协议（pre_execute → execute → post_execute）  │
+│                                                        │
+│  区别（有意保留）：                                       │
+│  • 内置 Tool：留在 python/tools/，继承 BaseTool         │
+│  • Agent Skills：SKILL.md + scripts/，任务 venv 运行    │
+│  • Adapter 不是过渡方案，是最终设计                      │
+└────────────────────────────────────────────────────────┘
+```
+
+### 3.3 内置 Skill 清单
+
+#### P0 — 必须有
+
+| Skill | 能力 | 底层实现 | 需捆绑 |
+|-------|------|---------|--------|
+| **code_executor** | 执行 Python 代码，捕获 stdout/stderr/返回值/耗时 | `subprocess.run([venv_python, ...])` | 否 |
+| **shell** | 在 workspace 执行 shell 命令 | `subprocess.run(cmd)` | 否 |
+| **file_ops** | 文件读写/创建/删除/移动/search_replace/apply_diff | Python 标准库 `pathlib` / `shutil` | 否 |
+| **code_search** | 在代码库中搜索（grep/正则/符号查找） | ripgrep (rg) | 是，~5MB |
+| **web_search** | 网络搜索 | Tavily API（已有） | 否 |
+| **web_fetch** | 抓取网页内容，HTML→Markdown | httpx + html2text | 否 |
+
+#### P1 — 补上
+
+| Skill | 能力 | 底层实现 | 需捆绑 |
+|-------|------|---------|--------|
+| **code_lint** | 静态分析（ruff check / mypy / pyright） | ruff | 是，~15MB |
+| **code_format** | 代码格式化（ruff format） | ruff（同上） | 同上 |
+| **package_manager** | 依赖管理（uv pip install / requirements.txt 生成） | uv（已捆绑） | 否 |
+| **project_scaffold** | 项目脚手架（创建项目结构、配置文件） | 模板 + 文件生成 | 否 |
+
+#### P2 — 按需
+
+| Skill | 能力 | 底层实现 | 需捆绑 |
+|-------|------|---------|--------|
+| **doc_generator** | 生成文档（MD / DOCX / PDF） | weasyprint + pandoc + MS Office/LibreOffice | 否，pandoc 需系统安装 |
+| **knowledge_search** | 搜索知识库文档 | 现有知识库检索 API | 否 |
+| **repo_map** | 代码库结构感知（tree-sitter AST + PageRank） | tree-sitter | 否 |
+| **skill_runner** | Agent Skill 执行器 | subprocess 调用任务 venv | 否 |
+| **git_ops** | Git 版本控制操作 | subprocess 调用 git | 否 |
+| **lsp_client** | LSP 集成（pyright/tsc + ripgrep fallback） | subprocess + regex | 否 |
+
+### 3.4 捆绑工具汇总
+
+| 工具 | 大小 | 来源 | 跨平台 |
+|------|------|------|--------|
+| uv | ~20MB | astral-sh/uv releases | Windows/macOS/Linux |
+| ripgrep (rg) | ~5MB | BurntSushi/ripgrep releases | Windows/macOS/Linux |
+| ruff | ~15MB | astral-sh/ruff releases | Windows/macOS/Linux |
+| python-build-standalone | ~50MB | indygreg/python-build-standalone | Windows/macOS/Linux |
+
+总计额外捆绑约 ~90MB。
+
+### 3.5 统一 Skill 协议
+
+```python
+# python/skills/protocol.py
+
+@dataclass
+class SkillContext:
+    """Skill 执行时的运行时上下文"""
+    workspace_path: str           # 任务工作目录
+    venv_python: str = ""         # 任务 venv 的 python 路径
+    task_id: str = ""
+    settings: dict = field(default_factory=dict)
+    cancel_event: Any = None      # asyncio.Event，用于取消
+
+
+class BaseSkill:
+    """所有 Skill 的基类（内置和外部统一）"""
+    name: str = ""
+    description: str = ""
+    input_schema: dict = {}
+    permissions: list[str] = []
+
+    async def execute(self, params: dict, context: SkillContext) -> str: ...
+    async def pre_execute(self, params: dict, context: SkillContext) -> dict | None: ...
+    async def post_execute(self, result: str, params: dict, context: SkillContext) -> str: ...
+    def to_function_definition(self) -> dict: ...
+```
+
+### 3.6 Skill Registry
+
+```python
+class SkillRegistry:
+    """所有 Skill 的统一注册表"""
+    def register(self, skill: BaseSkill, manifest: dict): ...
+    def register_builtin_tools(self, tools: dict[str, BaseTool]): ...  # BuiltinToolAdapter 包装
+    def discover_external(self, skills_dir: str, db=None): ...
+    def get(self, name: str) -> BaseSkill | None: ...
+    def to_function_definitions(self) -> list[dict]: ...  # 生成 FC tools 列表
+    async def execute(self, name: str, params: dict, context: SkillContext) -> str: ...
+```
+
+### 3.7 BuiltinToolAdapter（永久桥接）
+
+```python
+class BuiltinToolAdapter(BaseSkill):
+    """将 BaseTool 子类适配为 BaseSkill 接口（永久设计，非过渡方案）"""
+    def __init__(self, tool: BaseTool):
+        self._tool = tool
+        self.name = tool.name
+        self.description = tool.description
+        self.input_schema = tool.parameters
+
+    async def execute(self, params: dict, context: SkillContext) -> str:
+        return await self._tool.execute(**params)
+```
+
+### 3.8 Agent Skills 行业标准格式
+
+```
+my-skill/
+├── SKILL.md            # 必须：元数据 + 指令
+├── scripts/            # 可选：可执行脚本
+│   └── main.py
+├── references/         # 可选：参考文档
+└── assets/             # 可选：模板、资源
+```
+
+**SKILL.md 格式**：
+
+```yaml
+---
+name: pdf-converter                    # 必需：小写+连字符，最长 64 字符
+description: |                         # 必需：最长 1024 字符
+  将文档转换为 PDF。当用户要求转换 HTML/Markdown 为 PDF 时使用。
+compatibility: "Requires Python 3.8+ with weasyprint"  # 可选：环境依赖声明
+---
+
+# PDF Converter
+
+## 何时使用
+当用户要求将文档转换为 PDF 时触发。
+
+## 执行步骤
+1. 读取源文件
+2. 运行转换脚本：`scripts/convert.py input.html output.pdf`
+3. 返回生成的 PDF 路径
+```
+
+### 3.9 渐进式披露（3 级加载）
+
+```
+Level 1: 元数据发现（始终在上下文）
+  └─ 只加载 name + description（~50 tokens/skill）
+
+Level 2: 指令激活（Agent 选择调用时）
+  └─ 读取完整 SKILL.md body 注入到 tool result
+
+Level 3: 资源执行（按需）
+  └─ 读取 references/、运行 scripts/
+```
+
+### 3.10 预装常用包
+
+创建任务 venv 后，预装常用包（仅新建 venv 时触发）：
+
+```python
+PREINSTALLED_PACKAGES = [
+    "requests", "httpx",       # HTTP
+    "pyyaml",                  # YAML 解析
+    "beautifulsoup4",          # HTML 解析
+    "openpyxl",                # Excel 处理
+    "pillow",                  # 图片处理
+]
+```
+
+uv 自带全局内容寻址缓存（Windows: `%LOCALAPPDATA%\uv\cache`），跨任务复用是秒级安装，无需额外代码。
+
+### 3.11 目录结构
+
+```
+python/tools/                           ← 内置 Tool
+├── base.py                             ← BaseTool 基类
+├── code_executor.py / shell_tool.py / file_ops.py
+├── code_search.py / web_fetch.py / tavily_search.py
+├── code_lint.py / code_format.py / package_manager.py
+├── project_scaffold.py / doc_generator.py
+├── task_knowledge_search.py / repo_map.py
+├── skill_runner.py / git_ops.py / lsp_client.py
+└── venv_manager.py
+
+python/skills/                          ← Skill 框架层
+├── protocol.py                         ← BaseSkill + SkillContext
+├── registry.py                         ← SkillRegistry
+├── loader.py                           ← BuiltinToolAdapter + AgentSkillAdapter
+├── parser.py                           ← SKILL.md 解析器
+└── context.py                          ← SkillContext 数据类
+
+%APPDATA%/InkCube/skills/               ← Agent Skill 安装目录
+├── hello-world/
+│   ├── SKILL.md
+│   └── scripts/
+└── pdf-converter/
+```
+
+### 3.12 Skill 执行路径
+
+| 路径 | 触发方 | 场景 |
+|------|--------|------|
+| SkillRegistry.execute() | LLM 直接调用 skill 函数 | Skill 作为独立 FC tool 注册 |
+| SkillRunnerTool.execute() | LLM 调用 `skill_runner(skill="xx")` | 通用 runner 入口 |
+| _execute_slash_command() | 用户输入 `/skill-name` | 用户直接调用，绕过 LLM |
+
+三条路径服务不同调用方，不冲突。
+
+### 3.13 Git 工具支持的操作
+
+| action | 说明 | 用途 |
+|--------|------|------|
+| `status` | `git status --short` | 查看工作区状态 |
+| `diff` | `git diff [args]` | 查看未提交变更 |
+| `diff_staged` | `git diff --cached` | 查看已暂存变更 |
+| `log` | `git log --oneline -20` | 查看提交历史 |
+| `show` | `git show <commit>` | 查看某次提交详情 |
+| `blame` | `git blame <file>` | 查看文件逐行归属 |
+| `commit` | `git commit -m "msg"` | 提交变更（需确认） |
+
+---
+
+## 4. Agent 循环与 Function Calling
+
+### 4.1 Function Calling 设计
+
+```
+V1（文本解析）：
+  LLM 输出纯文本 → 正则匹配 "Action: xxx" → 解析 JSON → 执行
+  问题：格式不可靠、JSON 易出错、无法多工具并行
+
+V2+（Function Calling）：
+  声明 tools 参数 → LLM 返回结构化 tool_calls → 直接读 JSON → 执行
+  优势：100% 可靠、schema 约束、支持并行调用
+```
+
+### 4.2 Agent Loop 核心循环
+
+```python
+async def _run_inner(self, task_id, user_message):
+    tool_defs = self.skill_registry.to_function_definitions()
+
+    for iteration in range(self.max_iterations):
+        result = await task_llm.chat(messages, settings, tools=tool_defs)
+
+        # 情况 1：LLM 返回文本（Final Answer）
+        if result["content"] and not result["tool_calls"]:
+            final = self._extract_final_answer(result["content"])
+            if final:
+                yield answer...
+                return
+
+        # 情况 2：LLM 返回 tool_calls
+        if result["tool_calls"]:
+            messages.append(assistant_msg with tool_calls)
+            for tc in tool_calls:
+                tool_result = await self._execute_with_confirm(...)
+                messages.append(tool_msg)
+                yield observation
+```
+
+### 4.3 兼容性回退
+
+对于不支持 function calling 的模型，保留文本解析作为 fallback：
+
+```python
+SUPPORTS_FUNCTION_CALLING = {
+    "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4",
+    "claude-3-5-sonnet", "claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
+    "deepseek-chat", "deepseek-coder", ...
+}
+```
+
+### 4.4 Stuck Detection（V4 修复）
+
+将 stuck detection 移到 `for tc in tool_calls` 循环**之后**，确保所有 tool_call 的 tool 消息都已追加，不破坏 OpenAI API 的消息配对关系。
+
+```python
+# 循环内部：只收集错误信号
+for tc in tool_calls:
+    is_error = ...
+    if is_error:
+        recent_errors.append(err_sig)
+    else:
+        recent_errors.clear()
+
+# 循环结束后：安全注入 stuck hint
+if len(recent_errors) >= stuck_threshold and len(set(recent_errors)) == 1:
+    messages.append({"role": "user", "content": "⚠️ 你已经连续 N 次遇到相同错误..."})
+```
+
+### 4.5 编辑验证循环（V4 实现）
+
+```
+file_ops (write/search_replace/apply_diff) 成功
+  → post_execute 检测到 lint_warning
+  → 自动读取当前文件内容
+  → 构建修复 prompt（包含错误信息 + 当前内容）
+  → 调用 LLM 生成修复
+  → 自动应用修复 → 再次验证
+  → 最多 3 轮
+```
+
+### 4.6 Self-Reflection / 自我审查
+
+**双重机制**（Phase 17 增强）：
+
+**1. System Prompt 引导式**（始终生效）：
+自我审查原则嵌入在 system prompt 的 `_PROMPT_SELF_REVIEW` 模块中（coding 模式下注入），引导 Agent 自行检查。
+
+**2. 独立注入式**（Phase 17 新增）：
+当 Agent 在一轮迭代中进行了文件编辑（write/search_replace/apply_diff/batch_edit）后，自动注入审查提示：
+
+```python
+# 在 _handle_fc_iteration 中，工具执行循环结束后
+if _edits_made:
+    messages.append({
+        "role": "user",
+        "content": (
+            "🔍 自我审查: 你刚刚进行了文件编辑。"
+            "在给出最终回答前，请确认："
+            "1) 所有修改的文件语法正确（用 code_executor 或 code_lint 验证）"
+            "2) 没有遗漏的需求点"
+            "3) 如果一切就绪，输出 Final Answer"
+        ),
+    })
+```
+
+这确保 Agent 在编辑代码后不会直接跳到 Final Answer，而是先验证修改。
+
+---
+
+## 5. 上下文管理
+
+### 5.1 Token 感知
+
+```python
+class ContextManager:
+    def __init__(self, max_tokens=128000, reserve_for_response=4096, reserve_for_system=2000):
+        ...
+
+    @property
+    def available_tokens(self) -> int:
+        return self.max_tokens - self.reserve_for_response - self.reserve_for_system
+```
+
+### 5.2 Token 计数（CJK 感知）
+
+```python
+@staticmethod
+def count_tokens(text: str) -> int:
+    if _tiktoken_encoder is not None:
+        return len(_tiktoken_encoder.encode(text))
+    # Heuristic: CJK ~1.5 chars/token, Latin ~3 chars/token
+    cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    if cjk_count > len(text) * 0.3:
+        return max(1, int(len(text) * 2 / 3))  # CJK
+    else:
+        return max(1, len(text) // 3)  # Latin
+```
+
+### 5.3 五种压缩策略（对标 Claude Code）
+
+| 策略 | 触发条件 | 做法 |
+|------|---------|------|
+| **Disk Dump** | 单个 tool 输出 > 8000 字符 | 保存到 `.inkcube/dumps/`，上下文保留文件路径 + 前 1000 字符 |
+| **Snip** | 单个 tool 结果超过阈值 | 截断输出，保留头部 + 尾部 |
+| **Micro Compact** | 上下文达到 70% | 压缩早期 tool 结果为单行摘要 |
+| **Context Collapse** | 上下文达到 85% | 将早期对话压缩为 LLM 摘要 |
+| **Full Compact** | 上下文达到 95% | 用 LLM 对整个历史生成摘要，只保留最近 3 条 |
+
+### 5.4 渐进式压缩调度
+
+```python
+async def compress(self, messages, llm, settings):
+    total = self.total_tokens(messages)
+    # Level 1: Micro Compact (70%)
+    if total > self.available_tokens * 0.70:
+        messages = self.micro_compact(messages)
+        total = self.total_tokens(messages)
+    # Level 2: Context Collapse (85%)
+    if total > self.available_tokens * 0.85:
+        messages = await self._context_collapse(messages, llm, settings)
+        total = self.total_tokens(messages)
+    # Level 3: Full Compact (95%)
+    if total > self.available_tokens * 0.95:
+        messages = await self.full_compact(messages, llm, settings)
+    return messages
+```
+
+### 5.5 tool_call/tool 配对保护
+
+压缩后通过 `_fix_tool_pairing()` 确保 `assistant(tool_calls) → tool` 消息配对正确，移除孤儿 tool 消息。
+
+### 5.6 Git 上下文注入
+
+```python
+def build_git_context(workspace_path: str) -> str:
+    # 当前分支 + 最近 5 次 commit + 未提交变更摘要
+    # 注入到 system prompt
+```
+
+### 5.7 项目上下文自动检测
+
+支持 20+ 框架检测（React/Vue/Angular/Django/Flask/FastAPI/Vite/Next.js 等），自动注入框架特定编码指导。
+
+---
+
+## 6. 代码编辑能力
+
+### 6.1 编辑格式
+
+支持三种编辑格式：
+- **search_replace**：文本匹配替换（5 级模糊匹配容错）
+- **apply_diff**：Aider 风格 SEARCH/REPLACE 块
+- **write/create**：整文件创建/重写
+
+### 6.2 5 级模糊匹配（search_replace）
+
+| 级别 | 策略 | 说明 |
+|------|------|------|
+| 1 | 精确匹配 | old_content 与文件内容完全一致 |
+| 2 | 去除空行后匹配 | 忽略空行差异 |
+| 3 | 去除缩进后匹配 | 忽略缩进差异 |
+| 4 | 模糊匹配（difflib ≥ 90%） | 允许 ≤10% 字符差异 |
+| 5 | 模糊匹配（difflib ≥ 80%） | 允许 ≤20% 字符差异 |
+
+### 6.3 编辑后自动验证
+
+`post_execute` 钩子自动检查：
+- `.py` 文件：`py_compile` 语法检查
+- `.js/.mjs/.cjs` 文件：`node --check` 语法检查
+- 编辑失败自动回滚（`.bak` 备份）
+
+### 6.4 编辑-验证-修复循环（V4 真自动修复）
+
+```python
+async def _edit_verify_loop(self, tool, tool_params, result_str, task_llm, settings, messages, max_retries=3):
+    for attempt in range(max_retries):
+        if not result_obj.get("lint_warning"):
+            break  # No error, done
+        # Read current file → Ask LLM to fix → Apply fix → Re-validate
+    return result_str
+```
+
+### 6.5 批量编辑（batch_edit）
+
+一次操作修改多个相关文件，原子性执行（全部成功或全部回滚）。
+
+---
+
+## 7. 项目理解
+
+### 7.1 跨文件引用追踪
+
+通过 `lsp_client.py`（ripgrep + regex fallback）实现引用查找和跳转定义：
+- `find_references(symbol)` — 查找函数/类的所有调用者
+- `go_to_definition(symbol)` — 跳转到定义位置
+- 编辑函数时，自动列出调用者，让 LLM 理解代码影响范围
+
+### 7.2 代码库结构感知（repo_map）
+
+使用 tree-sitter（可选）+ regex fallback 提取项目结构（函数签名、类定义、方法、装饰器），支持 Python/JS/TS/Go/Java/Rust 等语言。
+
+**已实现功能**：
+- ✅ tree-sitter AST 提取（当 tree_sitter 包可用时）+ regex fallback
+- ✅ **PageRank 算法排序** — 构建 import 依赖图，计算 PageRank 分数，被引用多的文件排在前面（Phase 17）
+- ✅ **可配置 token 预算** — `token_budget` 参数（默认 0=不限制），超预算时按 PageRank 优先级截断低重要性符号（Phase 17）
+- ✅ **自动注入 system prompt** — 每次 LLM 调用前自动调用 `generate_summary_for_prompt()`（512 token 预算），注入到 system prompt 的可选部分（Phase 17）
+- 输出上限 15000 字符（手动调用时）
+- 支持 brief（目录树+统计）和 full（含签名）两种详细程度
+- Agent 也可通过调用 `repo_map` 工具主动获取完整视图
+
+### 7.3 项目类型自动检测
+
+扫描 `package.json` / `requirements.txt` / `pyproject.toml` / `Cargo.toml` / `go.mod` 等标记文件，匹配已知框架特征（20+ 框架），注入框架特定 prompt 指导。
+
+### 7.4 项目级配置（inkcube.md）
+
+支持多种配置文件名（兼容行业标准）：
+- `inkcube.md` / `INKCUBE.md`（原生）
+- `.cursorrules`（Cursor 兼容）
+- `AGENTS.md`（Aider / Codex 兼容）
+
+Agent 启动时自动读取注入 system prompt，限制 4000 字符。
+
+---
+
+## 8. Prompt 工程
+
+### 8.1 System Prompt 模块化结构
+
+```python
+def _build_system_prompt(self, workspace_path, mode="coding"):
+    parts = [
+        _PROMPT_IDENTITY,          # 1. 身份定义
+        date_time_line,             # 2. 当前时间（动态）
+        "可用工具:",                # 3. 工具列表（从 SkillRegistry 生成）
+        f"工作目录: {workspace_path}",
+        _PROMPT_EFFICIENCY,         # 4. 效率原则
+        _PROMPT_VERIFICATION,       # 5. 验证原则（coding mode）
+        _PROMPT_EDIT_FORMAT,        # 6. 编辑格式指导
+        _PROMPT_SELF_REVIEW,        # 7. 自我审查原则
+        _PROMPT_RICH_TEXT,          # 8. 富文本支持
+        # ── 可选部分（超预算时按优先级丢弃）──
+        build_git_context(),        # 9. Git 上下文
+        detect_project_context(),   # 10. 项目检测
+        _load_project_config(),     # 11. 项目配置
+    ]
+```
+
+### 8.2 Token 预算控制（V4）
+
+设置 4000 token 预算，超限时按优先级丢弃可选部分：
+- 先丢 project_config
+- 再丢 project_ctx
+- 最后丢 git_ctx
+
+实测 system prompt 基础部分 ~2568 tokens（工具描述 ~2169 + 静态 prompt ~331 + 开销 ~100），预算充裕。
+
+### 8.3 关键设计原则
+
+- **条件组装**：不是所有部分都注入，根据上下文条件选择
+- **缓存友好**：稳定部分放前面（可利用 prompt cache），动态部分放后面
+- **工具描述详细**：每个工具都有完整使用说明、参数说明、示例、错误情况
+- **验证引导**：system prompt 强调"编辑后必须验证"
+
+### 8.4 任务双模式
+
+| | 编程模式（coding） | 通用模式（general） |
+|---|---|---|
+| **定位** | 写代码、操作文件、调试 | 写报告、分析、翻译、总结 |
+| **工具集** | 全部工具 | 精简：file_ops、shell、web_fetch、web_search、knowledge_search、doc_generator、repo_map、skill_runner、git_ops、lsp_client |
+| **System Prompt** | 编程提示（含验证/编辑/审查原则） | 侧重结构化写作、分析框架 |
+
+新建时选择 + 任务中可切换，切换不影响已有对话历史。
+
+### 8.5 Planner/Editor 双模型架构（可选）
+
+当用户配置了 `task_planner_model`（Planner 模型）时，启用双模型架构：
+
+```
+Phase 1: Planner（架构师）
+  → 分析需求，制定执行计划（步骤 + 涉及文件）
+  → 不执行任何工具
+  → 输出 Plan + Strategy
+
+Phase 2: Editor（执行者）
+  → 接收 Planner 的执行计划
+  → 按计划使用工具执行代码修改
+  → 验证结果
+```
+
+- Planner 使用独立的 `_PLANNER_PROMPT`，Editor 使用 `_EDITOR_PROMPT`
+- Planner 模型可与 Editor 模型不同（如 Planner 用强模型，Editor 用快模型）
+- 若未配置 Planner 模型，则使用单模型模式（直接执行）
+- Planner 阶段结果注入到 Editor 的对话上下文中
+
+---
+
+## 9. 安全机制
+
+### 9.1 安全分级
+
+| 操作类型 | 风险等级 | 处理方式 |
+|---------|---------|----------|
+| 只读操作 | 低 | 自动执行 |
+| 工作区内写操作 | 中 | 自动执行，UI 显示操作日志 |
+| 代码执行 | 中 | 自动执行（在 venv 中） |
+| Shell 命令 | 高 | 三模式确认：strict（全部确认）/ smart（智能判断）/ auto（全部自动） |
+| 危险命令 | 极高 | 黑名单硬编码阻止 |
+| 第三方 skill | 高 | 安装确认 + 运行时强制拦截 + 权限展示 |
+
+### 9.2 已实现的安全措施
+
+- ✅ 路径穿越防护：所有工具 resolve() + startswith() 校验
+- ✅ 资源限制：代码执行超时 30s、输出截断、并发任务数限制（3 个）
+- ✅ 危险命令黑名单：`rm -rf /`、`DROP TABLE`、`format` 等
+- ✅ Shell 命令三模式确认：strict（全部确认）/ smart（智能判断）/ auto（全部自动）
+- ✅ Shell 命令域名白名单：智能模式自动放行匹配命令
+- ✅ Shell 会话级自动允许：用户点击“本次会话全部允许”后，后续命令不再确认
+- ✅ git commit 操作单独确认：git_ops commit 动作需用户确认
+- ✅ 第三方 skill 运行时强制确认（confirm_skill SSE + 前端确认卡片 + 60s 超时）
+- ✅ Skill 安装确认对话框 + 权限展示（permissions badges）
+- ✅ 外部依赖检测 UI（pandoc/libreoffice/git/ffmpeg）
+
+### 9.3 危险命令黑名单
+
+```python
+DANGEROUS_PATTERNS = [
+    r"rm\s+-rf\s+/",           # 删除根目录
+    r"format\s+[A-Z]:",        # 格式化磁盘
+    r"DROP\s+TABLE",           # 删除数据库表
+    r"DROP\s+DATABASE",        # 删除数据库
+    r":\(\)\s*\{.*\}\s*;",    # Shellshock 攻击
+    r"mkfs\.",                 # 格式化文件系统
+    r"dd\s+if=.*of=/dev/",    # 覆盖设备文件
+]
+```
+
+---
+
+## 10. 前端 UI
+
+### 10.1 整体布局
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ 任务列表（左）  │  对话 + 执行过程（中）    │ 文件树（右）  │
+│                │                          │              │
+│ ▶ Task 1       │  [对话消息流]             │ 📁 workspace │
+│   Task 2       │  ┌─ 代码执行 ──────────┐  │  ├─ main.py  │
+│   Task 3       │  │ def hello():        │  │  ├─ data.csv │
+│                │  │     print("hi")     │  │  └─ output/  │
+│                │  │ stdout: hi          │  │              │
+│                │  │ exit code: 0        │  │              │
+│ [+ 新任务]     │  └─────────────────────┘  │              │
+│                │                          │              │
+│                │  [输入框]                 │              │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 10.2 UI 组件
+
+| 区域 | 组件 | 说明 |
+|------|------|------|
+| 左侧 | TaskList | 任务列表，创建/切换/删除任务 |
+| 中间 | MessageFlow | 对话消息流，嵌入可折叠的代码执行结果 |
+| 中间 | CodeBlock | 代码 view，语法高亮 |
+| 中间 | ExecutionPanel | Agent 思考/行动步骤可视化（Thought → Action → Observation） |
+| 中间 | MessageInput | 输入框，支持发送/取消 |
+| 右侧 | FileTree + FilePreview | 浏览任务 workspace 文件结构 + 文件只读预览 |
+
+### 10.3 文件只读预览
+
+文件面板内左右两个子面板（目录树 + 预览），支持：
+- 文本/代码文件：react-syntax-highlighter 语法高亮 + 行号
+- Markdown 文件：渲染预览 ↔ 源码高亮切换
+- 图片文件：base64 内嵌显示
+- 二进制文件：显示信息 + "打开所在目录"按钮
+
+### 10.4 斜杠命令机制
+
+用户可通过 `/skill-name` 直接调用已安装的第三方 Skill，绕过 LLM 节省 token：
+- 输入 `/` 触发自动补全弹窗
+- 支持键盘导航（↑↓ + Enter/Tab/Esc）
+- 支持 `/help` 查看所有可用命令
+
+### 10.5 执行日志 UI
+
+覆盖层面板，支持自动刷新（3 秒轮询），显示总行数、当前行数，自动滚动到最新。
+
+### 10.6 Function Calling 并行展示
+
+V2 的 tool_calls 可能一次返回多个工具调用，前端支持并行展示。
+
+### 10.7 前后端功能对齐表
+
+| 前端组件 | 前端功能 | 后端 API | 状态 |
+|----------|----------|----------|------|
+| TaskList | 任务列表/创建/切换/删除/归档/导出 | GET/POST/DELETE /tasks, /archive, /unarchive, /export | ✅ |
+| TaskPage | 模式切换（coding/general） | PUT /tasks/{id}/mode | ✅ |
+| TaskChatView | 发送消息、流式接收 | POST /tasks/{id}/chat (SSE) | ✅ |
+| TaskChatView | 停止生成 | POST /tasks/{id}/chat/cancel | ✅ |
+| TaskChatView | 暂停/恢复任务 | POST /tasks/{id}/pause, /resume | ✅ |
+| TaskChatView | Shell 命令内联确认 | POST /tasks/{id}/confirm-shell | ✅ |
+| TaskChatView | Skill 运行时确认 | POST /tasks/{id}/confirm-skill | ✅ |
+| TaskChatView | 拖拽文件上传 | POST /tasks/{id}/files/upload | ✅ |
+| TaskChatView | 斜杠命令自动补全 | IPC tasks:getSkills → GET /skills | ✅ |
+| TaskMessageList | 消息展示 + 重新执行 | GET /tasks/{id}/messages, POST /messages/{id}/rerun | ✅ |
+| FileTree | 文件树浏览 | GET /tasks/{id}/files | ✅ |
+| FilePreview | 文件预览（代码/MD/图片/二进制） | GET /tasks/{id}/files/content | ✅ |
+| TaskLogViewer | 执行日志查看（自动刷新） | GET /tasks/{id}/logs | ✅ |
+| SkillManagement | Skill 安装/卸载/启用禁用 | GET/POST/DELETE /skills, /toggle, /confirm | ✅ |
+| ExternalDepsSettings | 外部依赖检测 | GET /system/deps/check | ✅ |
+| TaskSettings | 任务模型/Planner 模型/超时/Shell 模式/白名单/工作区限制/任务数上限/自动归档 | settings API | ✅ |
+
+### 10.8 设置页任务选项卡
+
+| 配置项 | 前端控件 | 后端字段 | 默认值 |
+|--------|----------|----------|--------|
+| 任务模型 | 文本输入 | task_model | 与对话模型相同 |
+| Planner 模型 | 文本输入 | task_planner_model | 空（不使用） |
+| 执行超时 | 数字输入 (5-300) | task_timeout | 30 秒 |
+| Shell 确认模式 | 下拉选择 (strict/smart/auto) | task_shell_confirm_mode | smart |
+| Shell 域名白名单 | 多行文本 | task_shell_domain_whitelist | 空 |
+| 显示执行日志 | 开关 | task_show_execution_log | 开启 |
+| 工作区大小限制 | 数字输入 (0-10240) | task_workspace_max_mb | 1024 MB |
+| 任务数上限 | 数字输入 (0-500) | task_max_count | 50 |
+| 自动归档天数 | 数字输入 (0-365) | task_auto_archive_days | 30 天 |
+| 外部依赖检测 | 状态展示 + 刷新 | GET /system/deps/check | — |
+
+---
+
+## 11. 数据库与 API
+
+### 11.1 新增表
+
+```sql
+-- 任务表
+CREATE TABLE tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    workspace_path TEXT NOT NULL,
+    venv_path TEXT NOT NULL,
+    mode TEXT DEFAULT 'coding',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- 任务消息表
+CREATE TABLE task_messages (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tool_calls TEXT,
+    tool_results TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- Skill 注册表
+CREATE TABLE skills (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    source_type TEXT NOT NULL,
+    source_path TEXT,
+    install_path TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+```
+
+### 11.2 API 路由
+
+#### 任务管理
+
+| 路由 | 方法 | 说明 | 前端对应 |
+|------|------|------|----------|
+| `/tasks` | GET | 任务列表 | TaskList 组件 |
+| `/tasks` | POST | 创建任务（自动创建 venv + workspace） | TaskList "新任务"按钮 |
+| `/tasks/status` | GET | 任务状态概览（活跃数/归档数/配额） | TaskList 状态展示 |
+| `/tasks/{id}` | GET | 任务详情 | TaskPage 标题栏 |
+| `/tasks/{id}` | PATCH | 更新任务信息（标题等） | TaskList 重命名 |
+| `/tasks/{id}` | DELETE | 删除任务 | TaskList 删除按钮 |
+| `/tasks/{id}/mode` | PUT | 切换任务模式（coding ↔ general） | TaskPage 模式切换按钮 |
+| `/tasks/{id}/archive` | POST | 归档任务 | TaskList 归档操作 |
+| `/tasks/{id}/unarchive` | POST | 取消归档 | TaskList 取消归档操作 |
+| `/tasks/{id}/export` | GET | 导出任务（zip） | TaskList 导出按钮 |
+
+#### 对话与执行
+
+| 路由 | 方法 | 说明 | 前端对应 |
+|------|------|------|----------|
+| `/tasks/{id}/messages` | GET | 获取任务消息历史 | TaskMessageList 加载 |
+| `/tasks/{id}/chat` | POST | 发送消息（SSE 流式响应） | TaskChatView 发送按钮 |
+| `/tasks/{id}/chat/cancel` | POST | 取消执行 | TaskChatView 停止按钮 |
+| `/tasks/{id}/pause` | POST | 暂停任务（保存中间状态） | TaskChatView 暂停按钮 |
+| `/tasks/{id}/resume` | POST | 恢复暂停的任务 | TaskChatView 恢复按钮 |
+| `/tasks/{id}/confirm-shell` | POST | Shell 命令确认（允许/拒绝） | TaskChatView 内联确认卡片 |
+| `/tasks/{id}/confirm-skill` | POST | 运行时 Skill 确认 | TaskChatView Skill 确认卡片 |
+| `/tasks/{id}/messages/{msg_id}/rerun` | POST | 重新执行历史消息 | TaskMessageList 重执行按钮 |
+
+#### 文件管理
+
+| 路由 | 方法 | 说明 | 前端对应 |
+|------|------|------|----------|
+| `/tasks/{id}/files` | GET | 获取 workspace 文件树 | FileTree 组件 |
+| `/tasks/{id}/files/content` | GET | 读取文件内容（文本/base64/二进制） | FilePreview 组件 |
+| `/tasks/{id}/files/upload` | POST | 文件上传（multipart/form-data） | TaskChatView 拖拽上传 + 📎 按钮 |
+| `/tasks/{id}/logs` | GET | 获取执行日志 | TaskLogViewer 组件 |
+
+#### Skill 管理
+
+| 路由 | 方法 | 说明 | 前端对应 |
+|------|------|------|----------|
+| `/skills` | GET | 已安装 skill 列表 | SkillManagement 组件 |
+| `/skills/install` | POST | 安装第三方 skill | SkillManagement 安装按钮 |
+| `/skills/{id}` | DELETE | 卸载 skill | SkillManagement 卸载按钮 |
+| `/skills/{id}/toggle` | POST | 启用/禁用 skill | SkillManagement 开关 |
+| `/skills/{id}/confirm` | POST | 安装确认 | SkillManagement 确认对话框 |
+| `/skills/builtin-tools` | GET | 内置工具列表 | SkillManagement 内置 Tool 展示 |
+| `/system/deps/check` | GET | 外部依赖检测 | ExternalDepsSettings 组件 |
+
+---
+
+## 12. 日志体系
+
+### 12.1 日志规范
+
+```python
+logger = logging.getLogger(__name__)
+logger.debug(...)   # 开发调试：变量值、中间状态
+logger.info(...)    # 关键节点：任务开始/结束、API 调用
+logger.warning(...) # 可恢复异常：降级、重试、默认值
+logger.error(...)   # 不可恢复异常：捕获的 exception
+```
+
+### 12.2 日志覆盖目标
+
+| 优先级 | 模块 | 状态 |
+|--------|------|------|
+| P0 | agent/task_agent.py, react_agent.py | ✅ 已补充 |
+| P0 | llm/client.py | ✅ 已补充 |
+| P0 | routers/tasks.py | ✅ 已补充 |
+| P0 | tools/shell_tool.py, code_executor.py | ✅ 已补充 |
+| P1 | routers/chat.py, knowledge/rag.py | ✅ 已补充 |
+| P1 | agent/context_manager.py | ✅ 已补充 |
+| P2 | 其他 Tools / Routers | ✅ 已补充 |
+
+目标：覆盖率从 20% 提升到 80%+，核心模块 100% 覆盖。
+
+### 12.3 V3 日志审计统计（基线）
+
+| 指标 | 数值 |
+|------|------|
+| 日志语句总数 | 97 条 |
+| Python 日志 | 87 条 |
+| Electron 日志 | 10 条 |
+| Python 文件总数 | 55 个 |
+| 有日志的文件 | 11 个 (20%) |
+| 无日志的文件 | 44 个 (80%) |
+
+按级别分布：INFO 47 (48%) / WARNING 18 (19%) / ERROR 19 (20%) / DEBUG 3 (3% 偏少)
+
+关键缺失模块（V3 审计时）：`react_agent.py`、`llm_client.py`、所有 Routers（6 个）、知识库核心（8 个）、所有 Tools（14 个）。
+
+---
+
+## 13. 工程最佳实践与开源参考
+
+> 本章基于对 Aider、OpenHands、SWE-agent、Claude Code 四个成熟开源编程智能体的深入调研。
+
+### 13.1 Aider — 开源 AI 编程助手
+
+**核心架构**：ReAct 循环 + Git 原生集成 + 双模型架构（Architect 模式）
+
+**编辑格式**：SEARCH/REPLACE Block
+```
+<<<<<<< SEARCH
+def old_function():
+    return 42
+=======
+def new_function():
+    return 100
+>>>>>>> REPLACE
+```
+优势：token 效率高、可精确 diff、LLM 只需关注要改的部分。
+
+**Repo-map**：用 tree-sitter 提取代码结构 + PageRank 算法排序 + 可配置 token 预算（默认 1024 tokens）。
+
+**System Prompt**：动态组装，不是固定模板。每次 LLM 调用前重新组装。
+
+**对 InkCube 的启示**：
+- ✅ P0 实现 search/replace 编辑格式 + 模糊匹配
+- ✅ P1 引入 tree-sitter 做精确代码结构提取（repo_map）
+- ✅ 编辑失败时自动回滚（.bak 备份机制）
+- ❌ PageRank 排序 + Token 预算控制 — ✅ Phase 17 已实施
+
+### 13.2 SWE-agent — 面向软件工程的 Agent
+
+**核心理念 — ACI（Agent-Computer Interface）**：
+> 给 LLM 专门为 agent 设计的简化界面，比给人类同样的终端界面更高效。
+> 工具设计比模型选择更重要：同一模型，用好的 ACI 可以大幅提升表现。
+
+**工具设计**：只 6 个命令（open/scroll_down/scroll_up/goto/str_replace/create），窗口式文件查看（每次 100 行），str_replace 自动验证 + 回滚。
+
+**对 InkCube 的启示**：
+- ✅ 工具要少而精，返回值要结构化
+- ✅ 编辑操作要有自动验证和回滚机制
+- ✅ 在 system prompt 中引导 agent 遵循结构化流程
+
+### 13.3 OpenHands — 开放式 AI 软件开发 Agent
+
+**核心架构**：事件源（Event-Sourced）——所有状态变化记录为不可变事件。
+
+**Condenser 上下文压缩**：
+1. 选择性保留：保留最近 N 条消息 + 关键 tool 结果
+2. 摘要压缩：对较早消息用 LLM 生成摘要
+3. 工具结果裁剪：长输出只保留关键部分
+
+**Microagents 领域知识注入**：根据触发条件（如编辑 .py 文件）自动注入领域知识到 system prompt。
+
+**卡住检测**：连续 3 次相同错误 → 暂停并报告。
+
+**对 InkCube 的启示**：
+- ✅ SQLite 存消息历史（简化版事件日志）
+- ✅ Snip + Context Collapse 压缩策略
+- ✅ 基础卡住检测（stuck detection）
+
+### 13.4 Claude Code — Anthropic 的编程 Agent
+
+**System Prompt 架构**：~34,000 tokens，模块化条件组装，缓存友好。
+
+**工具设计**：25+ 工具，每个都有 Usage/Parameters/Example/Error cases。
+
+**5 种上下文压缩策略**：
+
+| 策略 | 触发条件 | 做法 |
+|------|---------|------|
+| Disk Dump | 工具输出过长 | 保存到文件，上下文只保留路径 |
+| Snip | 单个结果超阈值 | 截断保留头尾 |
+| Micro Compact | 接近阈值 | 压缩早期 tool 结果为单行 |
+| Context Collapse | 达到 80% | 早期对话压缩为摘要 |
+| Full Compact | 达到 95% | LLM 摘要整个历史 |
+
+**CLAUDE.md 项目级记忆**：自动读取注入 system prompt，支持多层级。
+
+**Hook 系统**：PreToolUse / PostToolUse / OnError 事件。
+
+**对 InkCube 的启示**：
+- ✅ System prompt 模块化条件组装
+- ✅ 5 种压缩策略全部实现（V4）
+- ✅ inkcube.md 项目级配置（兼容 .cursorrules / AGENTS.md）
+- ✅ 验证引导（编辑后必须验证）
+
+### 13.5 开源项目参考总览
+
+| 项目 | 借鉴点 |
+|------|--------|
+| **Aider** | 编辑格式、repo-map、prompt 模板、双模型架构 |
+| **OpenHands** | 事件源架构、Condenser 压缩、Microagents、卡住检测 |
+| **SWE-agent** | ACI 概念、窗口式文件查看、str_replace 自动验证+回滚 |
+| **Claude Code** | 模块化 system prompt、5 种压缩策略、CLAUDE.md、Hook 系统 |
+
+### 13.6 模型选择建议
+
+| 场景 | 推荐模型 | 说明 |
+|------|---------|------|
+| 简单脚本/快速任务 | GLM-4-Flash / GPT-4o-mini | 成本低，响应快 |
+| 复杂编程/多文件协作 | Claude Sonnet / GPT-4o | 能力强，适合生产级任务 |
+| 超长上下文/大型项目 | Claude Opus / Gemini 1.5 Pro | 上下文窗口大 |
+
+---
+
+## 14. 实施指南
+
+### 14.1 工作区管理
+
+| 模式 | 说明 | 状态 |
+|------|------|------|
+| 新建工作区 | 自动生成空白工作区 | ✅ 已实现 |
+| 选择已有目录 | 用户指定本地目录 | ✅ 已实现（含确认弹窗） |
+
+### 14.2 任务类型与通用性
+
+P0 统一创建 venv，不管任务类型。不在 UI 中区分任务类型，统一叫“任务”。已实现双模式（coding / general），详见 §8.4。
+
+### 14.3 文件上传
+
+| 功能 | 状态 |
+|------|------|
+| 文件上传（单文件 + 拖拽） | ✅ 已实现 |
+| 文件大小限制 50MB | ✅ 已实现 |
+| 文件夹上传 | ❌ 不做 |
+
+### 14.4 资源限制
+
+| 资源 | 限制 | 状态 |
+|------|------|------|
+| 单次代码执行超时 | 30 秒 | ✅ 已实现 |
+| 单次输出大小 | Snip 截断 8000 字符 | ✅ 已实现 |
+| 单任务工作区大小 | 1GB | ✅ 已实现 |
+| 并发任务数 | 3 个 | ✅ 已实现 |
+| 最大迭代次数 | 25 次（可配置 task_max_iterations） | ✅ 已实现 |
+
+### 14.5 错误处理
+
+| 异常场景 | 处理方式 |
+|---------|----------|
+| venv 创建失败 | 重试 1 次，仍失败则任务创建失败 |
+| Python 进程崩溃 | 捕获异常，返回错误信息 |
+| Agent 无响应 | 30s 显示“思考中...”，60s 提示取消 |
+| API 调用失败 | 重试 2 次，仍失败则报告错误 |
+
+### 14.6 数据生命周期
+
+| 功能 | 状态 |
+|------|------|
+| 任务删除（清空工作区 + venv + DB） | ✅ 已实现 |
+| 任务归档 / 取消归档 | ✅ 已实现 |
+| 自动清理（30 天未访问归档） | ✅ 已实现 |
+| 存储配额 + 任务数上限 | ✅ 已实现 |
+| 任务导出（zip） | ✅ 已实现 |
+
+### 14.7 配置项
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| 任务模型 | 与对话模型相同 | 任务使用的 AI 模型 |
+| Planner 模型 | 空（不使用） | 双模型架构的规划模型（可选） |
+| 代码执行超时 | 30 秒 | 单次代码执行最大时间 |
+| Shell 确认模式 | smart | strict（全部确认）/ smart（智能判断）/ auto（全部自动） |
+| Shell 域名白名单 | 空 | 每行一个域名，智能模式自动放行匹配命令 |
+| Skill 脚本超时 | 120 秒 | 从 settings 读取 |
+| 显示执行日志 | 开启 | 是否在对话流中显示详细操作日志 |
+| 工作区大小限制 | 1024 MB | 单任务工作区大小限制 |
+| 任务数上限 | 50 | 最大同时任务数 |
+| 自动归档天数 | 30 天 | 未访问自动归档 |
+
+### 14.8 国际化
+
+| 维度 | 状态 |
+|------|------|
+| Agent 响应语言 | ✅ 跟随用户输入语言 |
+| UI 界面 | ✅ 中英双语 i18n |
+| 文件名编码 | ✅ UTF-8，支持中文 |
+
+### 14.9 性能考虑
+
+| 场景 | 处理方式 |
+|------|----------|
+| 大文件（>100KB） | repo_map 截断到 100,000 字符；file_ops read 截断到 100KB |
+| 大量文件（>1000 个） | 文件树组件懒加载，只显示第一层 |
+| 长对话（>100 轮） | 上下文压缩（见 §5） |
+| 大输出（>1MB） | 截断输出，保留头尾（Snip 策略） |
+
+文件树性能：首次加载只显示第一层目录，用户展开时异步加载子目录，文件数量 >1000 时提示使用搜索。
+
+代码搜索性能：ripgrep 本身性能极好，搜索结果限制最多显示 100 条匹配。
+
+### 14.10 与现有功能的交互
+
+| 交互场景 | 状态 | 说明 |
+|----------|------|------|
+| 任务访问知识库 | ✅ 已完成 | 新增 knowledge-search skill |
+| 知识库引用任务结果 | ❌ 否 | 暂不支持，任务结果不自动入库 |
+| 模型设置共享 | ✅ 是 | 任务功能使用全局模型设置 |
+| 任务使用外部 API | ✅ 是 | web-search 使用现有 Tavily API key |
+
+任务功能在设置页新增"任务模型"选项（独立于"对话模型"），默认与"对话模型"相同，用户可单独配置。
+
+### 14.11 doc-generator — 文档格式转换
+
+| 转换路径 | 工具 | 说明 |
+|----------|------|------|
+| MD → PDF | weasyprint | 纯 Python，跨平台好，中文需配置字体 |
+| MD → DOCX | pandoc | 跨平台标准工具，需系统安装 pandoc |
+| DOCX → PDF | 复用知识模块 doc_parser.py | Windows: MS Office COM；其它: LibreOffice |
+
+优先级：MD → PDF > MD → DOCX > DOCX → PDF
+
+**MD → PDF 细节**：使用 `weasyprint`（纯 Python，无外部依赖），中文排版配置 Noto Sans CJK / 思源黑体，代码高亮用 `pygments`，支持表格、Mermaid 图表。
+
+**MD → DOCX 细节**：通过 `subprocess` 调用 `pandoc input.md -o output.docx`，支持自定义 reference.docx 模板，若 pandoc 未安装则提示用户。
+
+**DOCX → PDF 细节**：复用知识模块 `doc_parser.py` 的 `_convert_office_to_pdf`，Windows 用 MS Office COM，其它平台用 LibreOffice headless。
+
+### 14.12 外部依赖
+
+| 工具 | 用途 | 是否捆绑 | 缺失时行为 |
+|------|------|----------|------------|
+| pandoc | MD → DOCX | ❌ 不捆绑 | 返回错误，提示安装 |
+| MS Office | DOCX → PDF (Windows) | ❌ 不捆绑 | 回退到 LibreOffice |
+| LibreOffice | DOCX → PDF (跨平台) | ❌ 不捆绑 | 提示安装 |
+| weasyprint | MD → PDF | ✅ pip 安装 | 无外部依赖，始终可用 |
+
+### 14.13 关键设计决策记录
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| Python 预装方案 | python-build-standalone 随安装包分发 | 跨平台一致，用户无需手动安装 |
+| 代码执行环境 | 每任务独立 venv | 任务间依赖隔离，预装 Python 不被污染 |
+| 后端架构 | 扩展现有 FastAPI | 统一端口，前端无感，减少进程管理复杂度 |
+| 依赖管理 | uv | 速度快，跨平台，同时承担 skill 依赖安装 |
+| 记忆范围 | 会话级 + 自动压缩 | P0 先做好基础，长期记忆后续迭代 |
+| 第三方 skill 来源 | 仅本地路径 | 暂不做 skill 市场 |
+| UI 形态 | 类 IDE（对话 + 代码 view + 文件树） | 编程智能体需要丰富的信息展示 |
+| Skill 框架 | 统一 manifest + 统一协议 | 内置/外部一致体验，支持 function calling |
+| Function Calling | 支持 + 文本解析 fallback | 可靠性飞跃，同时兼容本地模型 |
+| 迁移策略 | 双轨并存（Adapter 永久桥接） | 零破坏，内置 Tool 无需物理迁移 |
+| 上下文管理 | Token-aware + 渐进式压缩 | 解决长任务“失忆”问题 |
+| Agent Skills 格式 | SKILL.md + scripts/，任务 venv 运行 | 行业标准，兼容 60,000+ 现有 Skill |
+| Git 集成 | 新增 git_ops 内置 Tool | 让 agent 感知版本控制状态 |
+| Self-reflection | Final Answer 前插入审查 | 低成本提升准确性 |
+
+---
+
+## 15. 对标评分与路线图
+
+### 15.1 10 维度对标（Phase 17 当前）
+
+| 维度 | Phase 17 | Cursor | Aider | Devin | 关键改进 |
+|------|---------|--------|-------|-------|----------|
+| Agent 循环架构 | 9 | 9 | 8 | 9 | FC + 消息配对修复 + 渐进压缩 + Self-Reflection 独立注入 |
+| Prompt 工程 | 9 | 9 | 8 | 9 | 4000 token 预算 + CJK 精度 + 动态组装 + repo_map 自动注入 |
+| 工具系统 | 9 | 9 | 7 | 9 | 渐进式 Skill 披露 + 预装包 + PageRank repo_map |
+| 上下文管理 | 9 | 9 | 8 | 9 | 5 种策略对齐 Claude Code |
+| 代码编辑能力 | **8.5** | 9 | 9 | 8 | 真·编辑验证循环 + 3 种编辑格式 + inline diff 展示 (Phase 18) |
+| 错误恢复 | 8 | 8 | 7 | 9 | 真自动重试 + Stuck Detection 修复 + Self-Reflection |
+| 规划与推理 | **8** | 7 | 6 | 9 | Planner/Editor 双模型 + Self-Reflection 双重机制 + 结构化计划展示 (Phase 18) |
+| 安全机制 | 7.5 | 7 | 5 | 8 | 三模式确认 + 域名白名单 + 会话级 auto-allow |
+| 项目理解 | 9 | 9 | 9 | 9 | git 上下文 + 20+ 框架检测 + PageRank repo_map + inkcube.md |
+| 用户体验 | **8** | 9 | 6 | 9 | Disk Dump + 文件预览 + 斜杠命令 + DiffCard + PlanCard (Phase 18) |
+
+### 15.2 综合评分
+
+| 指标 | 值 |
+|------|-----|
+| V1 基线 | ~55 分 |
+| V4 基线 | ~80.5 分 |
+| Phase 17 | ~84.5 分 |
+| **Phase 18 当前** | **~87 分** |
+| 业界标杆 | Cursor/Aider/Devin 80-90 分 |
+| Phase 18 提升 | +2.5 分（inline diff +1, 结构化计划 +0.75, UX 组件 +0.75） |
+
+### 15.3 下一步提升建议
+
+| 优先级 | 方向 | 预估提升 | 说明 |
+|--------|------|---------|------|
+| P0 | ~~repo_map 增强~~ | ✅ 已完成 | PageRank 排序 + Token 预算 + 自动注入 system prompt (Phase 17) |
+| P0 | ~~规划与推理~~ | ✅ 已完成 | Self-reflection 独立注入 (Phase 17) + Planner/Editor 双模型 |
+| P1 | ~~代码编辑~~ | ✅ 已完成 | inline diff 展示 (Phase 18) — file_ops 返回 unified diff，前端 DiffCard 红绿高亮渲染 |
+| P2 | ~~用户体验~~ | ✅ 已完成 | DiffCard 折叠/展开 + 计划展示 PlanProgressCard (Phase 18) |
+
+### 15.4 V4 代码核实总结表
+
+| Phase | 问题 | 代码位置 | 状态 | 备注 |
+|-------|------|---------|------|------|
+| 10 | Bug #1 Stuck Detection | task_agent.py | ✅ 已实施 | 移出 for tc 循环，循环后注入 hint |
+| 10 | Bug #2 假循环 | task_agent.py | ✅ 已实施 | 重命名为 _enrich_result_with_lint_hint + 新增 _edit_verify_loop |
+| 11 | 编辑验证循环 | task_agent.py | ✅ 已实施 | _edit_verify_loop 实现真自动修复 |
+| 12 | 上下文策略缺失 | context_manager.py | ✅ 已实施 | 新增 micro_compact / disk_dump / full_compact + 渐进式调度 |
+| 12 | ~~compress 类型安全~~ | context_manager.py | ❌ 误判 | llm.chat() 未传 tools 时永远返回 str |
+| 13 | 依赖缓存认知错误 | loader.py | ⚠️ 已修正 | uv 自带全局缓存，无需额外代码 |
+| 13 | 预装包缺失 | venv_manager.py | ✅ 已实施 | 新增 PREINSTALLED_PACKAGES + preinstall_packages() |
+| 14 | 渐进式披露缺失 | loader.py + skill_runner.py | ✅ 已实施 | Level 1 元数据 + Level 2 执行时注入 body |
+| 15.1 | Token 计数偏粗 | context_manager.py | ✅ 已实施 | CJK 检测，中文 ~1.5 chars/token |
+| 15.2 | System Prompt 无预算 | task_agent.py | ✅ 已实施 | 4000 token 预算，超限截断低优先级部分 |
+| 15.3 | 脚本超时硬编码 | loader.py | ✅ 已实施 | 从 settings 读取，默认 120s |
+| 15.4 | Skill 扫描无缓存 | task_agent.py | ✅ 已实施 | mtime 缓存，避免重复解析 |
+| 15.5 | 并发 tool 实例 | task_agent.py | ✅ 核实无需修改 | prompt_description 均为静态文本 |
+| 16.1 | compress_ratio 文档 | context_manager.py | ✅ 已确认 | 代码 85%，保持 |
+| 16.5 | Skill 三重路径 | task_agent.py | ✅ 核实为设计选择 | 3 条路径服务不同调用方 |
+
+### 15.5 V3 用户体验优化方向（待实施）
+
+| 功能 | 说明 | 预估提升 |
+|------|------|----------|
+| Thought 过程可视化 | 前端渲染 thought 事件为折叠面板，展示 LLM 推理链 | +1 分 |
+| 工具执行进度条 | 工具执行超过 3 秒时显示进度指示，Shell 命令实时输出 | +0.5 分 |
+| 错误恢复建议 | 错误返回包含 suggestion 字段，前端高亮显示，一键应用 | +0.5 分 |
+
+---
+
+## 16. 不做的事
+
+- ~~打包安装~~ — 基础设施已实施，待全流程测试
+- ~~任务克隆~~ — 不做
+- ~~文件夹上传~~ — 不做
+- ~~内置 Tool 物理迁移到 skills/builtin/~~ — Adapter 永久桥接，无实际收益
+- ~~Skill 市场 / 在线商店~~ — 范围外
+- ~~跨会话长期记忆~~ — 已有单独规划
+- ~~Docker 沙箱~~ — venv 隔离 P0 够用
+- ~~多 Agent 协作~~ — 范围外
+- ~~LSP 协议完整实现~~ — 当前 regex + pyright/tsc 子进程足够
+
+---
+
+## 17. 附录
+
+### 17.1 术语表
+
+| 术语 | 说明 |
+|------|------|
+| **任务（Task）** | 用户创建的工作单元，包含独立的工作区和对话历史 |
+| **工作区（Workspace）** | 任务的工作目录，agent 在此目录中操作文件 |
+| **venv** | Python 虚拟环境，每个任务独立一个，隔离依赖 |
+| **Skill** | 智能体的能力模块，分为内置 Tool 和第三方 Agent Skill |
+| **Tool** | Skill 中的原子操作 |
+| **ACI** | Agent-Computer Interface，为 agent 设计的简化界面 |
+| **Repo-map** | 代码库结构摘要，用 tree-sitter 提取 |
+| **Context Collapse** | 上下文压缩策略，将早期对话压缩为摘要 |
+| **Disk Dump** | 将超长工具输出保存到文件，上下文中只保留引用 |
+| **Function Calling (FC)** | OpenAI 结构化工具调用协议 |
+| **Agent Skills** | Anthropic 提出的行业标准 Skill 格式（SKILL.md） |
+
+### 17.2 参考资源
+
+- Aider：https://aider.chat/
+- OpenHands：https://github.com/All-Hands-AI/OpenHands
+- SWE-agent：https://github.com/princeton-nlp/SWE-agent
+- Claude Code：https://docs.anthropic.com/en/docs/claude-code
+- python-build-standalone：https://github.com/indygreg/python-build-standalone
+- uv：https://github.com/astral-sh/uv
+- ripgrep：https://github.com/BurntSushi/ripgrep
+- ruff：https://github.com/astral-sh/ruff
+
+---
+
+## 18. 版本历史
+
+### V1 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 0.1.0 | 2026-09-19 | 初始设计 |
+| 0.2.0 | 2026-09-19 | 添加开源项目调研（第 11 章） |
+| 0.3.0 | 2026-09-19 | 添加待明确设计问题与实施指南（第 12 章） |
+| 0.4.0 | 2026-09-19 | 实施完成：P0+P1 全部实现 |
+| 0.5.0 | 2026-09-19 | Wave 8-13 全部实施完成；后续功能设计 |
+| 0.6.0 | 2026-09-19 | Wave 14-15 实施完成；外部依赖与打包考量 |
+| 0.7.0 | 2026-09-19 | 全部功能实施完成 |
+| 0.8.0 | 2026-09-20 | 文件预览实施完成 |
+| 0.9.0 | 2026-09-21 | 文件预览增强：语法高亮 + MD 渲染/源码切换 |
+| 0.10.0 | 2026-09-21 | Agent 日期时间感知 + 斜杠命令 + 执行日志 UI |
+| 0.11.0 | 2026-09-21 | 安全增强：Skill 运行时确认 + Shell 域名白名单 |
+| 0.12.0 | 2026-09-21 | 打包安装基础设施 |
+| 0.13.0 | 2026-09-22 | 全部功能实施完成 + 安全增强 |
+
+### V2 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 0.1.0 | 2026-09-21 | 初始设计：Skill 框架 + FC + 上下文 + Git |
+| 0.2.0 | 2026-09-21 | 确认双轨架构：Adapter 永久桥接 |
+| 0.3.0 | 2026-09-21 | Phase 1-3 实施完成 |
+| 0.4.0 | 2026-09-21 | Phase 4 + 查缺补漏完成 |
+| 0.5.0 | 2026-09-21 | 全面 Code Review 修复 |
+| 0.6.0 | 2026-09-21 | tiktoken + tree-sitter AST + 流式输出 |
+| 0.7.0 | 2026-09-22 | 外部 Skill 统一为 Agent Skills 标准 |
+
+### V3 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 0.1.0 | 2026-09-21 | V3 初始设计 |
+| 0.7.0 | 2026-09-21 | 日志体系 + apply_diff + 引用追踪 + LSP |
+| 0.8.0 | 2026-09-21 | 编辑验证 + 项目检测 + 批量编辑 |
+| 0.9.0 | 2026-09-21 | V3 全功能完成：综合 88 分 |
+| 0.10.0 | 2026-09-21 | Agent Skills 行业标准支持 |
+| 0.11.0 | 2026-09-22 | 简化为两模式并存 |
+
+### V4 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 0.1.0 | 2026-09-22 | V4 初始设计 |
+| 0.2.1 | 2026-09-22 | 修正 compress 类型安全误判 |
+| 0.3.0 | 2026-09-22 | Phase 10-15 全部实施完成 |
+| 0.3.1 | 2026-09-22 | 最终核实：Phase 15.5 和 16.5 无需修改 |
+
+### 统一文档版本
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 1.0.0 | 2026-09-22 | 整合 V1/V2/V3/V4 四份设计文档为单一统一文档 |
+| 1.1.0 | 2026-09-23 | 前后端功能对齐；修正文档与代码不一致项；明确标注待实施功能（repo_map PageRank/Token预算/自动注入） |
+| 1.2.0 | 2026-09-23 | Phase 17 实施完成：repo_map PageRank 排序 + Token 预算 + 自动注入；Self-Reflection 独立注入 |
+| 1.3.0 | 2026-09-23 | Phase 18 实施完成：file_ops inline diff + 结构化计划解析 + DiffCard/PlanProgressCard 前端组件 |

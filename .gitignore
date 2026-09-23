@@ -1,0 +1,48 @@
+# ── Dependencies ──
+node_modules/
+
+# ── Build outputs ──
+dist/
+dist-renderer/
+build/
+resources/
+*.spec.bak
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# ── User data (runtime generated) ──
+python/data/
+
+# ── Logs ──
+*.log
+*.log.*
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Environment / secrets ──
+.env
+.env.local
+.env.*.local
+
+# ── Dev (local-only) ──
+dev/
+
+# ── Test / coverage ──
+coverage/
+.pytest_cache/
+*.tsbuildinfo
