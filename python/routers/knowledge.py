@@ -61,9 +61,69 @@ def _validate_vlm_config(db: Database) -> None:
         raise VLMNotConfigured()
 
 
+async def _validate_base_lib_exists(db: Database, lib_id: str):
+    """Raise 404 if the base library doesn't exist."""
+    lib = db.get_base_lib(lib_id)
+    if not lib:
+        raise HTTPException(status_code=404, detail="Base library not found")
+    return lib
+
+
+async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, worker):
+    """Core upload logic for base library files (shared across base lib routes)."""
+    import uuid
+    import hashlib
+    file_id = f"file_{uuid.uuid4().hex[:8]}"
+
+    files_dir = Path(data_dir) / "files" / lib_id / file_id
+    files_dir.mkdir(parents=True, exist_ok=True)
+    file_path = files_dir / upload.filename
+
+    file_data = base64.b64decode(
+        upload.data.split(",")[1] if "," in upload.data else upload.data
+    )
+    file_path.write_bytes(file_data)
+
+    file_size = len(file_data)
+    file_hash = hashlib.md5(file_data).hexdigest()
+
+    existing = db.find_duplicate_file(lib_id, file_hash)
+    if existing:
+        import shutil
+        shutil.rmtree(files_dir, ignore_errors=True)
+        return {
+            "success": True, "file_id": existing["id"],
+            "chunks_count": existing.get("chunk_count", 0),
+            "images_count": existing.get("image_count", 0),
+            "duplicate": True, "message": f"文件已存在: {existing['filename']}",
+        }
+
+    db.create_file(
+        project_id=lib_id, filename=upload.filename,
+        file_type=upload.fileType, file_size=file_size,
+        file_hash=file_hash, file_id=file_id,
+    )
+
+    if worker:
+        logger.info("Enqueuing base lib file %s for processing", file_id)
+        await worker.enqueue_file(file_id)
+    else:
+        logger.warning("Worker not available! Base lib file %s will be picked up by queue scanner", file_id)
+
+    return {
+        "success": True, "file_id": file_id,
+        "chunks_count": 0, "images_count": 0,
+        "error": None, "queued": True,
+    }
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    type: Optional[str] = "general"
+    stage: Optional[str] = "none"
+    company_name: Optional[str] = ""
+    credit_code: Optional[str] = ""
 
 
 class FileUpload(BaseModel):
@@ -97,11 +157,16 @@ async def list_projects():
                 p.id,
                 p.name,
                 p.description,
+                p.type,
+                p.stage,
+                p.company_name,
+                p.credit_code,
                 COUNT(DISTINCT f.id) as file_count,
                 COALESCE(SUM(f.chunk_count), 0) as chunk_count,
                 p.created_at
             FROM projects p
             LEFT JOIN files f ON f.project_id = p.id
+            WHERE p.kind = 'project'
             GROUP BY p.id
             ORDER BY p.created_at DESC
         """)
@@ -112,6 +177,10 @@ async def list_projects():
                 "id": row["id"],
                 "name": row["name"],
                 "description": row["description"],
+                "type": row.get("type", "general"),
+                "stage": row.get("stage", "none"),
+                "company_name": row.get("company_name", ""),
+                "credit_code": row.get("credit_code", ""),
                 "file_count": row["file_count"],
                 "chunk_count": row["chunk_count"],
                 "created_at": row["created_at"]
@@ -131,13 +200,21 @@ async def create_project(project: ProjectCreate):
         
         result = db.create_project(
             name=project.name,
-            description=project.description or ""
+            description=project.description or "",
+            project_type=project.type or "general",
+            stage=project.stage or "none",
+            company_name=project.company_name or "",
+            credit_code=project.credit_code or "",
         )
         
         return {
             "id": result["id"],
             "name": result["name"],
             "description": result["description"],
+            "type": result["type"],
+            "stage": result["stage"],
+            "company_name": result.get("company_name", ""),
+            "credit_code": result.get("credit_code", ""),
             "file_count": 0,
             "chunk_count": 0,
             "created_at": result["created_at"]
@@ -450,9 +527,8 @@ async def delete_project(project_id: str):
             import shutil
             shutil.rmtree(files_dir, ignore_errors=True)
 
-        # Delete from database (cascade handles files, images)
-        db.conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-        db.conn.commit()
+        # Delete from database (cascade handles files, images; kind check prevents base_lib deletion)
+        db.delete_project(project_id)
 
         return {"success": True}
     except Exception as e:
@@ -844,5 +920,491 @@ async def retry_failed_images(project_id: str, file_id: str):
         return {"success": True, "retried_count": len(images)}
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Base Library CRUD ──
+
+
+class BaseLibCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class BaseLibUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.get("/base-libs")
+async def list_base_libs():
+    """List all base libraries."""
+    try:
+        db = get_db()
+        libs = db.list_base_libs()
+        return {"base_libs": libs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs")
+async def create_base_lib(body: BaseLibCreate):
+    """Create a custom base library."""
+    try:
+        db = get_db()
+        result = db.create_base_lib(
+            name=body.name,
+            description=body.description or "",
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/base-libs/{lib_id}")
+async def update_base_lib(lib_id: str, body: BaseLibUpdate):
+    """Update a custom base library (preset libs cannot be modified)."""
+    try:
+        db = get_db()
+        if not db.update_base_lib(lib_id, name=body.name, description=body.description):
+            raise HTTPException(status_code=404, detail="Base library not found or is preset")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/base-libs/{lib_id}")
+async def delete_base_lib(lib_id: str):
+    """Delete a custom base library (preset libs cannot be deleted)."""
+    try:
+        db = get_db()
+        data_dir = get_data_dir()
+
+        lib = db.get_base_lib(lib_id)
+        if not lib:
+            raise HTTPException(status_code=404, detail="Base library not found")
+        if lib.get("lib_type", "").startswith("preset_"):
+            raise HTTPException(status_code=403, detail="Preset base libraries cannot be deleted")
+
+        # Delete from ChromaDB
+        chroma_dir = str(Path(data_dir) / "chroma")
+        vector_store = VectorStore(chroma_dir)
+        vector_store.delete_project(lib_id)
+
+        # Delete from FTS
+        fts_store = FTSStore(db)
+        fts_store.delete_project_chunks(lib_id)
+
+        # Delete files from disk
+        files_dir = Path(data_dir) / "files" / lib_id
+        if files_dir.exists():
+            import shutil
+            shutil.rmtree(files_dir, ignore_errors=True)
+
+        # Delete from database
+        db.delete_base_lib(lib_id)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Base Library File Management ──
+
+
+@router.get("/base-libs/{lib_id}/files")
+async def get_base_lib_files(
+    lib_id: str,
+    limit: int = 20,
+    before_created_at: Optional[str] = None,
+    before_id: Optional[str] = None,
+    file_type: Optional[str] = None,
+    filename_search: Optional[str] = None,
+):
+    """Get files in a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+
+        where_clauses = ["f.project_id = ?"]
+        params: list = [lib_id]
+        if file_type and file_type != "all":
+            type_map = {
+                "pdf": [".pdf"], "docx": [".docx", ".doc"],
+                "pptx": [".pptx", ".ppt"], "xlsx": [".xlsx", ".xls"],
+                "image": [".png", ".jpg", ".jpeg"],
+            }
+            extensions = type_map.get(file_type, [])
+            if extensions:
+                placeholders = ",".join("?" for _ in extensions)
+                where_clauses.append(f"f.file_type IN ({placeholders})")
+                params.extend(extensions)
+        if filename_search:
+            where_clauses.append("f.filename LIKE ?")
+            params.append(f"%{filename_search}%")
+        where_sql = " AND ".join(where_clauses)
+        if before_created_at and before_id:
+            where_sql += " AND (f.created_at < ? OR (f.created_at = ? AND f.id < ?))"
+            params.extend([before_created_at, before_created_at, before_id])
+        params.append(limit + 1)
+
+        cursor = db.conn.execute(
+            f"""SELECT f.id, f.filename, f.file_type, f.status, f.progress,
+                       f.chunk_count, f.image_count, f.image_status,
+                       f.image_described_count, f.error_message, f.created_at
+                FROM files f WHERE {where_sql}
+                ORDER BY f.created_at DESC, f.id DESC LIMIT ?""",
+            params,
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        return {
+            "files": [{
+                "id": r["id"], "filename": r["filename"], "file_type": r["file_type"],
+                "status": r["status"], "progress": r.get("progress", 0),
+                "chunks_count": r["chunk_count"], "images_count": r["image_count"],
+                "image_status": r.get("image_status", "none"),
+                "image_described_count": r.get("image_described_count", 0),
+                "error_message": r.get("error_message"), "created_at": r["created_at"],
+            } for r in rows],
+            "has_more": has_more,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs/{lib_id}/upload")
+async def upload_base_lib_file(lib_id: str, upload: FileUpload):
+    """Upload a file to a base library."""
+    try:
+        import deps
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        return await _base_lib_upload_core(lib_id, upload, db, get_data_dir(), deps.worker)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/base-libs/{lib_id}/files/active")
+async def get_base_lib_active_files(lib_id: str):
+    """Get active (non-terminal) files in a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        cursor = db.conn.execute(
+            "SELECT id, filename, status, progress, image_status, "
+            "image_described_count, image_count, error_message "
+            "FROM files WHERE project_id = ? AND "
+            "(status IN ('pending','parsing') OR "
+            "image_status IN ('pending','describing','error')) "
+            "ORDER BY created_at ASC",
+            (lib_id,),
+        )
+        return {"files": [dict(r) for r in cursor.fetchall()]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/base-libs/{lib_id}/files/{file_id}")
+async def delete_base_lib_file(lib_id: str, file_id: str):
+    """Delete a file from a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        from knowledge.file_cleanup import cleanup_file_data
+        await cleanup_file_data(
+            db, VectorStore(str(Path(data_dir) / "chroma")),
+            FTSStore(db), file_id, lib_id, data_dir,
+            remove_file_record=True,
+        )
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs/{lib_id}/files/{file_id}/retry")
+async def retry_base_lib_file(lib_id: str, file_id: str):
+    """Retry a failed file in a base library."""
+    try:
+        import deps
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        from knowledge.file_cleanup import cleanup_file_data
+        await cleanup_file_data(
+            db, VectorStore(str(Path(data_dir) / "chroma")),
+            FTSStore(db), file_id, lib_id, data_dir,
+            remove_file_record=False,
+        )
+        db.reset_file_for_retry(file_id)
+        if deps.worker:
+            await deps.worker.enqueue_file(file_id)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/base-libs/{lib_id}/recent-chunks")
+async def get_base_lib_recent_chunks(lib_id: str, limit: int = 20, file_id: Optional[str] = None):
+    """Get the most recent chunks for a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        where_clauses = ["project_id = ?"]
+        params = [lib_id]
+        if file_id:
+            where_clauses.append("(chunk_id LIKE ? OR chunk_id LIKE ?)")
+            params.extend([f"chunk_{file_id}_%", f"img_{file_id}_%"])
+        where_sql = " AND ".join(where_clauses)
+        cursor = db.conn.execute(
+            f"""SELECT chunk_id, content, filename, content_type
+               FROM chunks_fts WHERE {where_sql}
+               ORDER BY rowid DESC LIMIT ?""",
+            params + [limit],
+        )
+        chunks = [{"id": r["chunk_id"], "content": r["content"], "_score": 0,
+                    "metadata": {"filename": r["filename"], "content_type": r["content_type"]}}
+                   for r in cursor.fetchall()]
+        return {"results": chunks}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs/{lib_id}/files/retry-failed")
+async def retry_base_lib_failed_files(lib_id: str):
+    """Retry all failed files in a base library."""
+    try:
+        import deps
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        vs = VectorStore(str(Path(data_dir) / "chroma"))
+        fts = FTSStore(db)
+        from knowledge.file_cleanup import cleanup_file_data
+        cursor = db.conn.execute(
+            "SELECT id FROM files WHERE project_id = ? AND status = 'error'", (lib_id,),
+        )
+        ids = [r["id"] for r in cursor.fetchall()]
+        for fid in ids:
+            await cleanup_file_data(db, vs, fts, fid, lib_id, data_dir, remove_file_record=False)
+            db.reset_file_for_retry(fid)
+            if deps.worker:
+                await deps.worker.enqueue_file(fid)
+        return {"success": True, "retried_count": len(ids)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs/{lib_id}/files/batch-delete")
+async def batch_delete_base_lib_files(lib_id: str, req: BatchFileRequest):
+    """Batch delete multiple files in a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        vs = VectorStore(str(Path(data_dir) / "chroma"))
+        fts = FTSStore(db)
+        from knowledge.file_cleanup import cleanup_file_data
+        deleted = 0
+        for fid in req.file_ids:
+            try:
+                await cleanup_file_data(db, vs, fts, fid, lib_id, data_dir, remove_file_record=True)
+                deleted += 1
+            except Exception:
+                pass
+        return {"success": True, "deleted_count": deleted}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs/{lib_id}/files/batch-reprocess")
+async def batch_reprocess_base_lib_files(lib_id: str, req: BatchFileRequest):
+    """Batch reprocess multiple files in a base library."""
+    try:
+        import deps
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        vs = VectorStore(str(Path(data_dir) / "chroma"))
+        fts = FTSStore(db)
+        from knowledge.file_cleanup import cleanup_file_data
+        reprocessed = 0
+        for fid in req.file_ids:
+            try:
+                await cleanup_file_data(db, vs, fts, fid, lib_id, data_dir, remove_file_record=False)
+                db.reset_file_for_retry(fid)
+                if deps.worker:
+                    await deps.worker.enqueue_file(fid)
+                reprocessed += 1
+            except Exception:
+                pass
+        return {"success": True, "reprocessed_count": reprocessed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Base Library Search & Chat ──
+
+
+@router.post("/base-libs/{lib_id}/search")
+async def search_base_lib(lib_id: str, request: SearchRequest):
+    """Search within a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        search_tool = KnowledgeSearchTool(
+            db=db,
+            chroma_persist_dir=str(Path(data_dir) / "chroma"),
+            models_dir=str(Path(data_dir) / "models"),
+        )
+        results = await search_tool.search(
+            query=request.query, project_id=lib_id,
+            top_k=request.topK, content_type_filter=request.contentTypeFilter,
+            file_id=request.fileId,
+        )
+        return {"results": results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/base-libs/{lib_id}/chat")
+async def chat_base_lib(lib_id: str, request: ChatRequest):
+    """RAG chat within a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        data_dir = get_data_dir()
+        from knowledge.rag import KnowledgeRAG
+        rag = KnowledgeRAG(
+            db=db,
+            chroma_persist_dir=str(Path(data_dir) / "chroma"),
+            models_dir=str(Path(data_dir) / "models"),
+        )
+        import deps
+        settings = deps.db.get_settings() if hasattr(deps.db, 'get_settings') else {}
+        return await rag.ask(
+            project_id=lib_id, message=request.message,
+            file_id=request.fileId, settings=settings,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/base-libs/{lib_id}/images")
+async def get_base_lib_images(
+    lib_id: str, limit: int = 40, offset: int = 0,
+    file_id: Optional[str] = None,
+):
+    """Get images in a base library."""
+    try:
+        db = get_db()
+        await _validate_base_lib_exists(db, lib_id)
+        where_clauses = ["f.project_id = ?"]
+        params = [lib_id]
+        if file_id:
+            where_clauses.append("i.file_id = ?")
+            params.append(file_id)
+        where_sql = " AND ".join(where_clauses)
+        cursor = db.conn.execute(
+            f"""SELECT i.id, i.file_id, i.page_no, i.caption, i.local_path,
+                      i.vlm_description, i.status, i.context_text,
+                      i.error_message, i.category, i.created_at, f.filename
+               FROM images i JOIN files f ON f.id = i.file_id
+               WHERE {where_sql}
+               ORDER BY i.created_at DESC LIMIT ? OFFSET ?""",
+            params + [limit + 1, offset],
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        count_cursor = db.conn.execute(
+            f"SELECT COUNT(*) as cnt FROM images i JOIN files f ON f.id = i.file_id WHERE {where_sql}",
+            params,
+        )
+        total = count_cursor.fetchone()["cnt"]
+        return {
+            "images": [{
+                "id": r["id"], "file_id": r["file_id"], "filename": r["filename"],
+                "page_no": r["page_no"], "caption": r["caption"],
+                "local_path": r["local_path"], "vlm_description": r["vlm_description"],
+                "status": r.get("status", "pending"), "error_message": r.get("error_message"),
+                "context_text": r["context_text"], "category": r.get("category", "uncategorized"),
+                "created_at": r["created_at"],
+            } for r in rows],
+            "total": total, "has_more": has_more,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Project-BaseLib Association ──
+
+
+@router.get("/projects/{project_id}/base-libs")
+async def get_project_base_libs(project_id: str):
+    """Get base libraries linked to a project."""
+    try:
+        db = get_db()
+        libs = db.get_project_base_libs(project_id)
+        return {"base_libs": libs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class LinkBaseLibRequest(BaseModel):
+    base_lib_id: str
+
+
+@router.post("/projects/{project_id}/base-libs")
+async def link_project_base_lib(project_id: str, body: LinkBaseLibRequest):
+    """Link a base library to a project."""
+    try:
+        db = get_db()
+        db.link_project_to_base_lib(project_id, body.base_lib_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/{project_id}/base-libs/{base_lib_id}")
+async def unlink_project_base_lib(project_id: str, base_lib_id: str):
+    """Unlink a base library from a project."""
+    try:
+        db = get_db()
+        db.unlink_project_from_base_lib(project_id, base_lib_id)
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -224,11 +224,11 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('knowledge:createProject', async (_event, { name, description }) => {
+  ipcMain.handle('knowledge:createProject', async (_event, { name, description, type, stage, companyName, creditCode }) => {
     const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, type: type || 'general', stage: stage || 'none', company_name: companyName || '', credit_code: creditCode || '' }),
     })
     return handlePythonResponse(res)
   })
@@ -385,6 +385,157 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, fileId }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // ── Base Library ──
+
+  ipcMain.handle('baseLib:list', async () => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:create', async (_event, { name, description }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description: description || '' }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:update', async (_event, { libId, projectId, name, description }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:delete', async (_event, libId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:getFiles', async (_event, { libId, projectId, limit, beforeCreatedAt, beforeId, fileType, filenameSearch }) => {
+    const id = libId || projectId
+    const params = new URLSearchParams({ limit: String(limit || 20) })
+    if (beforeCreatedAt) params.set('before_created_at', beforeCreatedAt)
+    if (beforeId) params.set('before_id', beforeId)
+    if (fileType) params.set('file_type', fileType)
+    if (filenameSearch) params.set('filename_search', filenameSearch)
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:getActiveFiles', async (_event, libId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}/files/active`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:upload', async (_event, { libId, projectId, filename, fileType, data }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: id, filename, fileType, data }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:deleteFile', async (_event, { libId, projectId, fileId }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/${fileId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:retryFile', async (_event, { libId, projectId, fileId }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/${fileId}/retry`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:search', async (_event, { libId, projectId, query, topK, contentTypeFilter, fileId }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId: id, query, topK, contentTypeFilter, fileId }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:recentChunks', async (_event, { libId, projectId, limit, fileId }) => {
+    const id = libId || projectId
+    const params = new URLSearchParams({ limit: String(limit || 20) })
+    if (fileId) params.set('file_id', fileId)
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/recent-chunks?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:retryFailedFiles', async (_event, libId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}/files/retry-failed`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:batchDeleteFiles', async (_event, { libId, projectId, fileIds }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/batch-delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_ids: fileIds }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:batchReprocessFiles', async (_event, { libId, projectId, fileIds }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/batch-reprocess`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_ids: fileIds }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:getImages', async (_event, { libId, projectId, limit, offset, fileId }) => {
+    const id = libId || projectId
+    const params = new URLSearchParams({ limit: String(limit || 40), offset: String(offset || 0) })
+    if (fileId) params.set('file_id', fileId)
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/images?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  // ── Project-BaseLib Association ──
+
+  ipcMain.handle('project:getBaseLibs', async (_event, projectId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('project:linkBaseLib', async (_event, { projectId, baseLibId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_lib_id: baseLibId }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('project:unlinkBaseLib', async (_event, { projectId, baseLibId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs/${baseLibId}`, {
+      method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
@@ -682,6 +833,182 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── External Dependencies Check ──
   ipcMain.handle('system:checkDeps', async () => {
     const res = await fetch(`${pythonManager.getBaseUrl()}/system/deps/check`)
+    return handlePythonResponse(res)
+  })
+
+  // ── Reports & Templates ──
+
+  ipcMain.handle('dialog:openFile', async (_event, { filters, properties }) => {
+    const { dialog } = require('electron')
+    return dialog.showOpenDialog({
+      filters: filters || [{ name: 'All Files', extensions: ['*'] }],
+      properties: properties || ['openFile'],
+    })
+  })
+
+  ipcMain.handle('reports:listTemplates', async (_event, { projectType, stage }) => {
+    const params = new URLSearchParams()
+    if (projectType) params.set('project_type', projectType)
+    if (stage) params.set('stage', stage)
+    const qs = params.toString() ? `?${params.toString()}` : ''
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates${qs}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:getTemplate', async (_event, templateId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:saveTemplate', async (_event, { templateJson }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template_json: templateJson }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:updateTemplate', async (_event, { templateId, templateJson }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template_json: templateJson }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:copyTemplate', async (_event, { templateId, newName }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}/copy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_name: newName }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:deleteTemplate', async (_event, templateId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:extractSample', async (_event, { filePath }) => {
+    const fs = require('fs')
+    const path = require('path')
+    const fileData = fs.readFileSync(filePath)
+    const fileName = path.basename(filePath)
+    const boundary = '----InkCubeBoundary' + Date.now()
+
+    const parts = []
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`
+      )
+    )
+    parts.push(fileData)
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
+
+    const body = Buffer.concat(parts)
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/extract-sample`, {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body: body,
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:refreshTemplates', async () => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/refresh-templates`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:listReports', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports?project_id=${encodeURIComponent(projectId)}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:getReport', async (_event, reportId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:deleteReport', async (_event, reportId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Phase 3: Report generation (SSE streaming)
+  ipcMain.handle('reports:generateReport', async (_event, { projectId, templateId, title, variables, baseProjectIds, outputFormat, supplementaryNotes }) => {
+    // Note: SSE streaming is handled via direct HTTP connection in the frontend
+    // This handler returns the report_id for tracking
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: projectId,
+        template_id: templateId,
+        title,
+        variables: variables || {},
+        base_project_ids: baseProjectIds || [],
+        output_format: outputFormat || 'Word',
+        supplementary_notes: supplementaryNotes || null,
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Phase 4: Report content retrieval
+  ipcMain.handle('reports:getReportContent', async (_event, reportId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/content`)
+    return handlePythonResponse(res)
+  })
+
+  // Phase 4: Report export
+  ipcMain.handle('reports:exportReport', async (_event, { reportId, format }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: format || 'Word' }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Phase 4: Section regeneration
+  ipcMain.handle('reports:regenerateSection', async (_event, { reportId, sectionId, promptHint }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/sections/${sectionId}/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        section_id: sectionId,
+        prompt_hint: promptHint || null,
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Retry failed report
+  ipcMain.handle('reports:retryReport', async (_event, { reportId, mode }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode || 'resume' }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Get report generation logs
+  ipcMain.handle('reports:getReportLogs', async (_event, { reportId, limit }) => {
+    const url = new URL(`${pythonManager.getBaseUrl()}/reports/${reportId}/logs`)
+    if (limit) url.searchParams.set('limit', String(limit))
+    const res = await fetch(url.toString())
     return handlePythonResponse(res)
   })
 }

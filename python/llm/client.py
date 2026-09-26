@@ -113,6 +113,62 @@ class LLMClient:
                 return ""
             return content
 
+    async def chat_full(self, messages: list[dict], settings: dict) -> dict:
+        """Chat completion that returns both content and precise token usage.
+
+        Unlike chat() which returns str for backward compatibility, this method
+        always returns a dict with content and usage information from the API.
+
+        Returns:
+            {"content": str, "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}}
+        """
+        logger.info("LLM chat_full request: model=%s, messages=%d", self.model, len(messages))
+        request_body: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "top_p": self.top_p,
+            "stream": False,
+        }
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
+            try:
+                response = await client.post(
+                    f"{self.api_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_body,
+                )
+            except httpx.TimeoutException as e:
+                logger.error("LLM timeout: %s", str(e))
+                raise LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
+            except httpx.ConnectError as e:
+                logger.error("LLM connection failed: %s", str(e))
+                raise LLMNetworkError(detail=f"连接失败: {e}")
+
+            if response.status_code == 401:
+                raise LLMInvalidKey(detail=response.text)
+            if response.status_code != 200:
+                logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
+                raise LLMCallFailed(detail=f"API error {response.status_code}: {response.text}")
+
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice["message"].get("content") or ""
+            usage = data.get("usage", {})
+
+            return {
+                "content": content,
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+
     async def test_connection(self) -> bool:
         logger.info("Testing LLM connection: model=%s, url=%s", self.model, self.api_url)
         async with httpx.AsyncClient(timeout=10.0) as client:

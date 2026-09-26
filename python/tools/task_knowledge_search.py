@@ -108,6 +108,7 @@ class TaskKnowledgeSearchTool(BaseTool):
                            COALESCE(SUM(f.chunk_count), 0) as chunk_count
                     FROM projects p
                     LEFT JOIN files f ON f.project_id = p.id
+                    WHERE p.kind = 'project'
                     GROUP BY p.id
                     ORDER BY p.created_at DESC
                 """)

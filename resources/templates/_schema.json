@@ -157,6 +157,16 @@
           "enum": ["front", "end"],
           "description": "post_body 章节的渲染位置"
         },
+        "data_sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["knowledge", "internet", "wiki"]
+          },
+          "uniqueItems": true,
+          "default": ["knowledge"],
+          "description": "数据来源通道配置。knowledge=项目知识库RAG，internet=互联网搜索，wiki=Wiki页面（预留）"
+        },
         "children": {
           "type": "array",
           "items": { "$ref": "#/$defs/outline_node" },

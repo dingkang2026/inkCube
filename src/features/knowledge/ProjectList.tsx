@@ -13,7 +13,7 @@ interface ProjectListProps {
   onSelect: (projectId: string) => void
   onDelete: (projectId: string) => void
   onRename?: (projectId: string, name: string) => void
-  onCreate?: (name: string, description?: string, type?: ProjectType) => void
+  onCreate?: (name: string, description?: string, type?: ProjectType, companyName?: string, creditCode?: string) => void
 }
 
 export function ProjectList({
@@ -29,6 +29,8 @@ export function ProjectList({
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDesc, setNewProjectDesc] = useState('')
   const [newProjectType, setNewProjectType] = useState<ProjectType>('general')
+  const [newCompanyName, setNewCompanyName] = useState('')
+  const [newCreditCode, setNewCreditCode] = useState('')
   const [creating, setCreating] = useState(false)
   const [confirmingProjectId, setConfirmingProjectId] = useState<string | null>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -82,10 +84,12 @@ export function ProjectList({
     if (!newProjectName.trim() || !onCreate || creating) return
     setCreating(true)
     try {
-      await onCreate(newProjectName.trim(), newProjectDesc.trim() || undefined, newProjectType)
+      await onCreate(newProjectName.trim(), newProjectDesc.trim() || undefined, newProjectType, newCompanyName.trim() || undefined, newCreditCode.trim() || undefined)
       setNewProjectName('')
       setNewProjectDesc('')
       setNewProjectType('general')
+      setNewCompanyName('')
+      setNewCreditCode('')
       setShowCreateModal(false)
     } finally {
       setCreating(false)
@@ -210,6 +214,20 @@ export function ProjectList({
                 <option key={key} value={key}>{t(cfg.labelKey)}</option>
               ))}
             </select>
+            <input
+              type="text"
+              className={s.input}
+              placeholder={t('knowledge.companyName')}
+              value={newCompanyName}
+              onChange={(e) => setNewCompanyName(e.target.value)}
+            />
+            <input
+              type="text"
+              className={s.input}
+              placeholder={t('knowledge.creditCode')}
+              value={newCreditCode}
+              onChange={(e) => setNewCreditCode(e.target.value)}
+            />
             <div className={s.modalActions}>
               <button className={s.btnCancel} onClick={() => setShowCreateModal(false)}>
                 {t('knowledge.cancel')}

@@ -1,59 +1,117 @@
-/** src/features/project/tabs/ReportsTab.tsx — Reports tab with wizard, preview, template mgmt (UI-First) */
-import { useState } from 'react'
+/** src/features/project/tabs/ReportsTab.tsx — Reports tab with kanban layout (4 columns by stage) */
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Plus, Settings2, Clock, CheckCircle, AlertCircle } from 'lucide-react'
-import type { ProjectType, ProjectStage, MockReport } from '../types'
+import { FileText, Plus, Settings2, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw } from 'lucide-react'
+import type { ProjectType, ProjectStage, Report } from '../types'
+import { STAGE_COLUMNS } from '../types'
 import { ReportWizard } from './ReportWizard'
 import { ReportPreview } from './ReportPreview'
 import { TemplateManagement } from './TemplateManagement'
 import s from './ReportsTab.module.css'
 
+type ViewMode = 'list' | 'wizard' | 'preview' | 'templateManagement'
+
 interface ReportsTabProps {
+  projectId: string
   projectType: ProjectType
   currentStage: ProjectStage
 }
 
-/** Initial mock generated reports */
-const INITIAL_REPORTS: MockReport[] = [
-  { id: 'r1', title: 'XX公司尽职调查报告', templateName: '尽职调查报告', outputFormat: 'Word', createdAt: '2026-09-20', status: 'completed' },
-  { id: 'r2', title: '新能源行业研究报告', templateName: '行业研究报告', outputFormat: 'Word', createdAt: '2026-09-18', status: 'completed' },
-  { id: 'r3', title: 'XX项目招商推介', templateName: '招商推介方案', outputFormat: 'PPT', createdAt: '2026-09-23', status: 'generating', progress: 60 },
-]
-
-const STATUS_FILTER_KEYS = ['all', 'dueDiligence', 'industryResearch', 'investmentAnalysis', 'recruitmentPlan'] as const
-
-type ViewMode = 'list' | 'wizard' | 'preview' | 'templateManagement'
-
-export function ReportsTab({ projectType, currentStage }: ReportsTabProps) {
+export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabProps) {
   const { t } = useTranslation()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
-  const [activeFilter, setActiveFilter] = useState('all')
-  const [reports, setReports] = useState<MockReport[]>(INITIAL_REPORTS)
-  const [previewReport, setPreviewReport] = useState<MockReport | null>(null)
+  const [reports, setReports] = useState<Report[]>([])
+  const [previewReport, setPreviewReport] = useState<Report | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  const statusFilters = STATUS_FILTER_KEYS.map(key => ({
-    key,
-    label: t(`project.report.filter.${key}`),
-  }))
+  // Load reports from backend
+  useEffect(() => {
+    const loadReports = async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+        if (result.reports) {
+          setReports(result.reports)
+        }
+      } catch (err) {
+        console.error('Failed to load reports:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadReports()
+  }, [projectId])
 
-  const handleWizardComplete = (newReport: MockReport) => {
-    setReports(prev => [newReport, ...prev])
+  const handleWizardComplete = async () => {
+    // Reload reports after wizard completes
+    try {
+      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+      if (result.reports) {
+        setReports(result.reports)
+      }
+    } catch (err) {
+      console.error('Failed to reload reports:', err)
+    }
     setViewMode('list')
   }
 
-  const handleOpenReport = (report: MockReport) => {
+  const handleOpenReport = (report: Report) => {
     setPreviewReport(report)
     setViewMode('preview')
   }
 
-  const handleExportReport = (report: MockReport) => {
-    alert(t('project.report.exportSuccess', { format: report.outputFormat, title: report.title }))
+  const handleDeleteReport = async (report: Report) => {
+    if (!confirm(t('project.report.confirmDelete'))) return
+    try {
+      await window.electronAPI.invoke('reports:deleteReport', report.id)
+      // Reload reports
+      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+      if (result.reports) setReports(result.reports)
+    } catch (err) {
+      console.error('Failed to delete report:', err)
+    }
+  }
+
+  const handleExportReport = async (report: Report) => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:exportReport', {
+        reportId: report.id,
+        format: report.output_format,
+      })
+      if (result.path) {
+        alert(t('project.report.exportSuccess', { format: report.output_format, title: report.title }))
+      } else {
+        alert(t('project.report.exportFailed', { error: result.error }))
+      }
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert(t('project.report.exportFailed', { error: String(err) }))
+    }
+  }
+
+  const handleRetryReport = async (report: Report, mode: 'resume' | 'restart' = 'resume') => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:retryReport', {
+        reportId: report.id,
+        mode,
+      })
+      if (result.error) {
+        alert(t('project.report.retryFailed', { error: result.error }))
+      } else {
+        // Reload reports to show updated status
+        const res: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+        if (res.reports) setReports(res.reports)
+      }
+    } catch (err) {
+      console.error('Retry failed:', err)
+      alert(t('project.report.retryFailed', { error: String(err) }))
+    }
   }
 
   // ── Wizard view ──
   if (viewMode === 'wizard') {
     return (
       <ReportWizard
+        projectId={projectId}
         projectType={projectType}
         currentStage={currentStage}
         onComplete={handleWizardComplete}
@@ -79,7 +137,24 @@ export function ReportsTab({ projectType, currentStage }: ReportsTabProps) {
     )
   }
 
-  // ── List view (default) ──
+  // ── Kanban view (default) ──
+  // Determine columns to show based on project type
+  const columns = projectType === 'general'
+    ? STAGE_COLUMNS
+    : STAGE_COLUMNS.filter(c => c.key !== 'none' || reports.some(r => r.stage === 'none'))
+
+  const visibleColumns = projectType === 'general'
+    ? [{ key: 'none' as ProjectStage, labelKey: 'project.stage.other' }]
+    : columns
+
+  if (loading) {
+    return (
+      <div className={s.container}>
+        <div className={s.loading}>{t('common.loading')}</div>
+      </div>
+    )
+  }
+
   return (
     <div className={s.container}>
       {/* Header */}
@@ -93,67 +168,87 @@ export function ReportsTab({ projectType, currentStage }: ReportsTabProps) {
         </button>
       </div>
 
-      {/* Filters */}
-      <div className={s.filters}>
-        {statusFilters.map((f) => (
-          <button
-            key={f.key}
-            className={`${s.filterBtn} ${activeFilter === f.key ? s.filterBtnActive : ''}`}
-            onClick={() => setActiveFilter(f.key)}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Report list */}
-      <div className={s.reportList}>
-        {reports.map((report) => (
-          <div key={report.id} className={s.reportCard}>
-            <div className={s.reportIcon}>
-              <FileText size={20} />
-            </div>
-            <div className={s.reportInfo}>
-              <div className={s.reportTitle}>{report.title}</div>
-              <div className={s.reportMeta}>
-                <span>{t('project.report.template')}: {report.templateName}</span>
-                <span className={s.dot}>·</span>
-                <span>{report.outputFormat}</span>
-                <span className={s.dot}>·</span>
-                <span>{report.createdAt}</span>
+      {/* Kanban board */}
+      <div className={s.kanbanBoard}>
+        {visibleColumns.map((col) => {
+          const colReports = reports.filter(r => r.stage === col.key)
+          return (
+            <div key={col.key} className={s.kanbanColumn}>
+              <div className={s.columnHeader}>
+                <span className={s.columnTitle}>{t(col.labelKey)}</span>
+                <span className={s.columnCount}>{colReports.length}</span>
+              </div>
+              <div className={s.columnBody}>
+                {colReports.length === 0 ? (
+                  <div className={s.columnEmpty}>{t('project.report.kanban.noReports')}</div>
+                ) : (
+                  colReports.map((report) => (
+                    <div key={report.id} className={s.reportCard} onClick={() => handleOpenReport(report)}>
+                      <div className={s.reportCardHeader}>
+                        <FileText size={14} className={s.reportIcon} />
+                        <span className={s.reportTitle}>{report.title}</span>
+                      </div>
+                      <div className={s.reportMeta}>
+                        <span>{report.template_name}</span>
+                        <span className={s.dot}>·</span>
+                        <span>{report.output_format}</span>
+                        <span className={s.dot}>·</span>
+                        <span>{new Date(report.created_at).toLocaleDateString()}</span>
+                      </div>
+                      <div className={s.reportCardFooter}>
+                        {report.status === 'done' && (
+                          <span className={s.statusCompleted}>
+                            <CheckCircle size={12} /> {t('project.report.completed')}
+                          </span>
+                        )}
+                        {report.status === 'generating' && (
+                          <span className={s.statusGenerating}>
+                            <Clock size={12} /> {report.progress || 0}%
+                          </span>
+                        )}
+                        {report.status === 'error' && (
+                          <span
+                            className={s.statusFailed}
+                            title={report.error_message || t('project.report.failed')}
+                          >
+                            <AlertCircle size={12} /> {t('project.report.failed')}
+                          </span>
+                        )}
+                        {report.status === 'error' && (
+                          <button
+                            className={s.retryBtn}
+                            onClick={(e) => { e.stopPropagation(); handleRetryReport(report, 'resume') }}
+                            title={t('project.report.retry')}
+                          >
+                            <RefreshCw size={12} />
+                          </button>
+                        )}
+                        <button
+                          className={s.exportBtn}
+                          onClick={(e) => { e.stopPropagation(); handleDeleteReport(report) }}
+                          title={t('project.report.delete')}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                        <button
+                          className={s.exportBtn}
+                          onClick={(e) => { e.stopPropagation(); handleExportReport(report) }}
+                          disabled={report.status !== 'done'}
+                        >
+                          {t('project.report.export')}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
-            <div className={s.reportStatus}>
-              {report.status === 'completed' && (
-                <span className={s.statusCompleted}>
-                  <CheckCircle size={14} /> {t('project.report.completed')}
-                </span>
-              )}
-              {report.status === 'generating' && (
-                <span className={s.statusGenerating}>
-                  <Clock size={14} /> {report.progress}%
-                </span>
-              )}
-              {report.status === 'failed' && (
-                <span className={s.statusFailed}>
-                  <AlertCircle size={14} /> {t('project.report.failed')}
-                </span>
-              )}
-            </div>
-            <div className={s.reportActions}>
-              <button className={s.actionBtn} onClick={() => handleOpenReport(report)}>
-                {t('project.report.open')}
-              </button>
-              <button className={s.actionBtn} onClick={() => handleExportReport(report)}>
-                {t('project.report.export')}
-              </button>
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       <div className={s.footer}>
-        {t('project.report.totalReports', { count: reports.length })}
+        {t('project.report.kanban.totalReports', { count: reports.length })}
       </div>
     </div>
   )

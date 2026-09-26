@@ -2,8 +2,8 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { X, RefreshCw, Package } from 'lucide-react'
-import type { ImageRecord } from './types'
-import { IMAGE_CATEGORIES } from './types'
+import type { ImageRecord, KnowledgeIpcChannels } from './types'
+import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './ImageList.module.css'
@@ -12,9 +12,11 @@ interface ImageListProps {
   projectId: string
   fileId: string
   onClose: () => void
+  ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
-export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
+export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageListProps) {
+  const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const showToast = useToast()
   const handleError = useErrorHandler()
@@ -25,7 +27,7 @@ export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
   const loadImages = async () => {
     setLoading(true)
     try {
-      const result: any = await window.electronAPI.invoke('knowledge:getImages', { projectId, fileId })
+      const result: any = await window.electronAPI.invoke(ipc.getImages, { projectId, fileId })
       setImages(result.images || [])
     } catch (err) {
       console.error('Failed to load images:', err)
@@ -38,7 +40,7 @@ export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
 
   const handleRetry = async (imageId: string, force = false) => {
     try {
-      await window.electronAPI.invoke('knowledge:retryImage', { projectId, imageId, force })
+      await window.electronAPI.invoke(ipc.retryImage, { projectId, imageId, force })
       loadImages()
       showToast(force ? t('knowledge.retryForceSubmitted') : t('knowledge.retrySubmitted'), 'success')
     } catch (err: any) {
@@ -48,7 +50,7 @@ export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
 
   const handleChangeCategory = async (imageId: string, category: string) => {
     try {
-      await window.electronAPI.invoke('knowledge:updateImageCategory', { projectId, imageId, category })
+      await window.electronAPI.invoke(ipc.updateImageCategory, { projectId, imageId, category })
       setImages(prev => prev.map(i => i.id === imageId ? { ...i, category } : i))
     } catch (err) {
       console.error('Update category failed:', err)
@@ -58,7 +60,7 @@ export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
   const handleArchive = async (imageId: string) => {
     if (!confirm(t('knowledge.confirmArchive'))) return
     try {
-      await window.electronAPI.invoke('knowledge:archiveImage', { projectId, imageId })
+      await window.electronAPI.invoke(ipc.archiveImage, { projectId, imageId })
       setImages(prev => prev.map(i =>
         i.id === imageId ? { ...i, status: 'archived' as const, vlm_description: null, error_message: '手动归档' } : i
       ))
@@ -69,7 +71,7 @@ export function ImageList({ projectId, fileId, onClose }: ImageListProps) {
 
   const handleRetryFailed = async () => {
     try {
-      await window.electronAPI.invoke('knowledge:retryFailedImages', { projectId, fileId })
+      await window.electronAPI.invoke(ipc.retryFailedImages, { projectId, fileId })
       loadImages()
       showToast(t('knowledge.retrySubmitted'), 'success')
     } catch (err: any) {

@@ -9,7 +9,7 @@ import { FormsTab } from './tabs/FormsTab'
 import { ProjectChatPanel } from './ProjectChatPanel'
 import type { Project } from '../knowledge/types'
 import type { ProjectType, ProjectStage } from './types'
-import { PROJECT_TYPE_CONFIG, STAGE_MAP, getProjectExtState, projectExtState } from './types'
+import { PROJECT_TYPE_CONFIG, STAGE_MAP, getInitialStage } from './types'
 import s from './ProjectDetailPage.module.css'
 
 interface ProjectDetailPageProps {
@@ -27,36 +27,32 @@ const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
   { key: 'forms', labelKey: 'project.tab.forms', Icon: ClipboardList },
 ]
 
-/** UI-First: project type/stage stored in shared module-level state */
-
 export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChanged }: ProjectDetailPageProps) {
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabKey>('materials')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
 
-  const ext = getProjectExtState(project.id)
-  const [projectType, setProjectType] = useState(ext.type)
-  const [currentStage, setCurrentStage] = useState(ext.stage)
+  // Read type/stage from project (persisted in backend)
+  const [projectType, setProjectType] = useState<ProjectType>((project.type as ProjectType) || 'general')
+  const [currentStage, setCurrentStage] = useState<ProjectStage>((project.stage as ProjectStage) || 'none')
 
   // Re-sync local state when switching to a different project
   useEffect(() => {
-    const newExt = getProjectExtState(project.id)
-    setProjectType(newExt.type)
-    setCurrentStage(newExt.stage)
-  }, [project.id])
+    setProjectType((project.type as ProjectType) || 'general')
+    setCurrentStage((project.stage as ProjectStage) || 'none')
+  }, [project.id, project.type, project.stage])
 
   const handleStageClick = useCallback((stage: ProjectStage) => {
     setCurrentStage(stage)
-    projectExtState.set(project.id, { type: projectType, stage })
-  }, [projectType, project.id])
+    // TODO: persist stage change to backend via API
+  }, [project.id])
 
   const handleTypeChange = useCallback((newType: ProjectType) => {
     setProjectType(newType)
-    const stages = STAGE_MAP[newType]
-    const newStage: ProjectStage = stages.length > 0 ? stages[0].key : 'none'
+    const newStage = getInitialStage(newType)
     setCurrentStage(newStage)
-    projectExtState.set(project.id, { type: newType, stage: newStage })
+    // TODO: persist type/stage change to backend via API
   }, [project.id])
 
   const typeConfig = PROJECT_TYPE_CONFIG[projectType]
@@ -74,6 +70,13 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
               <h2 className={s.projectName}>{project.name}</h2>
               {project.description && (
                 <p className={s.projectDesc}>{project.description}</p>
+              )}
+              {(project.company_name || project.credit_code) && (
+                <p className={s.companyInfo}>
+                  {project.company_name && <span>{project.company_name}</span>}
+                  {project.company_name && project.credit_code && <span className={s.companyDot}>·</span>}
+                  {project.credit_code && <span className={s.creditCode}>{project.credit_code}</span>}
+                </p>
               )}
             </div>
           </div>
@@ -142,7 +145,7 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
             <WikiTab projectType={projectType} />
           )}
           {activeTab === 'reports' && (
-            <ReportsTab projectType={projectType} currentStage={currentStage} />
+            <ReportsTab projectId={project.id} projectType={projectType} currentStage={currentStage} />
           )}
           {activeTab === 'forms' && (
             <FormsTab projectType={projectType} currentStage={currentStage} />

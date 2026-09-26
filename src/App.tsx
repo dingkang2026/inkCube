@@ -19,7 +19,7 @@ import { useSettings } from './features/settings/useSettings'
 import { useResizeHandle } from './hooks/useResizeHandle'
 import type { Project } from './features/knowledge/types'
 import type { ProjectType } from './features/project/types'
-import { setProjectExtState } from './features/project/types'
+import { getInitialStage } from './features/project/types'
 
 export default function App() {
   const { settings, handleSaveSettings } = useSettings()
@@ -147,15 +147,20 @@ export default function App() {
     }
   }
 
-  const handleCreateProject = async (name: string, description?: string, type?: ProjectType) => {
-    const result: any = await window.electronAPI.invoke('knowledge:createProject', { name, description })
+  const handleCreateProject = async (name: string, description?: string, type?: ProjectType, companyName?: string, creditCode?: string) => {
+    const projectType = type || 'general'
+    const stage = getInitialStage(projectType)
+    const result: any = await window.electronAPI.invoke('knowledge:createProject', {
+      name,
+      description,
+      type: projectType,
+      stage,
+      companyName,
+      creditCode,
+    })
     await loadProjects()
     // Auto-select the newly created project
     if (result?.id) {
-      // Set project type if specified
-      if (type) {
-        setProjectExtState(result.id, type)
-      }
       setSelectedProjectId(result.id)
     }
   }

@@ -71,7 +71,7 @@ from db.database import Database
 from agent.task_agent import TaskAgent
 from knowledge.model_manager import ModelManager
 from watchdog import start_watchdog
-from routers import settings, models, knowledge, health, system, tasks, skills
+from routers import settings, models, knowledge, health, system, tasks, skills, reports
 
 
 @asynccontextmanager
@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
 
     deps.db = Database(db_path)
     deps.db.initialize()
+    deps.db.ensure_preset_base_libs()
     deps.task_agent = TaskAgent(deps.db)
     deps.model_manager = ModelManager()
 
@@ -168,6 +169,7 @@ app.include_router(health.router)
 app.include_router(system.router)
 app.include_router(tasks.router)
 app.include_router(skills.router)
+app.include_router(reports.router)
 
 
 # ── Global Exception Handlers ──

@@ -126,6 +126,30 @@ class Database:
         # Migrate: tasks table - mode for coding/general mode
         self._migrate_add_column("tasks", "mode", "TEXT DEFAULT 'coding'")
 
+        # Migrate: projects table - type/stage for project classification
+        self._migrate_add_column("projects", "type", "TEXT DEFAULT 'general'")
+        self._migrate_add_column("projects", "stage", "TEXT DEFAULT 'none'")
+
+        # Migrate: projects table - company info fields
+        self._migrate_add_column("projects", "company_name", "TEXT DEFAULT ''")
+        self._migrate_add_column("projects", "credit_code", "TEXT DEFAULT ''")
+
+        # Migrate: projects table - kind/lib_type for base library support
+        self._migrate_add_column("projects", "kind", "TEXT DEFAULT 'project'")
+        self._migrate_add_column("projects", "lib_type", "TEXT DEFAULT NULL")
+
+        # Project-BaseLib association table
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS project_base_libs (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                base_lib_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                auto_linked INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project_id, base_lib_id)
+            );
+        """)
+        self.conn.commit()
+
         # Skills table
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS skills (
@@ -144,6 +168,64 @@ class Database:
                 state_json TEXT NOT NULL,
                 paused_at TEXT NOT NULL
             );
+
+            -- Report system tables
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                template_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                output_format TEXT NOT NULL DEFAULT 'Word',
+                status TEXT NOT NULL DEFAULT 'generating',
+                progress INTEGER DEFAULT 0,
+                content_path TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS report_sections (
+                id TEXT PRIMARY KEY,
+                report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+                section_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                word_count INTEGER DEFAULT 0,
+                compose_mode TEXT DEFAULT 'standard',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                template_json TEXT NOT NULL,
+                is_custom INTEGER DEFAULT 0,
+                version TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reports_project ON reports(project_id);
+            CREATE INDEX IF NOT EXISTS idx_report_sections_report ON report_sections(report_id);
+        """)
+        self.conn.commit()
+
+        # ── Migrations ──
+        self._migrate_add_column("reports", "token_usage", "TEXT")
+        self._migrate_add_column("reports", "error_message", "TEXT")
+
+        # Report logs table (for progress tracking)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS report_logs (
+                id TEXT PRIMARY KEY,
+                report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+                level TEXT NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL,
+                section_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_report_logs_report ON report_logs(report_id, created_at);
         """)
         self.conn.commit()
 
@@ -192,6 +274,9 @@ class Database:
             "task_workspace_max_mb": 1024,
             "task_max_count": 50,
             "task_auto_archive_days": 30,
+            # Report-specific settings
+            "report_max_concurrent": 2,  # 最大并发生成报告数
+            "report_channel_parallelism": 4,  # 通道内多 query 并行数
         }
         cursor = self.conn.execute("SELECT key, value FROM settings")
         for row in cursor.fetchall():
@@ -214,18 +299,29 @@ class Database:
 
     # ── Knowledge Base: Projects ──
 
-    def create_project(self, name: str, description: str = "") -> dict:
+    def create_project(self, name: str, description: str = "", project_type: str = "general", stage: str = "none",
+                       company_name: str = "", credit_code: str = "") -> dict:
         now = self._now()
         proj_id = self._uuid()
         self.conn.execute(
-            "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (proj_id, name, description, now, now),
+            "INSERT INTO projects (id, name, description, type, stage, company_name, credit_code, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'project', ?, ?)",
+            (proj_id, name, description, project_type, stage, company_name, credit_code, now, now),
         )
         self.conn.commit()
+
+        # Auto-link base libraries based on project type
+        auto_libs = self.get_auto_linked_base_libs(project_type)
+        for lib_id in auto_libs:
+            self.link_project_to_base_lib(proj_id, lib_id, auto=True)
+
         return {
             "id": proj_id,
             "name": name,
             "description": description,
+            "type": project_type,
+            "stage": stage,
+            "company_name": company_name,
+            "credit_code": credit_code,
             "created_at": now,
             "updated_at": now,
         }
@@ -235,6 +331,7 @@ class Database:
             """SELECT p.*, COUNT(f.id) as file_count
                FROM projects p
                LEFT JOIN files f ON p.id = f.project_id
+               WHERE p.kind = 'project'
                GROUP BY p.id
                ORDER BY p.updated_at DESC"""
         )
@@ -264,9 +361,13 @@ class Database:
         )
         self.conn.commit()
 
-    def delete_project(self, proj_id: str):
-        self.conn.execute("DELETE FROM projects WHERE id = ?", (proj_id,))
+    def delete_project(self, proj_id: str) -> bool:
+        """Delete a project (kind='project' only). Returns True if deleted."""
+        cursor = self.conn.execute(
+            "DELETE FROM projects WHERE id = ? AND kind = 'project'", (proj_id,)
+        )
         self.conn.commit()
+        return cursor.rowcount > 0
 
     # ── Knowledge Base: Files ──
 
@@ -860,3 +961,354 @@ class Database:
             content = row["content"] or ""
             return content.startswith("\u26a0\ufe0f")
         return False
+
+    # ── Reports ──
+
+    def create_report(
+        self,
+        project_id: str,
+        template_id: str,
+        title: str,
+        output_format: str = "Word",
+        content_path: str | None = None,
+    ) -> dict:
+        now = self._now()
+        report_id = self._uuid()
+        self.conn.execute(
+            """INSERT INTO reports (id, project_id, template_id, title, output_format, status, content_path, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'generating', ?, ?, ?)""",
+            (report_id, project_id, template_id, title, output_format, content_path, now, now),
+        )
+        self.conn.commit()
+        return {
+            "id": report_id,
+            "project_id": project_id,
+            "template_id": template_id,
+            "title": title,
+            "output_format": output_format,
+            "status": "generating",
+            "progress": 0,
+            "content_path": content_path,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_reports(self, project_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT * FROM reports WHERE project_id = ? ORDER BY created_at DESC",
+            (project_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_report(self, report_id: str) -> dict | None:
+        cursor = self.conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_report_status(self, report_id: str, status: str, progress: int | None = None):
+        updates = ["status = ?", "updated_at = ?"]
+        params = [status, self._now()]
+        if progress is not None:
+            updates.insert(1, "progress = ?")
+            params.insert(1, progress)
+        params.append(report_id)
+        self.conn.execute(
+            f"UPDATE reports SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    def delete_report(self, report_id: str):
+        self.conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        self.conn.commit()
+
+    def update_report_token_usage(self, report_id: str, token_usage: dict):
+        """保存报告生成的 token 统计（JSON 格式）。"""
+        self.conn.execute(
+            "UPDATE reports SET token_usage = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(token_usage, ensure_ascii=False), self._now(), report_id),
+        )
+        self.conn.commit()
+
+    def update_report_error(self, report_id: str, error_message: str):
+        """保存报告生成的错误信息。"""
+        self.conn.execute(
+            "UPDATE reports SET error_message = ?, updated_at = ? WHERE id = ?",
+            (error_message, self._now(), report_id),
+        )
+        self.conn.commit()
+
+    def count_active_reports(self) -> int:
+        """统计正在生成的报告数量（用于并发限制）。"""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM reports WHERE status = 'generating'"
+        )
+        row = cursor.fetchone()
+        return row["cnt"] if row else 0
+
+    # ── Report Logs ──
+
+    def create_report_log(
+        self,
+        report_id: str,
+        message: str,
+        level: str = "info",
+        section_id: str | None = None,
+    ) -> dict:
+        """创建一条报告生成日志。"""
+        now = self._now()
+        log_id = self._uuid()
+        self.conn.execute(
+            """INSERT INTO report_logs (id, report_id, level, message, section_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (log_id, report_id, level, message, section_id, now),
+        )
+        self.conn.commit()
+        return {
+            "id": log_id,
+            "report_id": report_id,
+            "level": level,
+            "message": message,
+            "section_id": section_id,
+            "created_at": now,
+        }
+
+    def list_report_logs(self, report_id: str, limit: int = 100) -> list[dict]:
+        """获取报告的生成日志（按时间倒序）。"""
+        cursor = self.conn.execute(
+            """SELECT * FROM report_logs WHERE report_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (report_id, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ── Report Sections ──
+
+    def create_report_section(
+        self,
+        report_id: str,
+        section_id: str,
+        title: str,
+        compose_mode: str = "standard",
+    ) -> dict:
+        now = self._now()
+        section_pk = self._uuid()
+        self.conn.execute(
+            """INSERT INTO report_sections (id, report_id, section_id, title, status, word_count, compose_mode, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
+            (section_pk, report_id, section_id, title, compose_mode, now, now),
+        )
+        self.conn.commit()
+        return {
+            "id": section_pk,
+            "report_id": report_id,
+            "section_id": section_id,
+            "title": title,
+            "content": None,
+            "status": "pending",
+            "word_count": 0,
+            "compose_mode": compose_mode,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_report_sections(self, report_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT * FROM report_sections WHERE report_id = ? ORDER BY created_at ASC",
+            (report_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_section_content(self, section_pk: str, content: str, word_count: int, status: str = "completed"):
+        self.conn.execute(
+            "UPDATE report_sections SET content = ?, word_count = ?, status = ?, updated_at = ? WHERE id = ?",
+            (content, word_count, status, self._now(), section_pk),
+        )
+        self.conn.commit()
+
+    # ── Templates ──
+
+    def save_template(self, template_id: str, name: str, template_json: str, is_custom: bool = False, version: str | None = None) -> dict:
+        now = self._now()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO templates (id, name, template_json, is_custom, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (template_id, name, template_json, 1 if is_custom else 0, version, now, now),
+        )
+        self.conn.commit()
+        return {
+            "id": template_id,
+            "name": name,
+            "is_custom": is_custom,
+            "version": version,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_templates(self, is_custom: bool | None = None) -> list[dict]:
+        if is_custom is not None:
+            cursor = self.conn.execute(
+                "SELECT * FROM templates WHERE is_custom = ? ORDER BY created_at ASC",
+                (1 if is_custom else 0,),
+            )
+        else:
+            cursor = self.conn.execute("SELECT * FROM templates ORDER BY created_at ASC")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_template(self, template_id: str) -> dict | None:
+        cursor = self.conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def delete_template(self, template_id: str):
+        self.conn.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+        self.conn.commit()
+
+    # ── Base Library CRUD ──
+
+    # Mapping: project type → preset base lib IDs for auto-linking
+    _AUTO_LINK_MAP = {
+        "recruitment": ["bl-recruitment"],
+        "investment": ["bl-investment"],
+    }
+
+    PRESET_BASE_LIBS = [
+        {
+            "id": "bl-recruitment",
+            "name": "招商基础库",
+            "description": "政策、园区、产业扶持等基础资料",
+            "kind": "base_lib",
+            "lib_type": "preset_recruitment",
+        },
+        {
+            "id": "bl-investment",
+            "name": "投资基础库",
+            "description": "估值基准、法规、行业数据等",
+            "kind": "base_lib",
+            "lib_type": "preset_investment",
+        },
+    ]
+
+    def ensure_preset_base_libs(self):
+        """Create preset base libraries if they don't exist yet (idempotent)."""
+        for lib in self.PRESET_BASE_LIBS:
+            cursor = self.conn.execute(
+                "SELECT id FROM projects WHERE id = ?", (lib["id"],)
+            )
+            if cursor.fetchone() is None:
+                now = self._now()
+                self.conn.execute(
+                    "INSERT INTO projects (id, name, description, kind, lib_type, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 'base_lib', ?, ?, ?)",
+                    (lib["id"], lib["name"], lib["description"], lib["lib_type"], now, now),
+                )
+        self.conn.commit()
+
+    def create_base_lib(self, name: str, description: str = "", lib_type: str = "custom") -> dict:
+        now = self._now()
+        lib_id = self._uuid()
+        self.conn.execute(
+            "INSERT INTO projects (id, name, description, kind, lib_type, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'base_lib', ?, ?, ?)",
+            (lib_id, name, description, lib_type, now, now),
+        )
+        self.conn.commit()
+        return {
+            "id": lib_id,
+            "name": name,
+            "description": description,
+            "kind": "base_lib",
+            "lib_type": lib_type,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_base_libs(self) -> list[dict]:
+        cursor = self.conn.execute(
+            """SELECT p.*, COUNT(f.id) as file_count
+               FROM projects p
+               LEFT JOIN files f ON p.id = f.project_id
+               WHERE p.kind = 'base_lib'
+               GROUP BY p.id
+               ORDER BY p.created_at ASC"""
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_base_lib(self, lib_id: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM projects WHERE id = ? AND kind = 'base_lib'", (lib_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_base_lib(self, lib_id: str, name: str | None = None, description: str | None = None) -> bool:
+        """Update a custom base library. Returns True if updated."""
+        lib = self.get_base_lib(lib_id)
+        if not lib:
+            return False
+        if lib.get("lib_type", "").startswith("preset_"):
+            return False  # Preset libs cannot be renamed
+        updates = []
+        params: list = []
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if not updates:
+            return False
+        updates.append("updated_at = ?")
+        params.append(self._now())
+        params.append(lib_id)
+        self.conn.execute(
+            f"UPDATE projects SET {', '.join(updates)} WHERE id = ? AND kind = 'base_lib'",
+            params,
+        )
+        self.conn.commit()
+        return True
+
+    def delete_base_lib(self, lib_id: str) -> bool:
+        """Delete a custom base library. Returns True if deleted. Preset libs cannot be deleted."""
+        lib = self.get_base_lib(lib_id)
+        if not lib:
+            return False
+        if lib.get("lib_type", "").startswith("preset_"):
+            return False  # Preset libs cannot be deleted
+        self.conn.execute("DELETE FROM projects WHERE id = ? AND kind = 'base_lib'", (lib_id,))
+        self.conn.commit()
+        return True
+
+    # ── Project-BaseLib Association ──
+
+    def link_project_to_base_lib(self, project_id: str, base_lib_id: str, auto: bool = False):
+        """Link a project to a base library. Idempotent."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO project_base_libs (project_id, base_lib_id, auto_linked, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (project_id, base_lib_id, 1 if auto else 0, self._now()),
+        )
+        self.conn.commit()
+
+    def unlink_project_from_base_lib(self, project_id: str, base_lib_id: str):
+        self.conn.execute(
+            "DELETE FROM project_base_libs WHERE project_id = ? AND base_lib_id = ?",
+            (project_id, base_lib_id),
+        )
+        self.conn.commit()
+
+    def get_project_base_libs(self, project_id: str) -> list[dict]:
+        """Get base libraries linked to a project."""
+        cursor = self.conn.execute(
+            """SELECT p.id, p.name, p.description, p.lib_type, pbl.auto_linked, pbl.created_at as linked_at
+               FROM project_base_libs pbl
+               JOIN projects p ON p.id = pbl.base_lib_id
+               WHERE pbl.project_id = ? AND p.kind = 'base_lib'
+               ORDER BY p.created_at ASC""",
+            (project_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_auto_linked_base_libs(self, project_type: str) -> list[str]:
+        """Return base lib IDs that should be auto-linked for a given project type."""
+        return self._AUTO_LINK_MAP.get(project_type, [])

@@ -104,3 +104,25 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+
+.deleteBtn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.deleteBtn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.item:hover .deleteBtn {
+  display: flex;
+}

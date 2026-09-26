@@ -8,7 +8,8 @@ import { SearchBar } from './SearchBar'
 import { SearchResultList } from './SearchResultList'
 import { ToastProvider, useToast } from './Toast'
 import { SkeletonFileList, SkeletonSearchResults } from './SkeletonLoader'
-import type { Project, FileRecord, SearchResult } from './types'
+import type { Project, FileRecord, SearchResult, KnowledgeIpcChannels } from './types'
+import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './KnowledgePage.module.css'
 
 interface KnowledgePageProps {
@@ -19,6 +20,8 @@ interface KnowledgePageProps {
   compact?: boolean
   /** Called when file selection changes (for chat scope tracking) */
   onFileSelect?: (fileId: string | null, filename: string | null) => void
+  /** IPC channel name mapping — override to use different backend (e.g. baseLib:* channels) */
+  ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
 type OutputTab = 'search' | 'images'
@@ -31,15 +34,16 @@ const STATUS_FILTERS: { key: FileStatusFilter; labelKey: string }[] = [
   { key: 'error', labelKey: 'knowledge.filterError' },
 ]
 
-export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact, onFileSelect }: KnowledgePageProps) {
+export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipcChannels }: KnowledgePageProps) {
+  const channels = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   return (
     <ToastProvider>
-      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} />
+      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} ipc={channels} />
     </ToastProvider>
   )
 }
 
-function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact, onFileSelect }: KnowledgePageProps) {
+function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipc }: KnowledgePageProps & { ipc: KnowledgeIpcChannels }) {
   const { t } = useTranslation()
   const showToast = useToast()
   const [files, setFiles] = useState<FileRecord[]>([])
@@ -68,7 +72,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
   const loadRecentChunks = useCallback(async (projectId: string, fileId?: string | null) => {
     try {
-      const result: any = await window.electronAPI.invoke('knowledge:recentChunks', {
+      const result: any = await window.electronAPI.invoke(ipc.recentChunks, {
         projectId,
         limit: 20,
         fileId: fileId || undefined,
@@ -81,7 +85,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
   const loadFiles = useCallback(async (projectId: string, search?: string) => {
     try {
-      const result: any = await window.electronAPI.invoke('knowledge:getFiles', {
+      const result: any = await window.electronAPI.invoke(ipc.getFiles, {
         projectId,
         limit: 20,
         filenameSearch: search || undefined,
@@ -107,7 +111,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
           setUploadProgress({ current: i + 1, total: arr.length, filename: file.name })
           const base64 = await readFileAsBase64(file)
           const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
-          const result = await window.electronAPI.invoke('knowledge:uploadFile', {
+          const result = await window.electronAPI.invoke(ipc.uploadFile, {
             projectId: selectedProject.id,
             filename: file.name,
             fileType: ext,
@@ -190,7 +194,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     setLoadingMore(true)
     try {
       const lastFile = files[files.length - 1]
-      const result: any = await window.electronAPI.invoke('knowledge:getFiles', {
+      const result: any = await window.electronAPI.invoke(ipc.getFiles, {
         projectId: selectedProject.id,
         limit: 20,
         beforeCreatedAt: lastFile.created_at,
@@ -222,7 +226,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     const timer = setInterval(async () => {
       try {
         const result: any = await window.electronAPI.invoke(
-          'knowledge:getActiveFiles', selectedProject.id
+          ipc.getActiveFiles, selectedProject.id
         )
         const activeFiles = result.files || []
 
@@ -270,7 +274,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     setOutputTab('search')
     setHasSearched(true)
     try {
-      const result: any = await window.electronAPI.invoke('knowledge:search', {
+      const result: any = await window.electronAPI.invoke(ipc.search, {
         projectId: selectedProject.id,
         query,
         topK,
@@ -430,6 +434,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
                 selectedFileId={selectedFileId}
                 onSelectFile={setSelectedFileId}
                 onDeleteFile={handleDeleteFile}
+                ipcChannels={ipc}
               />
             )}
           </div>
@@ -487,7 +492,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
               </div>
             ) : (
               <div className={s.imagePanel}>
-                <ImageGallery projectId={selectedProject.id} fileId={selectedFileId || undefined} />
+                <ImageGallery projectId={selectedProject.id} fileId={selectedFileId || undefined} ipcChannels={ipc} />
               </div>
             )}
           </div>

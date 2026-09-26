@@ -61,6 +61,24 @@
   line-height: 1.4;
 }
 
+.companyInfo {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.companyDot {
+  color: var(--text-muted);
+}
+
+.creditCode {
+  font-family: var(--font-mono, monospace);
+  letter-spacing: 0.5px;
+}
+
 .headerActions {
   display: flex;
   align-items: center;

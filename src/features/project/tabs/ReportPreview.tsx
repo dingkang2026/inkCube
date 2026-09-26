@@ -1,102 +1,128 @@
-/** src/features/project/tabs/ReportPreview.tsx — Report edit/preview view (mock, UI-First) */
-import { useState } from 'react'
+/** src/features/project/tabs/ReportPreview.tsx — Report edit/preview view with real data */
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, FileText, Presentation, RefreshCw, Paperclip, ChevronDown, ChevronUp } from 'lucide-react'
-import type { MockReport } from '../types'
+import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info } from 'lucide-react'
+import type { Report, ReportLog } from '../types'
 import s from './ReportPreview.module.css'
 
-/** Full mock report content in Markdown */
-const MOCK_REPORT_CONTENT = `# XX公司尽职调查报告
-
-## 1. 公司概况
-
-XX科技有限公司成立于2018年，注册资本5000万元，是一家专注于新材料研发与生产的高新技术企业。公司总部位于上海张江高科技园区，拥有现代化生产基地20000平方米，员工总数300余人。
-
-公司先后获得国家级高新技术企业认定、上海市专精特新企业等荣誉，拥有有效专利12项（其中发明专利8项）。
-
-> 📎 来源: BP.pdf P3, 企业工商信息查询
-
-## 2. 核心团队
-
-**创始人兼CEO 张三**：清华大学材料科学博士，15年行业经验，曾主导多个亿元级项目的技术研发和产业化落地。
-
-**CTO 李四**：中科院硕士，曾任某上市公司技术总监，在新型材料合成领域拥有丰富的工程化经验。
-
-**CFO 王五**：CPA，10年财务管理经验，曾服务于四大会计师事务所。
-
-核心团队共12人，其中博士3人、硕士6人，团队结构合理、互补性强。
-
-> 📎 来源: BP.pdf P8, 团队介绍章节
-
-## 3. 业务模式
-
-公司主营业务分为三大板块：
-
-1. **新材料研发**：为客户提供定制化材料解决方案，毛利率约45%
-2. **技术授权**：将自有专利技术授权给合作伙伴，毛利率约90%
-3. **产品代工**：利用自有产能为客户提供代工服务，毛利率约25%
-
-收入结构：新材料研发占60%，技术授权占25%，产品代工占15%。
-
-> 📎 来源: BP.pdf P12-15
-
-## 4. 财务分析
-
-| 指标 | 2024年 | 2025年 | 增长率 |
-|------|--------|--------|--------|
-| 营业收入 | 8500万 | 1.2亿 | 41% |
-| 净利润 | 1200万 | 2100万 | 75% |
-| 毛利率 | 42% | 45% | +3pp |
-| 研发投入占比 | 15% | 18% | +3pp |
-
-公司财务状况良好，营收和利润均保持高速增长。研发投入持续加大，体现了公司对技术创新的重视。
-
-> 📎 来源: 财报.pdf P5-8, 财务数据摘要
-
-## 5. 市场分析
-
-目标市场规模约200亿元，年增长率15-20%。目前市场集中度较低，CR5约35%，行业仍处于快速成长期。
-
-主要驱动因素：
-- 下游需求持续增长（新能源、半导体等）
-- 国产替代趋势加速
-- 政策扶持力度加大
-
-> 📎 来源: 行业研究报告.pdf P20-25
-
-## 6. 风险提示
-
-1. **技术风险**：核心技术依赖少数关键人员
-2. **市场风险**：下游行业周期性波动可能影响需求
-3. **竞争风险**：大型企业可能加大该领域投入
-4. **政策风险**：相关补贴政策存在不确定性
-
-> 📎 来源: 综合分析
-`
-
-const SOURCES = [
-  { name: 'BP.pdf', count: 8 },
-  { name: '财报.pdf', count: 5 },
-  { name: '行业研究报告.pdf', count: 6 },
-  { name: '专利查询结果', count: 3 },
-  { name: '工商查询数据', count: 1 },
-]
+interface ReportContent {
+  content: string
+  registry: {
+    entries?: Array<{
+      ref_number: number
+      source_title: string
+      doc_name?: string
+      page?: number
+      content: string
+    }>
+  }
+  report: {
+    id: string
+    title: string
+    status: string
+  }
+}
 
 interface ReportPreviewProps {
-  report: MockReport
+  report: Report
   onBack: () => void
 }
 
 export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const { t } = useTranslation()
   const [showSources, setShowSources] = useState(true)
-  // regeneratingChapter is set by mock interactions (e.g. clicking "regenerate" on a chapter)
-  const [regeneratingChapter, setRegeneratingChapter] = useState<string | null>(null)
-  void setRegeneratingChapter // suppress unused warning in mock
+  const [showLogs, setShowLogs] = useState(false)
+  const [content, setContent] = useState<ReportContent | null>(null)
+  const [logs, setLogs] = useState<ReportLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
 
-  const handleExport = (format: string) => {
-    alert(t('project.report.preview.exportSuccess', { format, title: report.title }))
+  // Load report content from backend
+  useEffect(() => {
+    const loadContent = async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('reports:getReportContent', report.id)
+        if (result.content !== undefined) {
+          setContent(result)
+        }
+      } catch (err) {
+        console.error('Failed to load report content:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadContent()
+  }, [report.id])
+
+  // Load logs from backend
+  useEffect(() => {
+    const loadLogs = async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('reports:getReportLogs', {
+          reportId: report.id,
+          limit: 50,
+        })
+        if (result.logs) {
+          setLogs(result.logs)
+        }
+      } catch (err) {
+        console.error('Failed to load report logs:', err)
+      }
+    }
+    loadLogs()
+
+    // Auto-refresh logs when report is generating
+    if (report.status === 'generating') {
+      const interval = setInterval(loadLogs, 2000)
+      return () => clearInterval(interval)
+    }
+  }, [report.id, report.status])
+
+  const handleExport = async (format: string) => {
+    setExporting(true)
+    try {
+      const result: any = await window.electronAPI.invoke('reports:exportReport', {
+        reportId: report.id,
+        format,
+      })
+      if (result.path) {
+        alert(t('project.report.preview.exportSuccess', { format, title: report.title }))
+      } else {
+        alert(t('project.report.preview.exportFailed', { error: result.error }))
+      }
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert(t('project.report.preview.exportFailed', { error: String(err) }))
+    } finally {
+      setExporting(false)
+    }
   }
+
+  // Extract sources from registry (source_title for new cards, doc_name for legacy)
+  const sources = content?.registry?.entries
+    ? Array.from(
+        content.registry.entries.reduce((map, entry) => {
+          const name = entry.source_title || entry.doc_name || '未知来源'
+          const existing = map.get(name)
+          if (existing) {
+            existing.count++
+          } else {
+            map.set(name, { name, count: 1 })
+          }
+          return map
+        }, new Map<string, { name: string; count: number }>())
+      ).map(([, v]) => v)
+    : []
+
+  if (loading) {
+    return (
+      <div className={s.container}>
+        <div className={s.loading}>{t('common.loading')}</div>
+      </div>
+    )
+  }
+
+  const markdownContent = content?.content || t('project.report.preview.noContent')
 
   return (
     <div className={s.container}>
@@ -108,11 +134,11 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
         </button>
         <h3 className={s.reportTitle}>{report.title}</h3>
         <div className={s.toolbar}>
-          <button className={s.exportBtn} onClick={() => handleExport('Word')}>
+          <button className={s.exportBtn} onClick={() => handleExport('Word')} disabled={exporting}>
             <FileText size={14} /> Word
           </button>
-          <button className={s.exportBtn} onClick={() => handleExport('PPT')}>
-            <Presentation size={14} /> PPT
+          <button className={s.exportBtn} onClick={() => handleExport('PDF')} disabled={exporting}>
+            <FileText size={14} /> PDF
           </button>
           <div className={s.divider} />
           <button className={s.toolBtn}>
@@ -126,35 +152,57 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
 
       {/* Report content */}
       <div className={s.contentArea}>
-        <pre className={s.markdownContent}>{MOCK_REPORT_CONTENT}</pre>
+        <pre className={s.markdownContent}>{markdownContent}</pre>
       </div>
 
       {/* Sources panel */}
-      <div className={s.sourcesPanel}>
-        <button className={s.sourcesToggle} onClick={() => setShowSources(!showSources)}>
-          <Paperclip size={14} />
-          <span>{t('project.report.preview.sources', { count: SOURCES.length, total: SOURCES.reduce((a, s) => a + s.count, 0) })}</span>
-          {showSources ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+      {sources.length > 0 && (
+        <div className={s.sourcesPanel}>
+          <button className={s.sourcesToggle} onClick={() => setShowSources(!showSources)}>
+            <Paperclip size={14} />
+            <span>{t('project.report.preview.sources', { count: sources.length, total: sources.reduce((a, s) => a + s.count, 0) })}</span>
+            {showSources ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </button>
+          {showSources && (
+            <div className={s.sourcesList}>
+              {sources.map((src) => (
+                <div key={src.name} className={s.sourceItem}>
+                  <span className={s.sourceName}>{src.name}</span>
+                  <span className={s.sourceCount}>{src.count} {t('project.report.preview.fragments')}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Progress logs panel */}
+      <div className={s.logsPanel}>
+        <button className={s.sourcesToggle} onClick={() => setShowLogs(!showLogs)}>
+          <Activity size={14} />
+          <span>{t('project.report.preview.progressLogs')} ({logs.length})</span>
+          {showLogs ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
-        {showSources && (
-          <div className={s.sourcesList}>
-            {SOURCES.map((src) => (
-              <div key={src.name} className={s.sourceItem}>
-                <span className={s.sourceName}>{src.name}</span>
-                <span className={s.sourceCount}>{src.count} {t('project.report.preview.fragments')}</span>
-              </div>
-            ))}
+        {showLogs && (
+          <div className={s.logsList}>
+            {logs.length === 0 ? (
+              <div className={s.logEmpty}>{t('project.report.preview.noLogs')}</div>
+            ) : (
+              logs.map((log) => (
+                <div key={log.id} className={`${s.logItem} ${s[`log_${log.level}`] || ''}`}>
+                  <span className={s.logIcon}>
+                    {log.level === 'error' ? <AlertCircle size={12} /> :
+                     log.level === 'warning' ? <AlertCircle size={12} /> :
+                     <Info size={12} />}
+                  </span>
+                  <span className={s.logMessage}>{log.message}</span>
+                  <span className={s.logTime}>{new Date(log.created_at).toLocaleTimeString()}</span>
+                </div>
+              ))
+            )}
           </div>
         )}
       </div>
-
-      {/* Regenerating overlay */}
-      {regeneratingChapter && (
-        <div className={s.regenerating}>
-          <RefreshCw size={16} className={s.spinIcon} />
-          <span>{t('project.report.preview.regenerating', { chapter: regeneratingChapter })}</span>
-        </div>
-      )}
     </div>
   )
 }

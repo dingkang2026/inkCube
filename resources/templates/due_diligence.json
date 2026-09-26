@@ -32,6 +32,7 @@
           "description": "{{公司名}} 的注册信息、股权结构、实际控制人",
           "word_count": 800,
           "must_cite": true,
+          "data_sources": ["knowledge", "internet"],
           "query_hints": ["{{公司名}} 工商信息", "{{公司名}} 股权结构", "{{公司名}} 注册资本"]
         },
         {
@@ -77,6 +78,7 @@
           "description": "与 2-3 家可比公司在产品、规模、估值等维度的对比",
           "word_count": 1000,
           "must_cite": true,
+          "data_sources": ["knowledge", "internet"],
           "query_hints": ["{{公司名}} 竞品", "{{公司名}} 对比", "{{行业}} 可比公司"]
         }
       ]
@@ -178,6 +180,7 @@
           "id": "ch4.3",
           "title": "诉讼与处罚",
           "word_count": 600,
+          "data_sources": ["knowledge", "internet"],
           "query_hints": ["{{公司名}} 诉讼", "{{公司名}} 行政处罚", "{{公司名}} 合规"],
           "optional": true
         }

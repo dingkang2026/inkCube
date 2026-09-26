@@ -1,49 +1,49 @@
-/** src/features/project/BaseLibDetailPage.tsx — Base library detail page (two-tab: materials + wiki) */
-import { useState } from 'react'
+/** src/features/project/BaseLibDetailPage.tsx — Base library detail page (API-driven, embeds KnowledgePage) */
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, FolderOpen, BookOpen, FileText, CheckCircle, Clock, Factory, DollarSign, Library } from 'lucide-react'
+import { ArrowLeft, FolderOpen, BookOpen, Factory, DollarSign, Library } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { KnowledgePage } from '../knowledge/KnowledgePage'
+import type { Project, KnowledgeIpcChannels } from '../knowledge/types'
 import { WikiTab } from './tabs/WikiTab'
+import type { ProjectType } from './types'
 import s from './BaseLibDetailPage.module.css'
 
-/** Mock base library data */
-const BASE_LIB_DATA: Record<string, {
-  nameKey: string; descKey: string; Icon: typeof Factory; type: 'recruitment' | 'investment' | 'general';
-  files: { name: string; size: string; status: 'done' | 'processing' | 'pending' }[]
-}> = {
-  'bl-recruitment': {
-    nameKey: 'baseLib.recruitmentLib',
-    descKey: 'baseLib.recruitmentLibDesc',
-    Icon: Factory,
-    type: 'recruitment',
-    files: [
-      { name: '全国产业园区名录.pdf', size: '2.3 MB', status: 'done' },
-      { name: '各地招商政策汇编2026.pdf', size: '5.1 MB', status: 'done' },
-      { name: '园区配套设施标准.docx', size: '890 KB', status: 'done' },
-      { name: '产业扶持政策细则.pdf', size: '1.2 MB', status: 'processing' },
-    ],
-  },
-  'bl-investment': {
-    nameKey: 'baseLib.investmentLib',
-    descKey: 'baseLib.investmentLibDesc',
-    Icon: DollarSign,
-    type: 'investment',
-    files: [
-      { name: '投资估值基准数据.xlsx', size: '1.5 MB', status: 'done' },
-      { name: '尽调法规汇编.pdf', size: '3.2 MB', status: 'done' },
-      { name: '行业数据报告合集/', size: '12.8 MB', status: 'done' },
-      { name: '投后管理模板集.docx', size: '670 KB', status: 'pending' },
-    ],
-  },
-  'bl-custom-1': {
-    nameKey: 'baseLib.myLib',
-    descKey: 'baseLib.myLibDesc',
-    Icon: Library,
-    type: 'general',
-    files: [
-      { name: '我的参考资料.pdf', size: '4.5 MB', status: 'done' },
-      { name: '行业笔记.docx', size: '320 KB', status: 'done' },
-    ],
-  },
+/** IPC channel mapping: reuse KnowledgePage with baseLib:* backend channels */
+const BASE_LIB_IPC_CHANNELS: KnowledgeIpcChannels = {
+  getFiles: 'baseLib:getFiles',
+  getActiveFiles: 'baseLib:getActiveFiles',
+  uploadFile: 'baseLib:upload',
+  deleteFile: 'baseLib:deleteFile',
+  retryFile: 'baseLib:retryFile',
+  retryFailedFiles: 'baseLib:retryFailedFiles',
+  batchDeleteFiles: 'baseLib:batchDeleteFiles',
+  batchReprocessFiles: 'baseLib:batchReprocessFiles',
+  search: 'baseLib:search',
+  recentChunks: 'baseLib:recentChunks',
+  getProjectImages: 'baseLib:getImages',
+  getImages: 'baseLib:getImages',
+  retryImage: 'knowledge:retryImage',
+  updateImageCategory: 'knowledge:updateImageCategory',
+  archiveImage: 'knowledge:archiveImage',
+  retryFailedImages: 'knowledge:retryFailedImages',
+}
+
+/** Icon mapping for known preset base lib IDs */
+const PRESET_ICONS: Record<string, LucideIcon> = {
+  'bl-recruitment': Factory,
+  'bl-investment': DollarSign,
+}
+
+function getIcon(id: string): LucideIcon {
+  return PRESET_ICONS[id] || Library
+}
+
+/** Map lib_type to ProjectType for WikiTab hints */
+function getWikiProjectType(libType: string | null): ProjectType {
+  if (libType === 'preset_recruitment') return 'recruitment'
+  if (libType === 'preset_investment') return 'investment'
+  return 'general'
 }
 
 type TabKey = 'materials' | 'wiki'
@@ -53,12 +53,38 @@ interface BaseLibDetailPageProps {
   onBack: () => void
 }
 
+interface BaseLibInfo {
+  id: string
+  name: string
+  description: string
+  lib_type: string | null
+}
+
 export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps) {
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabKey>('materials')
-  const libData = BASE_LIB_DATA[baseLibId]
+  const [libInfo, setLibInfo] = useState<BaseLibInfo | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  if (!libData) {
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('baseLib:list')
+        const libs = result.base_libs || []
+        const found = libs.find((l: any) => l.id === baseLibId)
+        if (found) {
+          setLibInfo({ id: found.id, name: found.name, description: found.description, lib_type: found.lib_type })
+        }
+      } catch (err) {
+        console.error('Failed to load base lib info:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [baseLibId])
+
+  if (!loading && !libInfo) {
     return (
       <div className={s.notFound}>
         <p>{t('baseLib.notFound')}</p>
@@ -67,6 +93,21 @@ export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps)
         </button>
       </div>
     )
+  }
+
+  if (loading || !libInfo) {
+    return <div className={s.page} />
+  }
+
+  const Icon = getIcon(baseLibId)
+  // Construct a Project-compatible object for KnowledgePage
+  const fakeProject: Project = {
+    id: libInfo.id,
+    name: libInfo.name,
+    description: libInfo.description,
+    file_count: 0,
+    chunk_count: 0,
+    created_at: '',
   }
 
   return (
@@ -78,10 +119,10 @@ export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps)
           {t('baseLib.back')}
         </button>
         <div className={s.headerInfo}>
-          <span className={s.headerIcon}><libData.Icon size={24} /></span>
+          <span className={s.headerIcon}><Icon size={24} /></span>
           <div>
-            <h2 className={s.libName}>{t(libData.nameKey)}</h2>
-            <p className={s.libDesc}>{t(libData.descKey)}</p>
+            <h2 className={s.libName}>{libInfo.name}</h2>
+            {libInfo.description && <p className={s.libDesc}>{libInfo.description}</p>}
           </div>
         </div>
       </div>
@@ -107,34 +148,14 @@ export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps)
       {/* Tab content */}
       <div className={s.tabContent}>
         {activeTab === 'materials' && (
-          <div className={s.fileList}>
-            {libData.files.map((file, idx) => (
-              <div key={idx} className={s.fileCard}>
-                <FileText size={18} className={s.fileIcon} />
-                <div className={s.fileInfo}>
-                  <div className={s.fileName}>{file.name}</div>
-                  <div className={s.fileMeta}>{file.size}</div>
-                </div>
-                <div className={s.fileStatus}>
-                  {file.status === 'done' && (
-                    <span className={s.statusDone}><CheckCircle size={13} /> {t('baseLib.statusDone')}</span>
-                  )}
-                  {file.status === 'processing' && (
-                    <span className={s.statusProcessing}><Clock size={13} /> {t('baseLib.statusProcessing')}</span>
-                  )}
-                  {file.status === 'pending' && (
-                    <span className={s.statusPending}>{t('baseLib.statusPending')}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-            <div className={s.uploadHint}>
-              <p>{t('baseLib.uploadHint')}</p>
-            </div>
-          </div>
+          <KnowledgePage
+            selectedProject={fakeProject}
+            compact
+            ipcChannels={BASE_LIB_IPC_CHANNELS}
+          />
         )}
         {activeTab === 'wiki' && (
-          <WikiTab projectType={libData.type === 'recruitment' ? 'recruitment' : libData.type === 'investment' ? 'investment' : 'general'} />
+          <WikiTab projectType={getWikiProjectType(libInfo.lib_type)} />
         )}
       </div>
     </div>

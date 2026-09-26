@@ -2,8 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Search, Package, Image as ImageIcon } from 'lucide-react'
-import type { ImageRecord } from './types'
-import { IMAGE_CATEGORIES } from './types'
+import type { ImageRecord, KnowledgeIpcChannels } from './types'
+import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'
 import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
@@ -12,6 +12,7 @@ import s from './ImageGallery.module.css'
 interface ImageGalleryProps {
   projectId: string
   fileId?: string
+  ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
 interface ImageItem extends ImageRecord {
@@ -26,7 +27,8 @@ function localFileUrl(filePath: string): string {
   return `inkcube://app?file=${encodeURIComponent(normalized)}`
 }
 
-export function ImageGallery({ projectId, fileId }: ImageGalleryProps) {
+export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryProps) {
+  const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const showToast = useToast()
   const handleError = useErrorHandler()
@@ -47,7 +49,7 @@ export function ImageGallery({ projectId, fileId }: ImageGalleryProps) {
   const loadImages = async (projId: string, off: number, append = false) => {
     setLoading(true)
     try {
-      const result: any = await window.electronAPI.invoke('knowledge:getProjectImages', {
+      const result: any = await window.electronAPI.invoke(ipc.getProjectImages, {
         projectId: projId,
         limit: LIMIT,
         offset: off,
@@ -125,7 +127,7 @@ export function ImageGallery({ projectId, fileId }: ImageGalleryProps) {
 
   const handleRetry = useCallback(async (img: ImageItem, force = false) => {
     try {
-      await window.electronAPI.invoke('knowledge:retryImage', {
+      await window.electronAPI.invoke(ipc.retryImage, {
         projectId,
         imageId: img.id,
         force,
@@ -141,7 +143,7 @@ export function ImageGallery({ projectId, fileId }: ImageGalleryProps) {
 
   const handleChangeCategory = useCallback(async (img: ImageItem, category: string) => {
     try {
-      await window.electronAPI.invoke('knowledge:updateImageCategory', {
+      await window.electronAPI.invoke(ipc.updateImageCategory, {
         projectId,
         imageId: img.id,
         category,
@@ -158,7 +160,7 @@ export function ImageGallery({ projectId, fileId }: ImageGalleryProps) {
   const handleArchive = useCallback(async (img: ImageItem) => {
     if (!confirm(t('knowledge.confirmArchive'))) return
     try {
-      await window.electronAPI.invoke('knowledge:archiveImage', {
+      await window.electronAPI.invoke(ipc.archiveImage, {
         projectId,
         imageId: img.id,
       })

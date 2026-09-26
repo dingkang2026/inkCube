@@ -53,6 +53,7 @@
           "description": "全球 {{行业}} 市场总量、近 3-5 年增长趋势",
           "word_count": 1200,
           "must_cite": true,
+          "data_sources": ["knowledge", "internet"],
           "query_hints": ["{{行业}} 全球市场规模", "{{行业}} global market size"],
           "notes": ["近 3-5 年数据", "注明币种和统计口径"]
         },
@@ -62,6 +63,7 @@
           "description": "中国 {{行业}} 市场总量、增速与全球对比",
           "word_count": 1200,
           "must_cite": true,
+          "data_sources": ["knowledge", "internet"],
           "query_hints": ["{{行业}} 中国市场规模", "{{行业}} 国内市场", "{{行业}} 增长率"]
         },
         {
@@ -115,6 +117,7 @@
               "title": "近期动态与战略变化",
               "description": "近 1-2 年头部企业的重大事件、并购、战略调整",
               "word_count": 500,
+              "data_sources": ["knowledge", "internet"],
               "query_hints": ["{{行业}} 最新动态", "{{行业}} 并购", "{{行业}} 战略调整"],
               "optional": true
             }
@@ -146,6 +149,7 @@
           "description": "影响 {{行业}} 的关键政策、法规及监管趋势",
           "word_count": 1000,
           "must_cite": true,
+          "data_sources": ["knowledge", "internet"],
           "query_hints": ["{{行业}} 政策", "{{行业}} 监管", "{{行业}} 法规"]
         },
         {
@@ -161,6 +165,7 @@
       "title": "技术演进与创新",
       "description": "{{行业}} 关键技术路线、研发动态和创新方向",
       "word_count": 1200,
+      "data_sources": ["knowledge", "internet"],
       "query_hints": ["{{行业}} 技术趋势", "{{行业}} 技术创新", "{{行业}} R&D"],
       "optional": true
     },

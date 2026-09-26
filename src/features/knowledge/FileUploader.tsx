@@ -2,7 +2,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Trash2, RefreshCw, MoreVertical } from 'lucide-react'
-import type { FileRecord } from './types'
+import type { FileRecord, KnowledgeIpcChannels } from './types'
+import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './FileUploader.module.css'
 
 interface FileUploaderProps {
@@ -15,6 +16,7 @@ interface FileUploaderProps {
   selectedFileId?: string | null
   onSelectFile?: (fileId: string | null) => void
   onDeleteFile?: (fileIds: string[]) => void
+  ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
 const FILE_ICONS: Record<string, string> = {
@@ -31,7 +33,8 @@ const FILE_ICONS: Record<string, string> = {
   '.jpeg': '🖼️',
 }
 
-export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore, loadingMore, selectedFileId, onSelectFile, onDeleteFile }: FileUploaderProps) {
+export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore, loadingMore, selectedFileId, onSelectFile, onDeleteFile, ipcChannels }: FileUploaderProps) {
+  const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [confirmingFileId, setConfirmingFileId] = useState<string | null>(null)
@@ -62,7 +65,7 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
       return
     }
     try {
-      await window.electronAPI.invoke('knowledge:deleteFile', { projectId, fileId })
+      await window.electronAPI.invoke(ipc.deleteFile, { projectId, fileId })
       onRefresh()
       onDeleteFile?.([fileId])
     } catch (err) {
@@ -77,7 +80,7 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
 
   const handleRetry = async (fileId: string) => {
     try {
-      await window.electronAPI.invoke('knowledge:retryFile', { projectId, fileId })
+      await window.electronAPI.invoke(ipc.retryFile, { projectId, fileId })
       onRefresh()
     } catch (err) {
       console.error('Retry failed:', err)
@@ -86,7 +89,7 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
 
   const handleRetryAll = async () => {
     try {
-      await window.electronAPI.invoke('knowledge:retryFailedFiles', projectId)
+      await window.electronAPI.invoke(ipc.retryFailedFiles, projectId)
       onRefresh()
     } catch (err) {
       console.error('Retry all failed:', err)
@@ -115,7 +118,7 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
     if (selectedIds.size === 0) return
     if (!confirm(t('knowledge.confirmBatchDelete', { count: selectedIds.size }))) return
     try {
-      await window.electronAPI.invoke('knowledge:batchDeleteFiles', {
+      await window.electronAPI.invoke(ipc.batchDeleteFiles, {
         projectId,
         fileIds: Array.from(selectedIds),
       })
@@ -131,7 +134,7 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
   const handleBatchReprocess = async () => {
     if (selectedIds.size === 0) return
     try {
-      await window.electronAPI.invoke('knowledge:batchReprocessFiles', {
+      await window.electronAPI.invoke(ipc.batchReprocessFiles, {
         projectId,
         fileIds: Array.from(selectedIds),
       })

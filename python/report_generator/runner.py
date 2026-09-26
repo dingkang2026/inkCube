@@ -1,0 +1,539 @@
+"""python/report_generator/runner.py — 报告生成执行主流程。
+
+职责：
+  1. 两遍执行（standard 先，post_body 后）
+  2. 每节 checkpoint（outputs/digests/registry/order/token_tracker）
+  3. 断点恢复
+  4. 精准 Token 统计追踪
+  5. 智能重试分类
+
+设计参考：docs/2.1project-design.md §6.7.7 ~ §6.7.9
+"""
+import asyncio
+import json
+import logging
+from pathlib import Path
+from typing import Any, Optional
+
+from report_generator.normalizer import (
+    instantiate, normalize_outline, validate_execution_outline,
+    get_execution_sections,
+)
+from report_generator.registry import CitationRegistry
+from report_generator.retrieval import retrieve_for_section
+from report_generator.prompts import (
+    build_system_prompt, build_standard_prompt, build_post_body_prompt,
+    build_digest_prompt, build_extract_numbers_prompt,
+)
+from report_generator.validator import validate_section, format_retry_feedback
+from report_generator.finalizer import finalize_report
+from report_generator.token_tracker import TokenTracker
+
+logger = logging.getLogger(__name__)
+
+# 最大重试次数
+MAX_RETRIES = 3
+
+
+# ── 智能重试分类 ──────────────────────────────────────────
+
+
+def _classify_error(error_str: str) -> tuple[bool, str]:
+    """根据错误信息分类重试策略。
+
+    Args:
+        error_str: 错误消息（小写）
+
+    Returns:
+        (retryable, action):
+          - retryable: 是否可重试
+          - action: "retry" | "degrade" | "fatal"
+    """
+    # 内容安全过滤 → 不重试，直接降级
+    if any(kw in error_str for kw in [
+        "content_filter", "content_policy", "safety", "moderation",
+        "content management", "responsible_ai",
+    ]):
+        return False, "degrade"
+
+    # Token 超限 → 截断上下文后重试（一次机会）
+    if any(kw in error_str for kw in [
+        "context_length", "max_tokens", "token_limit",
+        "maximum context length", "too many tokens",
+    ]):
+        return True, "truncate"
+
+    # 无效 API Key → 不重试
+    if "401" in error_str or ("invalid" in error_str and "key" in error_str):
+        return False, "fatal"
+
+    # 频率限制 / 超时 / 网络错误 → 重试（指数退避）
+    if any(kw in error_str for kw in [
+        "429", "rate_limit", "rate limit", "too many requests",
+        "timeout", "timed out", "connection", "network",
+    ]):
+        return True, "retry"
+
+    # 空输出 → 重试
+    if "empty" in error_str or "null content" in error_str:
+        return True, "retry"
+
+    # 默认：重试
+    return True, "retry"
+
+
+class ReportGenerationError(Exception):
+    """报告生成过程中的致命错误。"""
+    pass
+
+
+class ProgressEvent:
+    """进度事件（用于 SSE 推送）。"""
+
+    def __init__(self, event_type: str, data: dict):
+        self.event_type = event_type  # "section_start" | "section_done" | "section_error" | "progress" | "complete" | "error"
+        self.data = data
+
+    def to_sse(self) -> str:
+        """格式化为 SSE 消息。"""
+        return f"event: {self.event_type}\ndata: {json.dumps(self.data, ensure_ascii=False)}\n\n"
+
+
+class ReportRunner:
+    """报告生成执行器。
+
+    Usage:
+        runner = ReportRunner(
+            template=template,
+            variables={"公司名": "XX科技"},
+            project_id="proj_xxx",
+            search_tool=search_tool,
+            llm_client=llm_client,
+            llm_settings=settings,
+            output_dir="data/reports/report_xxx",
+        )
+        async for event in runner.run():
+            # event: ProgressEvent → 推送给前端
+            ...
+    """
+
+    def __init__(
+        self,
+        template: dict,
+        variables: dict[str, str],
+        project_id: str,
+        search_tool,
+        llm_client,
+        llm_settings: dict,
+        output_dir: str,
+        base_project_ids: Optional[list[str]] = None,
+    ):
+        self.template = template
+        self.variables = variables
+        self.project_id = project_id
+        self.search_tool = search_tool
+        self.llm_client = llm_client
+        self.llm_settings = llm_settings
+        self.output_dir = Path(output_dir)
+        self.base_project_ids = base_project_ids or []
+
+        # 状态
+        self.outputs: dict[str, str] = {}
+        self.digests: dict[str, str] = {}
+        self.order: list[str] = []
+        self.registry = CitationRegistry()
+        self.token_tracker = TokenTracker()
+        self.system_prompt = ""
+        self.outline: list[dict] = []
+        self.sections: list[dict] = []
+        self.report_title = ""
+
+    async def run(self):
+        """执行报告生成主流程。
+
+        Yields:
+            ProgressEvent 实例
+        """
+        try:
+            # ── 准备阶段 ──
+            self._prepare()
+
+            # ── 尝试从 checkpoint 恢复 ──
+            self._load_checkpoint()
+
+            # ── 第一遍：standard 章节 ──
+            standard_sections = [
+                s for s in self.sections if s.get("compose_mode", "standard") == "standard"
+            ]
+            total = len(self.sections)
+
+            for sec in standard_sections:
+                sid = sec["id"]
+                if sid in self.outputs:
+                    continue  # 已恢复
+
+                yield ProgressEvent("section_start", {
+                    "section_id": sid,
+                    "title": sec.get("title", ""),
+                    "index": self.order.index(sid) + 1 if sid in self.order else len(self.outputs) + 1,
+                    "total": total,
+                })
+
+                # 构建 digests 列表（供检索策略使用）
+                digests_list = [
+                    {"section_id": s, "title": self._get_section_title(s), "digest": self.digests[s]}
+                    for s in self.order if s in self.digests
+                ]
+
+                # 检索（多通道并行 + LLM 策略 + 卡片构建）
+                retrieval, retrieval_usage = await retrieve_for_section(
+                    section=sec,
+                    search_tool=self.search_tool,
+                    registry=self.registry,
+                    project_id=self.project_id,
+                    llm_client=self.llm_client,
+                    llm_settings=self.llm_settings,
+                    digests=digests_list,
+                    tavily_api_key=self.llm_settings.get("tavily_key", ""),
+                    base_project_ids=self.base_project_ids,
+                    query_parallelism=self.llm_settings.get("report_channel_parallelism", 4),
+                )
+                self.token_tracker.record(sid, "retrieval", retrieval_usage)
+
+                if retrieval.skip:
+                    self.outputs[sid] = "（本节因材料不足已跳过）"
+                    self.digests[sid] = ""  # 空摘要，避免污染后续章节的检索策略
+                    self.order.append(sid)
+                    yield ProgressEvent("section_done", {
+                        "section_id": sid,
+                        "title": sec.get("title", ""),
+                        "word_count": 0,
+                        "skipped": True,
+                    })
+                    self._save_checkpoint()
+                    continue
+
+                # 构建 Prompt
+                chapter_title = sec.get("_chapter_title", "")
+                ref_numbers = [c.get("ref_number", 0) for c in retrieval.cards if c.get("ref_number")]
+                ref_text = self.registry.format_for_prompt(ref_numbers)
+
+                user_prompt = build_standard_prompt(
+                    section=sec,
+                    chapter_title=chapter_title,
+                    report_title=self.report_title,
+                    completed_digests=self.digests,
+                    section_order=self.order,
+                    ref_text=ref_text,
+                    ref_numbers=ref_numbers,
+                    global_requirements=self.template.get("global_requirements"),
+                    is_degraded=retrieval.is_degraded,
+                    sufficiency=retrieval.sufficiency,
+                )
+
+                # 生成 + 重试
+                output = await self._generate_with_retry(
+                    section=sec,
+                    user_prompt=user_prompt,
+                    given_refs=set(ref_numbers),
+                )
+
+                self.outputs[sid] = output
+                self.order.append(sid)
+
+                # 生成摘要
+                digest = await self._summarize(output)
+                self.digests[sid] = digest
+
+                word_count = len(output)
+                yield ProgressEvent("section_done", {
+                    "section_id": sid,
+                    "title": sec.get("title", ""),
+                    "word_count": word_count,
+                    "degraded": retrieval.is_degraded,
+                })
+
+                self._save_checkpoint()
+
+            # ── 第二遍：post_body 章节 ──
+            post_body_sections = [
+                s for s in self.sections if s.get("compose_mode") == "post_body"
+            ]
+
+            for sec in post_body_sections:
+                sid = sec["id"]
+                if sid in self.outputs:
+                    continue
+
+                yield ProgressEvent("section_start", {
+                    "section_id": sid,
+                    "title": sec.get("title", ""),
+                    "index": len(self.outputs) + 1,
+                    "total": total,
+                })
+
+                # 提取关键数据
+                key_data = await self._extract_numbers()
+
+                user_prompt = build_post_body_prompt(
+                    section=sec,
+                    digests=self.digests,
+                    section_order=self.order,
+                    key_data_text=key_data,
+                    registry=self.registry,
+                    global_requirements=self.template.get("global_requirements"),
+                )
+
+                output = await self._generate_with_retry(
+                    section=sec,
+                    user_prompt=user_prompt,
+                    given_refs=set(self.registry.all_ref_numbers()),
+                )
+
+                self.outputs[sid] = output
+                self.order.append(sid)
+
+                yield ProgressEvent("section_done", {
+                    "section_id": sid,
+                    "title": sec.get("title", ""),
+                    "word_count": len(output),
+                })
+
+                self._save_checkpoint()
+
+            # ── 全局收尾 ──
+            yield ProgressEvent("progress", {"phase": "finalizing", "message": "全局校验与收尾..."})
+
+            full_text = self._assemble_full_text()
+            final_text = finalize_report(full_text, self.registry, self.template, self.outline)
+
+            # 保存最终内容
+            content_path = self.output_dir / "content.md"
+            content_path.parent.mkdir(parents=True, exist_ok=True)
+            content_path.write_text(final_text, encoding="utf-8")
+
+            # 保存 registry + token 统计
+            self.registry.save(self.output_dir / "registry.json")
+            self.token_tracker.save(self.output_dir / "token_usage.json")
+
+            yield ProgressEvent("complete", {
+                "content_path": str(content_path),
+                "total_sections": sum(
+                    1 for v in self.outputs.values()
+                    if not v.startswith("（本节因材料不足已跳过）")
+                ),
+                "total_words": sum(
+                    len(v) for v in self.outputs.values()
+                    if not v.startswith("（本节因材料不足已跳过）")
+                ),
+                "registry_size": len(self.registry),
+                "token_usage": self.token_tracker.summary(),
+            })
+
+        except Exception as e:
+            logger.exception("Report generation failed: %s", e)
+            yield ProgressEvent("error", {"message": str(e)})
+            raise
+
+    def _prepare(self):
+        """准备阶段：实例化模板、归一化大纲、校验。"""
+        # 实例化变量
+        tpl = instantiate(self.template, self.variables)
+
+        # 归一化大纲
+        self.outline = normalize_outline(tpl.get("outline", []))
+
+        # 校验
+        errors = validate_execution_outline(self.outline)
+        if errors:
+            raise ReportGenerationError(f"大纲校验失败: {'; '.join(errors)}")
+
+        # 获取执行节列表
+        self.sections = get_execution_sections(self.outline)
+
+        # 报告标题
+        self.report_title = tpl.get("template_name", "报告")
+
+        # System Prompt
+        self.system_prompt = build_system_prompt(
+            role_hint=tpl.get("role_hint", "资深研究分析师"),
+            audience=tpl.get("audience", "机构客户"),
+            terminology=tpl.get("terminology"),
+            promote_subhead=any(s.get("promote_subhead") for s in self.sections),
+        )
+
+        # 确保输出目录
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info("Runner prepared: %d sections, title='%s'", len(self.sections), self.report_title)
+
+    def _load_checkpoint(self):
+        """从 checkpoint 恢复状态（如果存在）。"""
+        ckpt_path = self.output_dir / "checkpoint.json"
+        if not ckpt_path.exists():
+            return
+
+        try:
+            data = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            self.outputs = data.get("outputs", {})
+            self.digests = data.get("digests", {})
+            self.order = data.get("order", [])
+            if "registry" in data:
+                self.registry = CitationRegistry.from_dict(data["registry"])
+            if "token_tracker" in data:
+                self.token_tracker = TokenTracker.from_dict(data["token_tracker"])
+            logger.info("Checkpoint loaded: %d sections done, %d refs, %d token records",
+                        len(self.outputs), len(self.registry), len(self.token_tracker))
+        except Exception as e:
+            logger.warning("Failed to load checkpoint: %s", e)
+
+    def _save_checkpoint(self):
+        """保存 checkpoint。"""
+        ckpt_path = self.output_dir / "checkpoint.json"
+        data = {
+            "outputs": self.outputs,
+            "digests": self.digests,
+            "order": self.order,
+            "registry": self.registry.to_dict(),
+            "token_tracker": self.token_tracker.to_dict(),
+        }
+        ckpt_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    async def _generate_with_retry(
+        self,
+        section: dict,
+        user_prompt: str,
+        given_refs: set[int],
+    ) -> str:
+        """生成单节内容，智能重试 + 精准 token 追踪。"""
+        sid = section.get("id", "unknown")
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                result = await self.llm_client.chat_full(messages, self.llm_settings)
+                output = result["content"]
+                usage = result["usage"]
+                self.token_tracker.record(sid, "generation", usage)
+
+                # 校验
+                violations = validate_section(output, given_refs, section)
+                if not violations:
+                    return output
+
+                # 有违规，构建重试反馈
+                if attempt < MAX_RETRIES - 1:
+                    feedback = format_retry_feedback(violations)
+                    logger.info("Section '%s' attempt %d: %d violations, retrying...",
+                                sid, attempt + 1, len(violations))
+                    messages = [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": user_prompt},
+                        {"role": "assistant", "content": output},
+                        {"role": "user", "content": feedback},
+                    ]
+                else:
+                    logger.warning("Section '%s': %d violations after %d retries, accepting",
+                                   sid, len(violations), MAX_RETRIES)
+                    return output
+
+            except Exception as e:
+                error_str = str(e).lower()
+                retryable, action = _classify_error(error_str)
+
+                if not retryable:
+                    logger.error("Section '%s' non-retryable error (%s): %s", sid, action, e)
+                    if action == "degrade":
+                        return ""  # 降级：返回空内容
+                    raise ReportGenerationError(f"Section '{sid}' fatal error: {e}") from e
+
+                # 上下文溢出：截断 prompt 后重试（一次机会）
+                if action == "truncate":
+                    logger.warning("Section '%s' context overflow, truncating prompt and retrying", sid)
+                    # 截断 user_prompt 到 4000 字（保留核心要求，削减 digests/cards）
+                    if len(user_prompt) > 4000:
+                        user_prompt = user_prompt[:4000] + "\n\n（注：前文摘要已截断，请基于以上材料继续写作）"
+                    # 重置 messages 以使用截断后的 prompt
+                    messages = [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                    # 等待后重试
+                    await asyncio.sleep(1)
+                    continue
+
+                logger.error("Section '%s' attempt %d failed (%s): %s",
+                             sid, attempt + 1, action, e)
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)  # 指数退避
+                else:
+                    raise ReportGenerationError(
+                        f"Section '{sid}' generation failed after {MAX_RETRIES} attempts: {e}"
+                    ) from e
+
+        return ""  # unreachable
+
+    async def _summarize(self, text: str, max_words: int = 200) -> str:
+        """为生成的文本生成 200 字摘要。"""
+        try:
+            messages = build_digest_prompt(text, max_words)
+            result = await self.llm_client.chat_full(messages, self.llm_settings)
+            self.token_tracker.record("global", "digest", result["usage"])
+            return result["content"]
+        except Exception as e:
+            logger.warning("Failed to generate digest: %s", e)
+            return text[:200] + "..." if len(text) > 200 else text
+
+    async def _extract_numbers(self) -> str:
+        """从已生成的 standard 章节中提取关键数据。"""
+        combined = "\n\n".join(
+            self.outputs.get(sid, "") for sid in self.order
+            if self.outputs.get(sid) and not self.outputs[sid].startswith("（")
+        )
+        if not combined:
+            return ""
+
+        try:
+            messages = build_extract_numbers_prompt(combined[:8000])
+            result = await self.llm_client.chat_full(messages, self.llm_settings)
+            self.token_tracker.record("global", "extract_numbers", result["usage"])
+            return result["content"]
+        except Exception as e:
+            logger.warning("Failed to extract numbers: %s", e)
+            return ""
+
+    def _get_section_title(self, section_id: str) -> str:
+        """根据 section_id 查找标题。"""
+        for sec in self.sections:
+            if sec.get("id") == section_id:
+                return sec.get("title", "")
+        return section_id
+
+    def _assemble_full_text(self) -> str:
+        """按执行顺序拼接所有章节内容为完整文本。"""
+        parts = []
+        post_body_front = []
+        post_body_end = []
+
+        for sec in self.sections:
+            sid = sec.get("id", "")
+            content = self.outputs.get(sid, "")
+            if not content:
+                continue
+
+            title = sec.get("title", "")
+            if sec.get("compose_mode") == "post_body":
+                position = sec.get("position", "end")
+                section_text = f"## {title}\n\n{content}"
+                if position == "front":
+                    post_body_front.append(section_text)
+                else:
+                    post_body_end.append(section_text)
+            else:
+                parts.append(f"## {title}\n\n{content}")
+
+        full_parts = post_body_front + parts + post_body_end
+        return "\n\n---\n\n".join(full_parts)

@@ -4,6 +4,10 @@ export interface Project {
   id: string
   name: string
   description?: string
+  type?: string  // project type: recruitment | investment | general
+  stage?: string // project stage: before | during | after | none
+  company_name?: string  // 企业工商名称
+  credit_code?: string   // 统一社会信用代码
   file_count: number
   chunk_count: number
   created_at: string
@@ -77,4 +81,43 @@ export interface UploadProgress {
   stage: string
   progress: number // 0.0 - 1.0
   message?: string
+}
+
+/** IPC channel name mapping — allows KnowledgePage to be reused with different backends (e.g. base libs) */
+export interface KnowledgeIpcChannels {
+  getFiles: string
+  getActiveFiles: string
+  uploadFile: string
+  deleteFile: string
+  retryFile: string
+  retryFailedFiles: string
+  batchDeleteFiles: string
+  batchReprocessFiles: string
+  search: string
+  recentChunks: string
+  getProjectImages: string
+  getImages: string
+  retryImage: string
+  updateImageCategory: string
+  archiveImage: string
+  retryFailedImages: string
+}
+
+export const DEFAULT_KNOWLEDGE_IPC_CHANNELS: KnowledgeIpcChannels = {
+  getFiles: 'knowledge:getFiles',
+  getActiveFiles: 'knowledge:getActiveFiles',
+  uploadFile: 'knowledge:uploadFile',
+  deleteFile: 'knowledge:deleteFile',
+  retryFile: 'knowledge:retryFile',
+  retryFailedFiles: 'knowledge:retryFailedFiles',
+  batchDeleteFiles: 'knowledge:batchDeleteFiles',
+  batchReprocessFiles: 'knowledge:batchReprocessFiles',
+  search: 'knowledge:search',
+  recentChunks: 'knowledge:recentChunks',
+  getProjectImages: 'knowledge:getProjectImages',
+  getImages: 'knowledge:getImages',
+  retryImage: 'knowledge:retryImage',
+  updateImageCategory: 'knowledge:updateImageCategory',
+  archiveImage: 'knowledge:archiveImage',
+  retryFailedImages: 'knowledge:retryFailedImages',
 }
