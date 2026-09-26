@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Query
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 
 import deps
 from schemas import TaskCreateRequest, TaskChatRequest
@@ -50,7 +50,15 @@ async def tasks_status():
         "running_count": deps.task_agent.running_count,
         "can_start": deps.task_agent.can_start_task(),
         "max_concurrent": deps.task_agent.MAX_CONCURRENT,
+        "running_task_ids": list(deps.task_agent._running_task_ids),
     }
+
+
+@router.get("/tasks/{task_id}/has-state")
+async def task_has_state(task_id: str):
+    """Check if a task has saved agent state (for resume UI)."""
+    state = deps.db.load_agent_state(task_id)
+    return {"has_state": state is not None}
 
 
 @router.get("/tasks/{task_id}")
@@ -70,7 +78,7 @@ async def delete_task(task_id: str):
         logger.warning("Delete failed: task %s not found", task_id)
         return {"error": "任务不存在"}
     # Only cancel if this task is currently running
-    if task_id in deps.task_agent._running_task_ids:
+    if deps.task_agent.is_task_running(task_id):
         logger.info("Cancelling running task before delete: %s", task_id)
         deps.task_agent.request_cancel(task_id)
     # Run in thread pool (directory deletion can be slow)
@@ -134,7 +142,6 @@ async def export_task(task_id: str):
     safe_name = task["title"].replace("/", "_").replace("\\", "_")[:50]
     filename = f"{safe_name}_{task_id[:8]}.zip"
 
-    from fastapi.responses import Response
     return Response(
         content=zip_buffer.getvalue(),
         media_type="application/zip",
@@ -150,15 +157,26 @@ async def get_task_messages(task_id: str):
 
 @router.post("/tasks/{task_id}/chat")
 async def task_chat(task_id: str, req: TaskChatRequest):
-    logger.info("Task chat: task_id=%s, message_len=%d", task_id, len(req.message))
+    logger.info("Task chat: task_id=%s, message_len=%d, resume=%s", task_id, len(req.message), req.resume)
     if not deps.task_agent.can_start_task():
         logger.warning("Task chat blocked: max concurrent reached")
         return JSONResponse(
             status_code=429,
             content={"error": "已达到最大并发任务数限制", "code": "TASK_LIMIT_REACHED"},
         )
-    deps.db.save_task_message(task_id, "user", req.message)
-    deps.db.update_task_title_from_message(task_id, req.message)
+
+    if req.resume:
+        # Resume mode: check for saved state, skip saving user message
+        state = deps.db.load_agent_state(task_id)
+        if not state:
+            return {"error": "没有可恢复的任务状态"}
+        logger.info("Resuming task %s from iteration %d", task_id, state.get("iteration", 0))
+    else:
+        # Normal mode: save user message and update title
+        # Clear any saved agent state so _run_inner builds fresh context
+        deps.db.delete_agent_state(task_id)
+        deps.db.save_task_message(task_id, "user", req.message)
+        deps.db.update_task_title_from_message(task_id, req.message)
 
     async def event_stream():
         logger.debug("Starting task event stream: %s", task_id)
@@ -180,36 +198,22 @@ async def cancel_task_chat(task_id: str):
 async def pause_task_chat(task_id: str):
     """Pause a running task: save state and cancel execution."""
     logger.info("Pausing task: %s", task_id)
-    # Read the current iteration from the agent's runtime tracking
-    current_iteration = deps.task_agent._task_iterations.get(task_id, 0)
-    messages = deps.db.get_task_messages(task_id)
-    state_messages = [
-        {"role": m["role"], "content": m["content"]}
-        for m in messages if m["role"] in ("user", "assistant")
-    ]
-    ok = deps.task_agent.pause_task(task_id, state_messages, current_iteration, [])
+    current_iteration = deps.task_agent.get_iteration(task_id)
+    # Use in-memory messages (include tool_calls/tool_call_id) for correct resume context.
+    # Fall back to DB messages only if agent runtime doesn't have them.
+    messages = deps.task_agent.get_messages(task_id)
+    if messages is None:
+        msgs = deps.db.get_task_messages(task_id)
+        messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in msgs if m["role"] in ("user", "assistant")
+        ]
+    ok = deps.task_agent.pause_task(task_id, messages, current_iteration, [])
     if not ok:
         logger.warning("Pause failed: task %s", task_id)
         return {"error": "暂停失败"}
     logger.info("Task paused: %s at iteration %d", task_id, current_iteration)
     return {"ok": True}
-
-
-@router.post("/tasks/{task_id}/resume")
-async def resume_task_chat(task_id: str):
-    """Resume a paused task."""
-    logger.info("Resuming task: %s", task_id)
-    state = deps.task_agent.get_paused_state(task_id)
-    if not state:
-        logger.warning("Resume failed: no paused state for task %s", task_id)
-        return {"error": "没有已暂停的任务"}
-    # The resume will be handled by _run_inner which checks for saved state
-    # The cancel event will be reset when run() is called next
-    deps.task_agent.clear_paused_state(task_id)
-    # Re-save so _run_inner can pick it up
-    deps.db.save_agent_state(task_id, state)
-    logger.info("Task resumed: %s from iteration %d", task_id, state.get("iteration", 0))
-    return {"ok": True, "resumed_iteration": state.get("iteration", 0)}
 
 
 @router.post("/tasks/{task_id}/confirm-shell")
@@ -229,51 +233,6 @@ async def confirm_skill(task_id: str, body: dict):
     logger.info("Skill confirm: task=%s, confirmed=%s", task_id, confirmed)
     deps.task_agent.respond_skill_confirm(task_id, confirmed)
     return {"ok": True}
-
-
-@router.post("/tasks/{task_id}/messages/{msg_id}/rerun")
-async def rerun_action(task_id: str, msg_id: str):
-    """Re-execute a previously recorded tool action."""
-    task = deps.db.get_task(task_id)
-    if not task:
-        return {"error": "任务不存在"}
-
-    # Find the action message and extract tool info
-    messages = deps.db.get_task_messages(task_id)
-    action_msg = None
-    for m in messages:
-        if m["id"] == msg_id:
-            action_msg = m
-            break
-    if not action_msg or action_msg.get("role") != "action":
-        return {"error": "未找到对应的操作记录"}
-
-    meta = action_msg.get("metadata") or {}
-    tool_name = meta.get("tool_name", "")
-    tool_input = meta.get("tool_input", {})
-    if not tool_name:
-        return {"error": "操作记录缺少工具信息"}
-
-    # Create tools for this task and execute
-    settings = deps.db.get_settings()
-    tools = deps.task_agent._create_task_tools(
-        task["workspace_path"], task.get("venv_path", ""), settings
-    )
-    tool = tools.get(tool_name)
-    if not tool:
-        return {"error": f"未知工具: {tool_name}"}
-
-    try:
-        result = await tool.execute(**tool_input)
-    except Exception as e:
-        result = json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    # Save as new observation
-    deps.db.save_task_message(
-        task_id, "observation", result,
-        metadata={"tool_name": tool_name, "tool_input": tool_input, "rerun": True},
-    )
-    return {"ok": True, "result": result, "tool_name": tool_name}
 
 
 @router.get("/tasks/{task_id}/files")
@@ -440,9 +399,6 @@ def _build_file_tree(root: Path, current: Path, max_depth: int, _depth: int = 0)
 
 def _create_workspace_zip(workspace: Path, title: str):
     """Create a zip of the workspace directory. Returns io.BytesIO or error dict."""
-    import io
-    import zipfile
-
     MAX_ZIP_SIZE = 200 * 1024 * 1024  # 200MB
     buf = io.BytesIO()
     try:

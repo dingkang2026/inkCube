@@ -166,6 +166,23 @@
   line-height: 1.6;
 }
 
+/* ── Running indicator ── */
+.runningDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  margin-left: 6px;
+  vertical-align: middle;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* ── Inline delete confirmation ── */
 .inlineConfirm {
   position: absolute;

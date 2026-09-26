@@ -278,8 +278,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('knowledge:recentChunks', async (_event, { projectId, limit }) => {
+  ipcMain.handle('knowledge:recentChunks', async (_event, { projectId, limit, fileId }) => {
     const params = new URLSearchParams({ limit: String(limit || 20) })
+    if (fileId) params.set('file_id', fileId)
     const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/recent-chunks?${params}`)
     return handlePythonResponse(res)
   })
@@ -390,11 +391,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // ── Tasks ──
 
-  ipcMain.handle('tasks:list', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks`)
-    return handlePythonResponse(res)
-  })
-
   ipcMain.handle('tasks:create', async (_event, { title, workspacePath, mode }) => {
     const res = await fetch(`${pythonManager.getBaseUrl()}/tasks`, {
       method: 'POST',
@@ -443,12 +439,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('tasks:chat', async (_event, { taskId, message }) => {
+  ipcMain.handle('tasks:chat', async (_event, { taskId, message, resume }) => {
     const baseUrl = pythonManager.getBaseUrl()
     const response = await fetch(`${baseUrl}/tasks/${taskId}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: taskId, message }),
+      body: JSON.stringify({ task_id: taskId, message, resume: resume || false }),
     })
 
     if (!response.ok) {
@@ -523,6 +519,11 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('tasks:getStatus', async () => {
     const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/status`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('tasks:hasState', async (_event, taskId) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/has-state`)
     return handlePythonResponse(res)
   })
 
@@ -642,13 +643,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('tasks:rerun', async (_event, { taskId, msgId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/messages/${msgId}/rerun`, {
-      method: 'POST',
-    })
-    return handlePythonResponse(res)
-  })
-
   ipcMain.handle('tasks:uploadFiles', async (_event, { taskId, filePaths }) => {
     return _uploadFilesToTask(pythonManager, taskId, filePaths)
   })
@@ -664,16 +658,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return _uploadFilesToTask(pythonManager, taskId, result.filePaths)
   })
 
-  // ── Pause / Resume ──
+  // ── Pause ──
   ipcMain.handle('tasks:pause', async (_event, { taskId }) => {
     const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/pause`, {
-      method: 'POST',
-    })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('tasks:resume', async (_event, { taskId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/resume`, {
       method: 'POST',
     })
     return handlePythonResponse(res)

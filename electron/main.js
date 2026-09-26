@@ -1,3 +1,10 @@
+// ── Mermaid renderer mode (spawned by doc_generator.py for SVG export) ──
+// When INKCUBE_MERMAID_RENDERER=1, this process is a headless one-shot
+// renderer.  Delegate immediately and skip all main-app initialisation.
+if (process.env.INKCUBE_MERMAID_RENDERER === '1') {
+  require('./mermaid-renderer')
+} else {
+
 const { app, BrowserWindow, ipcMain, protocol, net, shell } = require('electron')
 const path = require('path')
 const { PythonManager } = require('./python-manager')
@@ -160,3 +167,5 @@ app.on('activate', async () => {
     await createWindow()
   }
 })
+
+} // end of non-renderer branch

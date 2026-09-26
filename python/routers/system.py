@@ -276,7 +276,6 @@ async def check_external_deps():
     # pandoc
     pandoc_path = shutil.which("pandoc")
     if pandoc_path:
-        import subprocess
         try:
             proc = subprocess.run([pandoc_path, "--version"], capture_output=True, encoding="utf-8", errors="replace", timeout=5)
             version_line = proc.stdout.split("\n")[0] if proc.stdout else ""
@@ -296,7 +295,6 @@ async def check_external_deps():
     # git
     git_path = shutil.which("git")
     if git_path:
-        import subprocess
         try:
             proc = subprocess.run([git_path, "--version"], capture_output=True, encoding="utf-8", errors="replace", timeout=5)
             version_line = proc.stdout.strip() if proc.stdout else ""

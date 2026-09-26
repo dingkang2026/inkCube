@@ -119,6 +119,43 @@
   cursor: not-allowed;
 }
 
+/* ── Resume banner ── */
+.resumeBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  background: rgba(245, 158, 11, 0.08);
+  border-top: 1px solid rgba(245, 158, 11, 0.2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.resumeIcon {
+  color: var(--warning, #f59e0b);
+  flex-shrink: 0;
+}
+
+.resumeBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.resumeBtn:hover {
+  background: var(--accent-hover);
+}
+
 /* Input area */
 .inputArea {
   position: relative;

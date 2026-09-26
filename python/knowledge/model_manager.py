@@ -119,6 +119,10 @@ class ModelManager:
             }
         return result
 
+    def verify_model(self, name: str, model_path: str) -> bool:
+        """Public API: verify a model is correctly downloaded and intact."""
+        return self._verify(name, model_path)
+
     def _verify(self, name: str, model_path: str) -> bool:
         if name == "rapidocr":
             if not os.path.isdir(model_path):

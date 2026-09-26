@@ -67,7 +67,7 @@ class FileOpsTool(BaseTool):
             "用法:\n"
             "- 先用 list 查看工作区有哪些文件\n"
             "- 用 read 读取文件内容\n"
-            "- 用 write 创建或覆盖文件（自动创建父目录）\n"
+            "- 用 write 创建或覆盖文件（自动创建父目录）。path 必须包含文件名，不能为空或目录\n"
             "- 用 create 创建新文件（已存在则报错，更安全）\n"
             "- 用 search_replace 精确替换文件中的文本块（推荐用于修改已有代码）\n"
             "- 用 apply_diff 应用 SEARCH/REPLACE 格式的 diff（适合多处同时修改）\n"
@@ -555,6 +555,21 @@ class FileOpsTool(BaseTool):
                 return json.dumps({"content": text, "path": path}, ensure_ascii=False)
 
             elif action == "write":
+                if target.is_dir():
+                    return json.dumps(
+                        {"error": f"路径 '{path}' 是一个目录，不是文件。请在 path 中指定文件名（如 'report.md'）"},
+                        ensure_ascii=False,
+                    )
+                if not content:
+                    logger.warning(
+                        "file_ops write called with EMPTY content for path=%s",
+                        path,
+                    )
+                    return json.dumps({"error": "write 操作需要提供 content 参数（文件内容不能为空）"}, ensure_ascii=False)
+                logger.debug(
+                    "file_ops write path=%s content_len=%d",
+                    path, len(content),
+                )
                 quota_err = self._check_write_quota(len(content.encode("utf-8")))
                 if quota_err:
                     return json.dumps({"error": quota_err}, ensure_ascii=False)
@@ -584,8 +599,23 @@ class FileOpsTool(BaseTool):
                 return json.dumps(resp_w, ensure_ascii=False)
 
             elif action == "create":
+                if target.is_dir():
+                    return json.dumps(
+                        {"error": f"路径 '{path}' 已存在且是一个目录。请指定一个文件名"},
+                        ensure_ascii=False,
+                    )
                 if target.exists():
                     return json.dumps({"error": f"文件已存在: {path}"}, ensure_ascii=False)
+                if not content:
+                    logger.warning(
+                        "file_ops create called with EMPTY content for path=%s",
+                        path,
+                    )
+                    return json.dumps({"error": "create 操作需要提供 content 参数（文件内容不能为空）"}, ensure_ascii=False)
+                logger.debug(
+                    "file_ops create path=%s content_len=%d",
+                    path, len(content),
+                )
                 quota_err = self._check_write_quota(len(content.encode("utf-8")))
                 if quota_err:
                     return json.dumps({"error": quota_err}, ensure_ascii=False)

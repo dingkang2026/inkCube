@@ -6,7 +6,7 @@ class SettingsModel(BaseModel):
     api_key: str = ""
     model: str = "glm-4-flash"
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     top_p: float = 0.9
     system_prompt: str = ""
     tavily_key: str = ""
@@ -19,7 +19,8 @@ class SettingsModel(BaseModel):
     task_model: str = ""  # empty = use global model
     task_planner_model: str = ""  # empty = use task_model or global model
     task_timeout: int = 30  # seconds
-    task_auto_confirm_shell: bool = False
+    task_auto_confirm_shell: bool = False  # legacy, kept for backward compat
+    task_shell_confirm_mode: str = "smart"  # strict | smart | auto
     task_shell_domain_whitelist: str = ""  # newline-separated domains auto-approved in smart mode
     task_show_execution_log: bool = True
     task_workspace_max_mb: int = 1024  # max workspace size in MB (0 = unlimited)
@@ -36,3 +37,4 @@ class TaskCreateRequest(BaseModel):
 class TaskChatRequest(BaseModel):
     task_id: str
     message: str
+    resume: bool = False

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python (difflib) / TypeScript+React / SSE / Electron IPC
 
-**Spec:** `docs/task-agent-design-unified.md` §15.3
+**Spec:** `../../1.1task-agent-design-unified.md` §15.3
 
 ## Global Constraints
 
@@ -29,7 +29,7 @@
 | Modify | `src/features/task/useTaskChat.ts` | 处理新 SSE 事件类型 |
 | Modify | `src/features/task/TaskMessageList.tsx` | DiffCard 组件 + PlanProgress 组件 |
 | Modify | `src/features/task/TaskMessageList.module.css` | Diff 样式 + 进度样式 |
-| Modify | `docs/task-agent-design-unified.md` | 更新文档反映实施结果 |
+| Modify | `../../1.1task-agent-design-unified.md` | 更新文档反映实施结果 |
 
 ---
 
@@ -747,7 +747,7 @@ git commit -m "feat(ui): plan progress card with step-by-step status tracking"
 ### Task 7: 文档更新 + 最终评估
 
 **Files:**
-- Modify: `docs/task-agent-design-unified.md`
+- Modify: `../../1.1task-agent-design-unified.md`
 
 - [ ] **Step 1: 更新文档**
 
@@ -775,7 +775,7 @@ git commit -m "feat(ui): plan progress card with step-by-step status tracking"
 - [ ] **Step 3: Commit**
 
 ```bash
-git add docs/task-agent-design-unified.md
+git add docs/1.1task-agent-design-unified.md
 git commit -m "docs: update unified doc to v1.3.0 — Phase 18 complete"
 ```
 

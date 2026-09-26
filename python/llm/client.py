@@ -24,7 +24,8 @@ class LLMClient:
         self.temperature = settings.get("temperature", 0.7)
         self.max_tokens = settings.get("max_tokens", 4096)
         self.top_p = settings.get("top_p", 0.9)
-        self.timeout = settings.get("llm_timeout", 120)
+        self.connect_timeout = settings.get("llm_connect_timeout", 30)
+        self.read_timeout = settings.get("llm_read_timeout", 300)
 
     async def chat(self, messages: list[dict], settings: dict, tools: list[dict] | None = None) -> "str | dict":
         """Send a chat completion request to the LLM API.
@@ -42,8 +43,8 @@ class LLMClient:
             - ``dict`` when *tools* is provided:
               ``{"content": str|None, "tool_calls": list|None, "finish_reason": str}``
         """
-        logger.info("LLM chat request: model=%s, messages=%d, tools=%s, timeout=%ds",
-                    self.model, len(messages), "yes" if tools else "no", self.timeout)
+        logger.info("LLM chat request: model=%s, messages=%d, tools=%s, connect_timeout=%ds, read_timeout=%ds",
+                    self.model, len(messages), "yes" if tools else "no", self.connect_timeout, self.read_timeout)
         request_body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -56,7 +57,7 @@ class LLMClient:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
 
-        async with httpx.AsyncClient(timeout=float(self.timeout)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
             try:
                 response = await client.post(
                     f"{self.api_url}/chat/completions",
@@ -67,12 +68,12 @@ class LLMClient:
                     json=request_body,
                 )
                 logger.debug("LLM response: status=%d", response.status_code)
-            except httpx.ConnectError as e:
-                logger.error("LLM connection failed: %s", str(e))
-                raise LLMNetworkError(detail=str(e))
             except httpx.TimeoutException as e:
                 logger.error("LLM timeout: %s", str(e))
-                raise LLMNetworkError(detail=f"Timeout: {e}")
+                raise LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
+            except httpx.ConnectError as e:
+                logger.error("LLM connection failed: %s", str(e))
+                raise LLMNetworkError(detail=f"连接失败: {e}")
 
             if response.status_code == 401:
                 logger.error("LLM auth failed (401): invalid API key")
@@ -174,7 +175,7 @@ class LLMClient:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
 
-        async with httpx.AsyncClient(timeout=float(self.timeout)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
             try:
                 async with client.stream(
                     "POST",
@@ -264,9 +265,9 @@ class LLMClient:
                     logger.debug("Stream finished: finish_reason=%s", finish_reason)
                     yield {"type": "finish", "finish_reason": finish_reason}
 
-            except httpx.ConnectError as e:
-                logger.error("Stream connection failed: %s", str(e))
-                raise LLMNetworkError(detail=str(e))
             except httpx.TimeoutException as e:
                 logger.error("Stream timeout: %s", str(e))
-                raise LLMNetworkError(detail=f"Timeout: {e}")
+                raise LLMNetworkError(detail=f"流式响应超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
+            except httpx.ConnectError as e:
+                logger.error("Stream connection failed: %s", str(e))
+                raise LLMNetworkError(detail=f"连接失败: {e}")

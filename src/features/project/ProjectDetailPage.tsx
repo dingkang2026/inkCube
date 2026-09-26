@@ -1,5 +1,5 @@
 /** src/features/project/ProjectDetailPage.tsx — Main project detail page with 4-tab structure */
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FolderOpen, BookOpen, FileText, ClipboardList } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
@@ -32,10 +32,19 @@ const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
 export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChanged }: ProjectDetailPageProps) {
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabKey>('materials')
+  const [chatFileId, setChatFileId] = useState<string | null>(null)
+  const [chatFilename, setChatFilename] = useState<string | null>(null)
 
   const ext = getProjectExtState(project.id)
   const [projectType, setProjectType] = useState(ext.type)
   const [currentStage, setCurrentStage] = useState(ext.stage)
+
+  // Re-sync local state when switching to a different project
+  useEffect(() => {
+    const newExt = getProjectExtState(project.id)
+    setProjectType(newExt.type)
+    setCurrentStage(newExt.stage)
+  }, [project.id])
 
   const handleStageClick = useCallback((stage: ProjectStage) => {
     setCurrentStage(stage)
@@ -126,6 +135,7 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
               onOpenSettings={onOpenSettings}
               onProjectDataChanged={onProjectDataChanged}
               compact
+              onFileSelect={(fileId, filename) => { setChatFileId(fileId); setChatFilename(filename) }}
             />
           )}
           {activeTab === 'wiki' && (
@@ -140,7 +150,13 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
         </div>
 
         {/* Right-side chat panel */}
-        <ProjectChatPanel />
+        <ProjectChatPanel
+          projectId={project.id}
+          projectName={project.name}
+          selectedFileId={chatFileId || undefined}
+          selectedFilename={chatFilename || undefined}
+          onClearFileScope={() => { setChatFileId(null); setChatFilename(null) }}
+        />
       </div>
     </div>
   )

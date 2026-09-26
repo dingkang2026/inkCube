@@ -1,5 +1,5 @@
 /** src/features/project/tabs/FormsTab.tsx — Forms tab with filling flow (UI-First, 填表) */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Table, Plus, FileSpreadsheet, CheckCircle, Clock, ArrowLeft, Download, Loader2 } from 'lucide-react'
 import type { ProjectType, ProjectStage } from '../types'
@@ -65,6 +65,7 @@ export function FormsTab({ projectType, currentStage: _currentStage }: FormsTabP
   const [fillProgress, setFillProgress] = useState(0)
   const [fillFields, setFillFields] = useState<{ label: string; value: string }[]>([])
   const [previewForm, setPreviewForm] = useState<typeof MOCK_FORMS[0] | null>(null)
+  const templatesRef = useRef<HTMLDivElement>(null)
 
   const availableTemplates = projectType === 'general'
     ? MOCK_FORM_TEMPLATES
@@ -213,14 +214,22 @@ export function FormsTab({ projectType, currentStage: _currentStage }: FormsTabP
     <div className={s.container}>
       {/* Header */}
       <div className={s.header}>
-        <button className={s.primaryBtn} onClick={() => setViewMode('list')}>
+        <button className={s.primaryBtn} onClick={() => {
+          if (viewMode !== 'list') {
+            setViewMode('list')
+            setSelectedTemplate(null)
+            setPreviewForm(null)
+          } else {
+            templatesRef.current?.scrollIntoView({ behavior: 'smooth' })
+          }
+        }}>
           <Plus size={16} />
           {t('project.forms.newForm')}
         </button>
       </div>
 
       {/* Available templates */}
-      <div className={s.section}>
+      <div className={s.section} ref={templatesRef}>
         <h4 className={s.sectionTitle}>{t('project.forms.availableTemplates')}</h4>
         <div className={s.templateList}>
           {availableTemplates.map((tpl) => (

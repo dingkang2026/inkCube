@@ -17,6 +17,8 @@ interface KnowledgePageProps {
   onProjectDataChanged?: () => void
   /** When true, hide project name/description header (used when embedded in ProjectDetailPage) */
   compact?: boolean
+  /** Called when file selection changes (for chat scope tracking) */
+  onFileSelect?: (fileId: string | null, filename: string | null) => void
 }
 
 type OutputTab = 'search' | 'images'
@@ -29,15 +31,15 @@ const STATUS_FILTERS: { key: FileStatusFilter; labelKey: string }[] = [
   { key: 'error', labelKey: 'knowledge.filterError' },
 ]
 
-export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact }: KnowledgePageProps) {
+export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact, onFileSelect }: KnowledgePageProps) {
   return (
     <ToastProvider>
-      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} />
+      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} />
     </ToastProvider>
   )
 }
 
-function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact }: KnowledgePageProps) {
+function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact, onFileSelect }: KnowledgePageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const [files, setFiles] = useState<FileRecord[]>([])
@@ -64,11 +66,12 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
   const ACCEPT = ['.pdf', '.docx', '.pptx', '.xlsx', '.html', '.png', '.jpg', '.jpeg'].join(',')
 
-  const loadRecentChunks = useCallback(async (projectId: string) => {
+  const loadRecentChunks = useCallback(async (projectId: string, fileId?: string | null) => {
     try {
       const result: any = await window.electronAPI.invoke('knowledge:recentChunks', {
         projectId,
         limit: 20,
+        fileId: fileId || undefined,
       })
       setRecentChunks(result.results || [])
     } catch (err) {
@@ -157,18 +160,30 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   useEffect(() => {
     if (selectedProject) {
       setSelectedFileId(null)
+      onFileSelect?.(null, null)
     }
   }, [selectedProject?.id])
 
-  // Reload files and recent chunks when project or search changes
+  // Notify parent when file selection changes (for chat scope)
+  const prevNotifiedFilenameRef = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    const filename = selectedFileId ? (files.find(f => f.id === selectedFileId)?.filename ?? null) : null
+    // Only notify when the resolved filename actually changes
+    if (filename !== prevNotifiedFilenameRef.current) {
+      prevNotifiedFilenameRef.current = filename
+      onFileSelect?.(selectedFileId, filename)
+    }
+  }, [selectedFileId, files])
+
+  // Reload files and recent chunks when project, search, or file selection changes
   useEffect(() => {
     if (selectedProject) {
       loadFiles(selectedProject.id, filenameSearch)
-      loadRecentChunks(selectedProject.id)
+      loadRecentChunks(selectedProject.id, selectedFileId)
       setHasSearched(false)
       setSearchResults([])
     }
-  }, [selectedProject?.id, filenameSearch, loadFiles, loadRecentChunks])
+  }, [selectedProject?.id, filenameSearch, selectedFileId, loadFiles, loadRecentChunks])
 
   const loadMoreFiles = async () => {
     if (!selectedProject || loadingMore || !hasMore) return
@@ -219,14 +234,14 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
         if (curCount === 0) {
           // All processing done — full refresh including related data
           loadFiles(selectedProject.id, filenameSearch)
-          loadRecentChunks(selectedProject.id)
+          loadRecentChunks(selectedProject.id, selectedFileId)
           onProjectDataChanged?.()
           return
         }
 
         if (prevCount > 0 && curCount < prevCount) {
           // Some files just finished — refresh related data
-          loadRecentChunks(selectedProject.id)
+          loadRecentChunks(selectedProject.id, selectedFileId)
           onProjectDataChanged?.()
         }
 
@@ -289,7 +304,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     }
     // Refresh recent chunks (may contain chunks from deleted file)
     if (selectedProject) {
-      loadRecentChunks(selectedProject.id)
+      loadRecentChunks(selectedProject.id, selectedFileId)
     }
   }, [selectedFileId, selectedProject, loadRecentChunks])
 

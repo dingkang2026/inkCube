@@ -155,9 +155,22 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
     }
   }, [taskId])
 
+  // Use taskId directly as dependency to avoid cross-component setState during render
   useEffect(() => {
-    loadTree()
-  }, [loadTree])
+    if (!taskId) return
+    setLoading(true)
+    window.electronAPI.invoke('tasks:getFiles', taskId)
+      .then((res) => {
+        const raw = (res as { tree: FileNode[] }).tree || []
+        setTree(assignPaths(raw))
+      })
+      .catch((err) => {
+        console.error('Failed to load file tree:', err)
+      })
+      .finally(() => {
+        setLoading(false)
+      })
+  }, [taskId])
 
   useEffect(() => {
     const handler = () => loadTree()

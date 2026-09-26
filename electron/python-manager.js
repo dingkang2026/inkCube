@@ -75,6 +75,13 @@ class PythonManager {
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
       INKCUBE_PARENT_PID: String(process.pid),
+      // Pass Electron binary path so Python can spawn mermaid-renderer.js
+      // In production, process.execPath is the packaged app — the renderer
+      // script is loaded via INKCUBE_MERMAID_RENDERER=1 (see main.js).
+      INKCUBE_ELECTRON_PATH: this.isDev
+        ? path.join(__dirname, '..', 'node_modules', 'electron', 'dist',
+            process.platform === 'win32' ? 'electron.exe' : 'electron')
+        : process.execPath,
     }
 
     this.process = spawn(command, [...args, '--port', String(this.port)], {

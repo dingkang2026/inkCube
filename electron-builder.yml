@@ -19,6 +19,8 @@ extraResources:
     to: "tools/"
     filter:
       - "**/*"
+  - from: "node_modules/mermaid/dist/mermaid.min.js"
+    to: "mermaid/mermaid.min.js"
 
 win:
   target: nsis

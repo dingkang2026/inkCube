@@ -1,7 +1,7 @@
 """python/agent/context_manager.py — Token-aware context management.
 
 Replaces the hard-coded thresholds in task_agent.py:
-- SNIP_THRESHOLD (8000 chars) → ContextManager.snip()
+- SNIP_THRESHOLD (32000 chars) → ContextManager.snip()
 - COLLAPSE_THRESHOLD (40 msgs) → ContextManager.should_compress()
 - KEEP_RECENT (10 msgs) → ContextManager.compress()
 
@@ -46,7 +46,7 @@ class ContextManager:
         max_tokens: int = 128_000,
         reserve_for_response: int = 4096,
         reserve_for_system: int = 2000,
-        snip_threshold: int = 8000,
+        snip_threshold: int = 32000,
         compress_ratio: float = 0.85,
         keep_recent: int = 10,
     ):
@@ -319,10 +319,10 @@ class ContextManager:
         except Exception:
             return self.snip(text)
 
-        head = text[:1000]
+        head = text[:4000]
         return (
             f"[输出已保存到 {dump_file}，共 {len(text)} 字符]\n"
-            f"前 1000 字符:\n{head}\n"
+            f"前 4000 字符:\n{head}\n"
             f"[如需完整内容，用 file_ops read {dump_file}]"
         )
 

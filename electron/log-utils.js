@@ -80,7 +80,7 @@ function logElectron(level, msg) {
   const line = `[${_formatTimestamp()}] [electron] [${level}] ${msg}\n`
   try {
     _rotateIfNeeded()
-    fs.appendFileSync(logFile, line)
+    fs.appendFileSync(logFile, line, 'utf-8')
   } catch { /* ignore write errors */ }
   // Also print to console
   if (level === 'ERROR') {

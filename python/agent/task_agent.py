@@ -30,6 +30,7 @@ from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter
 from agent.context_manager import ContextManager, build_git_context, detect_project_context
+from errors import LLMNetworkError
 
 logger = logging.getLogger(__name__)
 
@@ -97,15 +98,9 @@ Strategy: [整体策略说明]
 - 明确指出需要修改的文件
 - 如果任务简单（1-2步），直接给出计划即可"""
 
-_EDITOR_PROMPT = """你是“执行者”，负责根据架构师的计划精确执行代码修改。
-请严格按照提供的执行计划进行操作。
-使用工具完成每个步骤，并在完成后验证结果。"""
-
 # ── Context compression constants ──
 # Snip: truncate individual tool outputs longer than this
-SNIP_THRESHOLD = 8000  # chars
-# Context Collapse: when total messages exceed this, summarize early ones
-COLLAPSE_THRESHOLD = 40  # messages
+SNIP_THRESHOLD = 32000  # chars (~8K tokens, ~6% of 128K context)
 # After collapse, keep this many recent messages intact
 KEEP_RECENT = 10
 
@@ -115,11 +110,10 @@ class TaskAgent:
 
     def __init__(self, db: Database):
         self.db = db
-        self.max_iterations = 15
         self._cancel_events: dict[str, asyncio.Event] = {}
-        self._active_task_id: str | None = None
         self._running_task_ids: set[str] = set()
         self._task_iterations: dict[str, int] = {}
+        self._task_messages: dict[str, list[dict]] = {}  # in-memory LLM messages for pause
 
         # Shell confirmation: pending confirmations waiting for user response
         self._pending_confirms: dict[str, dict] = {}
@@ -130,45 +124,27 @@ class TaskAgent:
         # Skill scan cache: install_path → (mtime, parsed_dict) (Phase 15.4)
         self._skill_scan_cache: dict[str, tuple[float, dict]] = {}
 
-        # Shared tool instances (used for prompt description generation only)
-        self.code_executor = CodeExecutorTool()
-        self.shell = ShellTool()
-        self.file_ops = FileOpsTool()
-        self.code_search = CodeSearchTool()
-        self.web_fetch = WebFetchTool()
-        self.code_lint = CodeLintTool()
-        self.code_format = CodeFormatTool()
-        self.package_manager = PackageManagerTool()
-        self.project_scaffold = ProjectScaffoldTool()
-        self.knowledge_search = TaskKnowledgeSearchTool()
-        self.doc_generator = DocGeneratorTool()
-        self.web_search = TavilySearchTool()
-        self.repo_map = RepoMapTool()
-        self.skill_runner = SkillRunnerTool(db=db)
-        self.git_ops = GitOpsTool()
-        self.lsp_client = LSPClientTool()
+        # Tool instances for prompt description generation (used by _get_tools_description)
+        _knowledge_search = TaskKnowledgeSearchTool()
+        self.knowledge_search = _knowledge_search  # also referenced by _create_task_tools
         self._tools = {
-            "code_executor": self.code_executor,
-            "shell": self.shell,
-            "file_ops": self.file_ops,
-            "code_search": self.code_search,
-            "web_fetch": self.web_fetch,
-            "web_search": self.web_search,
-            "code_lint": self.code_lint,
-            "code_format": self.code_format,
-            "package_manager": self.package_manager,
-            "project_scaffold": self.project_scaffold,
-            "knowledge_search": self.knowledge_search,
-            "doc_generator": self.doc_generator,
-            "repo_map": self.repo_map,
-            "skill_runner": self.skill_runner,
-            "git_ops": self.git_ops,
-            "lsp_client": self.lsp_client,
+            "code_executor": CodeExecutorTool(),
+            "shell": ShellTool(),
+            "file_ops": FileOpsTool(),
+            "code_search": CodeSearchTool(),
+            "web_fetch": WebFetchTool(),
+            "web_search": TavilySearchTool(),
+            "code_lint": CodeLintTool(),
+            "code_format": CodeFormatTool(),
+            "package_manager": PackageManagerTool(),
+            "project_scaffold": ProjectScaffoldTool(),
+            "knowledge_search": _knowledge_search,
+            "doc_generator": DocGeneratorTool(),
+            "repo_map": RepoMapTool(),
+            "skill_runner": SkillRunnerTool(db=db),
+            "git_ops": GitOpsTool(),
+            "lsp_client": LSPClientTool(),
         }
-
-    def update_settings(self, settings: dict):
-        self.settings = settings
-        self.llm = LLMClient(settings)
 
     def request_cancel(self, task_id: str | None = None):
         """Request cancellation for a specific task, or all tasks if task_id is None."""
@@ -208,27 +184,16 @@ class TaskAgent:
             "messages": messages,
             "iteration": iteration,
             "recent_errors": recent_errors,
+            "auto_saved": True,  # Mark as pausable; also enables startup detection
         }
         ok = self.db.save_agent_state(task_id, state)
         if ok:
             self.request_cancel(task_id)
         return ok
 
-    def get_paused_state(self, task_id: str) -> dict | None:
-        """Check if a task has a paused state."""
-        return self.db.load_agent_state(task_id)
-
-    def clear_paused_state(self, task_id: str):
-        """Delete paused state after resume."""
-        self.db.delete_agent_state(task_id)
-
     def _reset_cancel(self, task_id: str):
         """Create a fresh cancel event for a specific task."""
         self._cancel_events[task_id] = asyncio.Event()
-
-    @property
-    def is_any_running(self) -> bool:
-        return len(self._running_task_ids) > 0
 
     @property
     def running_count(self) -> int:
@@ -580,6 +545,11 @@ class TaskAgent:
 
         Returns the (possibly updated) result_str.
         """
+        fix_path = tool_params.get("path", "")
+        logger.info(
+            "Edit-verify loop entered: path=%s action=%s",
+            fix_path, tool_params.get("action", ""),
+        )
         for attempt in range(max_retries):
             # Check if there's a lint error to fix
             try:
@@ -591,10 +561,9 @@ class TaskAgent:
                 break  # No error, done
 
             lint_warning = result_obj["lint_warning"]
-            fix_path = tool_params.get("path", "")
             logger.info(
-                "Edit-verify loop: lint error on %s, auto-fix attempt %d/%d",
-                fix_path, attempt + 1, max_retries,
+                "Edit-verify loop: lint error on %s: %s (attempt %d/%d)",
+                fix_path, lint_warning[:200], attempt + 1, max_retries,
             )
 
             # Read current file content
@@ -622,7 +591,15 @@ class TaskAgent:
             try:
                 fixed_content = await task_llm.chat(fix_prompt, settings)
                 if not fixed_content or not isinstance(fixed_content, str):
+                    logger.warning(
+                        "Edit-verify loop: LLM returned empty/invalid fix for %s (attempt %d/%d)",
+                        fix_path, attempt + 1, max_retries,
+                    )
                     break
+                logger.info(
+                    "Edit-verify loop: LLM fix response len=%d for %s (attempt %d/%d)",
+                    len(fixed_content), fix_path, attempt + 1, max_retries,
+                )
 
                 # Strip markdown code fences if present
                 fixed_content = fixed_content.strip()
@@ -632,6 +609,14 @@ class TaskAgent:
                     if lines and lines[-1].strip() == "```":
                         lines = lines[:-1]
                     fixed_content = "\n".join(lines)
+
+                # Guard: never overwrite a file with empty content
+                if not fixed_content.strip():
+                    logger.warning(
+                        "Edit-verify loop: LLM returned empty fix for %s, skipping (attempt %d/%d)",
+                        fix_path, attempt + 1, max_retries,
+                    )
+                    break
 
                 # Apply the fix
                 fix_result = await tool.execute(
@@ -658,17 +643,25 @@ class TaskAgent:
     def _log_execution(task_id: str, tool_name: str, tool_input: dict, result: str, duration_ms: int):
         """Write execution log entry to task's execution.log file."""
         try:
-            # This is best-effort; don't fail the task if logging fails
             from main import get_data_dir
             log_dir = os.path.join(get_data_dir(), "tasks", task_id)
             if not os.path.isdir(log_dir):
                 return
             log_path = os.path.join(log_dir, "execution.log")
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            # Truncate result for log
-            result_preview = result[:500] + "..." if len(result) > 500 else result
-            input_preview = json.dumps(tool_input, ensure_ascii=False)[:200]
-            entry = f"[{ts}] [INFO] [{tool_name}] input={input_preview} | duration={duration_ms}ms | result={result_preview}\n"
+            # Truncate result for log (increased from 500 to 2000)
+            result_preview = result[:2000] + "..." if len(result) > 2000 else result
+            # For input, show keys + short value previews (not truncated blob)
+            input_parts = []
+            for k, v in tool_input.items():
+                if isinstance(v, str) and len(v) > 100:
+                    input_parts.append(f"{k}=<{len(v)}chars>{v[:80]}...")
+                else:
+                    input_parts.append(f"{k}={v}")
+            input_preview = ", ".join(input_parts)
+            if len(input_preview) > 500:
+                input_preview = input_preview[:500] + "..."
+            entry = f"[{ts}] [INFO] [{tool_name}] input={{{input_preview}}} | duration={duration_ms}ms | result={result_preview}\n"
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(entry)
         except Exception:
@@ -857,9 +850,20 @@ class TaskAgent:
 
     # ── Main Run Loop ──
 
+    def get_iteration(self, task_id: str) -> int:
+        """Return the current iteration for a running task (0 if not found)."""
+        return self._task_iterations.get(task_id, 0)
+
+    def get_messages(self, task_id: str) -> list[dict] | None:
+        """Return the current in-memory LLM messages for a running task."""
+        return self._task_messages.get(task_id)
+
+    def is_task_running(self, task_id: str) -> bool:
+        """Return True if the given task is currently running."""
+        return task_id in self._running_task_ids
+
     async def run(self, task_id: str, user_message: str) -> AsyncGenerator[dict, None]:
         self._reset_cancel(task_id)
-        self._active_task_id = task_id
         self._running_task_ids.add(task_id)
         self._task_iterations[task_id] = 0
         try:
@@ -869,8 +873,7 @@ class TaskAgent:
             self._running_task_ids.discard(task_id)
             self._cancel_events.pop(task_id, None)
             self._task_iterations.pop(task_id, None)
-            if self._active_task_id == task_id:
-                self._active_task_id = None
+            self._task_messages.pop(task_id, None)
 
     async def _run_planner(
         self, planner_llm: LLMClient, settings: dict,
@@ -1067,7 +1070,8 @@ class TaskAgent:
             logger.info("Injected slash fallthrough hint for skill '%s'", _fc)
 
         # ── Phase 1: Planner (if configured) ──
-        if planner_llm:
+        # Skip planner when resuming from saved state (user_message is empty/irrelevant)
+        if planner_llm and not paused_state:
             yield {"type": "thought", "data": {"content": "🏗️ 架构师正在制定执行计划..."}}
             try:
                 plan = await self._run_planner(planner_llm, settings, user_message, messages)
@@ -1088,6 +1092,11 @@ class TaskAgent:
                 logger.warning("Planner failed for task %s: %s, falling back to single-model", task_id, e)
                 yield {"type": "thought", "data": {"content": "⚠️ 规划阶段出错，回退到单模型模式"}}
 
+        logger.info(
+            "TaskAgent run start: task=%s model=%s workspace=%s mode=%s msg_count=%d",
+            task_id, model_name, workspace_path, task_mode, len(messages),
+        )
+
         # Stuck detection state
         recent_errors: list[str] = recent_errors_saved if recent_errors_saved is not None else []
         STUCK_THRESHOLD = 3  # consecutive same errors → stuck
@@ -1100,10 +1109,18 @@ class TaskAgent:
         if not isinstance(max_iter, int) or max_iter < 1:
             max_iter = 25
 
+        # Track in-memory messages so pause endpoint can save complete state
+        self._task_messages[task_id] = messages
+
         for iteration in range(start_iteration, max_iter):
             self._task_iterations[task_id] = iteration
             if cancel_event.is_set():
                 break
+
+            logger.info(
+                "TaskAgent iteration %d start: msg_count=%d recent_errors=%d task=%s",
+                iteration, len(messages), len(recent_errors), task_id,
+            )
 
             # Context Collapse: compress if too many messages (token-aware)
             messages = await ctx_mgr.compress(messages, task_llm, settings)
@@ -1125,7 +1142,26 @@ class TaskAgent:
                     break
                 yield fc_event
             if fc_completed:
-                if fc_status in ("done", "error"):
+                logger.info(
+                    "TaskAgent iteration %d done: status=%s task=%s",
+                    iteration, fc_status, task_id,
+                )
+                if fc_status == "continue":
+                    # ── Auto-save full state for crash recovery ──
+                    # Save complete messages (including tool_calls / tool_call_id)
+                    # so the LLM can correctly pair tool calls with results on resume.
+                    try:
+                        self.db.save_agent_state(task_id, {
+                            "messages": messages,
+                            "iteration": iteration + 1,
+                            "recent_errors": list(recent_errors),
+                            "auto_saved": True,
+                        })
+                    except Exception:
+                        logger.warning("Auto-save state failed for task %s", task_id, exc_info=True)
+                elif fc_status in ("done", "error"):
+                    # Task finished or errored — clear auto-saved state
+                    self.db.delete_agent_state(task_id)
                     yield {"type": "done", "data": {}}
                     return
 
@@ -1136,6 +1172,32 @@ class TaskAgent:
         self.db.save_task_message(task_id, "assistant", fallback)
         yield {"type": "answer_chunk", "data": {"content": fallback}}
         yield {"type": "done", "data": {}}
+
+    # ── FC Iteration Logging Helpers ──
+
+    @staticmethod
+    def _preview(text: str, limit: int = 200) -> str:
+        """Truncate text for logging, preserving newlines as \\n."""
+        if not text:
+            return "<empty>"
+        one_line = text.replace("\n", "\\n")
+        return one_line[:limit] + ("..." if len(one_line) > limit else "")
+
+    @staticmethod
+    def _summarize_tool_call(tc: dict) -> str:
+        """One-line summary of a tool call: name + argument keys + value previews."""
+        name = tc.get("function", {}).get("name", "?")
+        try:
+            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            return f"{name}(<parse_error>)"
+        parts = []
+        for k, v in args.items():
+            if isinstance(v, str):
+                parts.append(f"{k}={TaskAgent._preview(v, 80)}")
+            else:
+                parts.append(f"{k}={v}")
+        return f"{name}({', '.join(parts)})"
 
     # ── Function Calling Iteration Handler ──
 
@@ -1169,43 +1231,98 @@ class TaskAgent:
         reasoning_flushed = False  # Track if reasoning has been yielded
         tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
         finish_reason = "unknown"
-        try:
-            async for chunk in task_llm.chat_stream(messages, settings, tools=tool_defs):
+
+        # ── Retry logic for transient LLM errors (timeout, connection) ──
+        _LLM_MAX_RETRIES = 2
+        _llm_last_error: Exception | None = None
+
+        for _llm_attempt in range(_LLM_MAX_RETRIES + 1):
+            if _llm_attempt > 0:
                 if cancel_event.is_set():
                     yield {"type": "_fc_done", "data": {"status": "error"}}
                     return
-                if chunk["type"] == "reasoning":
-                    delta = chunk["delta"]
-                    reasoning_parts.append(delta)
-                elif chunk["type"] == "content":
-                    # Flush reasoning before first content chunk (ensure correct order)
-                    if not reasoning_flushed and reasoning_parts:
-                        rc = "".join(reasoning_parts)
-                        if rc.strip():
-                            yield {"type": "reasoning", "data": {"content": rc}}
-                            self.db.save_task_message(task_id, "reasoning", rc)
-                        reasoning_flushed = True
-                    
-                    delta = chunk["delta"]
-                    content_parts.append(delta)
-                    # Stream text content to frontend
-                    yield {"type": "answer_chunk", "data": {"content": delta}}
-                elif chunk["type"] == "tool_calls":
-                    # Streaming complete — tool_calls accumulated
-                    for i, tc in enumerate(chunk["tool_calls"]):
-                        tc_accum[i] = tc
-                elif chunk["type"] == "finish":
-                    finish_reason = chunk.get("finish_reason", "unknown")
+                _backoff = 2 ** _llm_attempt  # 2s, 4s
+                logger.info(
+                    "LLM retry %d/%d for task %s (backoff %ds)",
+                    _llm_attempt, _LLM_MAX_RETRIES, task_id, _backoff,
+                )
+                await asyncio.sleep(_backoff)
+                # Reset accumulators for retry (keep reasoning_flushed to avoid duplicate DB writes)
+                content_parts.clear()
+                reasoning_parts.clear()
+                tc_accum.clear()
+                finish_reason = "unknown"
 
-            logger.info(
-                "TaskAgent FC response [%d] finish=%s tool_calls=%d for task %s",
-                iteration, finish_reason, len(tc_accum), task_id,
-            )
-        except Exception as e:
-            # Include detail from LLMCallFailed if available
+            try:
+                async for chunk in task_llm.chat_stream(messages, settings, tools=tool_defs):
+                    if cancel_event.is_set():
+                        yield {"type": "_fc_done", "data": {"status": "error"}}
+                        return
+                    if chunk["type"] == "reasoning":
+                        delta = chunk["delta"]
+                        reasoning_parts.append(delta)
+                    elif chunk["type"] == "content":
+                        # Flush reasoning before first content chunk (ensure correct order)
+                        if not reasoning_flushed and reasoning_parts:
+                            rc = "".join(reasoning_parts)
+                            if rc.strip():
+                                yield {"type": "reasoning", "data": {"content": rc}}
+                                self.db.save_task_message(task_id, "reasoning", rc)
+                            reasoning_flushed = True
+                        
+                        delta = chunk["delta"]
+                        content_parts.append(delta)
+                        # Stream text content to frontend
+                        yield {"type": "answer_chunk", "data": {"content": delta}}
+                    elif chunk["type"] == "tool_calls":
+                        # Streaming complete — tool_calls accumulated
+                        for i, tc in enumerate(chunk["tool_calls"]):
+                            tc_accum[i] = tc
+                    elif chunk["type"] == "finish":
+                        finish_reason = chunk.get("finish_reason", "unknown")
+
+                # Detailed summary of LLM response (use raw accumulators here)
+                _cp = "".join(content_parts) if content_parts else ""
+                _tc_list = [tc_accum[i] for i in sorted(tc_accum.keys())] if tc_accum else []
+                _content_preview = self._preview(_cp, 300) if _cp else "<none>"
+                _tc_summaries = [self._summarize_tool_call(tc) for tc in _tc_list]
+                logger.info(
+                    "TaskAgent FC response [%d] finish=%s content=%s tool_calls=[%s] for task %s",
+                    iteration, finish_reason, _content_preview,
+                    "; ".join(_tc_summaries) if _tc_summaries else "none",
+                    task_id,
+                )
+                _llm_last_error = None
+                break  # Success — exit retry loop
+
+            except LLMNetworkError as e:
+                # Transient error (timeout / connection) — eligible for retry
+                _llm_last_error = e
+                detail = getattr(e, 'detail', '') or str(e)
+                logger.warning(
+                    "LLM transient error for task %s (attempt %d/%d): %s",
+                    task_id, _llm_attempt + 1, _LLM_MAX_RETRIES + 1, detail,
+                )
+                if _llm_attempt >= _LLM_MAX_RETRIES:
+                    break  # Exhausted retries
+
+            except Exception as e:
+                # Non-transient error (auth, API error) — do not retry
+                _llm_last_error = e
+                break
+
+        # ── Check if LLM call ultimately failed ──
+        if _llm_last_error is not None:
+            e = _llm_last_error
             detail = getattr(e, 'detail', '') or str(e)
-            error_msg = f"调用模型出错: {detail}"
-            logger.error("TaskAgent FC LLM call exception for task %s: %s", task_id, detail)
+            if isinstance(e, LLMNetworkError):
+                if "超时" in detail or "timeout" in detail.lower():
+                    error_msg = f"⏱️ 调用模型超时，请检查网络连接或稍后重试。"
+                else:
+                    error_msg = f"🔌 无法连接模型服务，请检查网络连接。"
+            else:
+                error_msg = f"调用模型出错: {detail}"
+            logger.error("TaskAgent FC LLM call failed for task %s: %s", task_id, detail)
             self.db.save_task_message(task_id, "assistant", error_msg)
             yield {"type": "answer_chunk", "data": {"content": error_msg}}
             yield {"type": "_fc_done", "data": {"status": "error"}}
@@ -1273,14 +1390,19 @@ class TaskAgent:
 
             tc_id = tc["id"]
             tool_name = tc["function"]["name"]
+            raw_args = tc["function"].get("arguments", "")
             try:
-                tool_params = json.loads(tc["function"]["arguments"])
+                tool_params = json.loads(raw_args)
             except (json.JSONDecodeError, KeyError):
+                logger.warning(
+                    "TaskAgent FC tool call JSON parse error: tool=%s raw_args=%s task=%s",
+                    tool_name, self._preview(raw_args, 500), task_id,
+                )
                 tool_params = {}
 
             # Yield action event for frontend
             yield {"type": "action", "data": {"tool": tool_name, "input": tool_params}}
-            self.db.save_task_message(
+            action_msg_id = self.db.save_task_message(
                 task_id, "action", "",
                 metadata={"tool_name": tool_name, "tool_input": tool_params},
             )
@@ -1393,6 +1515,13 @@ class TaskAgent:
             if result_str is None:
                 tool = tools.get(tool_name)
                 if tool:
+                    # Log key param details for diagnostics
+                    _param_summary = {k: (f"len={len(v)}" if isinstance(v, str) and len(v) > 100 else v)
+                                      for k, v in tool_params.items()}
+                    logger.info(
+                        "TaskAgent FC exec tool=%s params=%s task=%s",
+                        tool_name, json.dumps(_param_summary, ensure_ascii=False), task_id,
+                    )
                     # Builtin tool execution
                     try:
                         override_params = await tool.pre_execute(**tool_params)
@@ -1411,6 +1540,10 @@ class TaskAgent:
                                     task_llm, settings,
                                 )
                     except Exception as e:
+                        logger.warning(
+                            "TaskAgent FC tool exception: tool=%s error=%s task=%s",
+                            tool_name, e, task_id,
+                        )
                         result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
                 else:
                     # Check if it's an external skill registered in skill_registry
@@ -1440,6 +1573,24 @@ class TaskAgent:
             if result_str is None:
                 result_str = ""
 
+            # Log execution result summary
+            _res_status = "ok"
+            try:
+                _rj = json.loads(result_str)
+                if isinstance(_rj, dict):
+                    if "error" in _rj:
+                        _res_status = f"error: {_rj['error'][:120]}"
+                    elif _rj.get("ok"):
+                        _res_status = "ok"
+                    elif "exit_code" in _rj:
+                        _res_status = f"exit={_rj['exit_code']}"
+            except (json.JSONDecodeError, TypeError):
+                _res_status = self._preview(result_str, 120)
+            logger.info(
+                "TaskAgent FC result tool=%s status=%s duration=%dms task=%s",
+                tool_name, _res_status, exec_duration, task_id,
+            )
+
             # Append tool result to message history
             snipped_result = ctx_mgr.snip(result_str, tool_name=tool_name, workspace_path=workspace_path) if ctx_mgr else result_str
             messages.append({
@@ -1460,9 +1611,17 @@ class TaskAgent:
                 except (json.JSONDecodeError, TypeError):
                     pass
             yield {"type": "observation", "data": obs_data}
+            # Save observation with action_id link + diff so frontend can reconstruct ToolCard from history
+            _obs_meta: dict = {
+                "tool_name": tool_name, "tool_input": tool_params,
+                "tool_output": result_str[:5000], "action_id": action_msg_id,
+            }
+            if obs_data.get("diff"):
+                _obs_meta["diff"] = obs_data["diff"]
+                _obs_meta["file_path"] = obs_data.get("file_path", "")
             self.db.save_task_message(
                 task_id, "observation", result_str,
-                metadata={"tool_name": tool_name, "tool_input": tool_params, "tool_output": result_str[:5000]},
+                metadata=_obs_meta,
             )
             self._log_execution(task_id, tool_name, tool_params, result_str, exec_duration)
 
@@ -1487,7 +1646,13 @@ class TaskAgent:
                 recent_errors.clear()
 
             # Track if edits were made (for self-reflection injection)
-            if tool_name == "file_ops" and tool_params.get("action") in ("write", "create", "search_replace", "apply_diff", "batch_edit"):
+            # Only count successful edits, not failed attempts
+            if (
+                tool_name == "file_ops"
+                and tool_params.get("action") in ("write", "create", "search_replace", "apply_diff", "batch_edit")
+                and isinstance(result_obj, dict)
+                and result_obj.get("ok")
+            ):
                 _edits_made = True
 
         # ── Stuck detection: inject hint AFTER all tool messages are appended ──

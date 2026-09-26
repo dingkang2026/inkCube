@@ -1,19 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Play, Terminal, Folder, Search, Globe, Sparkles, Package, Wrench, BookOpen,
-  FileText, Map, Puzzle, FolderOpen, Bot, User, Brain, Lightbulb, AlertTriangle, Copy, Check,
+  FileText, Map as MapIcon, Puzzle, FolderOpen, Bot, User, Brain, Lightbulb, AlertTriangle, Copy, Check,
 } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import s from './TaskMessageList.module.css'
 
 interface TaskMessageListProps {
-  taskId: string | null
   messages: TaskMessage[]
   streamContent: string
   streamSteps: StreamStep[]
-  streamIsThought?: boolean // Whether streamContent is a thought (analysis) or final answer
+  streamReasoning?: string
+  streamIteration?: number
+  streamIterationThoughts?: Map<number, string>
+  streamIterationReasoning?: Map<number, string>
   planData?: PlanData | null
   isGenerating: boolean
 }
@@ -22,10 +24,10 @@ interface TaskMessageListProps {
 const TOOL_META: Record<string, { icon: string; label: string }> = {
   code_executor: { icon: '▶', label: '执行代码' },
   shell: { icon: '⌘', label: 'Shell' },
-  file_ops: { icon: '📁', label: '文件操作' },
+  file_ops: { icon: '', label: '文件操作' },
   code_search: { icon: '🔍', label: '搜索' },
   web_fetch: { icon: '🌐', label: '网页' },
-  web_search: { icon: '🔎', label: '网络搜索' },
+  web_search: { icon: '', label: '网络搜索' },
   code_lint: { icon: '🔎', label: '代码检查' },
   code_format: { icon: '✨', label: '格式化' },
   package_manager: { icon: '📦', label: '依赖管理' },
@@ -38,8 +40,7 @@ const TOOL_META: Record<string, { icon: string; label: string }> = {
   lsp_client: { icon: '🧠', label: '代码分析' },
 }
 
-// Lucide icon mapping for tool cards
-const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
+const TOOL_ICONS: Record<string, any> = {
   code_executor: Play,
   shell: Terminal,
   file_ops: Folder,
@@ -52,7 +53,7 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   project_scaffold: Wrench,
   knowledge_search: BookOpen,
   doc_generator: FileText,
-  repo_map: Map,
+  repo_map: MapIcon,
   skill_runner: Puzzle,
   git_ops: FolderOpen,
   lsp_client: Brain,
@@ -69,69 +70,270 @@ function getToolIcon(toolName: string) {
 function formatToolInput(input: Record<string, unknown>): string {
   const entries = Object.entries(input)
   if (entries.length === 0) return ''
-
   if (input.code && typeof input.code === 'string') {
     const firstLine = input.code.split('\n')[0]
     return firstLine.length > 60 ? firstLine.slice(0, 60) + '...' : firstLine
   }
-  if (input.command && typeof input.command === 'string') {
-    return input.command
-  }
-  if (input.action && input.path) {
-    return `${input.action}: ${input.path}`
-  }
-  if (input.pattern) {
-    return `/${input.pattern}/`
-  }
-  if (input.url) {
-    return input.url as string
-  }
+  if (input.command && typeof input.command === 'string') return input.command
+  if (input.action && input.path) return `${input.action}: ${input.path}`
+  if (input.pattern) return `/${input.pattern}/`
+  if (input.url) return input.url as string
   const [, val] = entries[0]
   const valStr = typeof val === 'string' ? val : JSON.stringify(val)
   return valStr.length > 60 ? valStr.slice(0, 60) + '...' : valStr
 }
 
-export function TaskMessageList({ taskId, messages, streamContent, streamSteps, streamIsThought, planData, isGenerating }: TaskMessageListProps) {
+// ── Iteration grouping ──
+
+interface IterationGroup {
+  iteration: number
+  reasoning: string | null
+  thought: string | null
+  actions: TaskMessage[]
+  status: 'ok' | 'error' | 'running'
+}
+
+/** Compute iteration status from its steps */
+function computeStepsStatus(steps: StreamStep[]): 'ok' | 'error' | 'running' {
+  let status: 'ok' | 'error' | 'running' = 'ok'
+  for (const step of steps) {
+    if (!step.output) { status = 'running'; break }
+    try {
+      const parsed = JSON.parse(step.output)
+      if (typeof parsed === 'object' && parsed !== null) {
+        if ((parsed.exit_code !== undefined && parsed.exit_code !== 0) || parsed.error) { status = 'error'; break }
+      }
+    } catch { /* ok */ }
+  }
+  return status
+}
+
+/** Build iteration groups from streaming state */
+function buildStreamGroups(
+  streamSteps: StreamStep[],
+  streamReasoning: string,
+  streamIteration: number,
+  streamIterationReasoning: Map<number, string>,
+  streamIterationThoughts: Map<number, string>,
+): IterationGroup[] {
+  const groups: IterationGroup[] = []
+
+  // Build groups from accumulated steps
+  const stepsByIteration = new Map<number, StreamStep[]>()
+  for (const step of streamSteps) {
+    const iter = step.iteration ?? 0
+    if (!stepsByIteration.has(iter)) stepsByIteration.set(iter, [])
+    stepsByIteration.get(iter)!.push(step)
+  }
+
+  // Determine max iteration from steps
+  const maxStepIter = stepsByIteration.size > 0 ? Math.max(...stepsByIteration.keys()) : 0
+
+  // Build historical iterations (0..maxStepIter or streamIteration-1)
+  const lastHistoricalIter = streamIteration > 0 ? streamIteration - 1 : maxStepIter
+  for (let i = 0; i <= lastHistoricalIter; i++) {
+    const steps = stepsByIteration.get(i) || []
+    const actions = steps.map((step) => ({
+      id: `stream-${i}-${steps.indexOf(step)}`,
+      task_id: '',
+      role: 'action' as const,
+      content: '',
+      metadata: { tool_name: step.tool, tool_input: step.input, tool_output: step.output, diff: step.diff, file_path: step.filePath },
+      created_at: '',
+    }))
+    let status = computeStepsStatus(steps)
+    groups.push({
+      iteration: i,
+      reasoning: streamIterationReasoning.get(i) || null,
+      thought: streamIterationThoughts.get(i) || null,
+      actions,
+      status,
+    })
+  }
+
+  // Current iteration (streamIteration)
+  const currentSteps = stepsByIteration.get(streamIteration) || []
+  if (currentSteps.length > 0 || streamReasoning) {
+    const actions = currentSteps.map((step, idx) => ({
+      id: `stream-cur-${idx}`,
+      task_id: '',
+      role: 'action' as const,
+      content: '',
+      metadata: { tool_name: step.tool, tool_input: step.input, tool_output: step.output, diff: step.diff, file_path: step.filePath },
+      created_at: '',
+    }))
+    let status = computeStepsStatus(currentSteps)
+    if (status === 'ok' && (currentSteps.length > 0 || streamReasoning)) status = 'running'
+    groups.push({
+      iteration: streamIteration,
+      reasoning: streamReasoning || null,
+      thought: streamIterationThoughts.get(streamIteration) || null,
+      actions,
+      status,
+    })
+  }
+
+  return groups
+}
+
+// ── Main component ──
+
+export function TaskMessageList({
+  messages, streamContent, streamSteps, streamReasoning,
+  streamIteration = 0, streamIterationThoughts, streamIterationReasoning,
+  planData, isGenerating,
+}: TaskMessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  // Combined expand state: autoExpanded tracks which iterations were auto-expanded
+  // (so we know which ones to collapse when a new iteration starts).
+  // expandedIterations tracks all currently expanded iterations.
+  const [expandState, setExpandState] = useState({
+    expanded: new Set<number>(),
+    autoExpanded: new Set<number>(),
+  })
+
+  const enrichedMessages = useMemo(() => enrichMessages(messages), [messages])
+
+  // Build streaming iteration groups
+  const streamGroups = useMemo(() => {
+    if (!isGenerating) return []
+    return buildStreamGroups(streamSteps, streamReasoning || '', streamIteration, streamIterationReasoning || new Map(), streamIterationThoughts || new Map())
+  }, [streamSteps, streamReasoning, streamIteration, streamIterationReasoning, streamIterationThoughts, isGenerating])
+
+  // Auto-expand current streaming iteration, collapse previous auto-expanded ones
+  useEffect(() => {
+    if (!isGenerating) return
+    setExpandState((prev) => {
+      const nextAuto = new Set(prev.autoExpanded)
+      nextAuto.add(streamIteration)
+      const nextExpanded = new Set<number>()
+      for (const iter of prev.expanded) {
+        // Keep user-expanded iterations, collapse auto-expanded ones
+        if (!prev.autoExpanded.has(iter)) nextExpanded.add(iter)
+      }
+      nextExpanded.add(streamIteration) // always expand current
+      return { expanded: nextExpanded, autoExpanded: nextAuto }
+    })
+  }, [streamIteration, isGenerating])
+
+  // Reset expand state when not generating
+  useEffect(() => {
+    if (!isGenerating) {
+      setExpandState({ expanded: new Set(), autoExpanded: new Set() })
+    }
+  }, [isGenerating])
+
+  const toggleIteration = (iter: number) => {
+    setExpandState((prev) => {
+      const nextExpanded = new Set(prev.expanded)
+      if (nextExpanded.has(iter)) nextExpanded.delete(iter)
+      else nextExpanded.add(iter)
+      const nextAuto = new Set(prev.autoExpanded)
+      nextAuto.delete(iter) // no longer auto-managed
+      return { expanded: nextExpanded, autoExpanded: nextAuto }
+    })
+  }
+
+  const isExpanded = (iter: number) => expandState.expanded.has(iter)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamContent, streamSteps])
+  }, [messages, streamContent, streamSteps, streamIteration])
+
+  // Build a unified render list preserving original message order.
+  // Interleave MessageBubbles (user/assistant) with IterationCards (reasoning+thought+action).
+  type RenderItem = { type: 'bubble'; msg: TaskMessage } | { type: 'iter'; group: IterationGroup; isStreaming: boolean }
+
+  const renderList = useMemo((): RenderItem[] => {
+    const items: RenderItem[] = []
+    let currentGroup: IterationGroup | null = null
+
+    for (const msg of enrichedMessages) {
+      if (msg.role === 'reasoning') {
+        // Start new iteration group
+        if (currentGroup) items.push({ type: 'iter', group: currentGroup, isStreaming: false })
+        currentGroup = { iteration: items.filter(i => i.type === 'iter').length, reasoning: msg.content, thought: null, actions: [], status: 'ok' }
+      } else if (msg.role === 'thought') {
+        // Defensive: create group if no preceding reasoning
+        if (!currentGroup) {
+          currentGroup = { iteration: items.filter(i => i.type === 'iter').length, reasoning: null, thought: msg.content, actions: [], status: 'ok' }
+        } else {
+          currentGroup.thought = msg.content
+        }
+      } else if (msg.role === 'action') {
+        if (currentGroup) {
+          currentGroup.actions.push(msg)
+          if (currentGroup.status !== 'error' && msg.metadata?.tool_output) {
+            try {
+              const parsed = JSON.parse(msg.metadata.tool_output as string)
+              if (typeof parsed === 'object' && parsed !== null) {
+                if ((parsed.exit_code !== undefined && parsed.exit_code !== 0) || parsed.error) {
+                  currentGroup.status = 'error'
+                }
+              }
+            } catch { /* ok */ }
+          }
+        }
+      } else if (msg.role === 'observation') {
+        // Skip — output already merged into action by enrichMessages
+      } else {
+        // user or assistant message bubble
+        if (currentGroup) {
+          items.push({ type: 'iter', group: currentGroup, isStreaming: false })
+          currentGroup = null
+        }
+        items.push({ type: 'bubble', msg })
+      }
+    }
+    // Flush last group
+    if (currentGroup) items.push({ type: 'iter', group: currentGroup, isStreaming: false })
+
+    // Append streaming groups (only during generation, after all historical messages)
+    if (isGenerating && streamGroups.length > 0) {
+      for (const g of streamGroups) {
+        items.push({ type: 'iter', group: g, isStreaming: true })
+      }
+    }
+
+    return items
+  }, [enrichedMessages, streamGroups, isGenerating])
 
   return (
     <div className={s.list}>
-      {messages.filter((msg) => msg.role !== 'observation').map((msg) => (
-        <MessageBubble key={msg.id} taskId={taskId} message={msg} />
-      ))}
-
-      {/* Plan progress card (Phase 18) */}
+      {/* Plan progress card */}
       {planData && planData.steps.length > 0 && (
         <PlanProgressCard plan={planData} />
       )}
 
-      {streamSteps.map((step, i) => (
-        <StreamStepView key={i} step={step} />
-      ))}
+      {/* Unified render list: interleaved bubbles + iteration cards */}
+      {renderList.map((item, idx) => {
+        if (item.type === 'bubble') {
+          return <MessageBubble key={item.msg.id} message={item.msg} />
+        }
+        // Iteration card
+        const group = item.group
+        return (
+          <IterationCard
+            key={`iter-${group.iteration}-${idx}`}
+            group={group}
+            open={isExpanded(group.iteration)}
+            onToggle={() => toggleIteration(group.iteration)}
+            isStreaming={item.isStreaming}
+          />
+        )
+      })}
 
-      {streamContent && streamIsThought ? (
-        // 流式期间默认显示在分析块，有后续步骤时收起
+      {/* Streaming analysis text — always outside IterationCard (doc §4.2) */}
+      {isGenerating && streamContent && (
         <StreamThoughtBlock
           content={streamContent}
           isGenerating={isGenerating}
-          defaultOpen={streamSteps.length === 0}
+          defaultOpen={true}
         />
-      ) : streamContent ? (
-        // 无工具调用时，最终回答显示为消息泡
-        <div className={`${s.message} ${s.assistant}`}>
-          <div className={s.avatar}><Bot size={18} /></div>
-          <div className={`${s.bubble} ${s.assistantBubble}`}>
-            <Markdown content={streamContent} className={s.markdown} />
-            {isGenerating && <span className={s.streamingCursor}>▍</span>}
-          </div>
-        </div>
-      ) : null}
+      )}
 
-      {isGenerating && !streamContent && streamSteps.length === 0 && (
+      {/* Thinking indicator */}
+      {isGenerating && !streamContent && streamSteps.length === 0 && renderList.length === 0 && (
         <div className={s.thinkingIndicator}>
           <span className={s.thinkingDots}>
             <span></span><span></span><span></span>
@@ -144,7 +346,67 @@ export function TaskMessageList({ taskId, messages, streamContent, streamSteps, 
   )
 }
 
-function MessageBubble({ taskId, message }: { taskId: string | null; message: TaskMessage }) {
+// ── Iteration Card ──
+
+function IterationCard({
+  group, open, onToggle, isStreaming,
+}: {
+  group: IterationGroup
+  open: boolean
+  onToggle: () => void
+  isStreaming: boolean
+}) {
+  const summary = group.thought
+    ? (group.thought.length > 30 ? group.thought.slice(0, 30) + '...' : group.thought)
+    : ''
+  const stepCount = group.actions.length
+
+  return (
+    <div className={s.iterCard}>
+      <button className={s.iterHeader} onClick={onToggle}>
+        <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
+        <span className={s.iterLabel}>Iter {group.iteration + 1}</span>
+        {summary && <span className={s.iterSummary}>{summary}</span>}
+        {stepCount > 0 && <span className={s.iterSteps}>{stepCount}步</span>}
+        {group.status === 'error' && <span className={`${s.statusDot} ${s.statusError}`} />}
+        {group.status === 'ok' && stepCount > 0 && !isStreaming && <span className={`${s.statusDot} ${s.statusOk}`} />}
+        {isStreaming && group.status === 'running' && <span className={s.spinner} />}
+      </button>
+      {open && (
+        <div className={s.iterBody}>
+          {group.reasoning && (
+            <ReasoningBlock content={group.reasoning} defaultOpen={isStreaming && open} />
+          )}
+          {group.thought && (
+            <ThoughtBlock content={group.thought} defaultOpen={isStreaming && open} />
+          )}
+          {group.actions.map((action, i) => {
+            const toolName = action.metadata?.tool_name || 'unknown'
+            const toolInput = action.metadata?.tool_input || {}
+            const toolOutput = action.metadata?.tool_output
+            const diff = action.metadata?.diff
+            const filePath = action.metadata?.file_path
+            return (
+              <ToolCard
+                key={i}
+                toolName={toolName}
+                input={toolInput}
+                output={toolOutput}
+                diff={diff}
+                filePath={filePath}
+                done={!!toolOutput}
+              />
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Message Bubble ──
+
+function MessageBubble({ message }: { message: TaskMessage }) {
   const { t, i18n } = useTranslation()
   const [copied, setCopied] = useState(false)
   const isUser = message.role === 'user'
@@ -152,24 +414,6 @@ function MessageBubble({ taskId, message }: { taskId: string | null; message: Ta
     hour: '2-digit',
     minute: '2-digit',
   })
-
-  // Reasoning: collapsible block at top
-  if (message.role === 'reasoning') {
-    return <ReasoningBlock content={message.content} />
-  }
-
-  // Thought (now called "Analysis"): compact collapsible row inside tool context
-  if (message.role === 'thought') {
-    return <ThoughtBlock content={message.content} />
-  }
-
-  // Action: compact tool card
-  if (message.role === 'action') {
-    const toolName = message.metadata?.tool_name || 'unknown'
-    const toolInput = message.metadata?.tool_input || {}
-    const toolOutput = message.metadata?.tool_output
-    return <ToolCard taskId={taskId} messageId={message.id} toolName={toolName} input={toolInput} output={toolOutput} done />
-  }
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -180,7 +424,6 @@ function MessageBubble({ taskId, message }: { taskId: string | null; message: Ta
     } catch { /* ignore */ }
   }
 
-  // User / Assistant message
   return (
     <div className={`${s.message} ${isUser ? s.user : s.assistant}`}>
       <div className={s.avatar}>{isUser ? <User size={18} /> : <Bot size={18} />}</div>
@@ -207,27 +450,8 @@ function MessageBubble({ taskId, message }: { taskId: string | null; message: Ta
   )
 }
 
-function StreamStepView({ step }: { step: StreamStep }) {
-  if (step.type === 'reasoning') {
-    return <ReasoningBlock content={step.content} defaultOpen />
-  }
-  if (step.type === 'thought') {
-    return <ThoughtBlock content={step.content} defaultOpen />
-  }
-  return (
-    <ToolCard
-      taskId={null}
-      toolName={step.tool}
-      input={step.input}
-      output={step.output}
-      diff={step.diff}
-      filePath={step.filePath}
-      done={!!step.output}
-    />
-  )
-}
+// ── Collapsible blocks ──
 
-/** Collapsible reasoning block — model's internal thinking */
 function ReasoningBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
@@ -244,7 +468,6 @@ function ReasoningBlock({ content, defaultOpen = false }: { content: string; def
   )
 }
 
-/** Collapsible thought block — Claude Code style (now labeled as "分析") */
 function ThoughtBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
@@ -260,15 +483,9 @@ function ThoughtBlock({ content, defaultOpen = false }: { content: string; defau
   )
 }
 
-/** Streaming thought block — same as ThoughtBlock but with streaming cursor support */
 function StreamThoughtBlock({ content, isGenerating, defaultOpen = true }: { content: string; isGenerating: boolean; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
-
-  // Auto-collapse when moving to next stage (e.g., tool execution)
-  useEffect(() => {
-    setOpen(defaultOpen)
-  }, [defaultOpen])
-
+  useEffect(() => { setOpen(defaultOpen) }, [defaultOpen])
   return (
     <div className={s.stepRow}>
       <button className={s.stepToggle} onClick={() => setOpen(!open)}>
@@ -285,19 +502,11 @@ function StreamThoughtBlock({ content, isGenerating, defaultOpen = true }: { con
   )
 }
 
-/** Compact tool call card — Cursor / Claude Code style */
+// ── Tool Card ──
+
 function ToolCard({
-  taskId,
-  messageId,
-  toolName,
-  input,
-  output,
-  diff,
-  filePath,
-  done,
+  toolName, input, output, diff, filePath, done,
 }: {
-  taskId: string | null
-  messageId?: string
   toolName: string
   input: Record<string, unknown>
   output?: string
@@ -305,27 +514,18 @@ function ToolCard({
   filePath?: string
   done: boolean
 }) {
-  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
-  const [rerunning, setRerunning] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const meta = getToolMeta(toolName)
   const summary = formatToolInput(input)
 
-  // Elapsed time counter for running tools
   useEffect(() => {
-    if (done) {
-      setElapsed(0)
-      return
-    }
+    if (done) { setElapsed(0); return }
     setElapsed(0)
-    const interval = setInterval(() => {
-      setElapsed(prev => prev + 1)
-    }, 1000)
+    const interval = setInterval(() => setElapsed(prev => prev + 1), 1000)
     return () => clearInterval(interval)
   }, [done])
 
-  // Determine success/failure from output
   let statusIcon: 'ok' | 'error' | null = null
   let fixSuggestion: string | null = null
   let lintWarning: string | null = null
@@ -334,106 +534,51 @@ function ToolCard({
       const parsed = JSON.parse(output)
       if (typeof parsed === 'object' && parsed !== null) {
         const exitCode = parsed.exit_code
-        if (exitCode !== undefined && exitCode !== 0) {
-          statusIcon = 'error'
-        } else if (parsed.error) {
-          statusIcon = 'error'
-        } else {
-          statusIcon = 'ok'
-        }
-        // Extract fix suggestion and lint warning
-        if (parsed.fix_suggestion) {
-          fixSuggestion = parsed.fix_suggestion as string
-        }
-        if (parsed.lint_warning) {
-          lintWarning = parsed.lint_warning as string
-        }
-        if (parsed.auto_fix_hint) {
-          fixSuggestion = parsed.auto_fix_hint as string
-        }
-      } else {
-        statusIcon = 'ok'
-      }
-    } catch {
-      // Non-JSON output = success (e.g. plain text output)
-      statusIcon = 'ok'
-    }
+        if (exitCode !== undefined && exitCode !== 0) statusIcon = 'error'
+        else if (parsed.error) statusIcon = 'error'
+        else statusIcon = 'ok'
+        if (parsed.fix_suggestion) fixSuggestion = parsed.fix_suggestion as string
+        if (parsed.lint_warning) lintWarning = parsed.lint_warning as string
+        if (parsed.auto_fix_hint) fixSuggestion = parsed.auto_fix_hint as string
+      } else { statusIcon = 'ok' }
+    } catch { statusIcon = 'ok' }
   }
 
-  const handleRerun = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!taskId || !messageId || rerunning) return
-    setRerunning(true)
-    try {
-      await window.electronAPI.invoke('tasks:rerun', { taskId, msgId: messageId })
-      // Refresh messages to show the new observation
-      window.dispatchEvent(new Event('task:rerun-done'))
-    } catch (err) {
-      console.error('Rerun failed:', err)
-    } finally {
-      setRerunning(false)
-    }
-  }
-
-  // Format elapsed time
-  const formatElapsed = (s: number) => {
-    if (s < 60) return `${s}s`
-    return `${Math.floor(s / 60)}m ${s % 60}s`
-  }
+  const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 
   return (
     <div className={s.stepRow}>
-      <div className={s.stepRowInner}>
-        <button className={s.stepToggle} onClick={() => setOpen(!open)}>
-          <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
-          <span className={`${s.toolIcon}`}>
-            {(() => { const Icon = getToolIcon(toolName); return Icon ? <Icon size={14} /> : meta.icon })()}
-          </span>
-          <span className={s.stepLabel}>{meta.label}</span>
-          <span className={s.toolSummary}>{summary}</span>
-          {!done && (
-            <>
-              <span className={s.spinner}></span>
-              {elapsed >= 3 && <span className={s.elapsed}>{formatElapsed(elapsed)}</span>}
-            </>
-          )}
-          {statusIcon && <span className={`${s.statusDot} ${statusIcon === 'ok' ? s.statusOk : s.statusError}`} />}
-        </button>
-        {taskId && messageId && done && (
-          <button
-            className={s.rerunBtn}
-            onClick={handleRerun}
-            disabled={rerunning}
-            title={t('task.rerun')}
-          >
-            {rerunning ? '⏳' : '↻'}
-          </button>
+      <button className={s.stepToggle} onClick={() => setOpen(!open)}>
+        <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
+        <span className={s.toolIcon}>
+          {(() => { const Icon = getToolIcon(toolName); return Icon ? <Icon size={14} /> : meta.icon })()}
+        </span>
+        <span className={s.stepLabel}>{meta.label}</span>
+        <span className={s.toolSummary}>{summary}</span>
+        {!done && (
+          <>
+            <span className={s.spinner}></span>
+            {elapsed >= 3 && <span className={s.elapsed}>{formatElapsed(elapsed)}</span>}
+          </>
         )}
-      </div>
-      {/* Diff viewer for file edits (Phase 18) */}
+        {statusIcon && <span className={`${s.statusDot} ${statusIcon === 'ok' ? s.statusOk : s.statusError}`} />}
+      </button>
       {diff && <DiffCard diff={diff} filePath={filePath} />}
-      {/* Fix suggestion banner */}
       {fixSuggestion && (
-        <div className={s.fixBanner}>
-          <Lightbulb size={14} className={s.fixIcon} /> {fixSuggestion}
-        </div>
+        <div className={s.fixBanner}><Lightbulb size={14} className={s.fixIcon} /> {fixSuggestion}</div>
       )}
-      {/* Lint warning banner */}
       {lintWarning && !fixSuggestion && (
-        <div className={s.warnBanner}>
-          <AlertTriangle size={14} className={s.warnIcon} /> {lintWarning}
-        </div>
+        <div className={s.warnBanner}><AlertTriangle size={14} className={s.warnIcon} /> {lintWarning}</div>
       )}
       {open && output && (
-        <div className={s.stepDetail}>
-          <pre className={s.toolOutput}>{output}</pre>
-        </div>
+        <div className={s.stepDetail}><pre className={s.toolOutput}>{output}</pre></div>
       )}
     </div>
   )
 }
 
-/** Inline diff viewer for file edits (Phase 18) */
+// ─ Diff Card ──
+
 function DiffCard({ diff, filePath }: { diff: string; filePath?: string }) {
   const [expanded, setExpanded] = useState(false)
   const lines = diff.split('\n')
@@ -476,7 +621,8 @@ function DiffCard({ diff, filePath }: { diff: string; filePath?: string }) {
   )
 }
 
-/** Plan progress card — shows execution plan steps (Phase 18) */
+// ─ Plan Progress Card ──
+
 function PlanProgressCard({ plan }: { plan: PlanData }) {
   const [open, setOpen] = useState(true)
   return (
@@ -492,13 +638,46 @@ function PlanProgressCard({ plan }: { plan: PlanData }) {
             <div key={step.id} className={s.planStep}>
               <span className={s.planStepNum}>{step.id}</span>
               <span className={s.planStepDesc}>{step.desc}</span>
-              {step.files.length > 0 && (
-                <span className={s.planStepFiles}>{step.files.join(', ')}</span>
-              )}
+              {step.files.length > 0 && <span className={s.planStepFiles}>{step.files.join(', ')}</span>}
             </div>
           ))}
         </div>
       )}
     </div>
   )
+}
+
+// ── Helpers ──
+
+function enrichMessages(msgs: TaskMessage[]): TaskMessage[] {
+  // Merge observation metadata into action messages
+  // Note: thought messages are kept separate (NOT merged into reasoning)
+  const obsByAction = new Map<string, Record<string, unknown>>()
+  for (const msg of msgs) {
+    if (msg.role === 'observation' && msg.metadata?.action_id) {
+      obsByAction.set(msg.metadata.action_id as string, msg.metadata as Record<string, unknown>)
+    }
+  }
+  if (obsByAction.size === 0) {
+    const actionIds: string[] = []
+    const obsList: Record<string, unknown>[] = []
+    for (const msg of msgs) {
+      if (msg.role === 'action') actionIds.push(msg.id)
+      if (msg.role === 'observation' && msg.metadata?.tool_output) obsList.push(msg.metadata as Record<string, unknown>)
+    }
+    for (let i = 0; i < actionIds.length && i < obsList.length; i++) {
+      obsByAction.set(actionIds[i], obsList[i])
+    }
+  }
+  if (obsByAction.size === 0) return msgs
+
+  return msgs.map((msg) => {
+    if (msg.role !== 'action') return msg
+    const obs = obsByAction.get(msg.id)
+    if (!obs) return msg
+    return {
+      ...msg,
+      metadata: { ...msg.metadata, tool_output: obs.tool_output as string | undefined, diff: obs.diff as string | undefined, file_path: obs.file_path as string | undefined },
+    }
+  })
 }

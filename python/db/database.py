@@ -172,7 +172,7 @@ class Database:
             "api_key": "",
             "model": "glm-4-flash",
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "top_p": 0.9,
             "system_prompt": "",
             "tavily_key": "",
@@ -187,6 +187,7 @@ class Database:
             "task_timeout": 30,
             "task_shell_confirm_mode": "smart",  # strict | smart | auto
             "task_auto_confirm_shell": False,  # legacy, kept for backward compat
+            "task_shell_domain_whitelist": "",  # newline-separated domains auto-approved in smart mode
             "task_show_execution_log": True,
             "task_workspace_max_mb": 1024,
             "task_max_count": 50,
@@ -628,6 +629,7 @@ class Database:
             if os.path.isdir(task_dir):
                 shutil.rmtree(task_dir, ignore_errors=True)
         self.conn.execute("DELETE FROM task_messages WHERE task_id = ?", (task_id,))
+        self.conn.execute("DELETE FROM task_agent_state WHERE task_id = ?", (task_id,))
         self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         self.conn.commit()
 
@@ -839,3 +841,22 @@ class Database:
             (task_id,),
         )
         self.conn.commit()
+
+    def list_tasks_with_saved_state(self) -> list[str]:
+        """Return task_ids that have saved agent state (for crash recovery)."""
+        cursor = self.conn.execute(
+            "SELECT task_id FROM task_agent_state"
+        )
+        return [row["task_id"] for row in cursor.fetchall()]
+
+    def has_interrupt_marker(self, task_id: str) -> bool:
+        """Check if the last message for a task is already an interrupt marker."""
+        cursor = self.conn.execute(
+            "SELECT content FROM task_messages WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            content = row["content"] or ""
+            return content.startswith("\u26a0\ufe0f")
+        return False

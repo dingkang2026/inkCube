@@ -1,32 +1,43 @@
-/** src/features/project/ProjectChatPanel.tsx — Right-side resizable chat panel (mock, UI-First) */
+/** src/features/project/ProjectChatPanel.tsx — Right-side resizable chat panel with real RAG Q&A */
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { MessageCircle, X, Send } from 'lucide-react'
+import { MessageCircle, X, Send, FileText, Search, ArrowLeft, Trash2 } from 'lucide-react'
+import { renderMarkdown } from '../knowledge/markdown'
 import s from './ProjectChatPanel.module.css'
+
+interface ChatSource {
+  filename: string
+  page?: number | null
+  section_path?: string
+  content_type: string
+  score: number
+}
 
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
-  timestamp: string
+  sources?: ChatSource[]
 }
 
-const MOCK_MESSAGES: ChatMessage[] = [
-  { id: 'm1', role: 'user', content: '这个项目有哪些核心专利？', timestamp: '10:23' },
-  { id: 'm2', role: 'assistant', content: '根据 BP.pdf 和专利查询结果，该项目公司拥有 12 项核心专利技术，其中发明专利 8 项（涵盖新型材料合成工艺、智能控制系统等），实用新型 4 项。主要专利集中在 2022-2025 年间申请。', timestamp: '10:23' },
-  { id: 'm3', role: 'user', content: '竞争对手有哪些？', timestamp: '10:25' },
-  { id: 'm4', role: 'assistant', content: '根据行业研究报告，主要竞争对手包括：\n1. A 公司 — 市场份额约 18%，技术路线相似\n2. B 公司 — 市场份额约 12%，差异化定位\n3. C 集团 — 市场份额约 25%，全产业链布局', timestamp: '10:25' },
-]
+interface ProjectChatPanelProps {
+  projectId: string
+  projectName: string
+  selectedFileId?: string
+  selectedFilename?: string
+  onClearFileScope?: () => void
+}
 
 const DEFAULT_WIDTH = 360
 const MIN_WIDTH = 260
 const MAX_WIDTH = 600
 
-export function ProjectChatPanel() {
+export function ProjectChatPanel({ projectId, projectName, selectedFileId, selectedFilename, onClearFileScope }: ProjectChatPanelProps) {
   const { t } = useTranslation()
   const [isOpen, setIsOpen] = useState(false)
   const [inputValue, setInputValue] = useState('')
-  const [messages, setMessages] = useState<ChatMessage[]>(MOCK_MESSAGES)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [loading, setLoading] = useState(false)
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH)
   const [isDraggingState, setIsDraggingState] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -34,9 +45,20 @@ export function ProjectChatPanel() {
   const startX = useRef(0)
   const startWidth = useRef(DEFAULT_WIDTH)
 
+  const scope = selectedFileId ? 'file' : 'project'
+  const title = selectedFileId ? (selectedFilename || t('knowledge.chatWithFile')) : projectName
+  const titleIcon = selectedFileId
+    ? <FileText size={14} style={{ flexShrink: 0 }} />
+    : <Search size={14} style={{ flexShrink: 0 }} />
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Clear messages when switching projects
+  useEffect(() => {
+    setMessages([])
+  }, [projectId])
 
   // ── Drag resize logic ──
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -72,26 +94,41 @@ export function ProjectChatPanel() {
     }
   }, [])
 
-  const handleSend = () => {
-    if (!inputValue.trim()) return
-    const userMsg: ChatMessage = {
-      id: `m-${Date.now()}`,
-      role: 'user',
-      content: inputValue.trim(),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    }
-    setMessages(prev => [...prev, userMsg])
+  const handleSend = async () => {
+    if (!inputValue.trim() || loading) return
+    const userMsg = inputValue.trim()
     setInputValue('')
 
-    setTimeout(() => {
-      const assistantMsg: ChatMessage = {
+    setMessages(prev => [...prev, {
+      id: `m-${Date.now()}`,
+      role: 'user',
+      content: userMsg,
+    }])
+    setLoading(true)
+
+    try {
+      const result: any = await window.electronAPI.invoke('knowledge:chat', {
+        projectId,
+        message: userMsg,
+        fileId: selectedFileId || undefined,
+      })
+
+      setMessages(prev => [...prev, {
         id: `m-${Date.now() + 1}`,
         role: 'assistant',
-        content: t('project.chat.mockResponse'),
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      }
-      setMessages(prev => [...prev, assistantMsg])
-    }, 800)
+        content: result.answer || t('knowledge.chatNoAnswer'),
+        sources: result.sources || [],
+      }])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setMessages(prev => [...prev, {
+        id: `m-${Date.now() + 1}`,
+        role: 'assistant',
+        content: `${t('knowledge.chatError')}: ${msg}`,
+      }])
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -99,6 +136,10 @@ export function ProjectChatPanel() {
       e.preventDefault()
       handleSend()
     }
+  }
+
+  const handleClear = () => {
+    setMessages([])
   }
 
   return (
@@ -124,23 +165,72 @@ export function ProjectChatPanel() {
           {/* Header */}
           <div className={s.panelHeader}>
             <div className={s.panelTitle}>
-              <MessageCircle size={14} />
-              <span>{t('project.chat.title')}</span>
-              <span className={s.panelCount}>{messages.length}</span>
+              {selectedFileId && onClearFileScope && (
+                <button
+                  className={s.backBtn}
+                  onClick={onClearFileScope}
+                  title={t('knowledge.chatWithAll')}
+                >
+                  <ArrowLeft size={14} />
+                </button>
+              )}
+              {titleIcon}
+              <span className={s.titleText}>{title}</span>
+              <span className={s.scopeBadge}>
+                {scope === 'file' ? t('knowledge.scopeFile') : t('knowledge.scopeProject')}
+              </span>
             </div>
-            <button className={s.closeBtn} onClick={() => setIsOpen(false)} title={t('project.chat.close')}>
-              <X size={14} />
-            </button>
+            <div className={s.headerActions}>
+              {messages.length > 0 && (
+                <button className={s.headerBtn} onClick={handleClear} title={t('knowledge.chatClear')}>
+                  <Trash2 size={13} />
+                </button>
+              )}
+              <button className={s.closeBtn} onClick={() => setIsOpen(false)} title={t('project.chat.close')}>
+                <X size={14} />
+              </button>
+            </div>
           </div>
 
           {/* Messages */}
           <div className={s.messages}>
+            {messages.length === 0 && (
+              <div className={s.emptyChat}>
+                <p>{t('knowledge.chatHint')}</p>
+              </div>
+            )}
             {messages.map((msg) => (
               <div key={msg.id} className={`${s.message} ${msg.role === 'user' ? s.messageUser : s.messageAssistant}`}>
-                <div className={s.messageContent}>{msg.content}</div>
-                <div className={s.messageTime}>{msg.timestamp}</div>
+                <div className={s.messageContent}>
+                  {msg.role === 'assistant' ? (
+                    <div
+                      className={s.markdownBody}
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+                    />
+                  ) : (
+                    msg.content
+                  )}
+                </div>
+                {msg.sources && msg.sources.length > 0 && (
+                  <div className={s.sources}>
+                    {msg.sources.map((src, j) => (
+                      <span key={j} className={s.sourceTag}>
+                        {src.filename}
+                        {src.page != null && ` p.${src.page}`}
+                        {src.section_path && ` › ${src.section_path}`}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
+            {loading && (
+              <div className={`${s.message} ${s.messageAssistant}`}>
+                <div className={s.messageContent}>
+                  <span className={s.typing}>{t('knowledge.chatThinking')}</span>
+                </div>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
@@ -151,9 +241,10 @@ export function ProjectChatPanel() {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t('project.chat.placeholder')}
+              placeholder={t('knowledge.chatInputPlaceholder')}
+              disabled={loading}
             />
-            <button className={s.sendBtn} onClick={handleSend} disabled={!inputValue.trim()}>
+            <button className={s.sendBtn} onClick={handleSend} disabled={!inputValue.trim() || loading}>
               <Send size={14} />
             </button>
           </div>

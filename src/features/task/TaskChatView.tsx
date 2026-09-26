@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderOpen, Wrench, Paperclip, Pause, Square, SendHorizonal, AlertTriangle, Check, SkipForward, X, Puzzle } from 'lucide-react'
+import { FolderOpen, Wrench, Paperclip, Pause, Square, SendHorizonal, AlertTriangle, Check, SkipForward, X, Puzzle, Play } from 'lucide-react'
 import { TaskMessageList } from './TaskMessageList'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import type { ShellConfirmData, SkillConfirmData } from './useTaskChat'
@@ -18,7 +18,10 @@ interface TaskChatViewProps {
   isGenerating: boolean
   streamContent: string
   streamSteps: StreamStep[]
-  streamIsThought?: boolean
+  streamReasoning?: string
+  streamIteration?: number
+  streamIterationThoughts?: Map<number, string>
+  streamIterationReasoning?: Map<number, string>
   planData?: PlanData | null
   pendingShellConfirm?: ShellConfirmData | null
   pendingSkillConfirm?: SkillConfirmData | null
@@ -27,6 +30,8 @@ interface TaskChatViewProps {
   onPauseTask?: () => void
   onShellConfirm?: (confirmed: boolean, allowSession?: boolean) => void
   onSkillConfirm?: (confirmed: boolean) => void
+  onResumeTask?: () => void
+  canResume?: boolean
   onFilesUploaded?: () => void
 }
 
@@ -37,7 +42,10 @@ export function TaskChatView({
   isGenerating,
   streamContent,
   streamSteps,
-  streamIsThought,
+  streamReasoning,
+  streamIteration,
+  streamIterationThoughts,
+  streamIterationReasoning,
   planData,
   pendingShellConfirm,
   pendingSkillConfirm,
@@ -46,6 +54,8 @@ export function TaskChatView({
   onPauseTask,
   onShellConfirm,
   onSkillConfirm,
+  onResumeTask,
+  canResume,
   onFilesUploaded,
 }: TaskChatViewProps) {
   const { t } = useTranslation()
@@ -251,11 +261,13 @@ export function TaskChatView({
         </div>
       ) : (
         <TaskMessageList
-          taskId={taskId}
           messages={messages}
           streamContent={streamContent}
           streamSteps={streamSteps}
-          streamIsThought={streamIsThought}
+          streamReasoning={streamReasoning}
+          streamIteration={streamIteration}
+          streamIterationThoughts={streamIterationThoughts}
+          streamIterationReasoning={streamIterationReasoning}
           planData={planData}
           isGenerating={isGenerating}
         />
@@ -280,6 +292,17 @@ export function TaskChatView({
       )}
 
       {/* Slash command autocomplete popup — rendered inside inputArea for correct positioning */}
+
+      {/* Resume banner — shown when task has saved state (crash recovery or pause) */}
+      {canResume && !isGenerating && hasActiveTask && (
+        <div className={styles.resumeBanner}>
+          <span className={styles.resumeIcon}><AlertTriangle size={14} /></span>
+          <span>{t('task.resumeHint', '此任务可恢复')}</span>
+          <button className={styles.resumeBtn} onClick={onResumeTask}>
+            <Play size={12} /> {t('task.resumeBtn', '恢复')}
+          </button>
+        </div>
+      )}
 
       <div className={styles.inputArea}>
         {slashVisible && !isGenerating && hasActiveTask && (

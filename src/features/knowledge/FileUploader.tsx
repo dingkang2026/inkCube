@@ -1,7 +1,7 @@
 /** src/features/knowledge/FileUploader.tsx */
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { MessageCircle, Trash2, RefreshCw, MoreVertical } from 'lucide-react'
+import { Trash2, RefreshCw, MoreVertical } from 'lucide-react'
 import type { FileRecord } from './types'
 import s from './FileUploader.module.css'
 
@@ -12,7 +12,6 @@ interface FileUploaderProps {
   hasMore?: boolean
   onLoadMore?: () => void
   loadingMore?: boolean
-  onOpenChat?: (fileId: string) => void
   selectedFileId?: string | null
   onSelectFile?: (fileId: string | null) => void
   onDeleteFile?: (fileIds: string[]) => void
@@ -32,7 +31,7 @@ const FILE_ICONS: Record<string, string> = {
   '.jpeg': '🖼️',
 }
 
-export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore, loadingMore, onOpenChat, selectedFileId, onSelectFile, onDeleteFile }: FileUploaderProps) {
+export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore, loadingMore, selectedFileId, onSelectFile, onDeleteFile }: FileUploaderProps) {
   const { t } = useTranslation()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [confirmingFileId, setConfirmingFileId] = useState<string | null>(null)
@@ -222,12 +221,6 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
                   <>
                     <button className={s.menuBtn} onClick={(e) => { e.stopPropagation(); setMenuOpenFileId(menuOpenFileId === file.id ? null : file.id) }}><MoreVertical size={15} /></button>
                     <div className={`${s.dropdownMenu} ${menuOpenFileId === file.id ? s.dropdownMenuOpen : ''}`}>
-                      {file.status === 'done' && onOpenChat && (
-                        <button className={s.menuItem} onClick={(e) => { e.stopPropagation(); onOpenChat(file.id) }}>
-                          <MessageCircle size={13} />
-                          {t('knowledge.chatWithFile')}
-                        </button>
-                      )}
                       {file.status === 'error' && (
                         <button className={s.menuItem} onClick={(e) => { e.stopPropagation(); handleRetry(file.id) }}>
                           <RefreshCw size={13} />

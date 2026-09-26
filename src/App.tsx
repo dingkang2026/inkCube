@@ -39,7 +39,10 @@ export default function App() {
     isGenerating: taskIsGenerating,
     streamContent: taskStreamContent,
     streamSteps: taskStreamSteps,
-    streamIsThought: taskStreamIsThought,
+    streamReasoning: taskStreamReasoning,
+    streamIteration: taskStreamIteration,
+    streamIterationThoughts: taskStreamIterationThoughts,
+    streamIterationReasoning: taskStreamIterationReasoning,
     planData: taskPlanData,
     pendingShellConfirm: taskPendingShellConfirm,
     pendingSkillConfirm: taskPendingSkillConfirm,
@@ -48,6 +51,9 @@ export default function App() {
     handlePauseTask: handleTaskPause,
     handleShellConfirm: handleTaskShellConfirm,
     handleSkillConfirm: handleTaskSkillConfirm,
+    handleResumeTask: handleTaskResume,
+    canResume: taskCanResume,
+    resetGeneratingState: resetTaskGeneratingState,
   } = useTaskChat(activeTaskId, useCallback(() => loadTasks(), []))
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -57,6 +63,7 @@ export default function App() {
   const [activeNav, setActiveNav] = useState('home')
   const [processExitCode, setProcessExitCode] = useState<number | null>(null)
   const [canStartTask, setCanStartTask] = useState(true)
+  const [runningTaskIds, setRunningTaskIds] = useState<Set<string>>(new Set())
 
   // ── Knowledge base state ──
   const [projects, setProjects] = useState<Project[]>([])
@@ -83,20 +90,24 @@ export default function App() {
     }
   }, [activeNav, projects, selectedProjectId, selectedBaseLibId])
 
-  // Poll task status for concurrent limit
+  // Poll task status for concurrent limit + running task IDs
   useEffect(() => {
-    if (activeNav !== 'tasks') return
     let cancelled = false
     const poll = async () => {
       try {
-        const status = await window.electronAPI.invoke('tasks:getStatus') as { can_start: boolean }
-        if (!cancelled) setCanStartTask(status.can_start)
+        const status = await window.electronAPI.invoke('tasks:getStatus') as {
+          can_start: boolean; running_task_ids?: string[]
+        }
+        if (!cancelled) {
+          setCanStartTask(status.can_start)
+          setRunningTaskIds(new Set(status.running_task_ids || []))
+        }
       } catch { /* ignore */ }
     }
     poll()
     const timer = setInterval(poll, 3000)
     return () => { cancelled = true; clearInterval(timer) }
-  }, [activeNav])
+  }, [])
 
   // Refresh task status when generation finishes
   useEffect(() => {
@@ -158,11 +169,11 @@ export default function App() {
     }
   }
 
-  const handleNavChange = (nav: string) => {
+  const handleNavChange = useCallback((nav: string) => {
     setActiveNav(nav)
     // Auto-close settings when switching tabs
-    if (settingsOpen) setSettingsOpen(false)
-  }
+    setSettingsOpen(false)
+  }, [])
 
   const handleNewTaskWithDir = async () => {
     const result = await window.electronAPI.invoke('tasks:selectDirectory') as { canceled?: boolean; path?: string }
@@ -209,6 +220,8 @@ export default function App() {
     const offProcessExit = window.electronAPI.on('python:process-exit', (data: unknown) => {
       const { code } = data as { code: number }
       setProcessExitCode(code)
+      // Reset generating state to prevent UI from being stuck
+      resetTaskGeneratingState()
     })
     return () => {
       offSettings()
@@ -270,6 +283,7 @@ export default function App() {
                   onTabChange={setActiveTab}
                   archivedCount={archivedTasks.length}
                   canCreateTask={canStartTask}
+                  runningTaskIds={runningTaskIds}
                 />
               )}
             </Sidebar>
@@ -325,7 +339,10 @@ export default function App() {
             isGenerating={taskIsGenerating}
             streamContent={taskStreamContent}
             streamSteps={taskStreamSteps}
-            streamIsThought={taskStreamIsThought}
+            streamReasoning={taskStreamReasoning}
+            streamIteration={taskStreamIteration}
+            streamIterationThoughts={taskStreamIterationThoughts}
+            streamIterationReasoning={taskStreamIterationReasoning}
             planData={taskPlanData}
             pendingShellConfirm={taskPendingShellConfirm}
             pendingSkillConfirm={taskPendingSkillConfirm}
@@ -334,6 +351,8 @@ export default function App() {
             onPauseTask={handleTaskPause}
             onShellConfirm={handleTaskShellConfirm}
             onSkillConfirm={handleTaskSkillConfirm}
+            onResumeTask={handleTaskResume}
+            canResume={taskCanResume}
             onFilesUploaded={() => loadTasks()}
             onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
           />

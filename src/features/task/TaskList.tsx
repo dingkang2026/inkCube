@@ -22,6 +22,7 @@ interface TaskListProps {
   onTabChange: (tab: TaskTab) => void
   archivedCount: number
   canCreateTask?: boolean
+  runningTaskIds?: Set<string>
 }
 
 export function TaskList({
@@ -41,6 +42,7 @@ export function TaskList({
   onTabChange,
   archivedCount,
   canCreateTask = true,
+  runningTaskIds,
 }: TaskListProps) {
   const { t } = useTranslation()
 
@@ -97,6 +99,7 @@ export function TaskList({
             key={task.id}
             task={task}
             isActive={task.id === activeTaskId}
+            isRunning={runningTaskIds?.has(task.id) ?? false}
             onSelect={() => onSelect(task.id)}
             onDelete={() => onDelete(task.id)}
             onRename={(title) => onRename(task.id, title)}

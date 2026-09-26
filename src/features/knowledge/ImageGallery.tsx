@@ -1,7 +1,7 @@
 /** src/features/knowledge/ImageGallery.tsx */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, RefreshCw, Package, Image as ImageIcon } from 'lucide-react'
+import { Search, Package, Image as ImageIcon } from 'lucide-react'
 import type { ImageRecord } from './types'
 import { IMAGE_CATEGORIES } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'

@@ -60,6 +60,16 @@
   border-top-left-radius: 4px;
 }
 
+/* Fade-in for newly appeared assistant messages (after streaming ends) */
+.message.assistant {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* ── Time row + copy button ── */
 
 .timeRow {
@@ -110,12 +120,8 @@
 
 .stepRow {
   margin-left: 44px; /* align with assistant bubble text */
+  margin-right: 44px; /* symmetric with left */
   font-size: 13px;
-}
-
-.stepRowInner {
-  display: flex;
-  align-items: center;
 }
 
 .stepToggle {
@@ -186,7 +192,7 @@
   color: var(--text-primary); /* same as bubble */
   line-height: 1.6; /* same as bubble */
   word-break: break-word;
-  max-width: calc(100% - 44px); /* account for margin-left */
+  max-width: calc(100% - 20px); /* account for own margin-left */
   overflow: hidden;
 }
 
@@ -255,32 +261,6 @@
   line-height: 1.5;
 }
 
-/* ── Rerun button ── */
-
-.rerunBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0 2px;
-  opacity: 0.5;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.rerunBtn:hover {
-  opacity: 1;
-}
-
-.rerunBtn:disabled {
-  cursor: not-allowed;
-  opacity: 0.3;
-}
-
 /* ── Thinking indicator (initial) ── */
 
 .thinkingIndicator {
@@ -289,6 +269,7 @@
   gap: 8px;
   padding: 8px 16px;
   margin-left: 44px;
+  margin-right: 44px;
   color: var(--text-secondary);
   font-size: 13px;
 }
@@ -360,7 +341,7 @@
   border-radius: 6px;
   overflow: hidden;
   font-size: 12px;
-  max-width: calc(100% - 44px);
+  max-width: calc(100% - 20px); /* account for own margin-left */
 }
 
 .diffHeader {
@@ -478,4 +459,68 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 200px;
+}
+
+/* ── Iteration Card ── */
+
+.iterCard {
+  margin-left: 44px;
+  margin-right: 44px;
+  border-left: 2px solid var(--border, #333);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  max-width: calc(100% - 88px);
+}
+
+.iterHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: var(--bg-tertiary, #1e1e2e);
+  cursor: pointer;
+  color: var(--text-secondary, #aaa);
+  font-size: 12px;
+  text-align: left;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  transition: background 0.15s;
+}
+
+.iterHeader:hover {
+  background: var(--bg-secondary, #2a2a3a);
+}
+
+.iterLabel {
+  font-weight: 600;
+  color: var(--text-primary, #ccc);
+  flex-shrink: 0;
+}
+
+.iterSummary {
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  font-weight: 400;
+}
+
+.iterSteps {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-secondary, #2a2a3a);
+  color: var(--text-secondary, #aaa);
+  flex-shrink: 0;
+}
+
+.iterStatus {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.iterBody {
+  padding: 4px 0;
 }

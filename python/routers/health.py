@@ -6,7 +6,7 @@ Checks configuration and model availability for all external services:
   - Embedding (bge-m3 model)
   - Parsing (Docling models)
 
-Model availability reuses ModelManager._verify() to stay consistent
+Model availability reuses ModelManager.verify_model() to stay consistent
 with the Internal Model settings page.
 """
 import json
@@ -75,7 +75,7 @@ async def health_check():
             "message": f"{vlm_model or 'glm-4v'} — 已配置",
         }
 
-    # 3 & 4. Embedding + Parsing — delegate to ModelManager._verify()
+    # 3 & 4. Embedding + Parsing — delegate to ModelManager.verify_model()
     #    This guarantees the same result as the Internal Model settings page.
     mgr = getattr(deps, 'model_manager', None)
     if mgr is None:
@@ -84,10 +84,10 @@ async def health_check():
         parsing_ok = False
     else:
         try:
-            embedding_ok = mgr._verify("bge-m3", mgr.get_model_path("bge-m3"))
+            embedding_ok = mgr.verify_model("bge-m3", mgr.get_model_path("bge-m3"))
             parsing_ok = (
-                mgr._verify("docling-layout-heron", mgr.get_model_path("docling-layout-heron"))
-                and mgr._verify("tableformer-v2", mgr.get_model_path("tableformer-v2"))
+                mgr.verify_model("docling-layout-heron", mgr.get_model_path("docling-layout-heron"))
+                and mgr.verify_model("tableformer-v2", mgr.get_model_path("tableformer-v2"))
             )
         except Exception as e:
             logger.warning("Model verification failed: %s", e)

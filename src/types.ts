@@ -49,9 +49,7 @@ export interface GpuStatus {
 }
 
 export type StreamStep =
-  | { type: 'reasoning'; content: string }
-  | { type: 'thought'; content: string }
-  | { type: 'action'; tool: string; input: Record<string, unknown>; output?: string; diff?: string; filePath?: string }
+  | { type: 'action'; tool: string; input: Record<string, unknown>; output?: string; diff?: string; filePath?: string; iteration?: number }
 
 export interface PlanStep {
   id: number
@@ -85,6 +83,10 @@ export interface TaskMessage {
     tool_name?: string
     tool_input?: Record<string, unknown>
     tool_output?: string
+    diff?: string
+    file_path?: string
+    action_id?: string
+    [key: string]: unknown
   }
   created_at: string
 }

@@ -23,7 +23,10 @@ interface TaskPageProps {
   isGenerating: boolean
   streamContent: string
   streamSteps: StreamStep[]
-  streamIsThought?: boolean
+  streamReasoning?: string
+  streamIteration?: number
+  streamIterationThoughts?: Map<number, string>
+  streamIterationReasoning?: Map<number, string>
   planData?: PlanData | null
   pendingShellConfirm?: ShellConfirmData | null
   pendingSkillConfirm?: SkillConfirmData | null
@@ -32,6 +35,8 @@ interface TaskPageProps {
   onPauseTask?: () => void
   onShellConfirm?: (confirmed: boolean) => void
   onSkillConfirm?: (confirmed: boolean) => void
+  onResumeTask?: () => void
+  canResume?: boolean
   onFilesUploaded?: () => void
   onSwitchMode?: (mode: 'coding' | 'general') => void
 }
@@ -45,7 +50,10 @@ export function TaskPage({
   isGenerating,
   streamContent,
   streamSteps,
-  streamIsThought,
+  streamReasoning,
+  streamIteration,
+  streamIterationThoughts,
+  streamIterationReasoning,
   planData,
   pendingShellConfirm,
   pendingSkillConfirm,
@@ -54,6 +62,8 @@ export function TaskPage({
   onPauseTask,
   onShellConfirm,
   onSkillConfirm,
+  onResumeTask,
+  canResume,
   onFilesUploaded,
   onSwitchMode,
 }: TaskPageProps) {
@@ -156,7 +166,10 @@ export function TaskPage({
           isGenerating={isGenerating}
           streamContent={streamContent}
           streamSteps={streamSteps}
-          streamIsThought={streamIsThought}
+          streamReasoning={streamReasoning}
+          streamIteration={streamIteration}
+          streamIterationThoughts={streamIterationThoughts}
+          streamIterationReasoning={streamIterationReasoning}
           planData={planData}
           pendingShellConfirm={pendingShellConfirm}
           pendingSkillConfirm={pendingSkillConfirm}
@@ -165,6 +178,8 @@ export function TaskPage({
           onPauseTask={onPauseTask}
           onShellConfirm={onShellConfirm}
           onSkillConfirm={onSkillConfirm}
+          onResumeTask={onResumeTask}
+          canResume={canResume}
           onFilesUploaded={onFilesUploaded}
         />
         {hasActiveTask && !filePanelCollapsed && (

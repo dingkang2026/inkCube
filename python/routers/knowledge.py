@@ -10,9 +10,6 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from db.database import Database
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
@@ -321,17 +318,23 @@ async def upload_file(project_id: str, upload: FileUpload):
 
 
 @router.get("/projects/{project_id}/recent-chunks")
-async def get_recent_chunks(project_id: str, limit: int = 20):
-    """Get the most recent chunks for a project (by insertion order)."""
+async def get_recent_chunks(project_id: str, limit: int = 20, file_id: Optional[str] = None):
+    """Get the most recent chunks for a project (by insertion order). Optionally filter by file_id."""
     try:
         db = get_db()
+        where_clauses = ["project_id = ?"]
+        params = [project_id]
+        if file_id:
+            where_clauses.append("(chunk_id LIKE ? OR chunk_id LIKE ?)")
+            params.extend([f"chunk_{file_id}_%", f"img_{file_id}_%"])
+        where_sql = " AND ".join(where_clauses)
         cursor = db.conn.execute(
-            """SELECT chunk_id, content, filename, content_type
+            f"""SELECT chunk_id, content, filename, content_type
                FROM chunks_fts
-               WHERE project_id = ?
+               WHERE {where_sql}
                ORDER BY rowid DESC
                LIMIT ?""",
-            (project_id, limit),
+            params + [limit],
         )
         chunks = []
         for row in cursor.fetchall():

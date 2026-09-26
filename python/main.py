@@ -85,16 +85,6 @@ async def lifespan(app: FastAPI):
     deps.task_agent = TaskAgent(deps.db)
     deps.model_manager = ModelManager()
 
-    # Configure knowledge_search tool with runtime dependencies
-    from tools.registry import tool_registry
-    ks_tool = tool_registry.get("knowledge_search")
-    if ks_tool:
-        ks_tool.configure(
-            db=deps.db,
-            chroma_persist_dir=os.path.join(data_dir, "chroma"),
-            models_dir=os.path.join(data_dir, "models"),
-        )
-
     # Configure task agent's knowledge search tool
     deps.task_agent.knowledge_search.configure(
         db=deps.db,
@@ -138,6 +128,23 @@ async def lifespan(app: FastAPI):
             )
 
     start_watchdog()
+
+    # ── Detect interrupted tasks (crash recovery) ──
+    _interrupted = deps.db.list_tasks_with_saved_state()
+    if _interrupted:
+        logging.getLogger(__name__).info(
+            "Found %d interrupted task states: %s", len(_interrupted), _interrupted,
+        )
+        for _tid in _interrupted:
+            _state = deps.db.load_agent_state(_tid)
+            if _state and _state.get("auto_saved"):
+                # Avoid duplicate interrupt messages on repeated restarts
+                if not deps.db.has_interrupt_marker(_tid):
+                    deps.db.save_task_message(_tid, "assistant",
+                        "\u26a0\ufe0f \u6b64\u4efb\u52a1\u5728\u4e0a\u6b21\u7a0b\u5e8f\u5173\u95ed\u65f6\u88ab\u4e2d\u65ad\u3002"
+                        "\u70b9\u51fb\u300c\u6062\u590d\u300d\u53ef\u4ece\u4e0a\u6b21\u4e2d\u65ad\u5904\u7ee7\u7eed\uff0c"
+                        "\u6216\u53d1\u9001\u65b0\u6d88\u606f\u91cd\u65b0\u5f00\u59cb\u3002")
+
     yield
 
     # Shutdown workers

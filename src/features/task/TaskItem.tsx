@@ -8,6 +8,7 @@ import s from './TaskItem.module.css'
 interface TaskItemProps {
   task: Task
   isActive: boolean
+  isRunning?: boolean
   onSelect: () => void
   onDelete: () => void
   onRename: (title: string) => void
@@ -19,6 +20,7 @@ interface TaskItemProps {
 export function TaskItem({
   task,
   isActive,
+  isRunning = false,
   onSelect,
   onDelete,
   onRename,
@@ -92,6 +94,7 @@ export function TaskItem({
           <>
             <div className={s.title}>
               {task.title}
+              {isRunning && <span className={s.runningDot} title={t('task.running')} />}
               {task.mode === 'general' && (
                 <span className={s.modeTag}>{t('task.modeGeneralShort')}</span>
               )}
