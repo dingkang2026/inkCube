@@ -26,7 +26,7 @@
 
 ## 开发安装
 
-详见 [开发指南](docs/dev-guide.md)。
+详见 [开发指南](docs/0.1dev-guide.md)。
 
 ## 开源协议
 

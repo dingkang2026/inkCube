@@ -19,6 +19,14 @@ extraResources:
     to: "tools/"
     filter:
       - "**/*"
+  - from: "resources/templates/"
+    to: "templates/"
+    filter:
+      - "**/*"
+  - from: "resources/base_libraries/"
+    to: "base_libraries/"
+    filter:
+      - "**/*"
   - from: "node_modules/mermaid/dist/mermaid.min.js"
     to: "mermaid/mermaid.min.js"
 
@@ -30,6 +38,7 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: true
+  deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   shortcutName: 墨方 InkCube
 

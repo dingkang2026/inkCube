@@ -1,0 +1,213 @@
+{
+  "template_id": "due_diligence",
+  "template_name": "尽职调查报告",
+  "version": "1.0",
+  "project_types": ["investment"],
+  "stage": "during",
+  "output_format": "Word",
+  "role_hint": "投资尽调顾问，严谨审慎，风险导向，注重事实核查",
+  "audience": "投委会成员，关注核心指标、风险点和交易条件",
+  "report_depth": "full",
+  "variables": ["公司名", "行业"],
+  "terminology": [
+    {"canonical": "DD", "aliases": ["尽职调查", "Due Diligence"]},
+    {"canonical": "EBITDA", "aliases": ["息税折旧摊销前利润"]},
+    {"canonical": "Valuation", "aliases": ["估值", "企业价值"]},
+    {"canonical": "Term Sheet", "aliases": ["投资条款清单", "TS"]}
+  ],
+  "global_requirements": [
+    "所有财务数据须注明来源（审计报告/管理层报表/预估）",
+    "关键判断须有证据支撑，禁止推测性结论",
+    "风险点须分级（高/中/低），并给出应对建议",
+    "数据截止日须统一标注"
+  ],
+  "outline": [
+    {
+      "id": "ch1",
+      "title": "公司概况",
+      "children": [
+        {
+          "id": "ch1.1",
+          "title": "基本信息",
+          "description": "{{公司名}} 的注册信息、股权结构、实际控制人",
+          "word_count": 800,
+          "must_cite": true,
+          "query_hints": ["{{公司名}} 工商信息", "{{公司名}} 股权结构", "{{公司名}} 注册资本"]
+        },
+        {
+          "id": "ch1.2",
+          "title": "发展历程与里程碑",
+          "description": "{{公司名}} 的创立、关键发展节点和战略转型",
+          "word_count": 600,
+          "query_hints": ["{{公司名}} 发展历程", "{{公司名}} 融资历史", "{{公司名}} 里程碑"]
+        },
+        {
+          "id": "ch1.3",
+          "title": "核心团队",
+          "description": "创始人及核心管理层的背景、经验和持股情况",
+          "word_count": 800,
+          "query_hints": ["{{公司名}} 创始人", "{{公司名}} 管理团队", "{{公司名}} 核心技术人员"]
+        }
+      ]
+    },
+    {
+      "id": "ch2",
+      "title": "业务分析",
+      "children": [
+        {
+          "id": "ch2.1",
+          "title": "产品与服务",
+          "description": "{{公司名}} 的核心产品/服务、技术壁垒和差异化优势",
+          "word_count": 1200,
+          "must_cite": true,
+          "query_hints": ["{{公司名}} 产品", "{{公司名}} 核心技术", "{{公司名}} 竞争优势"],
+          "promote_subhead": true
+        },
+        {
+          "id": "ch2.2",
+          "title": "客户与市场",
+          "description": "客户结构、集中度、获客方式和市场定位",
+          "word_count": 1000,
+          "must_cite": true,
+          "query_hints": ["{{公司名}} 客户", "{{公司名}} 市场份额", "{{公司名}} 商业模式"]
+        },
+        {
+          "id": "ch2.3",
+          "title": "竞争对比",
+          "description": "与 2-3 家可比公司在产品、规模、估值等维度的对比",
+          "word_count": 1000,
+          "must_cite": true,
+          "query_hints": ["{{公司名}} 竞品", "{{公司名}} 对比", "{{行业}} 可比公司"]
+        }
+      ]
+    },
+    {
+      "id": "ch3",
+      "title": "财务分析",
+      "children": [
+        {
+          "id": "ch3.1",
+          "title": "收入分析",
+          "description": "营收规模、结构、增长趋势和收入确认政策",
+          "word_count": 600,
+          "query_hints": ["{{公司名}} 营收", "{{公司名}} 收入结构", "{{公司名}} 财务数据"],
+          "notes": ["区分经常性收入和一次性收入"],
+          "children": [
+            {
+              "id": "ch3.1.1",
+              "title": "营收规模与拆分",
+              "description": "近 3 年总营收、按业务线/区域拆分的收入结构",
+              "word_count": 800,
+              "must_cite": true,
+              "query_hints": ["{{公司名}} 营收", "{{公司名}} 营收规模", "{{公司名}} 收入拆分", "{{公司名}} 业务线收入"]
+            },
+            {
+              "id": "ch3.1.2",
+              "title": "收入质量与确认",
+              "description": "收入确认政策、大客户依赖度、应收账款周转",
+              "word_count": 600,
+              "must_cite": true,
+              "query_hints": ["{{公司名}} 收入确认", "{{公司名}} 应收账款", "{{公司名}} 客户集中度"],
+              "notes": ["关注应收账款质量"]
+            }
+          ]
+        },
+        {
+          "id": "ch3.2",
+          "title": "盈利能力",
+          "description": "毛利、净利、ROE 等核心盈利指标及同业对比",
+          "word_count": 500,
+          "query_hints": ["{{公司名}} 盈利能力"],
+          "children": [
+            {
+              "id": "ch3.2.1",
+              "title": "毛利率与净利率",
+              "description": "近 3 年毛利率、净利率趋势，与可比公司对比",
+              "word_count": 800,
+              "must_cite": true,
+              "query_hints": ["{{公司名}} 毛利率", "{{公司名}} 净利率", "{{公司名}} 利润率"]
+            },
+            {
+              "id": "ch3.2.2",
+              "title": "ROE 与资本回报",
+              "description": "ROE、ROIC 杜邦分解，与行业均值对比",
+              "word_count": 600,
+              "must_cite": true,
+              "query_hints": ["{{公司名}} ROE", "{{公司名}} ROIC", "{{公司名}} 资本回报率"]
+            }
+          ]
+        },
+        {
+          "id": "ch3.3",
+          "title": "资产负债状况",
+          "description": "资产结构、负债水平、或有负债和表外事项",
+          "word_count": 1200,
+          "must_cite": true,
+          "query_hints": ["{{公司名}} 资产负债", "{{公司名}} 负债率", "{{公司名}} 资产质量"]
+        },
+        {
+          "id": "ch3.4",
+          "title": "现金流分析",
+          "description": "经营性现金流、自由现金流和资金消耗率",
+          "word_count": 1000,
+          "must_cite": true,
+          "query_hints": ["{{公司名}} 现金流", "{{公司名}} 经营现金流", "{{公司名}} 资金消耗"]
+        }
+      ]
+    },
+    {
+      "id": "ch4",
+      "title": "法律与合规",
+      "children": [
+        {
+          "id": "ch4.1",
+          "title": "重大合同与关联交易",
+          "description": "重大业务合同、关联方交易和利益输送风险",
+          "word_count": 800,
+          "query_hints": ["{{公司名}} 重大合同", "{{公司名}} 关联交易"]
+        },
+        {
+          "id": "ch4.2",
+          "title": "知识产权",
+          "description": "专利、商标、软件著作权等 IP 资产和侵权风险",
+          "word_count": 800,
+          "query_hints": ["{{公司名}} 专利", "{{公司名}} 知识产权", "{{公司名}} 商标"],
+          "optional": true
+        },
+        {
+          "id": "ch4.3",
+          "title": "诉讼与处罚",
+          "word_count": 600,
+          "query_hints": ["{{公司名}} 诉讼", "{{公司名}} 行政处罚", "{{公司名}} 合规"],
+          "optional": true
+        }
+      ]
+    },
+    {
+      "id": "ch5",
+      "title": "风险评估",
+      "description": "{{公司名}} 面临的系统性风险和特异性风险，按高/中/低分级",
+      "word_count": 1200,
+      "must_cite": true,
+      "promote_subhead": true,
+      "notes": ["须覆盖：市场风险、经营风险、财务风险、法律风险", "每项风险给出应对建议"]
+    },
+    {
+      "id": "exec_summary",
+      "title": "尽调摘要与投资建议",
+      "description": "核心发现、关键风险点和投资建议",
+      "compose_mode": "post_body",
+      "word_count": 1000,
+      "prompt_hint": "综合全文给出：1) 核心发现（3-5 条）；2) 关键风险（按高/中/低分级）；3) 估值参考区间；4) 投资建议（附前提条件）。",
+      "position": "front"
+    },
+    {
+      "id": "appendix",
+      "title": "数据来源与免责声明",
+      "compose_mode": "post_body",
+      "word_count": 300,
+      "prompt_hint": "列出本报告引用的主要数据来源类型，并附上标准免责声明。",
+      "position": "end"
+    }
+  ]
+}

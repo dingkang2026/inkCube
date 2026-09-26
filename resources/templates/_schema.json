@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "inkcube-template-schema",
+  "title": "InkCube Report Template Schema",
+  "description": "墨方报告模板 JSON Schema，用于入口校验",
+  "type": "object",
+  "required": ["template_id", "template_name", "version", "project_types", "outline"],
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "唯一标识，小写+下划线"
+    },
+    "template_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "模板显示名称"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "description": "语义化版本号"
+    },
+    "project_types": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["investment", "recruitment", "general"]
+      },
+      "uniqueItems": true,
+      "description": "适用项目类型（多选）"
+    },
+    "stage": {
+      "oneOf": [
+        { "type": "string", "enum": ["before", "during", "after"] },
+        { "type": "null" }
+      ],
+      "description": "所属阶段（单选，null 表示通用）"
+    },
+    "output_format": {
+      "type": "string",
+      "enum": ["Word", "PDF"],
+      "default": "Word",
+      "description": "默认导出格式"
+    },
+    "role_hint": {
+      "type": "string",
+      "description": "生成角色定位，注入 System Prompt"
+    },
+    "audience": {
+      "type": "string",
+      "description": "报告场景/汇报对象"
+    },
+    "report_depth": {
+      "type": "string",
+      "enum": ["full", "brief"],
+      "default": "full",
+      "description": "报告深度：full（长文）/ brief（概文）"
+    },
+    "variables": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true,
+      "description": "模板变量声明，如 [\"公司名\", \"行业\"]"
+    },
+    "terminology": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["canonical"],
+        "properties": {
+          "canonical": { "type": "string" },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "description": "术语规范"
+    },
+    "global_requirements": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "全局写作要求"
+    },
+    "outline": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/outline_node" },
+      "description": "报告大纲（支持多级嵌套）"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "outline_node": {
+      "type": "object",
+      "required": ["id", "title"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_.-]+$",
+          "description": "章节唯一标识"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "章节标题"
+        },
+        "description": {
+          "type": "string",
+          "description": "章节内容说明（给人看，用于搜索和预览）"
+        },
+        "compose_mode": {
+          "type": "string",
+          "enum": ["standard", "post_body"],
+          "default": "standard",
+          "description": "生成模式"
+        },
+        "word_count": {
+          "type": "integer",
+          "minimum": 200,
+          "default": 1200,
+          "description": "目标字数"
+        },
+        "prompt_hint": {
+          "type": "string",
+          "description": "内容生成指引（给 LLM 看）"
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "附加写作注意事项（折叠进 writing_requirements）"
+        },
+        "promote_subhead": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否要求模型使用 ◆ 内部小标题"
+        },
+        "query_hints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "检索关键词提示"
+        },
+        "must_cite": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否必须有引用支撑"
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false,
+          "description": "材料不足时是否可跳过"
+        },
+        "position": {
+          "type": "string",
+          "enum": ["front", "end"],
+          "description": "post_body 章节的渲染位置"
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/outline_node" },
+          "description": "子章节（支持多级嵌套）"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "compose_mode": { "const": "post_body" } }
+          },
+          "then": {
+            "properties": {
+              "children": {
+                "maxItems": 0,
+                "description": "post_body 章节不得有子章节"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}
