@@ -127,6 +127,7 @@ class ReportRunner:
         llm_settings: dict,
         output_dir: str,
         base_project_ids: Optional[list[str]] = None,
+        db=None,
     ):
         self.template = template
         self.variables = variables
@@ -136,6 +137,7 @@ class ReportRunner:
         self.llm_settings = llm_settings
         self.output_dir = Path(output_dir)
         self.base_project_ids = base_project_ids or []
+        self.db = db
 
         # 状态
         self.outputs: dict[str, str] = {}
@@ -197,6 +199,7 @@ class ReportRunner:
                     tavily_api_key=self.llm_settings.get("tavily_key", ""),
                     base_project_ids=self.base_project_ids,
                     query_parallelism=self.llm_settings.get("report_channel_parallelism", 4),
+                    db=self.db,
                 )
                 self.token_tracker.record(sid, "retrieval", retrieval_usage)
 

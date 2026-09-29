@@ -6,7 +6,7 @@ import { FileUploader } from './FileUploader'
 import { ImageGallery } from './ImageGallery'
 import { SearchBar } from './SearchBar'
 import { SearchResultList } from './SearchResultList'
-import { ToastProvider, useToast } from './Toast'
+import { useToast } from './Toast'
 import { SkeletonFileList, SkeletonSearchResults } from './SkeletonLoader'
 import type { Project, FileRecord, SearchResult, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
@@ -37,9 +37,7 @@ const STATUS_FILTERS: { key: FileStatusFilter; labelKey: string }[] = [
 export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipcChannels }: KnowledgePageProps) {
   const channels = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   return (
-    <ToastProvider>
-      <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} ipc={channels} />
-    </ToastProvider>
+    <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} ipc={channels} />
   )
 }
 
@@ -52,7 +50,8 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const [isSearching, setIsSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
   const [outputTab, setOutputTab] = useState<OutputTab>('search')
-  const [hasMore, setHasMore] = useState(false)
+  const [fileTotal, setFileTotal] = useState(0)
+  const [filePage, setFilePage] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
   const [statusFilter, setStatusFilter] = useState<FileStatusFilter>('all')
   const [filenameSearch, setFilenameSearch] = useState('')
@@ -83,15 +82,19 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     }
   }, [])
 
-  const loadFiles = useCallback(async (projectId: string, search?: string) => {
+  const FILE_LIMIT = 20
+
+  const loadFiles = useCallback(async (projectId: string, page = 1, search?: string) => {
     try {
       const result: any = await window.electronAPI.invoke(ipc.getFiles, {
         projectId,
-        limit: 20,
+        limit: FILE_LIMIT,
+        offset: (page - 1) * FILE_LIMIT,
         filenameSearch: search || undefined,
       })
       setFiles(result.files || [])
-      setHasMore(result.has_more || false)
+      setFileTotal(result.total || 0)
+      setFilePage(page)
     } catch (err) {
       console.error('Failed to load files:', err)
     } finally {
@@ -121,7 +124,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
             showToast(`${file.name}: ${result.message || result.error || 'Upload failed'}`, 'error')
           }
           // Refresh file list after each upload so the new file appears immediately
-          loadFiles(selectedProject.id, filenameSearchRef.current)
+          loadFiles(selectedProject.id, 1, filenameSearchRef.current)
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -182,29 +185,20 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   // Reload files and recent chunks when project, search, or file selection changes
   useEffect(() => {
     if (selectedProject) {
-      loadFiles(selectedProject.id, filenameSearch)
+      loadFiles(selectedProject.id, 1, filenameSearch)
       loadRecentChunks(selectedProject.id, selectedFileId)
       setHasSearched(false)
       setSearchResults([])
     }
   }, [selectedProject?.id, filenameSearch, selectedFileId, loadFiles, loadRecentChunks])
 
-  const loadMoreFiles = async () => {
-    if (!selectedProject || loadingMore || !hasMore) return
+  const handleFilePageChange = async (page: number) => {
+    if (!selectedProject || loadingMore || page < 1) return
+    const totalPages = Math.max(1, Math.ceil(fileTotal / FILE_LIMIT))
+    if (page > totalPages) return
     setLoadingMore(true)
     try {
-      const lastFile = files[files.length - 1]
-      const result: any = await window.electronAPI.invoke(ipc.getFiles, {
-        projectId: selectedProject.id,
-        limit: 20,
-        beforeCreatedAt: lastFile.created_at,
-        beforeId: lastFile.id,
-        filenameSearch: filenameSearch || undefined,
-      })
-      setFiles(prev => [...prev, ...(result.files || [])])
-      setHasMore(result.has_more || false)
-    } catch (err) {
-      console.error('Failed to load more files:', err)
+      await loadFiles(selectedProject.id, page, filenameSearch)
     } finally {
       setLoadingMore(false)
     }
@@ -237,7 +231,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
         if (curCount === 0) {
           // All processing done — full refresh including related data
-          loadFiles(selectedProject.id, filenameSearch)
+          loadFiles(selectedProject.id, 1, filenameSearch)
           loadRecentChunks(selectedProject.id, selectedFileId)
           onProjectDataChanged?.()
           return
@@ -427,9 +421,11 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
               <FileUploader
                 projectId={selectedProject.id}
                 files={filteredFiles}
-                onRefresh={() => loadFiles(selectedProject.id, filenameSearch)}
-                hasMore={hasMore}
-                onLoadMore={loadMoreFiles}
+                onRefresh={() => loadFiles(selectedProject.id, filePage, filenameSearch)}
+                filePage={filePage}
+                fileTotal={fileTotal}
+                fileLimit={FILE_LIMIT}
+                onPageChange={handleFilePageChange}
                 loadingMore={loadingMore}
                 selectedFileId={selectedFileId}
                 onSelectFile={setSelectedFileId}
@@ -457,7 +453,9 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
             </button>
             {selectedFileId && (
               <span className={s.scopeIndicator}>
-                {files.find(f => f.id === selectedFileId)?.filename}
+                <span className={s.scopeName} title={files.find(f => f.id === selectedFileId)?.filename}>
+                  {files.find(f => f.id === selectedFileId)?.filename}
+                </span>
                 <button className={s.scopeClear} onClick={() => setSelectedFileId(null)} title={t('knowledge.clearSelection')}>×</button>
               </span>
             )}

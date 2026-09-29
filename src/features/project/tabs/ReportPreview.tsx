@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info } from 'lucide-react'
 import type { Report, ReportLog } from '../types'
+import { useToast } from '../../knowledge/Toast'
 import s from './ReportPreview.module.css'
 
 interface ReportContent {
@@ -30,6 +31,7 @@ interface ReportPreviewProps {
 
 export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [showSources, setShowSources] = useState(true)
   const [showLogs, setShowLogs] = useState(false)
   const [content, setContent] = useState<ReportContent | null>(null)
@@ -86,13 +88,13 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
         format,
       })
       if (result.path) {
-        alert(t('project.report.preview.exportSuccess', { format, title: report.title }))
+        showToast(t('project.report.preview.exportSuccess', { format, title: report.title }), 'success')
       } else {
-        alert(t('project.report.preview.exportFailed', { error: result.error }))
+        showToast(t('project.report.preview.exportFailed', { error: result.error }), 'error')
       }
     } catch (err) {
       console.error('Export failed:', err)
-      alert(t('project.report.preview.exportFailed', { error: String(err) }))
+      showToast(t('project.report.preview.exportFailed', { error: String(err) }), 'error')
     } finally {
       setExporting(false)
     }

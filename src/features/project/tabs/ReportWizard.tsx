@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, Search, ChevronRight, CheckCircle, Clock, Circle, GripVertical, Trash2, Plus, Loader2, Globe } from 'lucide-react'
-import type { ProjectType, ProjectStage } from '../types'
+import type { ProjectType } from '../types'
 import { STAGE_MAP } from '../types'
 import s from './ReportWizard.module.css'
 
@@ -50,12 +50,11 @@ const STATIC_SOURCE_ENTRIES = [
 interface ReportWizardProps {
   projectId: string
   projectType: ProjectType
-  currentStage: ProjectStage
   onComplete: () => void
   onCancel: () => void
 }
 
-export function ReportWizard({ projectId, projectType, currentStage: _currentStage, onComplete, onCancel }: ReportWizardProps) {
+export function ReportWizard({ projectId, projectType, onComplete, onCancel }: ReportWizardProps) {
   const { t } = useTranslation()
   const [step, setStep] = useState(1)
   const [searchQuery, setSearchQuery] = useState('')
@@ -214,12 +213,12 @@ export function ReportWizard({ projectId, projectType, currentStage: _currentSta
         setReportId(result.report_id)
         setPreviewContent(t('project.report.wizard.generationStarted'))
       } else {
-        setPreviewContent(`Error: ${result.error || 'Unknown error'}`)
+        setPreviewContent(result.error || t('project.report.wizard.generationFailed'))
         setIsError(true)
       }
     } catch (err) {
       console.error('Generation failed:', err)
-      setPreviewContent(`Error: ${String(err)}`)
+      setPreviewContent(t('project.report.wizard.generationFailed'))
       setIsError(true)
     }
   }, [selectedTemplate, projectId, variableValues, outputFormat, supplementaryNotes, knowledgeSources, checkedSources, t])

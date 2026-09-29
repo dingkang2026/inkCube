@@ -40,17 +40,23 @@ class KnowledgeWorker:
         data_dir: str,
         max_file_concurrency: int = 1,
         max_image_concurrency: int = 2,
+        max_compile_concurrency: int = 1,
     ):
         self.db = db
         self.data_dir = data_dir
         self._file_sem = asyncio.Semaphore(max_file_concurrency)
         self._image_sem = asyncio.Semaphore(max_image_concurrency)
+        self._compile_sem = asyncio.Semaphore(max_compile_concurrency)
         self._file_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._image_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._image_queue: asyncio.Queue[tuple] = asyncio.Queue()
+        self._compile_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._compile_enqueued: set[str] = set()  # track task_ids already in queue to prevent duplicates
+        self._compile_continuation_events: dict[str, asyncio.Event] = {}  # supervised mode continue signals
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._max_file_concurrency = max_file_concurrency
         self._max_image_concurrency = max_image_concurrency
+        self._max_compile_concurrency = max_compile_concurrency
 
         # Shared VectorStore instance – avoids creating a new one (and
         # potentially triggering a separate model load) per image.
@@ -67,10 +73,12 @@ class KnowledgeWorker:
 
     # ── Public API ──
 
-    def update_concurrency(self, file_concurrency: int, image_concurrency: int):
+    def update_concurrency(self, file_concurrency: int, image_concurrency: int, compile_concurrency: int | None = None):
         """Update concurrency limits (takes effect on next task acquisition)."""
         self._file_sem = asyncio.Semaphore(file_concurrency)
         self._image_sem = asyncio.Semaphore(image_concurrency)
+        if compile_concurrency is not None:
+            self._compile_sem = asyncio.Semaphore(compile_concurrency)
 
     async def start(self):
         """Start all workers. Call from FastAPI lifespan."""
@@ -84,15 +92,21 @@ class KnowledgeWorker:
             self._tasks.append(
                 asyncio.create_task(self._image_worker(f"img-w-{i}"))
             )
+        for i in range(self._max_compile_concurrency):
+            self._tasks.append(
+                asyncio.create_task(self._compile_worker(f"compile-w-{i}"))
+            )
         self._tasks.append(asyncio.create_task(self._queue_scanner()))
         logger.info(
-            "[KnowledgeWorker] Started: %d file, %d image workers",
+            "[KnowledgeWorker] Started: %d file, %d image, %d compile workers",
             self._max_file_concurrency, self._max_image_concurrency,
+            self._max_compile_concurrency,
         )
         print(
             f"[KnowledgeWorker] Started: "
             f"{self._max_file_concurrency} file, "
-            f"{self._max_image_concurrency} image workers"
+            f"{self._max_image_concurrency} image, "
+            f"{self._max_compile_concurrency} compile workers"
         )
 
     async def stop(self):
@@ -118,6 +132,15 @@ class KnowledgeWorker:
         """
         logger.debug("Enqueue image: %s (force=%s)", image_id, force)
         await self._image_queue.put((image_id, force))
+
+    async def enqueue_compile(self, task_id: str):
+        """Add a Wiki compile task to the compile queue (skip if already enqueued)."""
+        if task_id in self._compile_enqueued:
+            logger.debug("Compile task %s already in queue, skipping duplicate", task_id)
+            return
+        self._compile_enqueued.add(task_id)
+        logger.debug("Enqueue compile task: %s", task_id)
+        await self._compile_queue.put(task_id)
 
     # ── File Parsing Worker ──
 
@@ -211,6 +234,13 @@ class KnowledgeWorker:
                         await self.enqueue_image(img["id"])
                 if images:
                     self.db.update_file_image_status(file_id)
+
+                # Wiki notification: file parsed → increment pending compile count
+                try:
+                    self.db.increment_pending_compile_count(project_id)
+                    logger.debug("Wiki: incremented pending_compile_count for project %s", project_id)
+                except Exception as e:
+                    logger.warning("Wiki notification failed: %s", e)
             else:
                 logger.error("File %s parse failed: %s", file_id, result.get("error"))
                 self.db.update_file_status(
@@ -393,6 +423,220 @@ class KnowledgeWorker:
         # Update file's overall image status
         self.db.update_file_image_status(file_id)
 
+    # ── Wiki Compile Worker ──
+
+    async def _compile_worker(self, name: str):
+        """Worker loop: pick compile tasks from queue and process."""
+        logger.info("[%s] Worker started", name)
+        while self._running:
+            try:
+                task_id = await asyncio.wait_for(
+                    self._compile_queue.get(), timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                logger.info("[%s] Cancelled", name)
+                return
+
+            async with self._compile_sem:
+                try:
+                    self._compile_enqueued.discard(task_id)  # remove from tracking set
+                    logger.info("[%s] Processing compile task %s", name, task_id)
+                    await self._process_compile(task_id)
+                except Exception as e:
+                    logger.error("[%s] Error processing compile %s: %s", name, task_id, e, exc_info=True)
+                finally:
+                    self._compile_queue.task_done()
+
+    async def _process_compile(self, task_id: str):
+        """Process a single Wiki compile task through the two-stage pipeline."""
+        task = self.db.get_wiki_compile_task(task_id)
+        if not task:
+            logger.warning("Compile task %s not found in DB, skipping", task_id)
+            return
+        if task["status"] not in ("queued", "failed", "waiting_review"):
+            logger.info("Compile task %s status is '%s', skipping", task_id, task["status"])
+            return
+
+        project_id = task["project_id"]
+
+        # Verify project still exists
+        project = self.db.get_project(project_id)
+        if not project:
+            logger.info("Project %s deleted, skipping compile task %s", project_id, task_id)
+            self.db.update_compile_task_status(task_id, "failed", error_message="Project deleted")
+            return
+
+        # Mark task as started (only on first run, not on continue)
+        if task["status"] != "waiting_review":
+            self.db.start_compile_task(task_id)
+
+        # Get LLM settings
+        settings = self.db.get_settings()
+
+        from llm import LLMClient
+        llm_client = LLMClient(settings)
+
+        # Check if this is a V2 per-file ingest (supervised or not)
+        supervised = self.db.is_compile_supervised(task_id)
+
+        if supervised:
+            # V2 supervised: per-file ingest with pause after each file
+            await self._process_supervised_ingest(task_id, project_id, llm_client, settings)
+        else:
+            # Legacy: batch compile via WikiCompiler
+            from wiki.compiler import WikiCompiler
+            compiler = WikiCompiler(
+                db=self.db,
+                data_dir=self.data_dir,
+                llm_client=llm_client,
+                llm_settings=settings,
+            )
+
+            max_retries = settings.get("compile_max_retries", task.get("max_retries", 3))
+            backoff_base = settings.get("compile_backoff_base", 30)
+            retry_count = task.get("retry_count", 0)
+
+            try:
+                summary = await compiler.compile(
+                    project_id=project_id,
+                    task_id=task_id,
+                    mode="incremental",
+                )
+                logger.info("Compile task %s completed: %s", task_id, summary)
+            except Exception as e:
+                logger.error("Compile task %s failed: %s", task_id, e, exc_info=True)
+
+                # Retry with exponential backoff
+                if retry_count < max_retries:
+                    new_count = self.db.increment_compile_task_retry(task_id)
+                    backoff = backoff_base * (2 ** new_count)
+                    logger.info("Compile task %s retry %d/%d, backoff %ds",
+                                task_id, new_count, max_retries, backoff)
+                    self.db.update_compile_task_status(
+                        task_id, "queued",
+                        error_message=f"Retry {new_count}/{max_retries}: {e}",
+                    )
+                    await asyncio.sleep(backoff)
+                    await self.enqueue_compile(task_id)
+                else:
+                    self.db.update_compile_task_status(
+                        task_id, "failed",
+                        error_message=str(e),
+                    )
+
+    async def _process_supervised_ingest(
+        self, task_id: str, project_id: str, llm_client, llm_settings: dict,
+    ):
+        """V2 supervised per-file ingest: loop through files, pausing after each."""
+        from wiki.ingest import WikiIngestor
+
+        ingestor = WikiIngestor(self.db, self.data_dir, llm_client, llm_settings)
+        already_done = [s["file_id"] for s in self.db.get_ingest_summaries(task_id)]
+        files_processed = len(already_done)
+
+        while self._running:
+            # Check stop request
+            if self.db.is_compile_stop_requested(task_id):
+                logger.info("Supervised compile [%s]: stop requested after %d files", task_id, files_processed)
+                self.db.update_compile_task_status(task_id, "stopped")
+                return
+
+            # Determine remaining files
+            pending_files = self.db.get_pending_wiki_files(
+                project_id, exclude_file_ids=already_done,
+            )
+            if not pending_files:
+                logger.info("Supervised compile [%s]: all files completed (%d total)", task_id, files_processed)
+                self.db.update_compile_task_status(
+                    task_id, "completed",
+                    pages_total=files_processed, pages_completed=files_processed,
+                )
+                return
+
+            # Process the next pending file
+            next_file = pending_files[0]
+            file_id = next_file["id"]
+            filename = next_file["filename"]
+            logger.info("Supervised compile [%s]: ingesting file '%s' (%d remaining)",
+                         task_id, filename, len(pending_files))
+
+            try:
+                result = await ingestor.ingest_file(
+                    project_id, file_id, task_id, skip_task_update=True,
+                )
+                self.db.append_ingest_summary(task_id, {
+                    "file_id": file_id, "filename": filename, **result,
+                })
+                logger.info("Supervised compile [%s]: file '%s' done: %s", task_id, filename, result)
+            except Exception as e:
+                logger.error("Supervised compile [%s]: file '%s' failed: %s", task_id, filename, e, exc_info=True)
+                self.db.append_ingest_summary(task_id, {
+                    "file_id": file_id, "filename": filename,
+                    "error": str(e), "skipped": False,
+                })
+
+            already_done.append(file_id)
+            files_processed += 1
+
+            # Check if more files remain
+            remaining = self.db.get_pending_wiki_files(
+                project_id, exclude_file_ids=already_done,
+            )
+            if not remaining:
+                logger.info("Supervised compile [%s]: all files completed", task_id)
+                self.db.update_compile_task_status(
+                    task_id, "completed",
+                    pages_total=files_processed, pages_completed=files_processed,
+                )
+                return
+
+            # Pause for user review
+            self.db.update_compile_task_status(
+                task_id, "waiting_review",
+                pages_total=files_processed + len(remaining),
+                pages_completed=files_processed,
+            )
+            logger.info("Supervised compile [%s]: waiting_review, %d files remaining",
+                         task_id, len(remaining))
+
+            # Ensure continuation event exists
+            if task_id not in self._compile_continuation_events:
+                self._compile_continuation_events[task_id] = asyncio.Event()
+
+            # Wait for user to click Continue (or Stop)
+            await self._compile_continuation_events[task_id].wait()
+            self._compile_continuation_events[task_id].clear()
+
+    def signal_compile_continue(self, task_id: str) -> bool:
+        """Signal a supervised compile task to continue to the next file."""
+        task = self.db.get_wiki_compile_task(task_id)
+        if not task or task["status"] != "waiting_review":
+            return False
+        # Reset status to ingesting so the worker picks it up
+        self.db.update_compile_task_status(task_id, "ingesting")
+        # Set the continuation event if the worker is waiting
+        if task_id in self._compile_continuation_events:
+            self._compile_continuation_events[task_id].set()
+        else:
+            # Worker may not be waiting yet; create event and re-enqueue
+            self._compile_continuation_events[task_id] = asyncio.Event()
+            # Remove from enqueued set so it can be re-enqueued
+            self._compile_enqueued.discard(task_id)
+        return True
+
+    def signal_compile_stop(self, task_id: str) -> bool:
+        """Request a supervised compile task to stop."""
+        task = self.db.get_wiki_compile_task(task_id)
+        if not task:
+            return False
+        self.db.request_compile_stop(task_id)
+        # If waiting for user input, wake up the worker so it can check the stop flag
+        if task_id in self._compile_continuation_events:
+            self._compile_continuation_events[task_id].set()
+        return True
+
     # ── Queue Scanner ──
 
     async def _queue_scanner(self):
@@ -426,6 +670,17 @@ class KnowledgeWorker:
                     logger.info("[QueueScanner] Found %d pending images", len(pending_images))
                 for img in pending_images:
                     await self.enqueue_image(img["id"])
+
+                # Pick up queued compile tasks
+                cursor = self.db.conn.execute(
+                    "SELECT id FROM wiki_compile_tasks WHERE status = 'queued' "
+                    "ORDER BY created_at ASC LIMIT 5"
+                )
+                queued_compiles = [row["id"] for row in cursor.fetchall()]
+                if queued_compiles:
+                    logger.info("[QueueScanner] Found %d queued compile tasks", len(queued_compiles))
+                for tid in queued_compiles:
+                    await self.enqueue_compile(tid)
 
             except asyncio.CancelledError:
                 return
@@ -511,6 +766,14 @@ class KnowledgeWorker:
                 )
             self.db.conn.commit()
             logger.info("[Startup] Reset %d interrupted images", len(interrupted_images))
+
+        # 3. Reset interrupted compile tasks
+        try:
+            reset_count = self.db.reset_interrupted_compile_tasks()
+            if reset_count > 0:
+                logger.info("[Startup] Reset %d interrupted compile tasks", reset_count)
+        except Exception as e:
+            logger.warning("[Startup] Failed to reset compile tasks: %s", e)
 
     # ── Helpers ──
 

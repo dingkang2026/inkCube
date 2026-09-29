@@ -20,24 +20,24 @@ interface TaskMessageListProps {
   isGenerating: boolean
 }
 
-// Tool display names and icons
-const TOOL_META: Record<string, { icon: string; label: string }> = {
-  code_executor: { icon: '▶', label: '执行代码' },
-  shell: { icon: '⌘', label: 'Shell' },
-  file_ops: { icon: '', label: '文件操作' },
-  code_search: { icon: '🔍', label: '搜索' },
-  web_fetch: { icon: '🌐', label: '网页' },
-  web_search: { icon: '', label: '网络搜索' },
-  code_lint: { icon: '🔎', label: '代码检查' },
-  code_format: { icon: '✨', label: '格式化' },
-  package_manager: { icon: '📦', label: '依赖管理' },
-  project_scaffold: { icon: '🏗', label: '项目骨架' },
-  knowledge_search: { icon: '📚', label: '知识库' },
-  doc_generator: { icon: '📄', label: '文档转换' },
-  repo_map: { icon: '🗺', label: '代码结构' },
-  skill_runner: { icon: '🧩', label: 'Skill' },
-  git_ops: { icon: '📂', label: 'Git' },
-  lsp_client: { icon: '🧠', label: '代码分析' },
+// Tool display i18n label keys (icons from TOOL_ICONS)
+const TOOL_META: Record<string, { labelKey: string }> = {
+  code_executor: { labelKey: 'task.tools.code_executor' },
+  shell: { labelKey: 'task.tools.shell' },
+  file_ops: { labelKey: 'task.tools.file_ops' },
+  code_search: { labelKey: 'task.tools.code_search' },
+  web_fetch: { labelKey: 'task.tools.web_fetch' },
+  web_search: { labelKey: 'task.tools.web_search' },
+  code_lint: { labelKey: 'task.tools.code_lint' },
+  code_format: { labelKey: 'task.tools.code_format' },
+  package_manager: { labelKey: 'task.tools.package_manager' },
+  project_scaffold: { labelKey: 'task.tools.project_scaffold' },
+  knowledge_search: { labelKey: 'task.tools.knowledge_search' },
+  doc_generator: { labelKey: 'task.tools.doc_generator' },
+  repo_map: { labelKey: 'task.tools.repo_map' },
+  skill_runner: { labelKey: 'task.tools.skill_runner' },
+  git_ops: { labelKey: 'task.tools.git_ops' },
+  lsp_client: { labelKey: 'task.tools.lsp_client' },
 }
 
 const TOOL_ICONS: Record<string, any> = {
@@ -60,7 +60,7 @@ const TOOL_ICONS: Record<string, any> = {
 }
 
 function getToolMeta(toolName: string) {
-  return TOOL_META[toolName] || { icon: '🔧', label: toolName }
+  return TOOL_META[toolName] || { labelKey: '' }
 }
 
 function getToolIcon(toolName: string) {
@@ -356,6 +356,7 @@ function IterationCard({
   onToggle: () => void
   isStreaming: boolean
 }) {
+  const { t } = useTranslation()
   const summary = group.thought
     ? (group.thought.length > 30 ? group.thought.slice(0, 30) + '...' : group.thought)
     : ''
@@ -367,7 +368,7 @@ function IterationCard({
         <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
         <span className={s.iterLabel}>Iter {group.iteration + 1}</span>
         {summary && <span className={s.iterSummary}>{summary}</span>}
-        {stepCount > 0 && <span className={s.iterSteps}>{stepCount}步</span>}
+        {stepCount > 0 && <span className={s.iterSteps}>{t('task.steps', { count: stepCount })}</span>}
         {group.status === 'error' && <span className={`${s.statusDot} ${s.statusError}`} />}
         {group.status === 'ok' && stepCount > 0 && !isStreaming && <span className={`${s.statusDot} ${s.statusOk}`} />}
         {isStreaming && group.status === 'running' && <span className={s.spinner} />}
@@ -453,13 +454,14 @@ function MessageBubble({ message }: { message: TaskMessage }) {
 // ── Collapsible blocks ──
 
 function ReasoningBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div className={s.stepRow}>
       <button className={s.stepToggle} onClick={() => setOpen(!open)}>
         <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}></span>
         <Brain size={14} className={s.stepIcon} />
-        <span className={s.stepLabel}>推理</span>
+        <span className={s.stepLabel}>{t('task.reasoningProcess')}</span>
       </button>
       {open && (
         <div className={s.stepDetail}><Markdown content={content} className={s.markdown} /></div>
@@ -469,12 +471,13 @@ function ReasoningBlock({ content, defaultOpen = false }: { content: string; def
 }
 
 function ThoughtBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div className={s.stepRow}>
       <button className={s.stepToggle} onClick={() => setOpen(!open)}>
         <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
-        <span className={s.stepLabel}>分析</span>
+        <span className={s.stepLabel}>{t('task.thoughtProcess')}</span>
       </button>
       {open && (
         <div className={s.stepDetail}><Markdown content={content} className={s.markdown} /></div>
@@ -484,13 +487,14 @@ function ThoughtBlock({ content, defaultOpen = false }: { content: string; defau
 }
 
 function StreamThoughtBlock({ content, isGenerating, defaultOpen = true }: { content: string; isGenerating: boolean; defaultOpen?: boolean }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
   useEffect(() => { setOpen(defaultOpen) }, [defaultOpen])
   return (
     <div className={s.stepRow}>
       <button className={s.stepToggle} onClick={() => setOpen(!open)}>
         <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
-        <span className={s.stepLabel}>分析</span>
+        <span className={s.stepLabel}>{t('task.thoughtProcess')}</span>
       </button>
       {open && (
         <div className={s.stepDetail}>
@@ -514,6 +518,7 @@ function ToolCard({
   filePath?: string
   done: boolean
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const meta = getToolMeta(toolName)
@@ -551,9 +556,9 @@ function ToolCard({
       <button className={s.stepToggle} onClick={() => setOpen(!open)}>
         <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
         <span className={s.toolIcon}>
-          {(() => { const Icon = getToolIcon(toolName); return Icon ? <Icon size={14} /> : meta.icon })()}
+          {(() => { const Icon = getToolIcon(toolName); return Icon ? <Icon size={14} /> : <Wrench size={14} /> })()}
         </span>
-        <span className={s.stepLabel}>{meta.label}</span>
+        <span className={s.stepLabel}>{meta.labelKey ? t(meta.labelKey) : toolName}</span>
         <span className={s.toolSummary}>{summary}</span>
         {!done && (
           <>
@@ -580,6 +585,7 @@ function ToolCard({
 // ─ Diff Card ──
 
 function DiffCard({ diff, filePath }: { diff: string; filePath?: string }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const lines = diff.split('\n')
   let additions = 0, deletions = 0
@@ -595,7 +601,7 @@ function DiffCard({ diff, filePath }: { diff: string; filePath?: string }) {
       <button className={s.diffHeader} onClick={() => setExpanded(!expanded)}>
         <span className={`${s.chevron} ${expanded ? s.chevronOpen : ''}`}>▸</span>
         <span className={s.diffTitle}>
-          {filePath || '变更'}
+          {filePath || t('task.diffChanges')}
           <span className={s.diffStats}>
             <span className={s.diffAdd}>+{additions}</span>
             <span className={s.diffDel}>-{deletions}</span>
@@ -624,13 +630,14 @@ function DiffCard({ diff, filePath }: { diff: string; filePath?: string }) {
 // ─ Plan Progress Card ──
 
 function PlanProgressCard({ plan }: { plan: PlanData }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(true)
   return (
     <div className={s.planCard}>
       <button className={s.planHeader} onClick={() => setOpen(!open)}>
         <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
-        <span className={s.planTitle}>📋 执行计划</span>
-        <span className={s.planBadge}>{plan.total} 步</span>
+        <span className={s.planTitle}>📋 {t('task.executionPlan')}</span>
+        <span className={s.planBadge}>{plan.total} {t('task.stepsCount')}</span>
       </button>
       {open && (
         <div className={s.planBody}>

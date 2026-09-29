@@ -310,10 +310,28 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  ipcMain.handle('knowledge:updateProject', async (_event, { projectId, name, description, type, stage }) => {
+    const body = {}
+    if (name !== undefined) body.name = name
+    if (description !== undefined) body.description = description
+    if (type !== undefined) body.type = type
+    if (stage !== undefined) body.stage = stage
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handlePythonResponse(res)
+  })
+
   // Image management
-  ipcMain.handle('knowledge:getProjectImages', async (_event, { projectId, limit, offset, fileId }) => {
+  ipcMain.handle('knowledge:getProjectImages', async (_event, { projectId, limit, offset, fileId, status, category, search, size }) => {
     const params = new URLSearchParams({ limit: String(limit || 40), offset: String(offset || 0) })
     if (fileId) params.set('file_id', fileId)
+    if (status) params.set('status', status)
+    if (category) params.set('category', category)
+    if (search) params.set('search', search)
+    if (size) params.set('size', size)
     const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images?${params}`)
     return handlePythonResponse(res)
   })
@@ -509,11 +527,25 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('baseLib:getImages', async (_event, { libId, projectId, limit, offset, fileId }) => {
+  ipcMain.handle('baseLib:getImages', async (_event, { libId, projectId, limit, offset, fileId, status, category, search, size }) => {
     const id = libId || projectId
     const params = new URLSearchParams({ limit: String(limit || 40), offset: String(offset || 0) })
     if (fileId) params.set('file_id', fileId)
+    if (status) params.set('status', status)
+    if (category) params.set('category', category)
+    if (search) params.set('search', search)
+    if (size) params.set('size', size)
     const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/images?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:chat', async (_event, { libId, projectId, message, fileId }) => {
+    const id = libId || projectId
+    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, fileId }),
+    })
     return handlePythonResponse(res)
   })
 
@@ -547,7 +579,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        title: title || '新任务',
+        title: title || 'Untitled',
         workspace_path: workspacePath || '',
         mode: mode || 'coding',
       }),
@@ -1009,6 +1041,264 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     const url = new URL(`${pythonManager.getBaseUrl()}/reports/${reportId}/logs`)
     if (limit) url.searchParams.set('limit', String(limit))
     const res = await fetch(url.toString())
+    return handlePythonResponse(res)
+  })
+
+  // ── Wiki ──
+
+  ipcMain.handle('wiki:listPages', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getPage', async (_event, { projectId, pageKey }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:compile', async (_event, { projectId, mode, supervised, force }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode || 'incremental', trigger_type: 'manual', supervised: !!supervised, force: !!force }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:compileStatus', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile-status`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:globalReviewStatus', async () => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/review-status`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:stopCompile', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/stop`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:continueCompile', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/continue`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:retryPage', async (_event, { projectId, pageKey }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/retry`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:listReviews', async (_event, { projectId, resolved }) => {
+    const params = resolved !== undefined ? `?resolved=${resolved}` : ''
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:resolveReview', async (_event, { projectId, reviewId, action }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/${reviewId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:batchResolveReviews', async (_event, { projectId, reviewIds, action }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ review_ids: reviewIds, action }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:deletePage', async (_event, { projectId, pageKey }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:editPage', async (_event, { projectId, pageKey, content, title }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, title: title || null }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:lint', async (_event, { projectId, mode }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/lint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode || 'structural' }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getSchemas', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getPurpose', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:updatePurpose', async (_event, { projectId, purpose }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purpose }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getOverview', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:updateOverview', async (_event, { projectId, overview }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overview }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getBacklinks', async (_event, { projectId, pageKey }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/backlinks`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getChangeLog', async (_event, { projectId, limit }) => {
+    const params = limit ? `?limit=${limit}` : ''
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/changelog${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:archive', async (_event, { projectId, title, content, pageKey, sourceQuestion }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        content,
+        page_key: pageKey || null,
+        source_question: sourceQuestion || '',
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Wiki search (hybrid retrieval: keyword + graph expansion)
+  ipcMain.handle('wiki:search', async (_event, { projectId, query, topK, enableGraph }) => {
+    const params = new URLSearchParams({ q: query || '', top_k: String(topK || 20) })
+    if (enableGraph === false) params.set('enable_graph', 'false')
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/search?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  // Wiki review sweep (two-stage auto-resolution)
+  ipcMain.handle('wiki:sweepReviews', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/sweep-reviews`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Wiki graph data
+  ipcMain.handle('wiki:getGraph', async (_event, { projectId, insights }) => {
+    const params = new URLSearchParams()
+    if (insights) params.set('insights', 'true')
+    const qs = params.toString()
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/graph${qs ? '?' + qs : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  // Wiki schema CRUD
+  ipcMain.handle('wiki:createSchema', async (_event, { projectId, pageKey, title, compileHint, baseLibSearchHints, position }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page_key: pageKey,
+        title,
+        compile_hint: compileHint || '',
+        base_lib_search_hints: baseLibSearchHints || [],
+        position: position ?? undefined,
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:updateSchema', async (_event, { projectId, schemaId, title, compileHint, baseLibSearchHints, position }) => {
+    const body = {}
+    if (title !== undefined) body.title = title
+    if (compileHint !== undefined) body.compile_hint = compileHint
+    if (baseLibSearchHints !== undefined) body.base_lib_search_hints = baseLibSearchHints
+    if (position !== undefined) body.position = position
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:deleteSchema', async (_event, { projectId, schemaId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Wiki page versions
+  ipcMain.handle('wiki:listVersions', async (_event, { projectId, pageKey, limit }) => {
+    const params = new URLSearchParams({ limit: String(limit || 20) })
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/versions?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:getVersion', async (_event, { projectId, versionId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/versions/${versionId}`)
+    return handlePythonResponse(res)
+  })
+
+  // Wiki duplicate detection (§12.2.10)
+  ipcMain.handle('wiki:dedupDetect', async (_event, { projectId }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/detect`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:dedupMerge', async (_event, { projectId, canonicalKey, duplicateKeys }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canonical_key: canonicalKey, duplicate_keys: duplicateKeys }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Wiki-link enrichment (§12.2.4)
+  ipcMain.handle('wiki:enrichWikilinks', async (_event, { projectId, pageKey }) => {
+    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/enrich-wikilinks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page_key: pageKey }),
+    })
     return handlePythonResponse(res)
   })
 }

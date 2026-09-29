@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Table, Plus, FileSpreadsheet, CheckCircle, Clock, ArrowLeft, Download, Loader2 } from 'lucide-react'
-import type { ProjectType, ProjectStage } from '../types'
+import type { ProjectType } from '../types'
 import s from './FormsTab.module.css'
 
 /* ── Mock data ── */
@@ -55,10 +55,9 @@ type ViewMode = 'list' | 'filling' | 'preview'
 
 interface FormsTabProps {
   projectType: ProjectType
-  currentStage: ProjectStage
 }
 
-export function FormsTab({ projectType, currentStage: _currentStage }: FormsTabProps) {
+export function FormsTab({ projectType }: FormsTabProps) {
   const { t } = useTranslation()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [selectedTemplate, setSelectedTemplate] = useState<typeof MOCK_FORM_TEMPLATES[0] | null>(null)

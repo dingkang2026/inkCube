@@ -35,8 +35,12 @@ export function useSettings() {
   }, [])
 
   const loadSettings = async () => {
-    const res = await window.electronAPI.invoke('settings:get')
-    setSettings(res as LLMSettings)
+    try {
+      const res = await window.electronAPI.invoke('settings:get')
+      setSettings(res as LLMSettings)
+    } catch (err) {
+      console.error('Failed to load settings:', err)
+    }
   }
 
   const handleSaveSettings = useCallback(async (newSettings: LLMSettings) => {

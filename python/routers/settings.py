@@ -20,6 +20,7 @@ async def save_settings(settings: SettingsModel):
         deps.worker.update_concurrency(
             settings.max_concurrent_file_parsing,
             settings.max_concurrent_image_description,
+            settings.max_compile_concurrency,
         )
 
     return {"ok": True}

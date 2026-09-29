@@ -15,6 +15,13 @@ class SettingsModel(BaseModel):
     vlm_model: str = "glm-4v"
     max_concurrent_file_parsing: int = 1
     max_concurrent_image_description: int = 2
+    # Wiki compile settings
+    max_compile_concurrency: int = 1
+    compile_max_retries: int = 3
+    compile_backoff_base: int = 30  # seconds
+    # LLM timeout settings
+    llm_connect_timeout: int = 30
+    llm_read_timeout: int = 300
     # Task-specific settings
     task_model: str = ""  # empty = use global model
     task_planner_model: str = ""  # empty = use task_model or global model

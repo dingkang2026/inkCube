@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { TitleBar } from './components/layout/TitleBar'
 import { AboutDialog } from './components/layout/AboutDialog'
 import { Sidebar } from './components/layout/Sidebar'
@@ -17,11 +18,74 @@ import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
 import { useSettings } from './features/settings/useSettings'
 import { useResizeHandle } from './hooks/useResizeHandle'
+import { ToastProvider, useToast } from './features/knowledge/Toast'
 import type { Project } from './features/knowledge/types'
 import type { ProjectType } from './features/project/types'
 import { getInitialStage } from './features/project/types'
 
+/** Inner component: polls global wiki review status and shows toast notifications.
+ *  Must live inside ToastProvider to access useToast. */
+function WikiReviewMonitor({
+  onWaitingReviewCountChange,
+  onActiveIngestChange,
+}: {
+  onWaitingReviewCountChange: (count: number) => void
+  onActiveIngestChange: (hasActive: boolean) => void
+}) {
+  const { t } = useTranslation()
+  const showToast = useToast()
+  const prevProjectIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    let cancelled = false
+    const check = async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('wiki:globalReviewStatus')
+        if (cancelled) return
+        const waiting: any[] = result?.waiting_reviews || []
+        onWaitingReviewCountChange(waiting.length)
+        const activeCompiles: any[] = result?.active_compiles || []
+        onActiveIngestChange(activeCompiles.length > 0)
+
+        // Detect NEW waiting reviews (not seen before) and show toast
+        const currentIds = new Set(waiting.map((w: any) => w.project_id))
+        for (const w of waiting) {
+          if (!prevProjectIdsRef.current.has(w.project_id)) {
+            showToast(
+              t('project.wiki.reviewWaiting', {
+                defaultValue: `「${w.project_name}」知识库编译等待审阅`,
+                projectName: w.project_name,
+              }),
+              'warning',
+              {
+                action: {
+                  label: t('project.wiki.goToReview', { defaultValue: '前往查看' }),
+                  onClick: () => {
+                    // Dispatch custom event to navigate to project wiki tab
+                    window.dispatchEvent(
+                      new CustomEvent('app:navigate-wiki', { detail: { projectId: w.project_id } })
+                    )
+                  },
+                },
+              },
+            )
+          }
+        }
+        prevProjectIdsRef.current = currentIds
+      } catch {
+        // Backend not ready yet
+      }
+    }
+    check()
+    const timer = setInterval(check, 5000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [showToast, t, onWaitingReviewCountChange])
+
+  return null
+}
+
 export default function App() {
+  const { t } = useTranslation()
   const { settings, handleSaveSettings } = useSettings()
   const sidebar = useResizeHandle(260, 200, 480)
 
@@ -32,7 +96,7 @@ export default function App() {
     creating: taskCreating,
     handleCreateTask, handleCreateTaskWithDir, handleDeleteTask, handleRenameTask,
     handleArchiveTask, handleUnarchiveTask, handleExportTask, handleSetTaskMode,
-  } = useTasks()
+  } = useTasks(t('task.defaultTitle'))
 
   const {
     messages: taskMessages,
@@ -64,6 +128,8 @@ export default function App() {
   const [processExitCode, setProcessExitCode] = useState<number | null>(null)
   const [canStartTask, setCanStartTask] = useState(true)
   const [runningTaskIds, setRunningTaskIds] = useState<Set<string>>(new Set())
+  const [waitingReviewCount, setWaitingReviewCount] = useState(0)
+  const [hasActiveIngest, setHasActiveIngest] = useState(false)
 
   // ── Knowledge base state ──
   const [projects, setProjects] = useState<Project[]>([])
@@ -83,6 +149,13 @@ export default function App() {
     loadProjects()
   }, [loadProjects])
 
+  // Refresh projects when navigating to projects tab
+  useEffect(() => {
+    if (activeNav === 'projects') {
+      loadProjects()
+    }
+  }, [activeNav, loadProjects])
+
   // Auto-select first project when navigating to projects tab (so KnowledgePage features are immediately accessible)
   useEffect(() => {
     if (activeNav === 'projects' && projects.length > 0 && !selectedProjectId && !selectedBaseLibId) {
@@ -90,8 +163,14 @@ export default function App() {
     }
   }, [activeNav, projects, selectedProjectId, selectedBaseLibId])
 
-  // Poll task status for concurrent limit + running task IDs
+  // Poll task status only when on tasks tab or a task is generating
   useEffect(() => {
+    const shouldPoll = activeNav === 'tasks' || taskIsGenerating
+    if (!shouldPoll) {
+      setCanStartTask(true)
+      setRunningTaskIds(new Set())
+      return
+    }
     let cancelled = false
     const poll = async () => {
       try {
@@ -107,7 +186,7 @@ export default function App() {
     poll()
     const timer = setInterval(poll, 3000)
     return () => { cancelled = true; clearInterval(timer) }
-  }, [])
+  }, [activeNav, taskIsGenerating])
 
   // Refresh task status when generation finishes
   useEffect(() => {
@@ -137,7 +216,7 @@ export default function App() {
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    if (!confirm('确认删除此项目？所有文件和索引将被清除。')) return
+    if (!confirm(t('knowledge.confirmDeleteProject'))) return
     try {
       await window.electronAPI.invoke('knowledge:deleteProject', projectId)
       await loadProjects()
@@ -150,18 +229,22 @@ export default function App() {
   const handleCreateProject = async (name: string, description?: string, type?: ProjectType, companyName?: string, creditCode?: string) => {
     const projectType = type || 'general'
     const stage = getInitialStage(projectType)
-    const result: any = await window.electronAPI.invoke('knowledge:createProject', {
-      name,
-      description,
-      type: projectType,
-      stage,
-      companyName,
-      creditCode,
-    })
-    await loadProjects()
-    // Auto-select the newly created project
-    if (result?.id) {
-      setSelectedProjectId(result.id)
+    try {
+      const result: any = await window.electronAPI.invoke('knowledge:createProject', {
+        name,
+        description,
+        type: projectType,
+        stage,
+        companyName,
+        creditCode,
+      })
+      await loadProjects()
+      // Auto-select the newly created project
+      if (result?.id) {
+        setSelectedProjectId(result.id)
+      }
+    } catch (err) {
+      console.error('Failed to create project:', err)
     }
   }
 
@@ -180,12 +263,43 @@ export default function App() {
     setSettingsOpen(false)
   }, [])
 
+  // Listen for navigate-wiki event (from WikiReviewMonitor toast action)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { projectId } = (e as CustomEvent).detail
+      setSelectedBaseLibId(null)
+      setSelectedProjectId(projectId)
+      setActiveNav('projects')
+    }
+    window.addEventListener('app:navigate-wiki', handler)
+    return () => window.removeEventListener('app:navigate-wiki', handler)
+  }, [])
+
+  // Listen for wiki immersive mode — auto-hide app sidebar to maximize content
+  const prevSidebarBeforeImmersive = useRef<boolean | null>(null)
+  const sidebarCollapsedRef = useRef(sidebarCollapsed)
+  sidebarCollapsedRef.current = sidebarCollapsed
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { expanded } = (e as CustomEvent).detail
+      if (expanded) {
+        prevSidebarBeforeImmersive.current = sidebarCollapsedRef.current
+        setSidebarCollapsed(true)
+      } else {
+        if (prevSidebarBeforeImmersive.current !== null) {
+          setSidebarCollapsed(prevSidebarBeforeImmersive.current)
+          prevSidebarBeforeImmersive.current = null
+        }
+      }
+    }
+    window.addEventListener('app:wiki-immersive', handler)
+    return () => window.removeEventListener('app:wiki-immersive', handler)
+  }, [])
+
   const handleNewTaskWithDir = async () => {
     const result = await window.electronAPI.invoke('tasks:selectDirectory') as { canceled?: boolean; path?: string }
     if (result.canceled || !result.path) return
-    const confirmed = window.confirm(
-      `确认使用此目录作为工作区？\n\n${result.path}\n\n目录中的文件可能会被任务修改。`
-    )
+    const confirmed = window.confirm(t('task.confirmWorkspace', { path: result.path }))
     if (confirmed) {
       handleCreateTaskWithDir(result.path)
     }
@@ -238,7 +352,8 @@ export default function App() {
   }, [])
 
   return (
-    <>
+    <ToastProvider>
+      <WikiReviewMonitor onWaitingReviewCountChange={setWaitingReviewCount} onActiveIngestChange={setHasActiveIngest} />
       <TitleBar
         onOpenSettings={() => setSettingsOpen(true)}
         onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -253,6 +368,8 @@ export default function App() {
               activeNav={activeNav}
               onNavChange={handleNavChange}
               onOpenSettings={() => setSettingsOpen(true)}
+              waitingReviewCount={waitingReviewCount}
+              hasActiveIngest={hasActiveIngest}
               footer={
                 <BaseLibFooter
                   selectedBaseLib={selectedBaseLibId}
@@ -369,11 +486,11 @@ export default function App() {
       {logViewerOpen && <LogViewer onClose={() => setLogViewerOpen(false)} />}
       {processExitCode !== null && (
         <div className="process-exit-banner">
-          <span>服务进程已退出 (code: {processExitCode})，请检查日志或重启应用</span>
-          <button onClick={() => setSettingsOpen(true)}>查看日志</button>
-          <button onClick={() => setProcessExitCode(null)}>关闭</button>
+          <span>{t('app.processExit', { code: processExitCode })}</span>
+          <button onClick={() => setSettingsOpen(true)}>{t('menu.viewLogs')}</button>
+          <button onClick={() => setProcessExitCode(null)}>{t('window.close')}</button>
         </div>
       )}
-    </>
+    </ToastProvider>
   )
 }

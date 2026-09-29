@@ -1,7 +1,7 @@
 /** src/features/knowledge/ImageGallery.tsx */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, Package, Image as ImageIcon } from 'lucide-react'
+import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { ImageRecord, KnowledgeIpcChannels } from './types'
 import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'
@@ -35,18 +35,23 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
   const [images, setImages] = useState<ImageItem[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [hasMore, setHasMore] = useState(false)
-  const [offset, setOffset] = useState(0)
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState('active')
+  const [statusFilter, setStatusFilter] = useState('done')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [sizeFilter, setSizeFilter] = useState('all')
   const [lightboxImg, setLightboxImg] = useState<ImageItem | null>(null)
   const [categoryMenuId, setCategoryMenuId] = useState<string | null>(null)
   const categoryMenuRef = useRef<HTMLDivElement>(null)
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [lightboxIndex, setLightboxIndex] = useState(-1)
+  const [lightboxZoom, setLightboxZoom] = useState(1)
 
   const LIMIT = 40
 
-  const loadImages = async (projId: string, off: number, append = false) => {
+  const loadImages = async (projId: string, off: number) => {
     setLoading(true)
     try {
       const result: any = await window.electronAPI.invoke(ipc.getProjectImages, {
@@ -54,16 +59,15 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
         limit: LIMIT,
         offset: off,
         fileId: fileId || undefined,
+        status: statusFilter || undefined,
+        category: categoryFilter !== 'all' ? categoryFilter : undefined,
+        search: searchQuery.trim() || undefined,
+        size: sizeFilter !== 'all' ? sizeFilter : undefined,
       })
-      const imgs: ImageItem[] = result.images || []
-      if (append) {
-        setImages(prev => [...prev, ...imgs])
-      } else {
-        setImages(imgs)
-      }
+      setImages(result.images || [])
       setTotal(result.total || 0)
-      setHasMore(result.has_more || false)
-      setOffset(off + imgs.length)
+      if (result.status_counts) setStatusCounts(result.status_counts)
+      if (result.category_counts) setCategoryCounts(result.category_counts)
     } catch (err) {
       console.error('Failed to load images:', err)
     } finally {
@@ -71,17 +75,102 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     }
   }
 
+  // Silent refresh for polling (no loading spinner)
+  const refreshImages = useCallback(async (projId: string) => {
+    try {
+      const result: any = await window.electronAPI.invoke(ipc.getProjectImages, {
+        projectId: projId,
+        limit: LIMIT,
+        offset: 0,
+        fileId: fileId || undefined,
+        status: statusFilter || undefined,
+        category: categoryFilter !== 'all' ? categoryFilter : undefined,
+        search: searchQuery.trim() || undefined,
+        size: sizeFilter !== 'all' ? sizeFilter : undefined,
+      })
+      setImages(result.images || [])
+      setTotal(result.total || 0)
+      if (result.status_counts) setStatusCounts(result.status_counts)
+      if (result.category_counts) setCategoryCounts(result.category_counts)
+    } catch (err) {
+      console.error('Failed to refresh images:', err)
+    }
+  }, [fileId, statusFilter, categoryFilter, sizeFilter, searchQuery, ipc])
+
   useEffect(() => {
     if (projectId) {
+      setCurrentPage(1)
       loadImages(projectId, 0)
     }
   }, [projectId, fileId])
 
-  const handleLoadMore = () => {
-    if (projectId && hasMore && !loading) {
-      loadImages(projectId, offset, true)
+  // Reload when filters change (reset to page 1), skip initial mount
+  const isFirstFilterRender = useRef(true)
+  useEffect(() => {
+    if (isFirstFilterRender.current) {
+      isFirstFilterRender.current = false
+      return
+    }
+    if (projectId) {
+      setCurrentPage(1)
+      loadImages(projectId, 0)
+    }
+  }, [statusFilter, categoryFilter, sizeFilter, searchQuery])
+
+  // Polling: refresh every 4s when there are active (pending/processing) images
+  const hasActiveImages = images.some(img => img.status === 'pending' || img.status === 'processing')
+
+  useEffect(() => {
+    if (!projectId || !hasActiveImages) {
+      // Stop polling if no active images
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+      return
+    }
+    // Start polling if not already running
+    if (!pollTimerRef.current) {
+      pollTimerRef.current = setInterval(() => {
+        refreshImages(projectId)
+      }, 4000)
+    }
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+    }
+  }, [projectId, hasActiveImages, refreshImages])
+
+  const handlePageChange = (page: number) => {
+    if (projectId && page >= 1 && page <= totalPages && page !== currentPage) {
+      setCurrentPage(page)
+      const newOffset = (page - 1) * LIMIT
+      loadImages(projectId, newOffset)
+      // Scroll to top of gallery
+      document.querySelector(`.${s.container}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }
+
+  const handleZoom = (delta: number) => {
+    setLightboxZoom(prev => Math.min(4, Math.max(0.25, prev + delta)))
+  }
+
+  // Lightbox keyboard navigation
+  useEffect(() => {
+    if (!lightboxImg) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeLightbox()
+      else if (e.key === 'ArrowLeft') handleLightboxNav(-1)
+      else if (e.key === 'ArrowRight') handleLightboxNav(1)
+      else if (e.key === '+' || e.key === '=') handleZoom(0.25)
+      else if (e.key === '-') handleZoom(-0.25)
+      else if (e.key === '0') setLightboxZoom(1)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [lightboxImg, lightboxIndex])
 
   // Close category menu on outside click
   useEffect(() => {
@@ -96,34 +185,32 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     }
   }, [categoryMenuId])
 
-  // Filter images by status, category, and search query
-  const filteredImages = images.filter(img => {
-    // Status filter: 'active' excludes archived
-    if (statusFilter === 'active' && img.status === 'archived') return false
-    if (statusFilter === 'archived' && img.status !== 'archived') return false
-    if (statusFilter === 'error' && img.status !== 'error') return false
-    // Category filter
-    if (categoryFilter !== 'all' && (img.category || 'uncategorized') !== categoryFilter) return false
-    // Text search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
-      return (
-        (img.vlm_description && img.vlm_description.toLowerCase().includes(q)) ||
-        (img.caption && img.caption.toLowerCase().includes(q)) ||
-        (img.filename && img.filename.toLowerCase().includes(q))
-      )
-    }
-    return true
-  })
+  // Images are already filtered server-side
+  const filteredImages = images
 
-  // Count archived images for the tab badge
-  const archivedCount = images.filter(img => img.status === 'archived').length
+  // Derive counts from backend status_counts
+  const totalPages = Math.max(1, Math.ceil(total / LIMIT))
 
   const handleImageClick = (img: ImageItem) => {
+    const idx = filteredImages.findIndex(fi => fi.id === img.id)
+    setLightboxIndex(idx >= 0 ? idx : 0)
     setLightboxImg(img)
+    setLightboxZoom(1)
   }
 
-  const closeLightbox = () => setLightboxImg(null)
+  const closeLightbox = () => {
+    setLightboxImg(null)
+    setLightboxIndex(-1)
+    setLightboxZoom(1)
+  }
+
+  const handleLightboxNav = (dir: number) => {
+    if (filteredImages.length === 0) return
+    const newIndex = (lightboxIndex + dir + filteredImages.length) % filteredImages.length
+    setLightboxIndex(newIndex)
+    setLightboxImg(filteredImages[newIndex])
+    setLightboxZoom(1)
+  }
 
   const handleRetry = useCallback(async (img: ImageItem, force = false) => {
     try {
@@ -183,47 +270,33 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     )
   }
 
-  if (!loading && images.length === 0) {
-    return (
-      <div className={s.empty}>
-        <div className={s.emptyIcon}><ImageIcon size={28} /></div>
-        <p>{t('knowledge.noImages')}</p>
-      </div>
-    )
-  }
+  // Empty state (no images at all) — still show filter tabs so user can navigate
+  const showEmptyState = !loading && images.length === 0 && !statusFilter && !categoryFilter && !searchQuery
 
   return (
     <div className={s.container}>
-      {/* Filter bar: status tabs + category + search */}
+      {/* Filter bar: status tabs + search */}
       <div className={s.searchBar}>
         <span className={s.total}>{t('knowledge.imageTotal', { count: total })}</span>
-        {/* Status filter tabs */}
+        {/* Status filter tabs — each status独立 */}
         <div className={s.statusTabs}>
           {[
-            { value: 'active', label: t('knowledge.statusFilter_active') },
-            { value: 'archived', label: `${t('knowledge.imgStatus_archived')}${archivedCount > 0 ? ` (${archivedCount})` : ''}` },
-            { value: 'error', label: t('knowledge.imgStatus_error') },
-            { value: 'all', label: t('knowledge.statusFilter_all') },
+            { value: 'pending', label: t('knowledge.imgStatus_pending'), count: statusCounts['pending'] || 0 },
+            { value: 'processing', label: t('knowledge.imgStatus_processing'), count: statusCounts['processing'] || 0 },
+            { value: 'done', label: t('knowledge.imgStatus_done'), count: statusCounts['done'] || 0 },
+            { value: 'error', label: t('knowledge.imgStatus_error'), count: statusCounts['error'] || 0 },
+            { value: 'archived', label: t('knowledge.imgStatus_archived'), count: statusCounts['archived'] || 0 },
+            { value: 'all', label: t('knowledge.statusFilter_all'), count: total },
           ].map(opt => (
             <button
               key={opt.value}
               className={`${s.statusTab} ${statusFilter === opt.value ? s.statusTabActive : ''}`}
               onClick={() => setStatusFilter(opt.value)}
             >
-              {opt.label}
+              {opt.label}{opt.count > 0 ? ` (${opt.count})` : ''}
             </button>
           ))}
         </div>
-        <select
-          className={s.categoryFilter}
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-        >
-          <option value="all">{t('knowledge.category')} — {t('knowledge.category_all', '全部')}</option>
-          {IMAGE_CATEGORIES.map(cat => (
-            <option key={cat} value={cat}>{t(`knowledge.category_${cat}`)}</option>
-          ))}
-        </select>
         <div className={s.searchWrap}>
           <span className={s.searchIcon}><Search size={14} /></span>
           <input
@@ -239,8 +312,58 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
         </div>
       </div>
 
+      {/* Category filter tabs + size filter — second row */}
+      <div className={s.filterRow}>
+        <div className={s.categoryTabs}>
+          <button
+            className={`${s.categoryTab} ${categoryFilter === 'all' ? s.categoryTabActive : ''}`}
+            onClick={() => setCategoryFilter('all')}
+          >
+            {t('knowledge.category_all', '全部')} ({total})
+          </button>
+          {IMAGE_CATEGORIES.map(cat => {
+            const cnt = categoryCounts[cat] || 0
+            return (
+              <button
+                key={cat}
+                className={`${s.categoryTab} ${categoryFilter === cat ? s.categoryTabActive : ''}`}
+                onClick={() => setCategoryFilter(cat)}
+              >
+                {t(`knowledge.category_${cat}`)}{cnt > 0 ? ` (${cnt})` : ''}
+              </button>
+            )
+          })}
+        </div>
+        <select
+          className={s.sizeFilter}
+          value={sizeFilter}
+          onChange={(e) => setSizeFilter(e.target.value)}
+        >
+          <option value="all">{t('knowledge.size_all', '全部尺寸')}</option>
+          <option value="small">{t('knowledge.size_small', '小图')} (&lt;200px)</option>
+          <option value="medium">{t('knowledge.size_medium', '中图')} (200-800px)</option>
+          <option value="large">{t('knowledge.size_large', '大图')} (≥800px)</option>
+        </select>
+      </div>
+
+      {/* Empty state: no images at all */}
+      {showEmptyState && (
+        <div className={s.empty}>
+          <div className={s.emptyIcon}><ImageIcon size={28} /></div>
+          <p>{t('knowledge.noImages')}</p>
+        </div>
+      )}
+
+      {/* No results for current filter */}
+      {!showEmptyState && filteredImages.length === 0 && !loading && (
+        <div className={s.noMatch}>
+          <p>{searchQuery ? t('knowledge.noImageMatch') : t('knowledge.noImages')}</p>
+        </div>
+      )}
+
       {/* Thumbnail grid */}
-      <div className={s.grid}>
+      {filteredImages.length > 0 && (
+        <div className={s.grid}>
         {filteredImages.map((img) => (
           <div key={img.id} className={`${s.thumb} ${img.status === 'error' ? s.thumbError : img.status === 'archived' ? s.thumbArchived : ''}`}>
             <div
@@ -290,7 +413,11 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
                 </div>
               </div>
             </div>
-            <div className={s.thumbInfo}>
+            {/* Row 1: Status + filename + page */}
+            <div className={s.thumbStatusRow}>
+              <span className={`${s.statusInline} ${s[`statusInline_${img.status}`] || ''}`}>
+                {t(`knowledge.imgStatus_${img.status}`)}
+              </span>
               <span className={s.thumbFilename} title={img.filename}>
                 {img.filename || '—'}
               </span>
@@ -298,7 +425,7 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
                 <span className={s.thumbPage}>p.{img.page_no}</span>
               )}
             </div>
-            {/* Category badge */}
+            {/* Row 2: Category badge */}
             <div className={s.thumbCategoryRow}>
               <button
                 className={`${s.categoryBadge} ${s[`cat_${img.category || 'uncategorized'}`] || ''}`}
@@ -330,29 +457,106 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
           </div>
         ))}
       </div>
-
-      {filteredImages.length === 0 && searchQuery && (
-        <div className={s.noMatch}>
-          <p>{t('knowledge.noImageMatch')}</p>
-        </div>
       )}
 
-      {/* Load more */}
-      {hasMore && (
-        <button className={s.loadMoreBtn} onClick={handleLoadMore} disabled={loading}>
-          {loading ? t('knowledge.loading') : t('knowledge.loadMore')}
-        </button>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className={s.pagination}>
+          <button className={s.pageBtn} disabled={currentPage <= 1} onClick={() => handlePageChange(currentPage - 1)}>
+            <ChevronLeft size={14} />
+          </button>
+          {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+            let page: number
+            if (totalPages <= 7) {
+              page = i + 1
+            } else if (currentPage <= 4) {
+              page = i + 1
+            } else if (currentPage >= totalPages - 3) {
+              page = totalPages - 6 + i
+            } else {
+              page = currentPage - 3 + i
+            }
+            return (
+              <button
+                key={page}
+                className={`${s.pageBtn} ${page === currentPage ? s.pageBtnActive : ''}`}
+                onClick={() => handlePageChange(page)}
+              >
+                {page}
+              </button>
+            )
+          })}
+          <button className={s.pageBtn} disabled={currentPage >= totalPages} onClick={() => handlePageChange(currentPage + 1)}>
+            <ChevronRight size={14} />
+          </button>
+          <span className={s.pageInfo}>{currentPage} / {totalPages}</span>
+        </div>
       )}
 
       {/* Lightbox */}
       {lightboxImg && (
         <div className={s.lightbox} onClick={closeLightbox}>
           <div className={s.lightboxContent} onClick={(e) => e.stopPropagation()}>
-            <img src={localFileUrl(lightboxImg.local_path)} alt="" />
             <button className={s.lightboxClose} onClick={closeLightbox}>×</button>
-            {lightboxImg.vlm_description && (
-              <div className={s.lightboxDesc}>{lightboxImg.vlm_description}</div>
+            {/* Nav arrows */}
+            {filteredImages.length > 1 && (
+              <>
+                <button className={s.lightboxNav} onClick={() => handleLightboxNav(-1)}>
+                  <ChevronLeft size={20} />
+                </button>
+                <button className={s.lightboxNavRight} onClick={() => handleLightboxNav(1)}>
+                  <ChevronRight size={20} />
+                </button>
+              </>
             )}
+            {/* Image with zoom */}
+            <div className={s.lightboxImageWrap}>
+              <img
+                src={localFileUrl(lightboxImg.local_path)}
+                alt=""
+                style={{ transform: `scale(${lightboxZoom})`, transformOrigin: 'center center' }}
+              />
+            </div>
+            {/* Zoom controls */}
+            <div className={s.lightboxZoomBar}>
+              <button className={s.zoomBtn} onClick={() => handleZoom(-0.25)} title="Zoom Out"><ZoomOut size={16} /></button>
+              <span className={s.zoomLevel}>{Math.round(lightboxZoom * 100)}%</span>
+              <button className={s.zoomBtn} onClick={() => handleZoom(0.25)} title="Zoom In"><ZoomIn size={16} /></button>
+              <button className={s.zoomBtn} onClick={() => setLightboxZoom(1)} title="Reset"><RotateCcw size={14} /></button>
+            </div>
+            {/* Metadata panel */}
+            <div className={s.lightboxMeta}>
+              <div className={s.lightboxMetaRow}>
+                <span className={s.lightboxMetaLabel}>{t('knowledge.filename', 'Filename')}</span>
+                <span>{lightboxImg.filename || '—'}</span>
+              </div>
+              {(lightboxImg.width_px || lightboxImg.height_px) && (
+                <div className={s.lightboxMetaRow}>
+                  <span className={s.lightboxMetaLabel}>{t('knowledge.dimensions', 'Dimensions')}</span>
+                  <span>{lightboxImg.width_px || '?'} × {lightboxImg.height_px || '?'} px</span>
+                </div>
+              )}
+              {lightboxImg.page_no != null && (
+                <div className={s.lightboxMetaRow}>
+                  <span className={s.lightboxMetaLabel}>{t('knowledge.page', 'Page')}</span>
+                  <span>{lightboxImg.page_no}</span>
+                </div>
+              )}
+              <div className={s.lightboxMetaRow}>
+                <span className={s.lightboxMetaLabel}>{t('knowledge.category', 'Category')}</span>
+                <span>{t(`knowledge.category_${lightboxImg.category || 'uncategorized'}`)}</span>
+              </div>
+              <div className={s.lightboxMetaRow}>
+                <span className={s.lightboxMetaLabel}>{t('knowledge.status', 'Status')}</span>
+                <span>{t(`knowledge.imgStatus_${lightboxImg.status}`)}</span>
+              </div>
+              {lightboxImg.vlm_description && (
+                <div className={s.lightboxMetaRow}>
+                  <span className={s.lightboxMetaLabel}>{t('knowledge.description', 'Description')}</span>
+                  <span className={s.lightboxMetaDesc}>{lightboxImg.vlm_description}</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

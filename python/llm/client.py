@@ -43,75 +43,115 @@ class LLMClient:
             - ``dict`` when *tools* is provided:
               ``{"content": str|None, "tool_calls": list|None, "finish_reason": str}``
         """
+        # Log per-message breakdown for debugging
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            content_len = len(content) if isinstance(content, str) else 0
+            logger.info("LLM message [%d/%d]: role=%s, content_len=%d", i + 1, len(messages), role, content_len)
         logger.info("LLM chat request: model=%s, messages=%d, tools=%s, connect_timeout=%ds, read_timeout=%ds",
                     self.model, len(messages), "yes" if tools else "no", self.connect_timeout, self.read_timeout)
+        # Allow per-call override of max_tokens via settings parameter
+        max_tokens = int(settings.get("max_tokens", self.max_tokens))
         request_body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
             "top_p": self.top_p,
             "stream": False,
         }
         if tools:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
+        # Pass reasoning_effort if provided (GLM-5.3 etc. support: low/high/max)
+        reasoning_effort = settings.get("reasoning_effort")
+        if reasoning_effort:
+            request_body["reasoning_effort"] = reasoning_effort
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
-            try:
-                response = await client.post(
-                    f"{self.api_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=request_body,
-                )
-                logger.debug("LLM response: status=%d", response.status_code)
-            except httpx.TimeoutException as e:
-                logger.error("LLM timeout: %s", str(e))
-                raise LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
-            except httpx.ConnectError as e:
-                logger.error("LLM connection failed: %s", str(e))
-                raise LLMNetworkError(detail=f"连接失败: {e}")
+        import asyncio
+        last_err = None
+        for attempt in range(2):  # max 2 attempts (1 retry on transient network errors)
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
+                try:
+                    response = await client.post(
+                        f"{self.api_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=request_body,
+                    )
+                    logger.debug("LLM response: status=%d", response.status_code)
+                except httpx.TimeoutException as e:
+                    logger.error("LLM timeout (attempt %d/2): %s", attempt + 1, str(e))
+                    last_err = LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
+                    if attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    raise last_err
+                except httpx.ConnectError as e:
+                    logger.error("LLM connection failed (attempt %d/2): %s", attempt + 1, str(e))
+                    last_err = LLMNetworkError(detail=f"连接失败: {e}")
+                    if attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    raise last_err
 
-            if response.status_code == 401:
-                logger.error("LLM auth failed (401): invalid API key")
-                raise LLMInvalidKey(detail=response.text)
-            if response.status_code != 200:
-                logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
-                raise LLMCallFailed(
-                    detail=f"API error {response.status_code}: {response.text}"
-                )
+                if response.status_code == 401:
+                    logger.error("LLM auth failed (401): invalid API key")
+                    raise LLMInvalidKey(detail=response.text)
+                if response.status_code != 200:
+                    logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
+                    raise LLMCallFailed(
+                        detail=f"API error {response.status_code}: {response.text}"
+                    )
 
-            data = response.json()
-            choice = data["choices"][0]
-            msg = choice["message"]
-            finish_reason = choice.get("finish_reason", "unknown")
-            logger.debug("LLM response parsed: finish_reason=%s, has_tool_calls=%s",
-                        finish_reason, "yes" if msg.get("tool_calls") else "no")
+                data = response.json()
+                choice = data["choices"][0]
+                msg = choice["message"]
+                finish_reason = choice.get("finish_reason", "unknown")
+                usage = data.get("usage", {})
+                logger.info("LLM response: finish_reason=%s, msg_keys=%s, usage=%s",
+                            finish_reason, list(msg.keys()), usage)
 
-            # ── Function Calling path (tools requested) ──
-            if tools is not None:
-                return {
-                    "content": msg.get("content"),  # may be None when model only returns tool_calls
-                    "tool_calls": msg.get("tool_calls"),  # [{id, function: {name, arguments}}]
-                    "reasoning_content": msg.get("reasoning_content"),  # model internal thinking
-                    "finish_reason": finish_reason,
-                }
+                # ── Function Calling path (tools requested) ──
+                if tools is not None:
+                    return {
+                        "content": msg.get("content"),  # may be None when model only returns tool_calls
+                        "tool_calls": msg.get("tool_calls"),  # [{id, function: {name, arguments}}]
+                        "reasoning_content": msg.get("reasoning_content"),  # model internal thinking
+                        "finish_reason": finish_reason,
+                    }
 
-            # ── Legacy text path (no tools) — always return str for backward compatibility
-            content = msg.get("content")
-            reasoning_content = msg.get("reasoning_content")  # not used in legacy path
-            # Some models return null content (e.g. refusal or tool-call edge cases)
-            if content is None:
-                logger.warning(
-                    "LLM returned null content (model=%s, finish_reason=%s). "
-                    "Full choice keys: %s",
-                    self.model, finish_reason, list(choice.keys()),
-                )
-                return ""
-            return content
+                # ── Legacy text path (no tools) — always return str for backward compatibility
+                content = msg.get("content")
+                reasoning_content = msg.get("reasoning_content")
+
+                # Log when content is empty or null for debugging
+                if not content:
+                    logger.warning(
+                        "LLM empty content (model=%s, finish_reason=%s, "
+                        "content_type=%s, content_repr=%r, reasoning_len=%d, "
+                        "msg_keys=%s, usage=%s)",
+                        self.model, finish_reason,
+                        type(content).__name__, content,
+                        len(reasoning_content) if reasoning_content else 0,
+                        list(msg.keys()), usage,
+                    )
+
+                # Some models return null content (e.g. refusal or tool-call edge cases)
+                if content is None:
+                    # GLM-5 deep-thinking models may put output in reasoning_content
+                    if reasoning_content:
+                        logger.info(
+                            "LLM content is null, falling back to reasoning_content "
+                            "(model=%s, finish_reason=%s, reasoning_len=%d)",
+                            self.model, finish_reason, len(reasoning_content),
+                        )
+                        return reasoning_content
+                    return ""
+                return content
 
     async def chat_full(self, messages: list[dict], settings: dict) -> dict:
         """Chat completion that returns both content and precise token usage.
@@ -132,42 +172,53 @@ class LLMClient:
             "stream": False,
         }
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
-            try:
-                response = await client.post(
-                    f"{self.api_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
+        import asyncio
+        last_err = None
+        for attempt in range(2):  # max 2 attempts (1 retry on transient network errors)
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
+                try:
+                    response = await client.post(
+                        f"{self.api_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=request_body,
+                    )
+                except httpx.TimeoutException as e:
+                    logger.error("LLM timeout (attempt %d/2): %s", attempt + 1, str(e))
+                    last_err = LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
+                    if attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    raise last_err
+                except httpx.ConnectError as e:
+                    logger.error("LLM connection failed (attempt %d/2): %s", attempt + 1, str(e))
+                    last_err = LLMNetworkError(detail=f"连接失败: {e}")
+                    if attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    raise last_err
+
+                if response.status_code == 401:
+                    raise LLMInvalidKey(detail=response.text)
+                if response.status_code != 200:
+                    logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
+                    raise LLMCallFailed(detail=f"API error {response.status_code}: {response.text}")
+
+                data = response.json()
+                choice = data["choices"][0]
+                content = choice["message"].get("content") or ""
+                usage = data.get("usage", {})
+
+                return {
+                    "content": content,
+                    "usage": {
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
                     },
-                    json=request_body,
-                )
-            except httpx.TimeoutException as e:
-                logger.error("LLM timeout: %s", str(e))
-                raise LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
-            except httpx.ConnectError as e:
-                logger.error("LLM connection failed: %s", str(e))
-                raise LLMNetworkError(detail=f"连接失败: {e}")
-
-            if response.status_code == 401:
-                raise LLMInvalidKey(detail=response.text)
-            if response.status_code != 200:
-                logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
-                raise LLMCallFailed(detail=f"API error {response.status_code}: {response.text}")
-
-            data = response.json()
-            choice = data["choices"][0]
-            content = choice["message"].get("content") or ""
-            usage = data.get("usage", {})
-
-            return {
-                "content": content,
-                "usage": {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                },
-            }
+                }
 
     async def test_connection(self) -> bool:
         logger.info("Testing LLM connection: model=%s, url=%s", self.model, self.api_url)

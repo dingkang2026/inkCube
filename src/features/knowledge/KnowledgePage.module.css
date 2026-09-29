@@ -306,13 +306,15 @@
   color: var(--accent);
   background: rgba(37, 99, 235, 0.08);
   border-radius: 12px;
-  max-width: 200px;
+  max-width: 240px;
+  min-width: 0;
 }
 
-.scopeIndicator span:first-child {
+.scopeName {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .scopeClear {

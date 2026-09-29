@@ -7,6 +7,7 @@ import { STAGE_COLUMNS } from '../types'
 import { ReportWizard } from './ReportWizard'
 import { ReportPreview } from './ReportPreview'
 import { TemplateManagement } from './TemplateManagement'
+import { useToast } from '../../knowledge/Toast'
 import s from './ReportsTab.module.css'
 
 type ViewMode = 'list' | 'wizard' | 'preview' | 'templateManagement'
@@ -14,11 +15,11 @@ type ViewMode = 'list' | 'wizard' | 'preview' | 'templateManagement'
 interface ReportsTabProps {
   projectId: string
   projectType: ProjectType
-  currentStage: ProjectStage
 }
 
-export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabProps) {
+export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [reports, setReports] = useState<Report[]>([])
   const [previewReport, setPreviewReport] = useState<Report | null>(null)
@@ -40,6 +41,22 @@ export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabP
     }
     loadReports()
   }, [projectId])
+
+  // Auto-refresh when any report is generating
+  useEffect(() => {
+    const hasGenerating = reports.some(r => r.status === 'generating')
+    if (!hasGenerating) return
+
+    const interval = setInterval(async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+        if (result.reports) setReports(result.reports)
+      } catch (err) {
+        console.error('Failed to poll reports:', err)
+      }
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [reports, projectId])
 
   const handleWizardComplete = async () => {
     // Reload reports after wizard completes
@@ -78,13 +95,13 @@ export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabP
         format: report.output_format,
       })
       if (result.path) {
-        alert(t('project.report.exportSuccess', { format: report.output_format, title: report.title }))
+        showToast(t('project.report.exportSuccess', { format: report.output_format, title: report.title }), 'success')
       } else {
-        alert(t('project.report.exportFailed', { error: result.error }))
+        showToast(t('project.report.exportFailed', { error: result.error }), 'error')
       }
     } catch (err) {
       console.error('Export failed:', err)
-      alert(t('project.report.exportFailed', { error: String(err) }))
+      showToast(t('project.report.exportFailed', { error: String(err) }), 'error')
     }
   }
 
@@ -95,7 +112,7 @@ export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabP
         mode,
       })
       if (result.error) {
-        alert(t('project.report.retryFailed', { error: result.error }))
+        showToast(t('project.report.retryFailed', { error: result.error }), 'error')
       } else {
         // Reload reports to show updated status
         const res: any = await window.electronAPI.invoke('reports:listReports', { projectId })
@@ -103,7 +120,7 @@ export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabP
       }
     } catch (err) {
       console.error('Retry failed:', err)
-      alert(t('project.report.retryFailed', { error: String(err) }))
+      showToast(t('project.report.retryFailed', { error: String(err) }), 'error')
     }
   }
 
@@ -113,7 +130,6 @@ export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabP
       <ReportWizard
         projectId={projectId}
         projectType={projectType}
-        currentStage={currentStage}
         onComplete={handleWizardComplete}
         onCancel={() => setViewMode('list')}
       />
@@ -133,19 +149,17 @@ export function ReportsTab({ projectId, projectType, currentStage }: ReportsTabP
   // ── Template management view ──
   if (viewMode === 'templateManagement') {
     return (
-      <TemplateManagement onBack={() => setViewMode('list')} />
+      <TemplateManagement onBack={() => setViewMode('list')} projectType={projectType} />
     )
   }
 
   // ── Kanban view (default) ──
   // Determine columns to show based on project type
-  const columns = projectType === 'general'
-    ? STAGE_COLUMNS
-    : STAGE_COLUMNS.filter(c => c.key !== 'none' || reports.some(r => r.stage === 'none'))
-
+  // For investment/recruitment: show before/during/after + other (for templates without stage)
+  // For general: only show "other" column
   const visibleColumns = projectType === 'general'
     ? [{ key: 'none' as ProjectStage, labelKey: 'project.stage.other' }]
-    : columns
+    : STAGE_COLUMNS  // before, during, after, none (other)
 
   if (loading) {
     return (

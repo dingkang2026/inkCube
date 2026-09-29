@@ -1,8 +1,9 @@
 /** src/features/project/ProjectDetailPage.tsx — Main project detail page with 4-tab structure */
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FolderOpen, BookOpen, FileText, ClipboardList } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
+import { useToast } from '../knowledge/Toast'
 import { ReportsTab } from './tabs/ReportsTab'
 import { WikiTab } from './tabs/WikiTab'
 import { FormsTab } from './tabs/FormsTab'
@@ -29,36 +30,134 @@ const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
 
 export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChanged }: ProjectDetailPageProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [activeTab, setActiveTab] = useState<TabKey>('materials')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
+  const [wikiExpanded, setWikiExpanded] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [closePreviewSignal, setClosePreviewSignal] = useState(0)
+
+  // Notify App-level to hide sidebar when entering immersive mode
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('app:wiki-immersive', { detail: { expanded: wikiExpanded } }))
+    return () => {
+      // Cleanup: restore sidebar when component unmounts
+      window.dispatchEvent(new CustomEvent('app:wiki-immersive', { detail: { expanded: false } }))
+    }
+  }, [wikiExpanded])
+
+  // Wiki compile status polling (adaptive frequency based on state)
+  const [wikiCompileState, setWikiCompileState] = useState<'idle' | 'compiling' | 'waiting_review'>('idle')
+  const wikiCompilePollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const checkStatus = async () => {
+      try {
+        const result: any = await window.electronAPI.invoke('wiki:compileStatus', { projectId: project.id })
+        if (cancelled) return
+        const task = result?.task
+        if (task?.status === 'waiting_review') {
+          setWikiCompileState('waiting_review')
+        } else if (task && ['queued', 'ingesting', 'storing'].includes(task.status)) {
+          setWikiCompileState('compiling')
+        } else {
+          setWikiCompileState('idle')
+        }
+      } catch (err) {
+        console.debug('Wiki compile status check failed (backend may not be ready):', err)
+      }
+    }
+
+    // Adaptive polling: compiling=5s, waiting_review=10s, idle=30s
+    const getInterval = () => {
+      if (wikiCompileState === 'compiling') return 5000
+      if (wikiCompileState === 'waiting_review') return 10000
+      return 30000
+    }
+
+    // Initial check
+    checkStatus()
+
+    const scheduleNext = () => {
+      wikiCompilePollRef.current = setTimeout(async () => {
+        await checkStatus()
+        if (!cancelled) scheduleNext()
+      }, getInterval())
+    }
+    scheduleNext()
+
+    return () => {
+      cancelled = true
+      if (wikiCompilePollRef.current) clearTimeout(wikiCompilePollRef.current)
+    }
+  }, [project.id, wikiCompileState])
 
   // Read type/stage from project (persisted in backend)
-  const [projectType, setProjectType] = useState<ProjectType>((project.type as ProjectType) || 'general')
-  const [currentStage, setCurrentStage] = useState<ProjectStage>((project.stage as ProjectStage) || 'none')
+  const [projectType, setProjectType] = useState<ProjectType>(project.type || 'general')
+  const [currentStage, setCurrentStage] = useState<ProjectStage>(project.stage || 'none')
 
   // Re-sync local state when switching to a different project
   useEffect(() => {
-    setProjectType((project.type as ProjectType) || 'general')
-    setCurrentStage((project.stage as ProjectStage) || 'none')
+    setProjectType(project.type || 'general')
+    setCurrentStage(project.stage || 'none')
   }, [project.id, project.type, project.stage])
 
-  const handleStageClick = useCallback((stage: ProjectStage) => {
+  const handleStageClick = useCallback(async (stage: ProjectStage) => {
+    const prevStage = currentStage
     setCurrentStage(stage)
-    // TODO: persist stage change to backend via API
-  }, [project.id])
+    try {
+      await window.electronAPI.invoke('knowledge:updateProject', {
+        projectId: project.id,
+        stage,
+      })
+      onProjectDataChanged?.()
+    } catch (err) {
+      console.error('Failed to persist stage change:', err)
+      setCurrentStage(prevStage)
+      showToast(t('project.stageUpdateFailed'), 'error')
+    }
+  }, [project.id, currentStage, onProjectDataChanged, showToast, t])
 
-  const handleTypeChange = useCallback((newType: ProjectType) => {
+  const handleTypeChange = useCallback(async (newType: ProjectType) => {
+    const prevType = projectType
+    const prevStage = currentStage
     setProjectType(newType)
     const newStage = getInitialStage(newType)
     setCurrentStage(newStage)
-    // TODO: persist type/stage change to backend via API
-  }, [project.id])
+    try {
+      await window.electronAPI.invoke('knowledge:updateProject', {
+        projectId: project.id,
+        type: newType,
+        stage: newStage,
+      })
+      onProjectDataChanged?.()
+    } catch (err) {
+      console.error('Failed to persist type change:', err)
+      setProjectType(prevType)
+      setCurrentStage(prevStage)
+      showToast(t('project.typeUpdateFailed'), 'error')
+    }
+  }, [project.id, projectType, currentStage, onProjectDataChanged, showToast, t])
 
   const typeConfig = PROJECT_TYPE_CONFIG[projectType]
 
+  // Mutual exclusion: when preview opens, close chat; when chat opens, close preview
+  const handlePreviewOpenChange = useCallback((isPreviewOpen: boolean) => {
+    if (isPreviewOpen) {
+      setChatOpen(false)
+    }
+  }, [])
+
+  const handleChatOpen = useCallback(() => {
+    setChatOpen(true)
+    setClosePreviewSignal(prev => prev + 1) // Signal WikiTab to close preview
+  }, [])
+
   return (
-    <div className={s.page}>
+    <div className={`${s.page}${wikiExpanded ? ` ${s.expanded}` : ''}`}>
       {/* Project header */}
       <div className={s.header}>
         <div className={s.headerTop}>
@@ -125,11 +224,19 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
           >
             <Icon size={15} />
             <span>{t(labelKey)}</span>
+            {key === 'wiki' && wikiCompileState === 'waiting_review' && (
+              <span className={s.wikiBadge} title={t('project.wiki.waitingReview', { defaultValue: '编译等待审阅' })}>
+                {t('project.wiki.reviewBadge', { defaultValue: '待审阅' })}
+              </span>
+            )}
+            {key === 'wiki' && wikiCompileState === 'compiling' && (
+              <span className={s.wikiBadgeCompiling} />
+            )}
           </button>
         ))}
       </div>
 
-      {/* Tab content + chat panel (side by side) */}
+      {/* Tab content + chat panel */}
       <div className={s.contentArea}>
         <div className={s.tabContent}>
           {activeTab === 'materials' && (
@@ -142,23 +249,34 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
             />
           )}
           {activeTab === 'wiki' && (
-            <WikiTab projectType={projectType} />
+            <WikiTab
+              key={projectType}
+              projectId={project.id}
+              projectType={projectType}
+              expanded={wikiExpanded}
+              onExpandChange={setWikiExpanded}
+              onPreviewOpenChange={handlePreviewOpenChange}
+              closePreviewSignal={closePreviewSignal}
+            />
           )}
           {activeTab === 'reports' && (
-            <ReportsTab projectId={project.id} projectType={projectType} currentStage={currentStage} />
+            <ReportsTab key={projectType} projectId={project.id} projectType={projectType} />
           )}
           {activeTab === 'forms' && (
-            <FormsTab projectType={projectType} currentStage={currentStage} />
+            <FormsTab key={projectType} projectType={projectType} />
           )}
         </div>
 
-        {/* Right-side chat panel */}
+        {/* Chat panel — wrapper stays in flex row (toggle positioning), panel is absolute to .page (full height) */}
         <ProjectChatPanel
           projectId={project.id}
           projectName={project.name}
           selectedFileId={chatFileId || undefined}
           selectedFilename={chatFilename || undefined}
           onClearFileScope={() => { setChatFileId(null); setChatFilename(null) }}
+          isOpen={chatOpen}
+          onOpen={handleChatOpen}
+          onClose={() => setChatOpen(false)}
         />
       </div>
     </div>

@@ -10,7 +10,7 @@ interface ProjectSidebarProps {
   onSelectProject: (projectId: string) => void
   onDeleteProject: (projectId: string) => void
   onRenameProject: (projectId: string, name: string) => void
-  onCreateProject: (name: string, description?: string, type?: ProjectType) => void
+  onCreateProject: (name: string, description?: string, type?: ProjectType, companyName?: string, creditCode?: string) => void
 }
 
 export function ProjectSidebar({

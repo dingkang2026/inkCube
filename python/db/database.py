@@ -214,6 +214,8 @@ class Database:
         # ── Migrations ──
         self._migrate_add_column("reports", "token_usage", "TEXT")
         self._migrate_add_column("reports", "error_message", "TEXT")
+        self._migrate_add_column("reports", "variables", "TEXT")
+        self._migrate_add_column("reports", "base_project_ids", "TEXT")
 
         # Report logs table (for progress tracking)
         self.conn.executescript("""
@@ -226,6 +228,149 @@ class Database:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_report_logs_report ON report_logs(report_id, created_at);
+        """)
+        self.conn.commit()
+
+        # ── Wiki tables (§3 of 2.6wiki-design.md) ──
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS wiki_schemas (
+                id TEXT PRIMARY KEY,
+                project_type TEXT NOT NULL,
+                page_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                compile_hint TEXT,
+                base_lib_search_hints TEXT,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS wiki_pages (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                page_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT,
+                status TEXT NOT NULL DEFAULT 'draft',
+                compile_version INTEGER DEFAULT 0,
+                last_compiled_at TEXT,
+                last_compiled_file_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, page_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS wiki_page_sources (
+                id TEXT PRIMARY KEY,
+                wiki_page_id TEXT NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+                file_id TEXT NOT NULL,
+                contribution TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS wiki_change_log (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                wiki_page_id TEXT,
+                action TEXT NOT NULL,
+                trigger_file_id TEXT,
+                summary TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS wiki_reviews (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                affected_page_ids TEXT,
+                source_file_id TEXT,
+                resolved INTEGER DEFAULT 0,
+                resolved_action TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS wiki_compile_tasks (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                trigger_type TEXT NOT NULL,
+                trigger_file_id TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                stage TEXT,
+                pages_total INTEGER DEFAULT 0,
+                pages_completed INTEGER DEFAULT 0,
+                pages_failed INTEGER DEFAULT 0,
+                error_message TEXT,
+                retry_count INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 3,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_wiki_pages_project ON wiki_pages(project_id);
+            CREATE INDEX IF NOT EXISTS idx_wiki_change_log_project ON wiki_change_log(project_id);
+            CREATE INDEX IF NOT EXISTS idx_wiki_reviews_project ON wiki_reviews(project_id);
+            CREATE INDEX IF NOT EXISTS idx_wiki_compile_tasks_project ON wiki_compile_tasks(project_id);
+        """)
+        self.conn.commit()
+
+        # Migrate: projects table - pending_compile_count for Wiki notification
+        self._migrate_add_column("projects", "pending_compile_count", "INTEGER DEFAULT 0")
+
+        # Migrate: wiki_pages — add page_type, refs, sources, tags (§3.2)
+        self._migrate_add_column("wiki_pages", "page_type", "TEXT DEFAULT 'structure'")
+        self._migrate_add_column("wiki_pages", "refs", "TEXT")
+        self._migrate_add_column("wiki_pages", "sources", "TEXT")
+        self._migrate_add_column("wiki_pages", "tags", "TEXT")
+
+        # Migrate: wiki_change_log — add source_title, affected_page_keys (§3.4)
+        self._migrate_add_column("wiki_change_log", "source_title", "TEXT DEFAULT ''")
+        self._migrate_add_column("wiki_change_log", "affected_page_keys", "TEXT")
+
+        # Migrate: projects — add wiki_purpose, wiki_overview (§3.6)
+        self._migrate_add_column("projects", "wiki_purpose", "TEXT DEFAULT ''")
+        self._migrate_add_column("projects", "wiki_overview", "TEXT DEFAULT ''")
+
+        # Wiki compile tasks — supervised ingest columns (§Step 1.4)
+        self._migrate_add_column("wiki_compile_tasks", "ingest_file_summaries", "TEXT")
+        self._migrate_add_column("wiki_compile_tasks", "stop_requested", "INTEGER DEFAULT 0")
+        self._migrate_add_column("wiki_compile_tasks", "supervised", "INTEGER DEFAULT 0")
+
+        # Wiki source pages table (§3.7) — tracks ingested files
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS wiki_source_pages (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                file_id TEXT NOT NULL,
+                source_page_key TEXT,
+                content_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'ingested',
+                pages_touched TEXT,
+                entities_found TEXT,
+                concepts_found TEXT,
+                ingested_at TEXT,
+                updated_at TEXT,
+                UNIQUE(project_id, file_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_wiki_source_pages_project ON wiki_source_pages(project_id);
+        """)
+        self.conn.commit()
+
+        # Wiki page versions table — stores historical snapshots for version history
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS wiki_page_versions (
+                id TEXT PRIMARY KEY,
+                wiki_page_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                page_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT,
+                version INTEGER NOT NULL,
+                change_summary TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_wiki_page_versions_page ON wiki_page_versions(wiki_page_id);
+            CREATE INDEX IF NOT EXISTS idx_wiki_page_versions_project ON wiki_page_versions(project_id);
         """)
         self.conn.commit()
 
@@ -263,6 +408,13 @@ class Database:
             "vlm_model": "glm-4v",
             "max_concurrent_file_parsing": 1,
             "max_concurrent_image_description": 2,
+            # Wiki compile settings
+            "max_compile_concurrency": 1,
+            "compile_max_retries": 3,
+            "compile_backoff_base": 30,  # seconds, exponential backoff: base * 2^retry
+            # LLM timeout settings
+            "llm_connect_timeout": 30,
+            "llm_read_timeout": 300,
             # Task-specific settings
             "task_model": "",
             "task_planner_model": "",
@@ -277,6 +429,10 @@ class Database:
             # Report-specific settings
             "report_max_concurrent": 2,  # 最大并发生成报告数
             "report_channel_parallelism": 4,  # 通道内多 query 并行数
+            # Wiki LLM task routing (§12.2.13)
+            "wiki_ingest_model": "",  # empty = use global model
+            "wiki_lint_model": "",
+            "wiki_dedup_model": "",
         }
         cursor = self.conn.execute("SELECT key, value FROM settings")
         for row in cursor.fetchall():
@@ -342,7 +498,14 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
 
-    def update_project(self, proj_id: str, name: str | None = None, description: str | None = None):
+    def update_project(
+        self,
+        proj_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        type: str | None = None,
+        stage: str | None = None,
+    ):
         updates = []
         params = []
         if name is not None:
@@ -351,6 +514,12 @@ class Database:
         if description is not None:
             updates.append("description = ?")
             params.append(description)
+        if type is not None:
+            updates.append("type = ?")
+            params.append(type)
+        if stage is not None:
+            updates.append("stage = ?")
+            params.append(stage)
         updates.append("updated_at = ?")
         params.append(self._now())
         params.append(proj_id)
@@ -1312,3 +1481,1110 @@ class Database:
     def get_auto_linked_base_libs(self, project_type: str) -> list[str]:
         """Return base lib IDs that should be auto-linked for a given project type."""
         return self._AUTO_LINK_MAP.get(project_type, [])
+
+    # ── Wiki: Schemas ──
+
+    def seed_wiki_schemas(self, schemas: list[dict]):
+        """Seed wiki_schemas table (idempotent: INSERT OR REPLACE by id)."""
+        for s in schemas:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO wiki_schemas
+                   (id, project_type, page_key, title, compile_hint, base_lib_search_hints, position)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (s["id"], s["project_type"], s["page_key"], s["title"],
+                 s.get("compile_hint", ""),
+                 json.dumps(s.get("base_lib_search_hints", []), ensure_ascii=False),
+                 s.get("position", 0)),
+            )
+        self.conn.commit()
+
+    def get_wiki_schemas(self, project_type: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_schemas WHERE project_type = ? ORDER BY position ASC",
+            (project_type,),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            if d.get("base_lib_search_hints"):
+                try:
+                    d["base_lib_search_hints"] = json.loads(d["base_lib_search_hints"])
+                except (json.JSONDecodeError, TypeError):
+                    d["base_lib_search_hints"] = []
+            rows.append(d)
+        return rows
+
+    def create_wiki_schema(
+        self,
+        project_type: str,
+        page_key: str,
+        title: str,
+        compile_hint: str = "",
+        base_lib_search_hints: list[str] | None = None,
+        position: int | None = None,
+    ) -> dict:
+        """Create a new wiki schema entry."""
+        schema_id = f"wiki_schema_{project_type}_{page_key}"
+        # Auto-assign position if not provided
+        if position is None:
+            cursor = self.conn.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM wiki_schemas WHERE project_type = ?",
+                (project_type,),
+            )
+            position = cursor.fetchone()["next_pos"]
+
+        hints_json = json.dumps(base_lib_search_hints or [], ensure_ascii=False)
+        self.conn.execute(
+            """INSERT INTO wiki_schemas (id, project_type, page_key, title, compile_hint, base_lib_search_hints, position)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (schema_id, project_type, page_key, title, compile_hint, hints_json, position),
+        )
+        self.conn.commit()
+        # Notify affected projects
+        self._notify_schema_change(project_type, page_key, "added")
+        return {"id": schema_id, "project_type": project_type, "page_key": page_key, "title": title}
+
+    def update_wiki_schema(
+        self,
+        schema_id: str,
+        title: str | None = None,
+        compile_hint: str | None = None,
+        base_lib_search_hints: list[str] | None = None,
+        position: int | None = None,
+    ) -> dict | None:
+        """Update an existing wiki schema entry."""
+        updates = []
+        params: list = []
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+        if compile_hint is not None:
+            updates.append("compile_hint = ?")
+            params.append(compile_hint)
+        if base_lib_search_hints is not None:
+            updates.append("base_lib_search_hints = ?")
+            params.append(json.dumps(base_lib_search_hints, ensure_ascii=False))
+        if position is not None:
+            updates.append("position = ?")
+            params.append(position)
+        if not updates:
+            return self._get_schema_by_id(schema_id)
+
+        params.append(schema_id)
+        self.conn.execute(
+            f"UPDATE wiki_schemas SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+        # Notify affected projects
+        schema = self._get_schema_by_id(schema_id)
+        if schema:
+            self._notify_schema_change(schema["project_type"], schema["page_key"], "modified")
+        return schema
+
+    def delete_wiki_schema(self, schema_id: str) -> bool:
+        """Delete a wiki schema entry."""
+        schema = self._get_schema_by_id(schema_id)
+        cursor = self.conn.execute("DELETE FROM wiki_schemas WHERE id = ?", (schema_id,))
+        self.conn.commit()
+        if schema:
+            self._notify_schema_change(schema["project_type"], schema["page_key"], "removed")
+        return cursor.rowcount > 0
+
+    def _get_schema_by_id(self, schema_id: str) -> dict | None:
+        cursor = self.conn.execute("SELECT * FROM wiki_schemas WHERE id = ?", (schema_id,))
+        row = cursor.fetchone()
+        if row:
+            d = dict(row)
+            if d.get("base_lib_search_hints"):
+                try:
+                    d["base_lib_search_hints"] = json.loads(d["base_lib_search_hints"])
+                except (json.JSONDecodeError, TypeError):
+                    d["base_lib_search_hints"] = []
+            return d
+        return None
+
+    def _notify_schema_change(self, project_type: str, page_key: str, action: str):
+        """Increment pending_compile_count for all projects of the affected type."""
+        try:
+            cursor = self.conn.execute(
+                "SELECT id FROM projects WHERE type = ? AND kind = 'project'",
+                (project_type,),
+            )
+            project_ids = [row["id"] for row in cursor.fetchall()]
+            for pid in project_ids:
+                self.conn.execute(
+                    "UPDATE projects SET pending_compile_count = pending_compile_count + 1 WHERE id = ?",
+                    (pid,),
+                )
+            if project_ids:
+                self.conn.commit()
+                logger.info("Schema %s %s: notified %d projects", action, page_key, len(project_ids))
+        except Exception as e:
+            logger.warning("Failed to notify schema change: %s", e)
+
+    # ── Wiki: Pages ──
+
+    def create_or_update_wiki_page(
+        self,
+        project_id: str,
+        page_key: str,
+        title: str,
+        content: str | None = None,
+        status: str = "draft",
+        compile_version: int | None = None,
+        last_compiled_file_id: str | None = None,
+        page_type: str = "structure",
+        refs: list[str] | None = None,
+        sources: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> dict:
+        now = self._now()
+        page_id = self._uuid()
+        version = compile_version if compile_version is not None else 1
+        refs_json = json.dumps(refs, ensure_ascii=False) if refs is not None else None
+        sources_json = json.dumps(sources, ensure_ascii=False) if sources is not None else None
+        tags_json = json.dumps(tags, ensure_ascii=False) if tags is not None else None
+        self.conn.execute(
+            """INSERT INTO wiki_pages (id, project_id, page_key, title, content, status, compile_version, last_compiled_at, last_compiled_file_id, page_type, refs, sources, tags, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(project_id, page_key) DO UPDATE SET
+                   title=excluded.title, content=excluded.content, status=excluded.status,
+                   compile_version=excluded.compile_version, last_compiled_at=excluded.last_compiled_at,
+                   last_compiled_file_id=excluded.last_compiled_file_id, page_type=excluded.page_type,
+                   refs=excluded.refs, sources=excluded.sources, tags=excluded.tags, updated_at=excluded.updated_at""",
+            (page_id, project_id, page_key, title, content, status, version, now, last_compiled_file_id,
+             page_type, refs_json, sources_json, tags_json, now, now),
+        )
+        self.conn.commit()
+        return self.get_wiki_page(project_id, page_key)
+
+    def get_wiki_page(self, project_id: str, page_key: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_pages WHERE project_id = ? AND page_key = ?",
+            (project_id, page_key),
+        )
+        row = cursor.fetchone()
+        if row:
+            d = dict(row)
+            d = self._parse_wiki_page_json_fields(d)
+            return d
+        return None
+
+    def get_wiki_page_by_id(self, page_id: str) -> dict | None:
+        cursor = self.conn.execute("SELECT * FROM wiki_pages WHERE id = ?", (page_id,))
+        row = cursor.fetchone()
+        if row:
+            d = dict(row)
+            d = self._parse_wiki_page_json_fields(d)
+            return d
+        return None
+
+    @staticmethod
+    def _parse_wiki_page_json_fields(d: dict) -> dict:
+        """Parse JSON string fields (refs, sources, tags) into Python lists."""
+        for field in ("refs", "sources", "tags"):
+            val = d.get(field)
+            if val:
+                try:
+                    d[field] = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    d[field] = []
+            else:
+                d[field] = []
+        return d
+
+    def list_wiki_pages(self, project_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            """SELECT wp.*, ws.position
+               FROM wiki_pages wp
+               LEFT JOIN wiki_schemas ws ON ws.project_type = (
+                   SELECT type FROM projects WHERE id = ?
+               ) AND ws.page_key = wp.page_key
+               WHERE wp.project_id = ?
+               ORDER BY COALESCE(ws.position, 999) ASC, wp.page_key ASC""",
+            (project_id, project_id),
+        )
+        return [self._parse_wiki_page_json_fields(dict(row)) for row in cursor.fetchall()]
+
+    def search_wiki_pages(self, project_id: str, query: str, top_k: int = 5) -> list[dict]:
+        """Search wiki pages by keyword matching on title/page_key/content.
+
+        Returns pages ranked by relevance (title match > page_key match > content match).
+        Only returns pages with status='compiled'.
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_pages WHERE project_id = ? AND status = 'compiled'",
+            (project_id,),
+        )
+        pages = [dict(row) for row in cursor.fetchall()]
+        if not pages:
+            return []
+
+        keywords = query.lower().split()
+        scored: list[tuple[float, dict]] = []
+        for page in pages:
+            title_lower = (page.get("title") or "").lower()
+            key_lower = (page.get("page_key") or "").lower()
+            content_lower = (page.get("content") or "").lower()
+
+            score = 0.0
+            for kw in keywords:
+                if kw in title_lower:
+                    score += 3.0
+                if kw in key_lower:
+                    score += 2.0
+                # Count content occurrences (capped)
+                content_hits = min(content_lower.count(kw), 10)
+                score += content_hits * 0.5
+
+            if score > 0:
+                scored.append((score, page))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [page for _, page in scored[:top_k]]
+
+    def update_wiki_page_content(
+        self,
+        page_id: str,
+        content: str,
+        title: str | None = None,
+        status: str = "compiled",
+        compile_version: int | None = None,
+        last_compiled_file_id: str | None = None,
+        refs: list[str] | None = None,
+        sources: list[str] | None = None,
+        tags: list[str] | None = None,
+        page_type: str | None = None,
+    ):
+        now = self._now()
+        updates = ["content = ?", "updated_at = ?"]
+        params: list = [content, now]
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+        updates.append("status = ?")
+        params.append(status)
+        if compile_version is not None:
+            updates.append("compile_version = ?")
+            params.append(compile_version)
+            updates.append("last_compiled_at = ?")
+            params.append(now)
+        if last_compiled_file_id is not None:
+            updates.append("last_compiled_file_id = ?")
+            params.append(last_compiled_file_id)
+        if refs is not None:
+            updates.append("refs = ?")
+            params.append(json.dumps(refs, ensure_ascii=False))
+        if sources is not None:
+            updates.append("sources = ?")
+            params.append(json.dumps(sources, ensure_ascii=False))
+        if tags is not None:
+            updates.append("tags = ?")
+            params.append(json.dumps(tags, ensure_ascii=False))
+        if page_type is not None:
+            updates.append("page_type = ?")
+            params.append(page_type)
+        params.append(page_id)
+        self.conn.execute(
+            f"UPDATE wiki_pages SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+
+        # Auto-save version snapshot
+        if compile_version is not None:
+            self._save_page_version(page_id, content, title, compile_version)
+
+    def _save_page_version(
+        self,
+        page_id: str,
+        content: str | None,
+        title: str | None,
+        version: int,
+        change_summary: str = "",
+    ):
+        """Save a version snapshot for a wiki page."""
+        try:
+            # Get project_id and page_key from the page
+            page = self.conn.execute(
+                "SELECT project_id, page_key FROM wiki_pages WHERE id = ?", (page_id,)
+            ).fetchone()
+            if not page:
+                return
+            version_id = self._uuid()
+            self.conn.execute(
+                """INSERT INTO wiki_page_versions
+                   (id, wiki_page_id, project_id, page_key, title, content, version, change_summary, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (version_id, page_id, page["project_id"], page["page_key"],
+                 title or "", content or "", version, change_summary, self._now()),
+            )
+            self.conn.commit()
+        except Exception as e:
+            logger.warning("Failed to save page version: %s", e)
+
+    def list_wiki_page_versions(self, page_id: str, limit: int = 20) -> list[dict]:
+        """List version history for a wiki page."""
+        cursor = self.conn.execute(
+            """SELECT id, wiki_page_id, page_key, title, version, change_summary, created_at
+               FROM wiki_page_versions
+               WHERE wiki_page_id = ?
+               ORDER BY version DESC LIMIT ?""",
+            (page_id, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_wiki_page_version(self, version_id: str) -> dict | None:
+        """Get a specific version with full content."""
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_page_versions WHERE id = ?", (version_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def delete_wiki_page(self, project_id: str, page_key: str) -> bool:
+        """Delete a Wiki page with full cascade cleanup.
+
+        Cleans:
+          - wiki_page_sources (provenance links)
+          - wiki_change_log entries for this page
+          - wiki_reviews referencing this page in affected_page_ids
+          - Other pages' refs that contain [[page_key]] (broken wikilink removal)
+          - The page itself from wiki_pages
+        All operations are in a single transaction for atomicity.
+        """
+        page = self.get_wiki_page(project_id, page_key)
+        if not page:
+            return False
+        page_id = page["id"]
+
+        try:
+            # 1. Delete page sources (provenance)
+            self.conn.execute(
+                "DELETE FROM wiki_page_sources WHERE wiki_page_id = ?", (page_id,)
+            )
+
+            # 2. Delete change log entries for this page
+            self.conn.execute(
+                "DELETE FROM wiki_change_log WHERE project_id = ? AND wiki_page_id = ?",
+                (project_id, page_id),
+            )
+
+            # 3. Clean wiki_reviews: remove page_id from affected_page_ids,
+            #    delete reviews whose affected list becomes empty
+            reviews = self.conn.execute(
+                "SELECT id, affected_page_ids FROM wiki_reviews "
+                "WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+            for review in reviews:
+                affected_raw = review["affected_page_ids"]
+                if not affected_raw:
+                    continue
+                try:
+                    affected_list = json.loads(affected_raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if page_id not in affected_list:
+                    continue
+                affected_list.remove(page_id)
+                if not affected_list:
+                    # No affected pages left — delete the review
+                    self.conn.execute(
+                        "DELETE FROM wiki_reviews WHERE id = ?", (review["id"],)
+                    )
+                else:
+                    # Update with remaining affected pages
+                    self.conn.execute(
+                        "UPDATE wiki_reviews SET affected_page_ids = ? WHERE id = ?",
+                        (json.dumps(affected_list, ensure_ascii=False), review["id"]),
+                    )
+
+            # 4. Strip [[page_key]] from other pages' refs
+            #    Find all pages whose refs JSON contains this page_key
+            pattern = f'%"{page_key}"%'
+            referring = self.conn.execute(
+                "SELECT id, refs FROM wiki_pages "
+                "WHERE project_id = ? AND id != ? AND refs LIKE ?",
+                (project_id, page_id, pattern),
+            ).fetchall()
+            for ref_page in referring:
+                refs_raw = ref_page["refs"]
+                if not refs_raw:
+                    continue
+                try:
+                    refs_list = json.loads(refs_raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if page_key in refs_list:
+                    refs_list.remove(page_key)
+                    self.conn.execute(
+                        "UPDATE wiki_pages SET refs = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(refs_list, ensure_ascii=False), self._now(), ref_page["id"]),
+                    )
+
+            # 5. Delete the page itself
+            self.conn.execute(
+                "DELETE FROM wiki_pages WHERE project_id = ? AND page_key = ?",
+                (project_id, page_key),
+            )
+
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    # ── Wiki: Page Sources ──
+
+    def add_wiki_page_source(self, wiki_page_id: str, file_id: str, contribution: str = "") -> str:
+        # Idempotent: skip if (wiki_page_id, file_id) already exists
+        existing = self.conn.execute(
+            "SELECT id FROM wiki_page_sources WHERE wiki_page_id = ? AND file_id = ?",
+            (wiki_page_id, file_id),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        source_id = self._uuid()
+        self.conn.execute(
+            "INSERT INTO wiki_page_sources (id, wiki_page_id, file_id, contribution, created_at) VALUES (?, ?, ?, ?, ?)",
+            (source_id, wiki_page_id, file_id, contribution, self._now()),
+        )
+        self.conn.commit()
+        return source_id
+
+    def list_wiki_page_sources(self, wiki_page_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            """SELECT wps.*, f.filename
+               FROM wiki_page_sources wps
+               LEFT JOIN files f ON f.id = wps.file_id
+               WHERE wps.wiki_page_id = ?
+               ORDER BY wps.created_at ASC""",
+            (wiki_page_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def delete_wiki_page_sources(self, wiki_page_id: str):
+        self.conn.execute("DELETE FROM wiki_page_sources WHERE wiki_page_id = ?", (wiki_page_id,))
+        self.conn.commit()
+
+    def remove_wiki_page_source(self, wiki_page_id: str, file_id: str):
+        self.conn.execute(
+            "DELETE FROM wiki_page_sources WHERE wiki_page_id = ? AND file_id = ?",
+            (wiki_page_id, file_id),
+        )
+        self.conn.commit()
+
+    # ── Wiki: Change Log ──
+
+    def add_wiki_change_log(
+        self,
+        project_id: str,
+        action: str,
+        wiki_page_id: str | None = None,
+        trigger_file_id: str | None = None,
+        summary: str = "",
+        source_title: str = "",
+        affected_page_keys: list[str] | None = None,
+    ) -> str:
+        log_id = self._uuid()
+        affected_json = json.dumps(affected_page_keys, ensure_ascii=False) if affected_page_keys else None
+        self.conn.execute(
+            """INSERT INTO wiki_change_log (id, project_id, wiki_page_id, action, trigger_file_id, summary, source_title, affected_page_keys, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (log_id, project_id, wiki_page_id, action, trigger_file_id, summary, source_title, affected_json, self._now()),
+        )
+        self.conn.commit()
+        return log_id
+
+    def list_wiki_change_log(self, project_id: str, wiki_page_id: str | None = None, limit: int = 50) -> list[dict]:
+        if wiki_page_id:
+            cursor = self.conn.execute(
+                "SELECT * FROM wiki_change_log WHERE project_id = ? AND wiki_page_id = ? ORDER BY created_at DESC LIMIT ?",
+                (project_id, wiki_page_id, limit),
+            )
+        else:
+            cursor = self.conn.execute(
+                "SELECT * FROM wiki_change_log WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+                (project_id, limit),
+            )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            val = d.get("affected_page_keys")
+            if val:
+                try:
+                    d["affected_page_keys"] = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    d["affected_page_keys"] = []
+            else:
+                d["affected_page_keys"] = []
+            rows.append(d)
+        return rows
+
+    def get_wiki_backlinks(self, project_id: str, page_key: str) -> list[dict]:
+        """Find all pages whose refs JSON array contains the given page_key."""
+        # refs stored as JSON array like ["key1","key2"] — use LIKE to search
+        pattern = f'%"{page_key}"%'
+        cursor = self.conn.execute(
+            "SELECT id, page_key, title, page_type, status FROM wiki_pages "
+            "WHERE project_id = ? AND refs LIKE ? ORDER BY title",
+            (project_id, pattern),
+        )
+        results = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            # Verify the match is exact (LIKE is approximate for JSON)
+            refs_raw = d.get("refs")
+            if refs_raw:
+                try:
+                    refs_list = json.loads(refs_raw)
+                    if page_key in refs_list:
+                        results.append(d)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return results
+
+    # ── Wiki: Reviews ──
+
+    def create_or_update_wiki_review(
+        self,
+        review_id: str,
+        project_id: str,
+        review_type: str,
+        title: str,
+        description: str = "",
+        affected_page_ids: list[str] | None = None,
+        source_file_id: str | None = None,
+    ) -> dict:
+        now = self._now()
+        ids_json = json.dumps(affected_page_ids, ensure_ascii=False) if affected_page_ids else None
+        self.conn.execute(
+            """INSERT INTO wiki_reviews (id, project_id, type, title, description, affected_page_ids, source_file_id, resolved, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   description=excluded.description, affected_page_ids=excluded.affected_page_ids,
+                   source_file_id=excluded.source_file_id""",
+            (review_id, project_id, review_type, title, description, ids_json, source_file_id, now),
+        )
+        self.conn.commit()
+        return self.get_wiki_review(review_id)
+
+    def get_wiki_review(self, review_id: str) -> dict | None:
+        cursor = self.conn.execute("SELECT * FROM wiki_reviews WHERE id = ?", (review_id,))
+        row = cursor.fetchone()
+        if row:
+            d = dict(row)
+            if d.get("affected_page_ids"):
+                try:
+                    d["affected_page_ids"] = json.loads(d["affected_page_ids"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return d
+        return None
+
+    def list_wiki_reviews(self, project_id: str, resolved: bool | None = None) -> list[dict]:
+        if resolved is not None:
+            cursor = self.conn.execute(
+                "SELECT * FROM wiki_reviews WHERE project_id = ? AND resolved = ? ORDER BY created_at DESC",
+                (project_id, 1 if resolved else 0),
+            )
+        else:
+            cursor = self.conn.execute(
+                "SELECT * FROM wiki_reviews WHERE project_id = ? ORDER BY created_at DESC",
+                (project_id,),
+            )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            if d.get("affected_page_ids"):
+                try:
+                    d["affected_page_ids"] = json.loads(d["affected_page_ids"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            rows.append(d)
+        return rows
+
+    def resolve_wiki_review(self, review_id: str, action: str) -> bool:
+        cursor = self.conn.execute(
+            "UPDATE wiki_reviews SET resolved = 1, resolved_action = ? WHERE id = ?",
+            (action, review_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    # ── Wiki: Compile Tasks ──
+
+    def create_wiki_compile_task(
+        self,
+        project_id: str,
+        trigger_type: str,
+        trigger_file_id: str | None = None,
+    ) -> dict:
+        now = self._now()
+        task_id = self._uuid()
+        self.conn.execute(
+            """INSERT INTO wiki_compile_tasks
+               (id, project_id, trigger_type, trigger_file_id, status, created_at)
+               VALUES (?, ?, ?, ?, 'queued', ?)""",
+            (task_id, project_id, trigger_type, trigger_file_id, now),
+        )
+        self.conn.commit()
+        return self.get_wiki_compile_task(task_id)
+
+    def get_wiki_compile_task(self, task_id: str) -> dict | None:
+        cursor = self.conn.execute("SELECT * FROM wiki_compile_tasks WHERE id = ?", (task_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_latest_compile_task(self, project_id: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_compile_tasks WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
+            (project_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_compile_task_status(
+        self,
+        task_id: str,
+        status: str,
+        stage: str | None = None,
+        pages_total: int | None = None,
+        pages_completed: int | None = None,
+        pages_failed: int | None = None,
+        error_message: str | None = None,
+    ):
+        updates = ["status = ?"]
+        params: list = [status]
+        if stage is not None:
+            updates.append("stage = ?")
+            params.append(stage)
+        if pages_total is not None:
+            updates.append("pages_total = ?")
+            params.append(pages_total)
+        if pages_completed is not None:
+            updates.append("pages_completed = ?")
+            params.append(pages_completed)
+        if pages_failed is not None:
+            updates.append("pages_failed = ?")
+            params.append(pages_failed)
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+        if status in ("completed", "failed", "partial"):
+            updates.append("completed_at = ?")
+            params.append(self._now())
+        params.append(task_id)
+        self.conn.execute(
+            f"UPDATE wiki_compile_tasks SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    def start_compile_task(self, task_id: str):
+        """Record compile task start time. Status is managed by the caller."""
+        self.conn.execute(
+            "UPDATE wiki_compile_tasks SET started_at = ? WHERE id = ?",
+            (self._now(), task_id),
+        )
+        self.conn.commit()
+
+    def increment_compile_task_retry(self, task_id: str) -> int:
+        self.conn.execute(
+            "UPDATE wiki_compile_tasks SET retry_count = retry_count + 1 WHERE id = ?",
+            (task_id,),
+        )
+        self.conn.commit()
+        task = self.get_wiki_compile_task(task_id)
+        return task["retry_count"] if task else 0
+
+    def list_interrupted_compile_tasks(self) -> list[dict]:
+        """List compile tasks that were interrupted (status in ingesting/storing/waiting_review)."""
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_compile_tasks WHERE status IN ('ingesting', 'storing', 'waiting_review')"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_waiting_review_compile_tasks(self) -> list[dict]:
+        """Get the latest compile task per project that is in 'waiting_review' status."""
+        cursor = self.conn.execute(
+            "SELECT wct.* FROM wiki_compile_tasks wct "
+            "INNER JOIN ("
+            "  SELECT project_id, MAX(created_at) AS max_created "
+            "  FROM wiki_compile_tasks GROUP BY project_id"
+            ") latest ON wct.project_id = latest.project_id AND wct.created_at = latest.max_created "
+            "WHERE wct.status = 'waiting_review'"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def reset_interrupted_compile_tasks(self) -> int:
+        """Reset interrupted compile tasks to queued for crash recovery. Returns count.
+        
+        Only resets 'ingesting' and 'storing' (actively processing when crashed).
+        'waiting_review' is NOT reset — supervised mode should wait for user to return.
+        """
+        cursor = self.conn.execute(
+            "UPDATE wiki_compile_tasks SET status = 'queued' WHERE status IN ('ingesting', 'storing')"
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    # ── Wiki: Supervised Ingest (Step 1.4) ──
+
+    def set_compile_supervised(self, task_id: str, supervised: bool = True):
+        """Mark a compile task as supervised (pause after each file)."""
+        self.conn.execute(
+            "UPDATE wiki_compile_tasks SET supervised = ? WHERE id = ?",
+            (1 if supervised else 0, task_id),
+        )
+        self.conn.commit()
+
+    def request_compile_stop(self, task_id: str):
+        """Request a running compile task to stop after the current file."""
+        self.conn.execute(
+            "UPDATE wiki_compile_tasks SET stop_requested = 1 WHERE id = ?",
+            (task_id,),
+        )
+        self.conn.commit()
+
+    def is_compile_stop_requested(self, task_id: str) -> bool:
+        """Check if stop has been requested for a compile task."""
+        cursor = self.conn.execute(
+            "SELECT stop_requested FROM wiki_compile_tasks WHERE id = ?",
+            (task_id,),
+        )
+        row = cursor.fetchone()
+        return bool(row and row["stop_requested"])
+
+    def append_ingest_summary(self, task_id: str, file_summary: dict):
+        """Append a per-file ingest summary to the compile task's summary list.
+        If a summary with the same file_id already exists, replace it (re-compile).
+        """
+        task = self.get_wiki_compile_task(task_id)
+        existing = []
+        if task and task.get("ingest_file_summaries"):
+            try:
+                raw = task["ingest_file_summaries"]
+                existing = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                existing = []
+        # Replace existing entry with same file_id, or append
+        file_id = file_summary.get("file_id")
+        if file_id:
+            existing = [s for s in existing if s.get("file_id") != file_id]
+        existing.append(file_summary)
+        self.conn.execute(
+            "UPDATE wiki_compile_tasks SET ingest_file_summaries = ? WHERE id = ?",
+            (json.dumps(existing, ensure_ascii=False), task_id),
+        )
+        self.conn.commit()
+
+    def get_ingest_summaries(self, task_id: str) -> list[dict]:
+        """Get all per-file ingest summaries for a compile task."""
+        task = self.get_wiki_compile_task(task_id)
+        if not task or not task.get("ingest_file_summaries"):
+            return []
+        try:
+            raw = task["ingest_file_summaries"]
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def is_compile_supervised(self, task_id: str) -> bool:
+        """Check if a compile task is in supervised mode."""
+        cursor = self.conn.execute(
+            "SELECT supervised FROM wiki_compile_tasks WHERE id = ?",
+            (task_id,),
+        )
+        row = cursor.fetchone()
+        return bool(row and row["supervised"])
+
+    def get_pending_wiki_files(self, project_id: str, exclude_file_ids: list[str] | None = None) -> list[dict]:
+        """Get files that need Wiki ingestion for a project.
+
+        Returns files with status='done' (parsed successfully) that don't have
+        an ingested source_page yet, excluding any file_ids already processed.
+        """
+        query = (
+            "SELECT id, filename FROM files "
+            "WHERE project_id = ? AND status = 'done' "
+            "AND id NOT IN ("
+            "  SELECT file_id FROM wiki_source_pages "
+            "  WHERE project_id = ? AND status = 'ingested'"
+            ")"
+        )
+        params: list = [project_id, project_id]
+        if exclude_file_ids:
+            placeholders = ",".join("?" for _ in exclude_file_ids)
+            query += f" AND id NOT IN ({placeholders})"
+            params.extend(exclude_file_ids)
+        query += " ORDER BY created_at ASC"
+        cursor = self.conn.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ── Wiki: Batch Review Operations (Step 1.4) ──
+
+    def batch_resolve_reviews(self, project_id: str, review_ids: list[str], action: str) -> int:
+        """Batch resolve multiple reviews. Returns count of resolved reviews."""
+        if not review_ids:
+            return 0
+        placeholders = ",".join("?" for _ in review_ids)
+        cursor = self.conn.execute(
+            f"UPDATE wiki_reviews SET resolved = 1, resolved_action = ? "
+            f"WHERE project_id = ? AND id IN ({placeholders}) AND resolved = 0",
+            [action, project_id] + list(review_ids),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    # ── Wiki: Pending Compile Count ──
+
+    def increment_pending_compile_count(self, project_id: str, delta: int = 1):
+        self.conn.execute(
+            "UPDATE projects SET pending_compile_count = COALESCE(pending_compile_count, 0) + ?, updated_at = ? WHERE id = ?",
+            (delta, self._now(), project_id),
+        )
+        self.conn.commit()
+
+    def reset_pending_compile_count(self, project_id: str):
+        self.conn.execute(
+            "UPDATE projects SET pending_compile_count = 0, updated_at = ? WHERE id = ?",
+            (self._now(), project_id),
+        )
+        self.conn.commit()
+
+    def get_pending_compile_count(self, project_id: str) -> int:
+        cursor = self.conn.execute(
+            "SELECT pending_compile_count FROM projects WHERE id = ?",
+            (project_id,),
+        )
+        row = cursor.fetchone()
+        return (row["pending_compile_count"] or 0) if row else 0
+
+    # ── Wiki: Source Pages (ingestion tracking, §3.7) ──
+
+    def create_or_update_source_page(
+        self,
+        project_id: str,
+        file_id: str,
+        source_page_key: str | None = None,
+        content_hash: str | None = None,
+        status: str = "ingested",
+        pages_touched: list[str] | None = None,
+        entities_found: list[str] | None = None,
+        concepts_found: list[str] | None = None,
+    ) -> dict:
+        """Create or update a wiki_source_pages entry (one per project+file)."""
+        now = self._now()
+        sp_id = self._uuid()
+        pages_json = json.dumps(pages_touched, ensure_ascii=False) if pages_touched else None
+        entities_json = json.dumps(entities_found, ensure_ascii=False) if entities_found else None
+        concepts_json = json.dumps(concepts_found, ensure_ascii=False) if concepts_found else None
+        self.conn.execute(
+            """INSERT INTO wiki_source_pages
+               (id, project_id, file_id, source_page_key, content_hash, status,
+                pages_touched, entities_found, concepts_found, ingested_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(project_id, file_id) DO UPDATE SET
+                   source_page_key=excluded.source_page_key,
+                   content_hash=excluded.content_hash,
+                   status=excluded.status,
+                   pages_touched=excluded.pages_touched,
+                   entities_found=excluded.entities_found,
+                   concepts_found=excluded.concepts_found,
+                   updated_at=excluded.updated_at""",
+            (sp_id, project_id, file_id, source_page_key, content_hash, status,
+             pages_json, entities_json, concepts_json, now, now),
+        )
+        self.conn.commit()
+        return self.get_source_page(project_id, file_id)
+
+    def get_source_page(self, project_id: str, file_id: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_source_pages WHERE project_id = ? AND file_id = ?",
+            (project_id, file_id),
+        )
+        row = cursor.fetchone()
+        if row:
+            return self._parse_source_page_json(dict(row))
+        return None
+
+    def get_source_page_by_hash(self, project_id: str, content_hash: str) -> dict | None:
+        """Check if a file with this content_hash has already been ingested."""
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_source_pages WHERE project_id = ? AND content_hash = ? AND status = 'ingested'",
+            (project_id, content_hash),
+        )
+        row = cursor.fetchone()
+        if row:
+            return self._parse_source_page_json(dict(row))
+        return None
+
+    def list_source_pages(self, project_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_source_pages WHERE project_id = ? ORDER BY ingested_at DESC",
+            (project_id,),
+        )
+        return [self._parse_source_page_json(dict(row)) for row in cursor.fetchall()]
+
+    def update_source_page_status(self, project_id: str, file_id: str, status: str):
+        self.conn.execute(
+            "UPDATE wiki_source_pages SET status = ?, updated_at = ? WHERE project_id = ? AND file_id = ?",
+            (status, self._now(), project_id, file_id),
+        )
+        self.conn.commit()
+
+    def delete_source_page(self, project_id: str, file_id: str) -> bool:
+        cursor = self.conn.execute(
+            "DELETE FROM wiki_source_pages WHERE project_id = ? AND file_id = ?",
+            (project_id, file_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _parse_source_page_json(d: dict) -> dict:
+        """Parse JSON string fields in wiki_source_pages."""
+        for field in ("pages_touched", "entities_found", "concepts_found"):
+            val = d.get(field)
+            if val:
+                try:
+                    d[field] = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    d[field] = []
+            else:
+                d[field] = []
+        return d
+
+    # ── Wiki: Projects purpose/overview (§3.6) ──
+
+    def update_wiki_purpose(self, project_id: str, purpose: str):
+        self.conn.execute(
+            "UPDATE projects SET wiki_purpose = ?, updated_at = ? WHERE id = ?",
+            (purpose, self._now(), project_id),
+        )
+        self.conn.commit()
+
+    def get_wiki_purpose(self, project_id: str) -> str:
+        cursor = self.conn.execute(
+            "SELECT wiki_purpose FROM projects WHERE id = ?",
+            (project_id,),
+        )
+        row = cursor.fetchone()
+        return (row["wiki_purpose"] or "") if row else ""
+
+    def update_wiki_overview(self, project_id: str, overview: str):
+        self.conn.execute(
+            "UPDATE projects SET wiki_overview = ?, updated_at = ? WHERE id = ?",
+            (overview, self._now(), project_id),
+        )
+        self.conn.commit()
+
+    def get_wiki_overview(self, project_id: str) -> str:
+        cursor = self.conn.execute(
+            "SELECT wiki_overview FROM projects WHERE id = ?",
+            (project_id,),
+        )
+        row = cursor.fetchone()
+        return (row["wiki_overview"] or "") if row else ""
+
+    # ── Wiki: Cascade cleanup for file deletion (§Step 1.5) ──
+
+    def cleanup_wiki_data_for_file(self, project_id: str, file_id: str) -> dict:
+        """Remove all Wiki-derived data associated with a file.
+
+        Cleans:
+          - wiki_source_pages (ingestion tracking) — reads pages_touched first
+          - wiki_page_sources (page ↔ file provenance links)
+          - wiki_reviews.source_file_id → set to NULL (keep review, detach file)
+          - Marks affected wiki_pages as 'draft' (need recompilation)
+
+        Does NOT delete wiki_pages themselves — they may aggregate multiple sources.
+        All operations run in a single transaction to prevent partial failures.
+        Returns counts of cleaned records for logging.
+        """
+        counts: dict[str, int] = {}
+
+        # 0. Read pages_touched BEFORE deleting source_page record
+        touched_page_keys: list[str] = []
+        sp = self.get_source_page(project_id, file_id)
+        if sp:
+            touched_page_keys = sp.get("pages_touched") or []
+
+        try:
+            # 1. Delete wiki_source_pages record
+            cur = self.conn.execute(
+                "DELETE FROM wiki_source_pages WHERE project_id = ? AND file_id = ?",
+                (project_id, file_id),
+            )
+            counts["source_pages"] = cur.rowcount
+
+            # 2. Delete wiki_page_sources referencing this file
+            cur = self.conn.execute(
+                "DELETE FROM wiki_page_sources WHERE file_id = ?",
+                (file_id,),
+            )
+            counts["page_sources"] = cur.rowcount
+
+            # 3. Detach wiki_reviews from this file (keep reviews, null out file ref)
+            cur = self.conn.execute(
+                "UPDATE wiki_reviews SET source_file_id = NULL "
+                "WHERE project_id = ? AND source_file_id = ?",
+                (project_id, file_id),
+            )
+            counts["reviews_detached"] = cur.rowcount
+
+            # 4. Mark affected wiki_pages as 'draft' (need recompilation)
+            #    Only mark pages that are currently 'compiled' and have no other source files
+            pages_marked = 0
+            for page_key in touched_page_keys:
+                page_row = self.conn.execute(
+                    "SELECT id FROM wiki_pages WHERE project_id = ? AND page_key = ?",
+                    (project_id, page_key),
+                ).fetchone()
+                if not page_row:
+                    continue
+                page_id = page_row["id"]
+                remaining = self.conn.execute(
+                    "SELECT COUNT(*) as cnt FROM wiki_page_sources WHERE wiki_page_id = ?",
+                    (page_id,),
+                ).fetchone()
+                if remaining and remaining["cnt"] == 0:
+                    self.conn.execute(
+                        "UPDATE wiki_pages SET status = 'draft', updated_at = ? WHERE id = ? AND status = 'compiled'",
+                        (self._now(), page_id),
+                    )
+                    pages_marked += self.conn.execute("SELECT changes()").fetchone()[0]
+            counts["pages_marked_draft"] = pages_marked
+
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        logger.info("cleanup_wiki_data_for_file(%s, %s): %s", project_id, file_id, counts)
+        return counts
+
+    def cleanup_wiki_data_for_project(self, project_id: str) -> dict:
+        """Explicitly clean Wiki data not covered by ON DELETE CASCADE.
+
+        CASCADE via projects(id) handles: wiki_pages → wiki_page_sources,
+        wiki_change_log, wiki_reviews, wiki_compile_tasks, wiki_source_pages.
+        This method handles edge cases and external references.
+        Returns counts for logging.
+        """
+        counts: dict[str, int] = {}
+
+        # wiki_source_pages — CASCADE should handle, but be explicit
+        try:
+            cur = self.conn.execute(
+                "DELETE FROM wiki_source_pages WHERE project_id = ?",
+                (project_id,),
+            )
+            counts["source_pages"] = cur.rowcount
+        except Exception:
+            counts["source_pages"] = 0
+
+        return counts

@@ -3,7 +3,7 @@ import type { Task } from '../../types'
 
 export type TaskTab = 'active' | 'archived'
 
-export function useTasks() {
+export function useTasks(defaultTaskTitle = 'New Task') {
   const [tasks, setTasks] = useState<Task[]>([])
   const [archivedTasks, setArchivedTasks] = useState<Task[]>([])
   const [activeTab, setActiveTab] = useState<TaskTab>('active')
@@ -11,7 +11,7 @@ export function useTasks() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
 
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     setLoading(true)
     try {
       const [activeRes, archivedRes] = await Promise.all([
@@ -23,17 +23,17 @@ export function useTasks() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     loadTasks()
-  }, [])
+  }, [loadTasks])
 
   const handleCreateTask = useCallback(async (mode: 'coding' | 'general' = 'coding') => {
     if (creating) return
     setCreating(true)
     try {
-      const res = await window.electronAPI.invoke('tasks:create', { title: '新任务', mode }) as Task & { error?: string }
+      const res = await window.electronAPI.invoke('tasks:create', { title: defaultTaskTitle, mode }) as Task & { error?: string }
       if (res.error) {
         console.error('Create task error:', res.error)
         return
@@ -46,13 +46,13 @@ export function useTasks() {
     } finally {
       setCreating(false)
     }
-  }, [creating])
+  }, [creating, defaultTaskTitle])
 
   const handleCreateTaskWithDir = useCallback(async (dirPath: string, mode: 'coding' | 'general' = 'coding') => {
     if (creating) return
     // Extract folder name as default title
     const parts = dirPath.replace(/[\/\\]+$/, '').split(/[\/\\]/)
-    const folderName = parts[parts.length - 1] || '新任务'
+    const folderName = parts[parts.length - 1] || defaultTaskTitle
     setCreating(true)
     try {
       const res = await window.electronAPI.invoke('tasks:create', { title: folderName, workspacePath: dirPath, mode }) as Task & { error?: string }
@@ -68,7 +68,7 @@ export function useTasks() {
     } finally {
       setCreating(false)
     }
-  }, [creating])
+  }, [creating, defaultTaskTitle])
 
   const handleDeleteTask = useCallback(
     async (id: string) => {

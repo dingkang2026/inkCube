@@ -83,27 +83,29 @@ class ProcessingPipeline:
         by the image description worker in task_queue.py.
         """
         try:
-            # Stage 1: Parse document (0% → 30%)
-            self._set_progress(file_id, 5)
+            # Stage 1: Parse document via Docling (0% → 25%)
+            # This is the longest step (layout analysis + OCR + table recognition)
+            self._set_progress(file_id, 2)
             parse_result = await asyncio.to_thread(
                 self.parser.parse_file, file_path, file_id
             )
-            self._set_progress(file_id, 30)
+            self._set_progress(file_id, 25)
             
-            # Stage 2: Store chunks in ChromaDB + FTS (30% → 80%)
-            self._set_progress(file_id, 35)
+            # Stage 2: Store chunks in ChromaDB + FTS (25% → 75%)
+            # Embedding via bge-m3 + FTS indexing
+            self._set_progress(file_id, 30)
             await asyncio.to_thread(
                 self._store_chunks, parse_result, project_id, file_id, filename
             )
-            self._set_progress(file_id, 80)
+            self._set_progress(file_id, 75)
             
-            # Stage 3: Store image records in DB (80% → 95%)
+            # Stage 3: Store image records in DB (75% → 90%)
             if parse_result.images:
-                self._set_progress(file_id, 85)
+                self._set_progress(file_id, 80)
                 self._store_image_records(parse_result.images, file_id)
-            self._set_progress(file_id, 95)
+            self._set_progress(file_id, 90)
             
-            # Stage 4: Finalize (95% → 100%)
+            # Stage 4: Finalize (90% → 100%)
             self._update_file_status(file_id, "done", {
                 "chunks_count": len(parse_result.text_chunks),
                 "images_count": len(parse_result.images),

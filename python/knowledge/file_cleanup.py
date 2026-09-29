@@ -1,10 +1,13 @@
 """python/knowledge/file_cleanup.py
 
 Shared cleanup logic for file deletion and retry.
-Cleans: ChromaDB chunks + FTS5 chunks + image records + disk files.
+Cleans: ChromaDB chunks + FTS5 chunks + image records + Wiki data + disk files.
 """
+import logging
 import shutil
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 async def cleanup_file_data(
@@ -34,13 +37,13 @@ async def cleanup_file_data(
     try:
         vector_store.delete_by_file_id(project_id, file_id)
     except Exception as e:
-        print(f"[WARN] ChromaDB cleanup failed for {file_id}: {e}")
+        logger.warning("ChromaDB cleanup failed for %s: %s", file_id, e)
 
     # 2. Delete FTS5 chunks for this file
     try:
         fts_store.delete_by_file_id(file_id)
     except Exception as e:
-        print(f"[WARN] FTS cleanup failed for {file_id}: {e}")
+        logger.warning("FTS cleanup failed for %s: %s", file_id, e)
 
     # 3. Delete image records and clean up extracted image files
     try:
@@ -53,19 +56,28 @@ async def cleanup_file_data(
                 except Exception:
                     pass
     except Exception as e:
-        print(f"[WARN] Image cleanup failed for {file_id}: {e}")
+        logger.warning("Image cleanup failed for %s: %s", file_id, e)
 
-    # 4. If full removal: delete original file from disk + DB record
+    # 4. Clean Wiki-derived data (source_pages, page_sources, review refs)
+    if remove_file_record:
+        try:
+            wiki_counts = db.cleanup_wiki_data_for_file(project_id, file_id)
+            if any(v > 0 for v in wiki_counts.values()):
+                logger.info("Wiki cleanup for %s: %s", file_id, wiki_counts)
+        except Exception as e:
+            logger.warning("Wiki cleanup failed for %s: %s", file_id, e)
+
+    # 5. If full removal: delete original file from disk + DB record
     if remove_file_record:
         file_dir = Path(data_dir) / "files" / project_id / file_id
         if file_dir.exists():
             try:
                 shutil.rmtree(file_dir, ignore_errors=True)
             except Exception as e:
-                print(f"[WARN] Disk cleanup failed for {file_id}: {e}")
+                logger.warning("Disk cleanup failed for %s: %s", file_id, e)
 
         try:
             db.conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
             db.conn.commit()
         except Exception as e:
-            print(f"[WARN] DB record cleanup failed for {file_id}: {e}")
+            logger.warning("DB record cleanup failed for %s: %s", file_id, e)

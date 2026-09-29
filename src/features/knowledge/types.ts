@@ -1,13 +1,14 @@
 /** src/features/knowledge/types.ts */
+import type { ProjectType, ProjectStage } from '../project/types'
 
 export interface Project {
   id: string
   name: string
   description?: string
-  type?: string  // project type: recruitment | investment | general
-  stage?: string // project stage: before | during | after | none
-  company_name?: string  // 企业工商名称
-  credit_code?: string   // 统一社会信用代码
+  type?: ProjectType
+  stage?: ProjectStage
+  company_name?: string
+  credit_code?: string
   file_count: number
   chunk_count: number
   created_at: string
@@ -39,6 +40,9 @@ export interface ImageRecord {
   status: 'pending' | 'processing' | 'done' | 'error' | 'archived'
   error_message: string | null
   category: string
+  width_px?: number | null
+  height_px?: number | null
+  file_size?: number | null
   created_at: string
 }
 

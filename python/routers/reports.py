@@ -4,17 +4,16 @@ Phase 2: Template management (CRUD, copy, extract-sample).
 Phase 3: Report generation (SSE streaming), section regeneration.
 Phase 4: Export (Word/PDF), content retrieval.
 """
-import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -357,9 +356,15 @@ async def get_report(report_id: str):
 
 @router.delete("/{report_id}")
 async def delete_report(report_id: str):
-    """Delete a report."""
+    """Delete a report and clean up disk files."""
     try:
         db = get_db()
+        report = db.get_report(report_id)
+        if report:
+            content_path = report.get("content_path", "")
+            if content_path and os.path.isdir(content_path):
+                shutil.rmtree(content_path, ignore_errors=True)
+                logger.info("Deleted report files: %s", content_path)
         db.delete_report(report_id)
         return {"success": True}
     except Exception as e:
@@ -430,10 +435,12 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
 
         now = _now()
         output_fmt = req.output_format or "Word"
+        variables_json = json.dumps(req.variables or {}, ensure_ascii=False)
+        base_ids_json = json.dumps(req.base_project_ids or [], ensure_ascii=False)
         db.conn.execute(
-            "INSERT INTO reports (id, project_id, template_id, title, output_format, status, progress, content_path, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (report_id, req.project_id, req.template_id, req.title, output_fmt, "generating", 0, report_dir, now, now),
+            "INSERT INTO reports (id, project_id, template_id, title, output_format, status, progress, content_path, variables, base_project_ids, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (report_id, req.project_id, req.template_id, req.title, output_fmt, "generating", 0, report_dir, variables_json, base_ids_json, now, now),
         )
         db.conn.commit()
 
@@ -642,7 +649,6 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
 
         if mode == "restart":
             # 删除 checkpoint 文件
-            import shutil
             ckpt_path = Path(report_dir) / "checkpoint.json"
             if ckpt_path.exists():
                 ckpt_path.unlink()
@@ -659,17 +665,31 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
         if not template:
             raise HTTPException(status_code=404, detail=f"Template not found: {report['template_id']}")
 
+        # 从 DB 恢复原始变量和知识库引用
+        variables = {}
+        if report.get("variables"):
+            try:
+                variables = json.loads(report["variables"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        base_project_ids = []
+        if report.get("base_project_ids"):
+            try:
+                base_project_ids = json.loads(report["base_project_ids"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         # 启动后台任务
         data_dir = get_data_dir()
         background_tasks.add_task(
             _run_report_generation,
             report_id=report_id,
             template=template,
-            variables={},  # TODO: 从 DB 恢复原始变量
+            variables=variables,
             project_id=report["project_id"],
             data_dir=data_dir,
             report_dir=report_dir,
-            base_project_ids=[],  # TODO: 从 DB 恢复
+            base_project_ids=base_project_ids,
         )
 
         return {"report_id": report_id, "status": "generating", "mode": mode}
@@ -746,6 +766,7 @@ async def _run_report_generation(
         llm_settings=llm_settings,
         output_dir=report_dir,
         base_project_ids=base_project_ids,
+        db=db,
     )
 
     section_count = 0

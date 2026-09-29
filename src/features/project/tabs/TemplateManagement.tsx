@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, Copy, Eye, Trash2, Upload, Plus, FileText, Loader2, AlertCircle, Edit3 } from 'lucide-react'
+import { useToast } from '../../knowledge/Toast'
 import { TemplateEditor } from './TemplateEditor'
 import s from './TemplateManagement.module.css'
 
@@ -40,10 +41,12 @@ type EditorMode = 'new-blank' | 'new-from-sample' | 'new-from-copy' | 'edit'
 
 interface TemplateManagementProps {
   onBack: () => void
+  projectType?: string
 }
 
-export function TemplateManagement({ onBack }: TemplateManagementProps) {
+export function TemplateManagement({ onBack, projectType }: TemplateManagementProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [templates, setTemplates] = useState<TemplateItem[]>([])
   const [loading, setLoading] = useState(true)
   const [viewingTemplate, setViewingTemplate] = useState<FullTemplate | null>(null)
@@ -56,14 +59,16 @@ export function TemplateManagement({ onBack }: TemplateManagementProps) {
 
   const loadTemplates = useCallback(async () => {
     try {
-      const res: any = await window.electronAPI.invoke('reports:listTemplates', {})
+      const res: any = await window.electronAPI.invoke('reports:listTemplates', {
+        projectType,
+      })
       setTemplates(res.templates || [])
       setLoading(false)
     } catch (err) {
       console.error('Failed to load templates:', err)
       setLoading(false)
     }
-  }, [])
+  }, [projectType, showToast, t])
 
   useEffect(() => { loadTemplates() }, [loadTemplates])
 
@@ -96,7 +101,7 @@ export function TemplateManagement({ onBack }: TemplateManagementProps) {
   // ── Copy from preset ──
   const handleCopyAndEdit = async (tpl: TemplateItem) => {
     try {
-      const newName = `${tpl.template_name} (副本)`
+      const newName = `${tpl.template_name} (${t('project.template.editor.copySuffix')})`
       const res: any = await window.electronAPI.invoke('reports:copyTemplate', {
         templateId: tpl.template_id,
         newName,
@@ -109,6 +114,7 @@ export function TemplateManagement({ onBack }: TemplateManagementProps) {
       await loadTemplates()
     } catch (err) {
       console.error('Failed to copy template:', err)
+      showToast(t('project.template.copyFailed') || String(err), 'error')
     }
   }
 
@@ -158,28 +164,35 @@ export function TemplateManagement({ onBack }: TemplateManagementProps) {
     try {
       await window.electronAPI.invoke('reports:deleteTemplate', tpl.template_id)
       await loadTemplates()
+      showToast(t('project.template.deleteSuccess'), 'success')
     } catch (err) {
       console.error('Failed to delete template:', err)
+      showToast(t('project.template.deleteFailed') || String(err), 'error')
     }
   }
 
   // ── Editor save ──
   const handleEditorSave = async (templateData: any) => {
-    if (editorMode === 'edit') {
-      // Update existing
-      await window.electronAPI.invoke('reports:updateTemplate', {
-        templateId: templateData.template_id,
-        templateJson: templateData,
-      })
-    } else {
-      // Create new (from blank, copy, or sample)
-      await window.electronAPI.invoke('reports:saveTemplate', {
-        templateJson: templateData,
-      })
+    try {
+      if (editorMode === 'edit') {
+        // Update existing
+        await window.electronAPI.invoke('reports:updateTemplate', {
+          templateId: templateData.template_id,
+          templateJson: templateData,
+        })
+      } else {
+        // Create new (from blank, copy, or sample)
+        await window.electronAPI.invoke('reports:saveTemplate', {
+          templateJson: templateData,
+        })
+      }
+      await loadTemplates()
+      setEditorMode(null)
+      setEditorInitialData({})
+    } catch (err) {
+      console.error('Failed to save template:', err)
+      showToast(t('project.template.saveFailed') || String(err), 'error')
     }
-    await loadTemplates()
-    setEditorMode(null)
-    setEditorInitialData({})
   }
 
   // ── Editor cancel ──
@@ -233,7 +246,7 @@ export function TemplateManagement({ onBack }: TemplateManagementProps) {
           <div className={s.detailContent}>
             <p className={s.detailMeta}>
               {t('project.template.stageLabel')}: {getStageLabel(viewingTemplate.stage)} | {viewingTemplate.chapter_count} {t('project.report.chapters')} | {viewingTemplate.output_format}
-              {viewingTemplate.is_custom && ` | Custom`}
+              {viewingTemplate.is_custom && ` | ${t('project.template.editor.custom')}`}
             </p>
             <div className={s.chapterPreview}>
               <p className={s.detailSectionTitle}>{t('project.template.chapterStructure')}:</p>

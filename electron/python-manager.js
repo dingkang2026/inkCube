@@ -38,7 +38,7 @@ class PythonManager {
 
       return {
         command: condaPython,
-        args: ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1'],
+        args: ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--no-access-log'],
         cwd: pythonDir,
       }
     }

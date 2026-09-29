@@ -256,7 +256,11 @@ class CitationRegistry:
         return [e for e in self._ordered if not e.get("_cited")]
 
     def remove_uncited(self) -> list[int]:
-        """清理未被引用的条目，返回被移除的编号列表。"""
+        """清理未被引用的条目，返回被移除的编号列表。
+
+        注意：仅做清理，不重排编号。调用方应随后调用 renumber_and_remap()
+        完成重排和文本更新。
+        """
         to_remove = []
         for entry in self._ordered:
             if not entry.get("_cited"):
@@ -265,8 +269,7 @@ class CitationRegistry:
         if to_remove:
             self._ordered = [e for e in self._ordered if e.get("_cited")]
             self._rebuild_index()
-            self._renumber()
-            logger.info("Removed %d uncited references, renumbered to %d entries.",
+            logger.info("Removed %d uncited references, now %d entries.",
                         len(to_remove), len(self._ordered))
 
         return to_remove

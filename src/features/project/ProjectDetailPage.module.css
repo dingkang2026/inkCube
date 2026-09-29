@@ -2,9 +2,11 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
   min-width: 0;
   background: var(--bg-primary);
+  position: relative;
 }
 
 /* ── Header ── */
@@ -210,6 +212,36 @@
   border-bottom-color: var(--accent);
 }
 
+/* Wiki compile status badge on tab */
+.wikiBadge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--warning, #d97706);
+  background: color-mix(in srgb, var(--warning, #d97706) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 25%, transparent);
+  animation: pulse-badge 2s ease-in-out infinite;
+}
+
+.wikiBadgeCompiling {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
 /* ── Tab content ── */
 .contentArea {
   display: flex;
@@ -223,4 +255,10 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
+}
+
+/* ── Immersive mode: hide header + tab bar, maximize content ── */
+.page.expanded .header,
+.page.expanded .tabBar {
+  display: none;
 }

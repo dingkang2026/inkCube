@@ -1,12 +1,11 @@
 /** src/features/project/BaseLibDetailPage.tsx — Base library detail page (API-driven, embeds KnowledgePage) */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, FolderOpen, BookOpen, Factory, DollarSign, Library } from 'lucide-react'
+import { ArrowLeft, Factory, DollarSign, Library } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import type { Project, KnowledgeIpcChannels } from '../knowledge/types'
-import { WikiTab } from './tabs/WikiTab'
-import type { ProjectType } from './types'
+import { ProjectChatPanel } from './ProjectChatPanel'
 import s from './BaseLibDetailPage.module.css'
 
 /** IPC channel mapping: reuse KnowledgePage with baseLib:* backend channels */
@@ -39,15 +38,6 @@ function getIcon(id: string): LucideIcon {
   return PRESET_ICONS[id] || Library
 }
 
-/** Map lib_type to ProjectType for WikiTab hints */
-function getWikiProjectType(libType: string | null): ProjectType {
-  if (libType === 'preset_recruitment') return 'recruitment'
-  if (libType === 'preset_investment') return 'investment'
-  return 'general'
-}
-
-type TabKey = 'materials' | 'wiki'
-
 interface BaseLibDetailPageProps {
   baseLibId: string
   onBack: () => void
@@ -62,9 +52,10 @@ interface BaseLibInfo {
 
 export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps) {
   const { t } = useTranslation()
-  const [activeTab, setActiveTab] = useState<TabKey>('materials')
   const [libInfo, setLibInfo] = useState<BaseLibInfo | null>(null)
   const [loading, setLoading] = useState(true)
+  const [chatFileId, setChatFileId] = useState<string | null>(null)
+  const [chatFilename, setChatFilename] = useState<string | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -127,36 +118,24 @@ export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps)
         </div>
       </div>
 
-      {/* Tab bar */}
-      <div className={s.tabBar}>
-        <button
-          className={`${s.tab} ${activeTab === 'materials' ? s.tabActive : ''}`}
-          onClick={() => setActiveTab('materials')}
-        >
-          <FolderOpen size={15} />
-          <span>{t('baseLib.tabMaterials')}</span>
-        </button>
-        <button
-          className={`${s.tab} ${activeTab === 'wiki' ? s.tabActive : ''}`}
-          onClick={() => setActiveTab('wiki')}
-        >
-          <BookOpen size={15} />
-          <span>{t('baseLib.tabWiki')}</span>
-        </button>
-      </div>
-
-      {/* Tab content */}
-      <div className={s.tabContent}>
-        {activeTab === 'materials' && (
+      {/* Content area: materials + chat panel side by side */}
+      <div className={s.contentArea}>
+        <div className={s.tabContent}>
           <KnowledgePage
             selectedProject={fakeProject}
             compact
             ipcChannels={BASE_LIB_IPC_CHANNELS}
+            onFileSelect={(fileId, filename) => { setChatFileId(fileId); setChatFilename(filename) }}
           />
-        )}
-        {activeTab === 'wiki' && (
-          <WikiTab projectType={getWikiProjectType(libInfo.lib_type)} />
-        )}
+        </div>
+        <ProjectChatPanel
+          projectId={libInfo.id}
+          projectName={libInfo.name}
+          selectedFileId={chatFileId || undefined}
+          selectedFilename={chatFilename || undefined}
+          onClearFileScope={() => { setChatFileId(null); setChatFilename(null) }}
+          chatIpcChannel="baseLib:chat"
+        />
       </div>
     </div>
   )

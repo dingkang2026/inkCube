@@ -12,6 +12,13 @@ export interface LLMSettings {
   vlm_model: string
   max_concurrent_file_parsing: number
   max_concurrent_image_description: number
+  // Wiki compile settings
+  max_compile_concurrency: number
+  compile_max_retries: number
+  compile_backoff_base: number
+  // LLM timeout settings
+  llm_connect_timeout: number
+  llm_read_timeout: number
   // Task-specific settings
   task_model: string
   task_planner_model: string

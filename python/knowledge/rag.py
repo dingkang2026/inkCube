@@ -71,7 +71,11 @@ class KnowledgeRAG:
             ]
             logger.debug("RAG filtered by file_id: %d chunks", len(results))
 
-        if not results:
+        # Step 1b: Wiki page retrieval (high-weight skeleton context)
+        # Use the new wiki search engine with context budget
+        wiki_context = self._search_wiki_context(project_id, message)
+
+        if not results and not wiki_context:
             logger.info("RAG no results found")
             return {
                 "answer": "未找到相关内容。请确保已上传并解析相关文件。",
@@ -81,6 +85,24 @@ class KnowledgeRAG:
         # Step 2: Build context from search results
         context_parts: list[str] = []
         sources: list[dict] = []
+
+        # Wiki pages first (high-weight skeleton)
+        if wiki_context:
+            context_parts.append("=== Wiki 知识页面（结构化参考） ===")
+            for wp in wiki_context:
+                context_parts.append(f"## {wp['title']} ({wp['page_key']})")
+                # Content already truncated by context_budget
+                context_parts.append(wp.get("content", ""))
+                context_parts.append("")
+                sources.append({
+                    "filename": f"Wiki: {wp['title']}",
+                    "page": None,
+                    "section_path": wp.get("page_key", ""),
+                    "content_type": "wiki_page",
+                    "score": wp.get("_score", 1.0),
+                })
+            context_parts.append("=== 原始知识库片段 ===")
+
         for i, r in enumerate(results, 1):
             meta = r.get("metadata", {})
             md = meta.get("markdown_content") or r.get("content", "")
@@ -129,3 +151,35 @@ class KnowledgeRAG:
         logger.info("RAG answer generated: len=%d", len(answer))
 
         return {"answer": answer, "sources": sources}
+
+    def _search_wiki_context(self, project_id: str, message: str, top_k: int = 5) -> list[dict]:
+        """Search compiled Wiki pages as high-weight skeleton context.
+
+        Uses the wiki search engine (keyword + graph expansion) with
+        context budget management.
+        """
+        try:
+            from wiki.wiki_search import search_wiki
+            from wiki.context_budget import compute_budgets, truncate_wiki_context
+
+            # Search with higher top_k to allow budget filtering
+            pages = search_wiki(
+                query=message,
+                project_id=project_id,
+                db=self.db,
+                top_k=top_k * 2,
+                enable_graph=True,
+            )
+            if not pages:
+                return []
+
+            # Apply context budget truncation
+            budgets = compute_budgets()
+            truncated = truncate_wiki_context(pages, budgets["wiki"])
+
+            logger.info("Wiki context: %d pages searched → %d after budget truncation",
+                        len(pages), len(truncated))
+            return truncated
+        except Exception as e:
+            logger.warning("Wiki context search failed: %s", e)
+            return []

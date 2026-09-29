@@ -3,19 +3,42 @@ import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Mermaid } from './Mermaid'
 
-/** Custom link renderer: open all links in external browser */
+/** Convert [[page_key]] and [[page_key|display text]] to markdown links with wiki: protocol */
+function preprocessWikiLinks(content: string): string {
+  return content.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_match, key: string, label?: string) => {
+    const displayText = label || key
+    // Use https://wiki/ prefix instead of wiki: protocol (react-markdown v9 strips non-standard protocols)
+    return `[${displayText}](https://wiki/${encodeURIComponent(key.trim())})`
+  })
+}
+
+/** Custom link renderer: open external links in browser, handle wiki: links via callback */
 const SafeLink: Components['a'] = ({ href, children, ...rest }) => {
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    if (href) {
-      // Use Electron's shell.openExternal via a data attribute
-      // The Electron main process will intercept this via will-navigate
-      window.open(href, '_blank', 'noopener,noreferrer')
+    if (!href) return
+
+    // Wiki-link: https://wiki/PAGE_KEY format (preprocessed from [[page_key]])
+    if (href.startsWith('https://wiki/')) {
+      const pageKey = decodeURIComponent(href.slice(13)) // Remove 'https://wiki/'
+      window.dispatchEvent(new CustomEvent('wiki-link-click', { detail: { pageKey } }))
+      return
     }
+    window.open(href, '_blank', 'noopener,noreferrer')
   }
+
+  // Style wiki-links differently from external links
+  const isWikiLink = href?.startsWith('https://wiki/')
   return (
-    <a href={href} onClick={handleClick} target="_blank" rel="noopener noreferrer" {...rest}>
+    <a
+      href={href}
+      onClick={handleClick}
+      className={isWikiLink ? 'wiki-link' : undefined}
+      target={isWikiLink ? undefined : '_blank'}
+      rel={isWikiLink ? undefined : 'noopener noreferrer'}
+      {...rest}
+    >
       {children}
     </a>
   )
@@ -89,7 +112,8 @@ function splitSegments(src: string): Segment[] {
 }
 
 export function Markdown({ content, className }: MarkdownProps) {
-  const segments = splitSegments(content)
+  const processed = preprocessWikiLinks(content)
+  const segments = splitSegments(processed)
 
   return (
     <div className={`markdown ${className || ''}`}>

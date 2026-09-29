@@ -1,7 +1,8 @@
 /** src/features/knowledge/FileUploader.tsx */
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Trash2, RefreshCw, MoreVertical } from 'lucide-react'
+import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import type { FileRecord, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './FileUploader.module.css'
@@ -10,8 +11,10 @@ interface FileUploaderProps {
   projectId: string
   files: FileRecord[]
   onRefresh: () => void
-  hasMore?: boolean
-  onLoadMore?: () => void
+  filePage?: number
+  fileTotal?: number
+  fileLimit?: number
+  onPageChange?: (page: number) => void
   loadingMore?: boolean
   selectedFileId?: string | null
   onSelectFile?: (fileId: string | null) => void
@@ -19,21 +22,21 @@ interface FileUploaderProps {
   ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
-const FILE_ICONS: Record<string, string> = {
-  '.pdf': '📄',
-  '.docx': '📝',
-  '.doc': '📝',
-  '.pptx': '📊',
-  '.ppt': '📊',
-  '.xlsx': '📈',
-  '.xls': '📈',
-  '.html': '🌐',
-  '.png': '🖼️',
-  '.jpg': '🖼️',
-  '.jpeg': '🖼️',
+const FILE_ICONS: Record<string, LucideIcon> = {
+  '.pdf': FileText,
+  '.docx': FileText,
+  '.doc': FileText,
+  '.pptx': FileText,
+  '.ppt': FileText,
+  '.xlsx': FileSpreadsheet,
+  '.xls': FileSpreadsheet,
+  '.html': Globe,
+  '.png': Image,
+  '.jpg': Image,
+  '.jpeg': Image,
 }
 
-export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore, loadingMore, selectedFileId, onSelectFile, onDeleteFile, ipcChannels }: FileUploaderProps) {
+export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTotal = 0, fileLimit = 20, onPageChange, selectedFileId, onSelectFile, onDeleteFile, ipcChannels }: FileUploaderProps) {
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -181,7 +184,7 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
                 checked={selectedIds.has(file.id)}
                 onChange={(e) => { e.stopPropagation(); toggleSelect(file.id) }}
               />
-              <span className={s.fileIcon}>{FILE_ICONS[file.file_type] || '📄'}</span>
+              <span className={s.fileIcon}>{(() => { const Icon = FILE_ICONS[file.file_type] || FileText; return <Icon size={14} /> })()}</span>
               <div className={s.fileInfo}>
                 <span className={s.filename}>{file.filename}</span>
                 <div className={s.fileMeta}>
@@ -257,12 +260,37 @@ export function FileUploader({ projectId, files, onRefresh, hasMore, onLoadMore,
             </div>
           )}
 
-          {/* Load more */}
-          {hasMore && (
-            <button className={s.loadMoreBtn} onClick={onLoadMore} disabled={loadingMore}>
-              {loadingMore ? t('knowledge.loading') : t('knowledge.loadMore')}
-            </button>
-          )}
+          {/* File pagination */}
+          {(() => {
+            const totalPages = Math.max(1, Math.ceil(fileTotal / fileLimit))
+            if (totalPages <= 1) return null
+            const pages: number[] = []
+            if (totalPages <= 7) {
+              for (let i = 1; i <= totalPages; i++) pages.push(i)
+            } else if (filePage <= 4) {
+              for (let i = 1; i <= 7; i++) pages.push(i)
+            } else if (filePage >= totalPages - 3) {
+              for (let i = totalPages - 6; i <= totalPages; i++) pages.push(i)
+            } else {
+              for (let i = filePage - 3; i <= filePage + 3; i++) pages.push(i)
+            }
+            return (
+              <div className={s.filePagination}>
+                <button className={s.pageBtn} disabled={filePage <= 1} onClick={() => onPageChange?.(filePage - 1)}>
+                  <ChevronLeft size={14} />
+                </button>
+                {pages.map(p => (
+                  <button key={p} className={`${s.pageBtn} ${p === filePage ? s.pageBtnActive : ''}`} onClick={() => onPageChange?.(p)}>
+                    {p}
+                  </button>
+                ))}
+                <button className={s.pageBtn} disabled={filePage >= totalPages} onClick={() => onPageChange?.(filePage + 1)}>
+                  <ChevronRight size={14} />
+                </button>
+                <span className={s.pageInfo}>{filePage} / {totalPages}</span>
+              </div>
+            )
+          })()}
 
           {/* Retry all failed */}
           {files.some(f => f.status === 'error') && (

@@ -14,8 +14,12 @@
     "dev:debug": "concurrently -k \"npm:python:debug\" \"npm:dev:vite\" \"npm:dev:electron\""
   },
   "dependencies": {
+    "@react-sigma/core": "^5.0.6",
+    "@sigma/edge-curve": "^3.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "better-sqlite3": "^13.0.3",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
     "i18next": "^26.4.2",
     "lucide-react": "^1.47.0",
     "mermaid": "^12.0.0",
@@ -25,7 +29,8 @@
     "react-markdown": "^9.0.1",
     "react-syntax-highlighter": "^16.1.1",
     "rehype-raw": "^7.0.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "sigma": "^3.0.3"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

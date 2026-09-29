@@ -1,6 +1,7 @@
 {
   "app": {
-    "title": "墨方"
+    "title": "墨方",
+    "processExit": "服务进程已退出 (code: {{code}})，请检查日志或重启应用"
   },
   "menu": {
     "file": "文件",
@@ -124,7 +125,21 @@
       "fileParsing": "文件解析并发数",
       "fileParsingHint": "同时处理的文件数量，默认 1",
       "imageDescription": "图片描述并发数",
-      "imageDescriptionHint": "同时处理的图片数量，默认 2"
+      "imageDescriptionHint": "同时处理的图片数量，默认 2",
+      "compile": "Wiki 编译并发数",
+      "compileHint": "同时进行的编译任务数，默认 1"
+    },
+    "compile": {
+      "maxRetries": "编译最大重试次数",
+      "maxRetriesHint": "编译失败后的重试次数，默认 3",
+      "backoffBase": "重试退避基数（秒）",
+      "backoffBaseHint": "指数退避基数，实际间隔 = 基数 × 2^重试次数，默认 30s"
+    },
+    "llm": {
+      "connectTimeout": "LLM 连接超时（秒）",
+      "connectTimeoutHint": "建立连接的超时时间，默认 30 秒",
+      "readTimeout": "LLM 读取超时（秒）",
+      "readTimeoutHint": "等待模型响应的超时时间，默认 300 秒"
     },
     "task": {
       "title": "任务设置",
@@ -236,7 +251,7 @@
     "imageTotal": "共 {{count}} 张图片",
     "searchImagePlaceholder": "搜索图片描述...",
     "noImageMatch": "没有匹配的图片",
-    "chatHint": "基于知识库内容的 RAG 问答\n输入问题开始对话",
+    "chatHint": "基于知识库与 Wiki 的智能问答\n输入问题开始对话",
     "chatThinking": "正在思考...",
     "chatInputPlaceholder": "输入问题...",
     "chatNoAnswer": "抱歉，未找到相关信息",
@@ -281,7 +296,11 @@
     "category_other": "其他",
     "changeCategory": "修改分类",
     "archiveImage": "归档",
-    "confirmArchive": "确认归档此图片？已生成的描述数据将被清除。"
+    "confirmArchive": "确认归档此图片？已生成的描述数据将被清除。",
+    "size_all": "全部尺寸",
+    "size_small": "小图",
+    "size_medium": "中图",
+    "size_large": "大图"
   },
   "about": {
     "tagline": "智能产业洞察与知识平台"
@@ -380,7 +399,31 @@
     "depNotDetected": "未检测到",
     "depRefresh": "刷新检测",
     "skillPermissions": "权限声明",
-    "skillPermissionsHint": "此 Skill 声明的权限范围"
+    "skillPermissionsHint": "此 Skill 声明的权限范围",
+    "defaultTitle": "新任务",
+    "confirmWorkspace": "确认使用此目录作为工作区？\n\n{{path}}\n\n目录中的文件可能会被任务修改。",
+    "diffChanges": "变更",
+    "executionPlan": "执行计划",
+    "stepsCount": "步",
+    "steps": "{{count}}步",
+    "tools": {
+      "code_executor": "执行代码",
+      "shell": "Shell",
+      "file_ops": "文件操作",
+      "code_search": "搜索",
+      "web_fetch": "网页",
+      "web_search": "网络搜索",
+      "code_lint": "代码检查",
+      "code_format": "格式化",
+      "package_manager": "依赖管理",
+      "project_scaffold": "项目骨架",
+      "knowledge_search": "知识库",
+      "doc_generator": "文档转换",
+      "repo_map": "代码结构",
+      "skill_runner": "Skill",
+      "git_ops": "Git",
+      "lsp_client": "代码分析"
+    }
   },
   "home": {
     "statusTitle": "服务状态",
@@ -614,7 +657,94 @@
       "title": "项目 Wiki",
       "description": "LLM 将项目文档编译为结构化、互相链接的 Wiki 页面，实现知识沉淀",
       "suggestedStructure": "建议 Wiki 结构（按项目类型）",
-      "comingSoon": "Wiki 功能即将推出"
+      "comingSoon": "Wiki 功能即将推出",
+      "hints": {
+        "investment": ["公司概况", "核心团队", "财务健康度", "法律风险", "估值参考", "风险清单"],
+        "recruitment": ["招商政策摘要", "目标企业画像", "园区/区域概况", "产业链分析", "竞品园区对比"],
+        "general": ["由 LLM 根据文档自动推断"]
+      },
+      "statusQueued": "编译排队中...",
+      "statusIngesting": "摄入文件内容...",
+      "statusStoring": "保存知识库...",
+      "pages": "页面",
+      "compileDone": "编译完成 ({{count}} 个文件)",
+      "compilePartial": "编译部分完成: {{completed}}/{{total}} 页面, {{failed}} 失败",
+      "retry": "重试",
+      "continueCompile": "继续编译",
+      "compileStopped": "编译已停止: {{completed}}/{{total}} 文件",
+      "compileStoppedSimple": "编译已停止",
+      "recompile": "重新编译",
+      "recompileConfirm": "重新编译将清除所有 Wiki 页面、版本历史、审查项和变更日志，从零开始。此操作不可撤销，确定继续？",
+      "compile": "编译",
+      "pendingCompile": "有 {{count}} 个新文件待编译",
+      "home": "首页",
+      "changeLog": "变更日志",
+      "purpose": "Wiki 目标",
+      "overview": "全局摘要",
+      "editPurposePlaceholder": "定义这个 Wiki 的目标和范围...",
+      "editOverviewPlaceholder": "Wiki 全局摘要...",
+      "noPurpose": "未定义 Wiki 目标。点击编辑来定义这个 Wiki 的目标和范围。",
+      "noOverview": "暂无全局摘要。上传文件并编译后，摘要将自动生成。",
+      "wikiPages": "Wiki 页面",
+      "sourceFiles": "来源文件",
+      "viewChangeLog": "查看变更日志",
+      "edit": "编辑",
+      "save": "保存",
+      "cancel": "取消",
+      "backlinks": "反向链接",
+      "sources": "来源文件",
+      "pageHistory": "页面历史",
+      "selectPage": "选择一个页面查看内容",
+      "editorPlaceholder": "输入 Markdown 内容...\n\n支持 [[page_key]] 语法创建页面间链接",
+      "editorHint": "支持 Markdown 语法 · 使用 [[page_key]] 创建页面链接 · 保存后页面状态将标记为「用户已编辑」",
+      "chars": "字符",
+      "compileFindings": "编译发现项",
+      "dismiss": "忽略",
+      "resolved": "已解决",
+      "noChangeLog": "暂无变更记录",
+      "pageType": {
+        "structure": "结构页",
+        "entity": "实体页",
+        "concept": "概念页",
+        "process": "流程页",
+        "reference": "参考页"
+      },
+      "action": {
+        "created": "创建",
+        "updated": "更新",
+        "user_edited": "用户编辑",
+        "deleted": "删除",
+        "archived": "归档",
+        "ingested": "摄入",
+        "overview_updated": "概览更新"
+      },
+      "supervisedMode": "监督摄入模式",
+      "supervisedWaiting": "等待审阅...",
+      "supervisedFiles": "文件",
+      "supervisedProgress": "已处理 {{done}}/{{total}} 个文件",
+      "supervisedContinue": "继续下一篇",
+      "supervisedStop": "停止摄入",
+      "supervisedClose": "关闭",
+      "supervisedSkipped": "已跳过",
+      "supervisedError": "处理失败",
+      "supervisedDone": "处理完成",
+      "supervisedCreated": "新建",
+      "supervisedUpdated": "更新",
+      "supervisedReviews": "发现项",
+      "supervisedAllDone": "所有文件摄入完成",
+      "supervisedStopped": "摄入已停止",
+      "selectAll": "全选",
+      "batchDismiss": "批量忽略 ({{count}})",
+      "batchResolved": "批量已解决 ({{count}})",
+      "runLint": "运行检查",
+      "lintRunning": "检查中...",
+      "lintDone": "检查完成 ({{count}} 个发现项)",
+      "lintFailed": "检查失败",
+      "lintNoPages": "暂无 Wiki 页面，无法执行检查",
+      "searchPlaceholder": "搜索 Wiki 页面...",
+      "searchHint": "输入关键词搜索 Wiki 页面",
+      "noResults": "未找到相关页面",
+      "graphRelated": "图谱关联"
     },
     "forms": {
       "newForm": "新建表格",
@@ -631,6 +761,8 @@
       "confirmExport": "确认导出",
       "exportSuccess": "{{name}} 已导出"
     },
+    "stageUpdateFailed": "阶段更新失败",
+    "typeUpdateFailed": "类型更新失败",
     "chat": {
       "title": "知识问答",
       "placeholder": "输入问题，基于项目知识库回答...",
@@ -654,6 +786,8 @@
       "copyAsCustom": "复制为自定义模板",
       "confirmDelete": "确认删除此自定义模板？",
       "deleteSuccess": "模板已删除",
+      "copyFailed": "复制模板失败",
+      "deleteFailed": "删除模板失败",
       "stageLabel": "阶段",
       "presetReadOnly": "预置模板为只读，可复制后编辑",
       "edit": "编辑",
@@ -702,7 +836,9 @@
         "variablePlaceholder": "输入变量名",
         "addVariable": "添加变量",
         "nameRequired": "请输入模板名称",
-        "saveSuccess": "模板已保存"
+        "saveSuccess": "模板已保存",
+        "custom": "自定义",
+        "copySuffix": "副本"
       }
     }
   }

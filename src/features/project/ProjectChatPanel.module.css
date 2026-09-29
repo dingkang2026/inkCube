@@ -1,12 +1,12 @@
 /* src/features/project/ProjectChatPanel.module.css — Right-side resizable chat panel */
 
-/* ── Wrapper: sits beside tab content ── */
+/* ── Wrapper: sits beside tab content (no position:relative — toggle tab anchors to .page) ── */
 .wrapper {
   display: flex;
   flex-shrink: 0;
   min-height: 0;
   overflow: visible;
-  position: relative;
+  width: 0; /* Don't take up space when panel is open */
 }
 
 /* ── Toggle tab — small floating label, attached to right edge ── */
@@ -28,7 +28,7 @@
   color: var(--text-muted);
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.06);
   transition: color 0.15s, background 0.15s, box-shadow 0.15s;
-  z-index: 5;
+  z-index: 150; /* Higher than preview (100), lower than chat panel (200) */
 }
 
 .toggleTab:hover {
@@ -55,15 +55,29 @@
   writing-mode: horizontal-tb;
 }
 
-/* ── Panel — right side, resizable ── */
+/* ── Panel — overlay from right, positioned relative to .page (full page height) ── */
 .panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
   background: var(--bg-primary);
   border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.1);
   overflow: hidden;
-  position: relative;
+  z-index: 200; /* Higher than preview panel (100) */
+  animation: slideInFromRight 0.2s ease-out;
+}
+
+@keyframes slideInFromRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
 }
 
 /* ── Drag handle — left edge of panel, wide hit-area ── */
@@ -341,13 +355,6 @@
   50% { opacity: 1; }
 }
 
-.messageTime {
-  font-size: 10px;
-  opacity: 0.6;
-  margin-top: 4px;
-  text-align: right;
-}
-
 /* ── Input row ── */
 .inputRow {
   display: flex;
@@ -397,4 +404,108 @@
 
 .sendBtn:not(:disabled):hover {
   opacity: 0.85;
+}
+
+/* ── Archive to Wiki actions ── */
+.messageActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.archiveBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.archiveBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.archiveForm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.archiveInput {
+  flex: 1;
+  min-width: 100px;
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.archiveInput:focus {
+  border-color: var(--accent);
+}
+
+.archiveConfirmBtn {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.archiveConfirmBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.archiveConfirmBtn:not(:disabled):hover {
+  opacity: 0.85;
+}
+
+.archiveCancelBtn {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.archiveCancelBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.archiveSuccess {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-success, #16a34a);
+}
+
+.archiveError {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-danger, #dc2626);
 }

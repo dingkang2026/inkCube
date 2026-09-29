@@ -55,6 +55,7 @@ async def retrieve_for_section(
     base_project_ids: Optional[list[str]] = None,
     top_k: int = 10,
     query_parallelism: int = 4,
+    db: Any = None,
 ) -> tuple[RetrievalResult, dict]:
     """为一个章节执行多通道并行检索。
 
@@ -117,9 +118,15 @@ async def retrieve_for_section(
             )
         )
 
-    # "wiki" 通道：架构预留，当前不实施
-    if "wiki" in data_sources:
-        logger.info("Retrieval: wiki channel not yet implemented, skipping")
+    # "wiki" 通道：Wiki 页面作为高权重骨架上下文
+    if "wiki" in data_sources and db is not None:
+        channel_tasks.append(
+            _search_wiki_channel(
+                queries, db, project_id, top_k,
+            )
+        )
+    elif "wiki" in data_sources:
+        logger.info("Retrieval: wiki channel requested but no db provided, skipping")
 
     # 并行执行所有通道
     if channel_tasks:
@@ -372,3 +379,54 @@ def _truncate_content(text: str, max_len: int = 500) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + "……"
+
+
+# ── wiki 通道 ──────────────────────────────────────────────
+
+
+async def _search_wiki_channel(
+    queries: list[str],
+    db: Any,
+    project_id: str,
+    top_k: int,
+) -> tuple[list[dict], dict]:
+    """Wiki 通道：从已编译的 Wiki 页面中检索相关页面。
+
+    使用 wiki_search 引擎（关键词 + 图谱扩展），合并去重后按相关性排序。
+    Wiki 页面作为"骨架"上下文，赋予较高权重。
+    """
+    empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    from wiki.wiki_search import search_wiki
+
+    all_pages: dict[str, dict] = {}  # page_key -> result dict
+
+    for query in queries:
+        try:
+            results = search_wiki(
+                query=query,
+                project_id=project_id,
+                db=db,
+                top_k=top_k,
+                enable_graph=True,
+            )
+        except Exception as e:
+            logger.warning("Wiki search failed for query='%s': %s", query, e)
+            continue
+
+        for page in results:
+            pk = page.get("page_key", "")
+            if pk and pk not in all_pages:
+                content = page.get("content", "")
+                all_pages[pk] = {
+                    "source_type": "wiki",
+                    "source_title": page.get("title", pk),
+                    "source_from": f"wiki:{pk}",
+                    "source_date": page.get("updated_at", ""),
+                    "content": _truncate_content(content, 800),
+                    "score": page.get("_score", 1.0),
+                    "page_key": pk,
+                }
+
+    sorted_pages = sorted(all_pages.values(), key=lambda r: r["score"], reverse=True)
+    return sorted_pages[:top_k], empty_usage

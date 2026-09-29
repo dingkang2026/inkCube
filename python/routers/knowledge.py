@@ -69,6 +69,36 @@ async def _validate_base_lib_exists(db: Database, lib_id: str):
     return lib
 
 
+class ProjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    type: Optional[str] = "general"
+    stage: Optional[str] = "none"
+    company_name: Optional[str] = ""
+    credit_code: Optional[str] = ""
+
+
+class FileUpload(BaseModel):
+    projectId: str
+    filename: str
+    fileType: str
+    data: str  # base64 encoded file content
+
+
+class SearchRequest(BaseModel):
+    projectId: str
+    query: str
+    topK: int = 5
+    contentTypeFilter: Optional[str] = None
+    fileId: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    """Knowledge base chat request — RAG Q&A, independent from agent chat."""
+    message: str
+    fileId: Optional[str] = None
+
+
 async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, worker):
     """Core upload logic for base library files (shared across base lib routes)."""
     import uuid
@@ -117,36 +147,6 @@ async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, w
     }
 
 
-class ProjectCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    type: Optional[str] = "general"
-    stage: Optional[str] = "none"
-    company_name: Optional[str] = ""
-    credit_code: Optional[str] = ""
-
-
-class FileUpload(BaseModel):
-    projectId: str
-    filename: str
-    fileType: str
-    data: str  # base64 encoded file content
-
-
-class SearchRequest(BaseModel):
-    projectId: str
-    query: str
-    topK: int = 5
-    contentTypeFilter: Optional[str] = None
-    fileId: Optional[str] = None
-
-
-class ChatRequest(BaseModel):
-    """Knowledge base chat request — RAG Q&A, independent from agent chat."""
-    message: str
-    fileId: Optional[str] = None
-
-
 @router.get("/projects")
 async def list_projects():
     """List all projects with file and chunk counts"""
@@ -177,10 +177,10 @@ async def list_projects():
                 "id": row["id"],
                 "name": row["name"],
                 "description": row["description"],
-                "type": row.get("type", "general"),
-                "stage": row.get("stage", "none"),
-                "company_name": row.get("company_name", ""),
-                "credit_code": row.get("credit_code", ""),
+                "type": row["type"],
+                "stage": row["stage"],
+                "company_name": row["company_name"],
+                "credit_code": row["credit_code"],
                 "file_count": row["file_count"],
                 "chunk_count": row["chunk_count"],
                 "created_at": row["created_at"]
@@ -228,12 +228,13 @@ async def create_project(project: ProjectCreate):
 async def get_project_files(
     project_id: str,
     limit: int = 20,
+    offset: int = 0,
     before_created_at: Optional[str] = None,
     before_id: Optional[str] = None,
     file_type: Optional[str] = None,
     filename_search: Optional[str] = None,
 ):
-    """Get files in a project with cursor-based pagination, type filter, and filename search."""
+    """Get files in a project with offset/cursor pagination, type filter, and filename search."""
     try:
         db = get_db()
 
@@ -262,27 +263,47 @@ async def get_project_files(
 
         where_sql = " AND ".join(where_clauses)
 
-        # Cursor-based pagination
-        if before_created_at and before_id:
-            where_sql += " AND (f.created_at < ? OR (f.created_at = ? AND f.id < ?))"
-            params.extend([before_created_at, before_created_at, before_id])
-
+        # Offset-based pagination
+        if offset > 0:
+            params.append(offset)
         params.append(limit + 1)  # fetch one extra to detect has_more
 
-        cursor = db.conn.execute(
+        sql = (
             f"""SELECT f.id, f.filename, f.file_type, f.status, f.progress,
                        f.chunk_count, f.image_count, f.image_status,
                        f.image_described_count, f.error_message, f.created_at
                 FROM files f
                 WHERE {where_sql}
                 ORDER BY f.created_at DESC, f.id DESC
-                LIMIT ?""",
-            params,
+                LIMIT ?"""
         )
+        if offset > 0:
+            sql += " OFFSET ?"
+
+        cursor = db.conn.execute(sql, params)
         rows = [dict(r) for r in cursor.fetchall()]
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]
+
+        # Get total count (re-derive params without limit/offset)
+        count_params: list = [project_id]
+        if file_type and file_type != "all":
+            type_map = {
+                "pdf": [".pdf"], "docx": [".docx", ".doc"],
+                "pptx": [".pptx", ".ppt"], "xlsx": [".xlsx", ".xls"],
+                "image": [".png", ".jpg", ".jpeg"],
+            }
+            extensions = type_map.get(file_type, [])
+            if extensions:
+                count_params.extend(extensions)
+        if filename_search:
+            count_params.append(f"%{filename_search}%")
+        count_cursor = db.conn.execute(
+            f"SELECT COUNT(*) as cnt FROM files f WHERE {where_sql}",
+            count_params,
+        )
+        total = count_cursor.fetchone()["cnt"]
 
         result = []
         for row in rows:
@@ -299,7 +320,7 @@ async def get_project_files(
                 "error_message": row.get("error_message"),
                 "created_at": row["created_at"],
             })
-        return {"files": result, "has_more": has_more}
+        return {"files": result, "has_more": has_more, "total": total}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -488,16 +509,24 @@ async def chat_project(project_id: str, request: ChatRequest):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    type: Optional[str] = None
+    stage: Optional[str] = None
 
 
 @router.patch("/projects/{project_id}")
 async def update_project(project_id: str, body: ProjectUpdate):
-    """Update project name and/or description."""
+    """Update project name, description, type, and/or stage."""
     try:
         db = get_db()
-        if body.name is None and body.description is None:
+        if body.name is None and body.description is None and body.type is None and body.stage is None:
             raise HTTPException(status_code=400, detail="No fields to update")
-        db.update_project(project_id, name=body.name, description=body.description)
+        db.update_project(
+            project_id,
+            name=body.name,
+            description=body.description,
+            type=body.type,
+            stage=body.stage,
+        )
         return {"success": True}
     except HTTPException:
         raise
@@ -527,7 +556,20 @@ async def delete_project(project_id: str):
             import shutil
             shutil.rmtree(files_dir, ignore_errors=True)
 
-        # Delete from database (cascade handles files, images; kind check prevents base_lib deletion)
+        # Explicit Wiki cleanup before CASCADE (belt-and-suspenders)
+        try:
+            wiki_counts = db.cleanup_wiki_data_for_project(project_id)
+            import logging
+            logging.getLogger(__name__).info(
+                "Wiki pre-cascade cleanup for project %s: %s", project_id, wiki_counts,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Wiki pre-cleanup failed for project %s: %s", project_id, e,
+            )
+
+        # Delete from database (cascade handles files, images, wiki_*; kind check prevents base_lib deletion)
         db.delete_project(project_id)
 
         return {"success": True}
@@ -551,6 +593,11 @@ async def delete_file(project_id: str, file_id: str):
             db, vs, fts, file_id, project_id, data_dir,
             remove_file_record=True,
         )
+        # Wiki notification: file deleted → increment pending compile count
+        try:
+            db.increment_pending_compile_count(project_id)
+        except Exception:
+            pass
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -631,6 +678,12 @@ async def batch_delete_files(project_id: str, req: BatchFileRequest):
                 deleted += 1
             except Exception:
                 pass
+        # Wiki notification: files deleted → increment pending compile count
+        if deleted > 0:
+            try:
+                db.increment_pending_compile_count(project_id, deleted)
+            except Exception:
+                pass
         return {"success": True, "deleted_count": deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -674,42 +727,122 @@ async def get_project_images(
     limit: int = 40,
     offset: int = 0,
     file_id: Optional[str] = None,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    size: Optional[str] = None,
 ):
-    """Get all images for a project with pagination. Optionally filter by file_id."""
+    """Get all images for a project with pagination and server-side filtering."""
     try:
         db = get_db()
 
-        where_clauses = ["f.project_id = ?"]
-        params = [project_id]
+        # Base WHERE = project + file + search
+        base_clauses = ["f.project_id = ?"]
+        base_params = [project_id]
         if file_id:
-            where_clauses.append("i.file_id = ?")
-            params.append(file_id)
-        where_sql = " AND ".join(where_clauses)
+            base_clauses.append("i.file_id = ?")
+            base_params.append(file_id)
+        if search and search.strip():
+            q = f"%{search.strip()}%"
+            base_clauses.append("(i.vlm_description LIKE ? OR i.caption LIKE ? OR f.filename LIKE ?)")
+            base_params.extend([q, q, q])
+
+        # Category filter clauses (for status_counts: base + category + size)
+        cat_filter_clauses = list(base_clauses)
+        cat_filter_params = list(base_params)
+        if category and category != 'all':
+            if category == 'uncategorized':
+                cat_filter_clauses.append("(i.category IS NULL OR i.category = 'uncategorized')")
+            else:
+                cat_filter_clauses.append("i.category = ?")
+                cat_filter_params.append(category)
+        if size and size != 'all':
+            if size == 'small':
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 200")
+            elif size == 'medium':
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 200")
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 800")
+            elif size == 'large':
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 800")
+        status_count_where = " AND ".join(cat_filter_clauses)
+
+        # Status filter clauses (for category_counts: base + status + size)
+        status_filter_clauses = list(base_clauses)
+        status_filter_params = list(base_params)
+        if status:
+            if status == 'active':
+                status_filter_clauses.append("i.status IN ('pending','processing','done')")
+            elif status != 'all':
+                status_filter_clauses.append("i.status = ?")
+                status_filter_params.append(status)
+        if size and size != 'all':
+            if size == 'small':
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 200")
+            elif size == 'medium':
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 200")
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 800")
+            elif size == 'large':
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 800")
+        cat_count_where = " AND ".join(status_filter_clauses)
+
+        # Full WHERE = base + status + category + size (for main query and total)
+        full_clauses = list(cat_filter_clauses)
+        full_params = list(cat_filter_params)
+        if status:
+            if status == 'active':
+                full_clauses.append("i.status IN ('pending','processing','done')")
+            elif status != 'all':
+                full_clauses.append("i.status = ?")
+                full_params.append(status)
+        full_where_sql = " AND ".join(full_clauses)
 
         cursor = db.conn.execute(
             f"""SELECT i.id, i.file_id, i.page_no, i.caption, i.local_path,
                       i.vlm_description, i.status, i.context_text,
-                      i.error_message, i.category, i.created_at, f.filename
+                      i.error_message, i.category, i.width_px, i.height_px,
+                      i.created_at, f.filename, f.file_size
                FROM images i
                JOIN files f ON f.id = i.file_id
-               WHERE {where_sql}
+               WHERE {full_where_sql}
                ORDER BY i.created_at DESC
                LIMIT ? OFFSET ?""",
-            params + [limit + 1, offset],
+            full_params + [limit + 1, offset],
         )
         rows = [dict(r) for r in cursor.fetchall()]
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]
 
-        # Get total count
+        # Total count (with status + category filters)
         count_cursor = db.conn.execute(
             f"""SELECT COUNT(*) as cnt FROM images i
                JOIN files f ON f.id = i.file_id
-               WHERE {where_sql}""",
-            params,
+               WHERE {full_where_sql}""",
+            full_params,
         )
         total = count_cursor.fetchone()["cnt"]
+
+        # Status counts (base + category filter, NOT status filter)
+        status_cursor = db.conn.execute(
+            f"""SELECT i.status, COUNT(*) as cnt
+               FROM images i
+               JOIN files f ON f.id = i.file_id
+               WHERE {status_count_where}
+               GROUP BY i.status""",
+            cat_filter_params,
+        )
+        status_counts = {r["status"]: r["cnt"] for r in status_cursor.fetchall()}
+
+        # Category counts (base + status filter, NOT category filter)
+        cat_cursor = db.conn.execute(
+            f"""SELECT COALESCE(i.category, 'uncategorized') as category, COUNT(*) as cnt
+               FROM images i
+               JOIN files f ON f.id = i.file_id
+               WHERE {cat_count_where}
+               GROUP BY COALESCE(i.category, 'uncategorized')""",
+            status_filter_params,
+        )
+        category_counts = {r["category"]: r["cnt"] for r in cat_cursor.fetchall()}
 
         return {
             "images": [
@@ -725,12 +858,17 @@ async def get_project_images(
                     "error_message": r.get("error_message"),
                     "context_text": r["context_text"],
                     "category": r.get("category", "uncategorized"),
+                    "width_px": r.get("width_px"),
+                    "height_px": r.get("height_px"),
+                    "file_size": r.get("file_size"),
                     "created_at": r["created_at"],
                 }
                 for r in rows
             ],
             "total": total,
             "has_more": has_more,
+            "status_counts": status_counts,
+            "category_counts": category_counts,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1324,35 +1462,108 @@ async def chat_base_lib(lib_id: str, request: ChatRequest):
 async def get_base_lib_images(
     lib_id: str, limit: int = 40, offset: int = 0,
     file_id: Optional[str] = None,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    size: Optional[str] = None,
 ):
-    """Get images in a base library."""
+    """Get images in a base library with server-side filtering."""
     try:
         db = get_db()
         await _validate_base_lib_exists(db, lib_id)
-        where_clauses = ["f.project_id = ?"]
-        params = [lib_id]
+        # Base WHERE = project + file + search
+        base_clauses = ["f.project_id = ?"]
+        base_params = [lib_id]
         if file_id:
-            where_clauses.append("i.file_id = ?")
-            params.append(file_id)
-        where_sql = " AND ".join(where_clauses)
+            base_clauses.append("i.file_id = ?")
+            base_params.append(file_id)
+        if search and search.strip():
+            q = f"%{search.strip()}%"
+            base_clauses.append("(i.vlm_description LIKE ? OR i.caption LIKE ? OR f.filename LIKE ?)")
+            base_params.extend([q, q, q])
+
+        # Category filter clauses (for status_counts: base + category + size)
+        cat_filter_clauses = list(base_clauses)
+        cat_filter_params = list(base_params)
+        if category and category != 'all':
+            if category == 'uncategorized':
+                cat_filter_clauses.append("(i.category IS NULL OR i.category = 'uncategorized')")
+            else:
+                cat_filter_clauses.append("i.category = ?")
+                cat_filter_params.append(category)
+        if size and size != 'all':
+            if size == 'small':
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 200")
+            elif size == 'medium':
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 200")
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 800")
+            elif size == 'large':
+                cat_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 800")
+        status_count_where = " AND ".join(cat_filter_clauses)
+
+        # Status filter clauses (for category_counts: base + status + size)
+        status_filter_clauses = list(base_clauses)
+        status_filter_params = list(base_params)
+        if status:
+            if status == 'active':
+                status_filter_clauses.append("i.status IN ('pending','processing','done')")
+            elif status != 'all':
+                status_filter_clauses.append("i.status = ?")
+                status_filter_params.append(status)
+        if size and size != 'all':
+            if size == 'small':
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 200")
+            elif size == 'medium':
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 200")
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) < 800")
+            elif size == 'large':
+                status_filter_clauses.append("MAX(COALESCE(i.width_px, 0), COALESCE(i.height_px, 0)) >= 800")
+        cat_count_where = " AND ".join(status_filter_clauses)
+
+        # Full WHERE = base + status + category
+        full_clauses = list(cat_filter_clauses)
+        full_params = list(cat_filter_params)
+        if status:
+            if status == 'active':
+                full_clauses.append("i.status IN ('pending','processing','done')")
+            elif status != 'all':
+                full_clauses.append("i.status = ?")
+                full_params.append(status)
+        full_where_sql = " AND ".join(full_clauses)
+
         cursor = db.conn.execute(
             f"""SELECT i.id, i.file_id, i.page_no, i.caption, i.local_path,
                       i.vlm_description, i.status, i.context_text,
-                      i.error_message, i.category, i.created_at, f.filename
+                      i.error_message, i.category, i.width_px, i.height_px,
+                      i.created_at, f.filename, f.file_size
                FROM images i JOIN files f ON f.id = i.file_id
-               WHERE {where_sql}
+               WHERE {full_where_sql}
                ORDER BY i.created_at DESC LIMIT ? OFFSET ?""",
-            params + [limit + 1, offset],
+            full_params + [limit + 1, offset],
         )
         rows = [dict(r) for r in cursor.fetchall()]
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]
         count_cursor = db.conn.execute(
-            f"SELECT COUNT(*) as cnt FROM images i JOIN files f ON f.id = i.file_id WHERE {where_sql}",
-            params,
+            f"SELECT COUNT(*) as cnt FROM images i JOIN files f ON f.id = i.file_id WHERE {full_where_sql}",
+            full_params,
         )
         total = count_cursor.fetchone()["cnt"]
+        # Status counts (base + category filter, NOT status filter)
+        status_cursor = db.conn.execute(
+            f"SELECT i.status, COUNT(*) as cnt FROM images i JOIN files f ON f.id = i.file_id WHERE {status_count_where} GROUP BY i.status",
+            cat_filter_params,
+        )
+        status_counts = {r["status"]: r["cnt"] for r in status_cursor.fetchall()}
+        # Category counts (base + status filter, NOT category filter)
+        cat_cursor = db.conn.execute(
+            f"""SELECT COALESCE(i.category, 'uncategorized') as category, COUNT(*) as cnt
+               FROM images i JOIN files f ON f.id = i.file_id
+               WHERE {cat_count_where} GROUP BY COALESCE(i.category, 'uncategorized')""",
+            status_filter_params,
+        )
+        category_counts = {r["category"]: r["cnt"] for r in cat_cursor.fetchall()}
         return {
             "images": [{
                 "id": r["id"], "file_id": r["file_id"], "filename": r["filename"],
@@ -1360,9 +1571,11 @@ async def get_base_lib_images(
                 "local_path": r["local_path"], "vlm_description": r["vlm_description"],
                 "status": r.get("status", "pending"), "error_message": r.get("error_message"),
                 "context_text": r["context_text"], "category": r.get("category", "uncategorized"),
-                "created_at": r["created_at"],
+                "width_px": r.get("width_px"), "height_px": r.get("height_px"),
+                "file_size": r.get("file_size"), "created_at": r["created_at"],
             } for r in rows],
             "total": total, "has_more": has_more,
+            "status_counts": status_counts, "category_counts": category_counts,
         }
     except HTTPException:
         raise

@@ -71,7 +71,7 @@ from db.database import Database
 from agent.task_agent import TaskAgent
 from knowledge.model_manager import ModelManager
 from watchdog import start_watchdog
-from routers import settings, models, knowledge, health, system, tasks, skills, reports
+from routers import settings, models, knowledge, health, system, tasks, skills, reports, wiki
 
 
 @asynccontextmanager
@@ -83,6 +83,10 @@ async def lifespan(app: FastAPI):
     deps.db = Database(db_path)
     deps.db.initialize()
     deps.db.ensure_preset_base_libs()
+
+    # Seed Wiki schemas on startup (idempotent)
+    from db.wiki_seed import get_all_wiki_schemas
+    deps.db.seed_wiki_schemas(get_all_wiki_schemas())
     deps.task_agent = TaskAgent(deps.db)
     deps.model_manager = ModelManager()
 
@@ -155,6 +159,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+# ── Access log middleware with timestamps ──
+# Uses a dedicated logger that inherits root handlers (with timestamps).
+_access_log = logging.getLogger("inkcube.access")
+
+
+@app.middleware("http")
+async def _log_request(request, call_next):
+    import time
+    start = time.time()
+    response = await call_next(request)
+    elapsed = (time.time() - start) * 1000
+    _access_log.info(
+        '%s %s %d %.0fms',
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed,
+    )
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -170,6 +196,7 @@ app.include_router(system.router)
 app.include_router(tasks.router)
 app.include_router(skills.router)
 app.include_router(reports.router)
+app.include_router(wiki.router)
 
 
 # ── Global Exception Handlers ──
