@@ -117,14 +117,64 @@ class TemplateLoader:
             errors.append(f"Invalid stage: {stage}")
 
         output_format = template.get("output_format")
-        if output_format is not None and output_format not in ("Word", "PDF"):
-            errors.append(f"Invalid output_format: {output_format}")
+        if output_format is not None and output_format != "docx":
+            errors.append(f"Invalid output_format: {output_format} (must be 'docx')")
 
         report_depth = template.get("report_depth")
         if report_depth is not None and report_depth not in ("full", "brief"):
             errors.append(f"Invalid report_depth: {report_depth}")
 
+        # Validate outline structure recursively
+        self._validate_outline_nodes(template.get("outline", []), errors)
+
         return errors
+
+    def _validate_outline_nodes(self, nodes: list, errors: list, path: str = "outline") -> None:
+        """Recursively validate outline node structure.
+
+        Args:
+            nodes: List of outline nodes to validate
+            errors: Error list to append to
+            path: Current path for error messages
+        """
+        for i, node in enumerate(nodes):
+            node_path = f"{path}[{i}]"
+
+            # Required fields
+            if "section_id" not in node:
+                errors.append(f"{node_path}: Missing required field 'section_id'")
+            elif not isinstance(node["section_id"], str) or not node["section_id"]:
+                errors.append(f"{node_path}: section_id must be non-empty string")
+
+            if "title" not in node:
+                errors.append(f"{node_path}: Missing required field 'title'")
+            elif not isinstance(node["title"], str) or not node["title"]:
+                errors.append(f"{node_path}: title must be non-empty string")
+
+            # Optional field checks
+            compose_mode = node.get("compose_mode", "standard")
+            if compose_mode not in ("standard", "post_body"):
+                errors.append(f"{node_path}: Invalid compose_mode: {compose_mode}")
+
+            position = node.get("position")
+            if position is not None and position not in ("front", "end"):
+                errors.append(f"{node_path}: Invalid position: {position}")
+
+            optional = node.get("optional", False)
+            if not isinstance(optional, bool):
+                errors.append(f"{node_path}: optional must be boolean")
+
+            # post_body cannot have children
+            if compose_mode == "post_body" and node.get("children"):
+                errors.append(f"{node_path}: post_body chapters cannot have children")
+
+            # Recursively validate children
+            children = node.get("children", [])
+            if children:
+                if not isinstance(children, list):
+                    errors.append(f"{node_path}: children must be array")
+                else:
+                    self._validate_outline_nodes(children, errors, f"{node_path}.children")
 
     def _load_manifest(self) -> dict | None:
         """Load the manifest.json file."""

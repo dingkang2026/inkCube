@@ -99,25 +99,10 @@ def _consistency_check(text: str, template: dict) -> str:
     """一致性检查（轻量版，不依赖 LLM）。
 
     检查项：
-      - 术语统一：通过 terminology aliases 检测同一概念的不同表述
       - 数字矛盾：检测同一指标在不同章节出现不同数值
       - 章节间重复：检测相邻章节是否存在高度相似的段落
     """
-    # 术语统一
-    terminology = template.get("terminology", [])
-    if terminology:
-        for term in terminology:
-            canonical = term.get("canonical", "")
-            aliases = term.get("aliases", [])
-            if not canonical or not aliases:
-                continue
-            found_aliases = [a for a in aliases if a in text]
-            if found_aliases:
-                logger.info(
-                    "Terminology: '%s' has aliases %s in text. "
-                    "First occurrence should use canonical form.",
-                    canonical, found_aliases,
-                )
+    # 注意：新设计中已删除 terminology，不再进行术语统一检查
 
     # 数字矛盾检测
     _check_number_contradictions(text)

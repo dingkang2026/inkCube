@@ -1,9 +1,9 @@
 """python/report_generator/search_strategy.py — LLM 驱动检索策略。
 
 职责：
-  - 根据章节上下文（标题、query_hints、写作要求、前文摘要）生成多组搜索关键词
+  - 根据章节上下文（标题、描述、生成指引、前文摘要）生成多组搜索关键词
   - 使用 LLM 理解信息需求，输出针对性不同的搜索查询
-  - 降级：LLM 调用失败时回退到原始 query_hints
+  - 降级：LLM 调用失败时回退到标题作为关键词
 
 设计参考：docs/2.1project-design.md §6.7.3
 """
@@ -18,7 +18,7 @@ SEARCH_STRATEGY_SYSTEM_PROMPT = """\
 
 ## 输入
 - 章节标题和描述
-- 章节的检索提示词（query_hints）
+- 章节的生成指引（prompt_hint）
 - 章节的写作要求
 - 前文摘要（已完成章节的内容摘要）
 
@@ -37,7 +37,7 @@ SEARCH_STRATEGY_SYSTEM_PROMPT = """\
 ## 规则
 1. 每组关键词应针对不同的信息点或角度
 2. 关键词要具体、可检索，避免过于宽泛
-3. 结合 query_hints 的提示方向
+3. 结合 prompt_hint 的提示方向
 4. 如果前文摘要提供了上下文，利用它来细化搜索方向
 5. 输出 3-6 组关键词
 6. 只输出 JSON，不要其他内容
@@ -53,7 +53,7 @@ async def generate_search_queries(
     """为章节生成搜索关键词。
 
     Args:
-        section: 归一化后的章节 dict，包含 title, description, query_hints, writing_requirements
+        section: 归一化后的章节 dict，包含 title, description, prompt_hint
         digests: 前文摘要列表 [{"section_id": str, "title": str, "digest": str}, ...]
         llm_client: LLMClient 实例
         llm_settings: 应用设置 dict
@@ -64,8 +64,7 @@ async def generate_search_queries(
     section_id = section.get("section_id", "unknown")
     title = section.get("title", "")
     description = section.get("description", "")
-    query_hints = section.get("query_hints", [])
-    writing_req = section.get("writing_requirements", "")
+    prompt_hint = section.get("prompt_hint", "")
 
     # 构建用户消息
     user_parts = [
@@ -74,10 +73,8 @@ async def generate_search_queries(
     ]
     if description:
         user_parts.append(f"- 描述：{description}")
-    if query_hints:
-        user_parts.append(f"- 检索提示词：{', '.join(query_hints)}")
-    if writing_req:
-        user_parts.append(f"- 写作要求：{writing_req}")
+    if prompt_hint:
+        user_parts.append(f"- 生成指引：{prompt_hint}")
 
     if digests:
         user_parts.append(f"\n## 前文摘要（共 {len(digests)} 节）")
@@ -115,10 +112,10 @@ async def generate_search_queries(
 
     except Exception as e:
         logger.error(
-            "SearchStrategy: LLM call failed for section=%s: %s, falling back to query_hints",
+            "SearchStrategy: LLM call failed for section=%s: %s, falling back to title",
             section_id, str(e),
         )
-        # 降级：返回空 usage，使用原始 query_hints
+        # 降级：返回空 usage，使用标题作为关键词
         return _fallback_queries(section), {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
@@ -151,10 +148,6 @@ def _parse_queries_json(content: str) -> list[str]:
 
 
 def _fallback_queries(section: dict) -> list[str]:
-    """降级策略：使用原始 query_hints 作为搜索关键词。"""
-    hints = section.get("query_hints", [])
-    if hints:
-        return list(hints)
-    # 最终降级：用标题作为关键词
+    """降级策略：使用标题作为搜索关键词。"""
     title = section.get("title", "")
     return [title] if title else []

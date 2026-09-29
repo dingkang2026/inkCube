@@ -2,7 +2,7 @@
 
 Parses Word/PDF sample documents to extract full text,
 then uses LLM to analyze the content and generate a complete template JSON draft
-including outline, prompt_hints, audience, role_hint, terminology, variables, etc.
+including outline, prompt_hint, audience, role_hint, etc.
 """
 import json
 import logging
@@ -138,24 +138,17 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
   "role_hint": "生成角色定位，如'资深行业分析师'",
   "audience": "目标读者/汇报对象",
   "report_depth": "full" 或 "brief",
-  "variables": ["模板变量1", "模板变量2"],
-  "terminology": [
-    {"canonical": "标准术语", "aliases": ["别名1", "别名2"]}
-  ],
   "global_requirements": ["全局写作要求1", "全局写作要求2"],
   "outline": [
     {
-      "id": "ch1",
+      "section_id": "ch1",
       "title": "章节标题",
       "children": [
         {
-          "id": "ch1.1",
+          "section_id": "ch1.1",
           "title": "子节标题",
           "description": "本节内容说明（给人看）",
-          "prompt_hint": "写作指引（给LLM看）",
-          "word_count": 1200,
-          "must_cite": false,
-          "query_hints": ["检索关键词1", "检索关键词2"]
+          "prompt_hint": "写作指引（给LLM看）"
         }
       ]
     }
@@ -166,14 +159,10 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
 分析要求：
 1. **大纲结构**：根据报告的实际章节划分，提取完整的层级结构
 2. **每节说明**：为每个章节生成 description（内容说明）和 prompt_hint（写作指引）
-3. **字数估算**：根据原文各节实际长度估算 word_count
-4. **角色定位**：根据报告的专业领域和文风推断 role_hint
-5. **目标读者**：根据报告的用语和深度推断 audience
-6. **术语规范**：提取报告中的专业术语和缩写
-7. **模板变量**：识别报告中可能需要替换的变量（如公司名、日期等）
-8. **全局要求**：总结报告的写作风格和质量要求
-9. **项目类型**：推断报告属于投资分析(investment)、招商引资(recruitment)还是通用(general)
-10. **所属阶段**：推断报告属于投前/招商前(before)、投中/招商中(during)、投后/招商后(after)
+3. **角色定位**：根据报告的专业领域和文风推断 role_hint
+4. **目标读者**：根据报告的用语和深度推断 audience
+5. **项目类型**：推断报告属于投资分析(investment)、招商引资(recruitment)还是通用(general)
+6. **所属阶段**：推断报告属于投前/招商前(before)、投中/招商中(during)、投后/招商后(after)
 
 直接输出 JSON，不要包含 markdown 代码块标记。"""
 
@@ -237,21 +226,18 @@ async def extract_template_with_llm(
     template.setdefault("version", "1.0")
     template.setdefault("project_types", ["general"])
     template.setdefault("stage", None)
-    template.setdefault("output_format", "Word")
+    template.setdefault("output_format", "docx")
     template.setdefault("role_hint", "")
     template.setdefault("audience", "")
     template.setdefault("report_depth", "full" if len(template.get("outline", [])) >= 5 else "brief")
-    template.setdefault("variables", [])
-    template.setdefault("terminology", [])
     template.setdefault("global_requirements", [])
     template.setdefault("outline", [])
 
-    # Ensure outline nodes have IDs
+    # Ensure outline nodes have section_id
     for i, ch in enumerate(template["outline"], 1):
-        ch.setdefault("id", f"ch{i}")
+        ch.setdefault("section_id", f"ch{i}")
         for j, sec in enumerate(ch.get("children", []), 1):
-            sec.setdefault("id", f"ch{i}.{j}")
-            sec.setdefault("word_count", 1200)
+            sec.setdefault("section_id", f"ch{i}.{j}")
 
     return template
 
@@ -294,10 +280,9 @@ async def extract_template_from_sample(
     template = await extract_template_with_llm(full_text, headings, llm_client, llm_settings)
 
     logger.info(
-        "LLM extracted template: name=%s, %d chapters, %d terminology entries",
+        "Extracted template: name=%s, %d chapters",
         template.get("template_name"),
         len(template.get("outline", [])),
-        len(template.get("terminology", [])),
     )
 
     return template

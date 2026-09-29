@@ -1288,11 +1288,17 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()]
 
-    def update_section_content(self, section_pk: str, content: str, word_count: int, status: str = "completed"):
-        self.conn.execute(
-            "UPDATE report_sections SET content = ?, word_count = ?, status = ?, updated_at = ? WHERE id = ?",
-            (content, word_count, status, self._now(), section_pk),
-        )
+    def update_section_content(self, section_pk: str, content: str, status: str = "completed", word_count: int | None = None):
+        if word_count is not None:
+            self.conn.execute(
+                "UPDATE report_sections SET content = ?, word_count = ?, status = ?, updated_at = ? WHERE id = ?",
+                (content, word_count, status, self._now(), section_pk),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE report_sections SET content = ?, status = ?, updated_at = ? WHERE id = ?",
+                (content, status, self._now(), section_pk),
+            )
         self.conn.commit()
 
     # ── Templates ──

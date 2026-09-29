@@ -10,6 +10,7 @@ import { ProjectDetailPage } from './features/project/ProjectDetailPage'
 import { ProjectSidebar } from './features/project/ProjectSidebar'
 import { BaseLibFooter } from './features/project/BaseLibFooter'
 import { BaseLibDetailPage } from './features/project/BaseLibDetailPage'
+import { TemplateManagement } from './features/project/tabs/TemplateManagement'
 import { KnowledgePage } from './features/knowledge/KnowledgePage'
 import { HomePage } from './features/home/HomePage'
 import { TaskPage } from './features/task/TaskPage'
@@ -135,6 +136,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedBaseLibId, setSelectedBaseLibId] = useState<string | null>(null)
+  const [showTemplateManagement, setShowTemplateManagement] = useState(false)
 
   const loadProjects = useCallback(async () => {
     try {
@@ -374,6 +376,7 @@ export default function App() {
                 <BaseLibFooter
                   selectedBaseLib={selectedBaseLibId}
                   onSelectBaseLib={handleBaseLibSelect}
+                  onOpenTemplateManagement={() => setShowTemplateManagement(true)}
                 />
               }
             >
@@ -422,6 +425,8 @@ export default function App() {
             onSave={handleSaveSettings}
             onClose={() => setSettingsOpen(false)}
           />
+        ) : showTemplateManagement ? (
+          <TemplateManagement onBack={() => setShowTemplateManagement(false)} />
         ) : selectedBaseLibId ? (
           /* Base library is parallel to projects — accessible from any nav */
           <BaseLibDetailPage

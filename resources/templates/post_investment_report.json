@@ -4,16 +4,10 @@
   "version": "1.0",
   "project_types": ["investment"],
   "stage": "after",
-  "output_format": "Word",
+  "output_format": "docx",
   "role_hint": "投后管理顾问，关注运营改善和风险预警",
   "audience": "投委会和企业管理层",
   "report_depth": "full",
-  "variables": ["公司名", "报告期"],
-  "terminology": [
-    {"canonical": "KPI", "aliases": ["关键绩效指标", "核心指标"]},
-    {"canonical": "MoM", "aliases": ["环比"]},
-    {"canonical": "YoY", "aliases": ["同比"]}
-  ],
   "global_requirements": [
     "数据须注明统计周期和口径",
     "对比基准须明确（预算/上期/同期）",
@@ -21,86 +15,64 @@
   ],
   "outline": [
     {
-      "id": "ch1",
+      "section_id": "ch1",
       "title": "经营概况",
       "children": [
         {
-          "id": "ch1.1",
+          "section_id": "ch1.1",
           "title": "核心 KPI 完成情况",
-          "description": "{{公司名}} 在 {{报告期}} 的核心指标完成对比（预算/上期/同期）",
-          "word_count": 1200,
-          "must_cite": true,
-          "query_hints": ["{{公司名}} KPI", "{{公司名}} 业绩", "{{公司名}} 经营数据"],
-          "notes": ["用表格呈现对比", "标注偏差超过 10% 的指标"]
+          "description": "{{公司名}} 在 {{报告期}} 的核心指标完成对比（预算/上期/同期）"
         },
         {
-          "id": "ch1.2",
+          "section_id": "ch1.2",
           "title": "重大进展与里程碑",
-          "description": "{{报告期}} 内的重大业务进展、战略调整和管理层变动",
-          "word_count": 800,
-          "query_hints": ["{{公司名}} 进展", "{{公司名}} 动态"]
+          "description": "{{报告期}} 内的重大业务进展、战略调整和管理层变动"
         }
       ]
     },
     {
-      "id": "ch2",
+      "section_id": "ch2",
       "title": "财务监控",
       "children": [
         {
-          "id": "ch2.1",
+          "section_id": "ch2.1",
           "title": "收入与利润跟踪",
-          "description": "营收、毛利、净利的实际vs预算对比，偏差原因分析",
-          "word_count": 1200,
-          "must_cite": true,
-          "query_hints": ["{{公司名}} 营收", "{{公司名}} 利润", "{{公司名}} 财务"],
-          "notes": ["区分经常性和一次性项目"]
+          "description": "营收、毛利、净利的实际vs预算对比，偏差原因分析"
         },
         {
-          "id": "ch2.2",
+          "section_id": "ch2.2",
           "title": "现金流与资金状况",
-          "description": "经营性现金流、资金余额和 burn rate 跟踪",
-          "word_count": 800,
-          "must_cite": true,
-          "query_hints": ["{{公司名}} 现金流", "{{公司名}} 资金"]
+          "description": "经营性现金流、资金余额和 burn rate 跟踪"
         }
       ]
     },
     {
-      "id": "ch3",
+      "section_id": "ch3",
       "title": "风险预警",
-      "description": "{{公司名}} 当前面临的经营风险、财务风险和行业风险，按红/黄/绿灯分级",
-      "word_count": 1000,
-      "must_cite": true,
-      "promote_subhead": true,
-      "query_hints": ["{{公司名}} 风险", "{{公司名}} 预警"],
-      "notes": ["红灯=需立即干预", "黄灯=需持续关注", "绿灯=正常"]
+      "description": "{{公司名}} 当前面临的经营风险、财务风险和行业风险，按红/黄/绿灯分级"
     },
     {
-      "id": "ch4",
+      "section_id": "ch4",
       "title": "下阶段计划",
       "children": [
         {
-          "id": "ch4.1",
+          "section_id": "ch4.1",
           "title": "经营目标与行动项",
-          "description": "下一报告期的经营目标和关键行动项",
-          "word_count": 800,
-          "query_hints": ["{{公司名}} 计划", "{{公司名}} 目标"]
+          "description": "下一报告期的经营目标和关键行动项"
         },
         {
-          "id": "ch4.2",
+          "section_id": "ch4.2",
           "title": "需投委会决策事项",
-          "word_count": 400,
           "prompt_hint": "列出需要投委会审议或决策的具体事项",
           "optional": true
         }
       ]
     },
     {
-      "id": "exec_summary",
+      "section_id": "exec_summary",
       "title": "管理摘要",
       "description": "本期经营核心结论和关键行动建议",
       "compose_mode": "post_body",
-      "word_count": 600,
       "prompt_hint": "用红绿灯仪表盘 + 3-5 条核心要点概括本期经营状况。",
       "position": "front"
     }

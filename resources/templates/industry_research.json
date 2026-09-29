@@ -4,16 +4,10 @@
   "version": "1.0",
   "project_types": ["investment", "general"],
   "stage": "before",
-  "output_format": "Word",
+  "output_format": "docx",
   "role_hint": "资深行业研究分析师，客观中立，数据驱动",
   "audience": "内部研究团队和投资决策层",
   "report_depth": "full",
-  "variables": ["行业", "报告日期"],
-  "terminology": [
-    {"canonical": "CAGR", "aliases": ["复合年增长率", "年均增长率"]},
-    {"canonical": "TAM", "aliases": ["总可寻址市场", "市场总规模"]},
-    {"canonical": "市场集中度", "aliases": ["CR4", "CR8", "行业集中度"]}
-  ],
   "global_requirements": [
     "数据须注明统计口径（来源机构、统计时间、币种/单位）",
     "禁止编造具体数据，无数据时须明确说明数据缺口",
@@ -21,160 +15,114 @@
   ],
   "outline": [
     {
-      "id": "ch1",
+      "section_id": "ch1",
       "title": "行业概述",
       "children": [
         {
-          "id": "ch1.1",
+          "section_id": "ch1.1",
           "title": "行业定义与边界",
-          "description": "界定 {{行业}} 的范畴、产业链位置和上下游关系",
-          "word_count": 800,
-          "query_hints": ["{{行业}} 定义", "{{行业}} 产业链", "{{行业}} 范畴"],
-          "notes": ["明确行业边界，避免概念泛化"]
+          "description": "界定 {{行业}} 的范畴、产业链位置和上下游关系"
         },
         {
-          "id": "ch1.2",
+          "section_id": "ch1.2",
           "title": "产业链结构",
-          "description": "上中下游环节拆分，各环节核心参与者和价值分配",
-          "word_count": 1200,
-          "must_cite": true,
-          "query_hints": ["{{行业}} 产业链", "{{行业}} 上游", "{{行业}} 下游", "价值链"],
-          "promote_subhead": true
+          "description": "上中下游环节拆分，各环节核心参与者和价值分配"
         }
       ]
     },
     {
-      "id": "ch2",
+      "section_id": "ch2",
       "title": "市场规模与增长",
       "children": [
         {
-          "id": "ch2.1",
+          "section_id": "ch2.1",
           "title": "全球市场规模",
-          "description": "全球 {{行业}} 市场总量、近 3-5 年增长趋势",
-          "word_count": 1200,
-          "must_cite": true,
-          "data_sources": ["knowledge", "internet"],
-          "query_hints": ["{{行业}} 全球市场规模", "{{行业}} global market size"],
-          "notes": ["近 3-5 年数据", "注明币种和统计口径"]
+          "description": "全球 {{行业}} 市场总量、近 3-5 年增长趋势"
         },
         {
-          "id": "ch2.2",
+          "section_id": "ch2.2",
           "title": "中国市场规模",
-          "description": "中国 {{行业}} 市场总量、增速与全球对比",
-          "word_count": 1200,
-          "must_cite": true,
-          "data_sources": ["knowledge", "internet"],
-          "query_hints": ["{{行业}} 中国市场规模", "{{行业}} 国内市场", "{{行业}} 增长率"]
+          "description": "中国 {{行业}} 市场总量、增速与全球对比"
         },
         {
-          "id": "ch2.3",
+          "section_id": "ch2.3",
           "title": "细分市场拆分",
           "description": "按产品类型/应用场景/区域等维度的细分市场结构",
-          "word_count": 1000,
-          "query_hints": ["{{行业}} 细分市场", "{{行业}} 产品结构", "{{行业}} 应用场景"],
           "optional": true
         }
       ]
     },
     {
-      "id": "ch3",
+      "section_id": "ch3",
       "title": "竞争格局",
       "children": [
         {
-          "id": "ch3.1",
+          "section_id": "ch3.1",
           "title": "市场集中度",
-          "description": "CR4/CR8/HHI 等集中度指标，头部企业排名变化",
-          "word_count": 1000,
-          "must_cite": true,
-          "query_hints": ["{{行业}} 市场集中度", "{{行业}} CR4", "{{行业}} 头部企业"]
+          "description": "CR4/CR8/HHI 等集中度指标，头部企业排名变化"
         },
         {
-          "id": "ch3.2",
+          "section_id": "ch3.2",
           "title": "主要参与者分析",
           "description": "3-5 家代表性企业的多维度深度对比",
-          "word_count": 600,
-          "query_hints": ["{{行业}} 龙头企业", "{{行业}} 主要公司"],
-          "promote_subhead": true,
           "children": [
             {
-              "id": "ch3.2.1",
+              "section_id": "ch3.2.1",
               "title": "战略定位与核心优势",
-              "description": "各头部企业的战略方向、差异化定位和核心竞争力",
-              "word_count": 800,
-              "must_cite": true,
-              "query_hints": ["{{行业}} 龙头企业", "{{行业}} 竞争策略", "{{行业}} 核心优势", "{{行业}} 差异化"]
+              "description": "各头部企业的战略方向、差异化定位和核心竞争力"
             },
             {
-              "id": "ch3.2.2",
+              "section_id": "ch3.2.2",
               "title": "财务与规模对比",
-              "description": "头部企业的营收、市值、市场份额等硬指标对比",
-              "word_count": 600,
-              "must_cite": true,
-              "query_hints": ["{{行业}} 企业营收", "{{行业}} 市场份额", "{{行业}} 市值对比"]
+              "description": "头部企业的营收、市值、市场份额等硬指标对比"
             },
             {
-              "id": "ch3.2.3",
+              "section_id": "ch3.2.3",
               "title": "近期动态与战略变化",
               "description": "近 1-2 年头部企业的重大事件、并购、战略调整",
-              "word_count": 500,
-              "data_sources": ["knowledge", "internet"],
-              "query_hints": ["{{行业}} 最新动态", "{{行业}} 并购", "{{行业}} 战略调整"],
               "optional": true
             }
           ]
         },
         {
-          "id": "ch3.3",
+          "section_id": "ch3.3",
           "title": "进入壁垒与替代品威胁",
-          "description": "行业壁垒（技术/资金/牌照/品牌）和替代品风险分析",
-          "word_count": 800,
-          "query_hints": ["{{行业}} 进入壁垒", "{{行业}} 替代品", "{{行业}} 竞争门槛"]
+          "description": "行业壁垒（技术/资金/牌照/品牌）和替代品风险分析"
         }
       ]
     },
     {
-      "id": "ch4",
+      "section_id": "ch4",
       "title": "驱动因素与风险",
       "children": [
         {
-          "id": "ch4.1",
+          "section_id": "ch4.1",
           "title": "增长驱动因素",
-          "description": "推动 {{行业}} 增长的核心动力（需求侧/供给侧/政策侧）",
-          "word_count": 1000,
-          "query_hints": ["{{行业}} 驱动因素", "{{行业}} 增长动力", "{{行业}} 发展趋势"]
+          "description": "推动 {{行业}} 增长的核心动力（需求侧/供给侧/政策侧）"
         },
         {
-          "id": "ch4.2",
+          "section_id": "ch4.2",
           "title": "政策与监管环境",
-          "description": "影响 {{行业}} 的关键政策、法规及监管趋势",
-          "word_count": 1000,
-          "must_cite": true,
-          "data_sources": ["knowledge", "internet"],
-          "query_hints": ["{{行业}} 政策", "{{行业}} 监管", "{{行业}} 法规"]
+          "description": "影响 {{行业}} 的关键政策、法规及监管趋势"
         },
         {
-          "id": "ch4.3",
+          "section_id": "ch4.3",
           "title": "主要风险",
-          "description": "{{行业}} 面临的周期性、结构性和技术性风险",
-          "word_count": 800
+          "description": "{{行业}} 面临的周期性、结构性和技术性风险"
         }
       ]
     },
     {
-      "id": "ch5",
+      "section_id": "ch5",
       "title": "技术演进与创新",
       "description": "{{行业}} 关键技术路线、研发动态和创新方向",
-      "word_count": 1200,
-      "data_sources": ["knowledge", "internet"],
-      "query_hints": ["{{行业}} 技术趋势", "{{行业}} 技术创新", "{{行业}} R&D"],
       "optional": true
     },
     {
-      "id": "summary",
+      "section_id": "summary",
       "title": "核心结论与投资启示",
       "description": "综合全文的行业核心结论和投资启示",
       "compose_mode": "post_body",
-      "word_count": 800,
       "prompt_hint": "综合全文各章节，提炼 3-5 条核心结论，给出投资启示。要求结论有数据支撑，避免空泛判断。",
       "position": "front"
     }

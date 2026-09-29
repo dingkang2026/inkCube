@@ -184,8 +184,7 @@
 
 .kanbanColumn {
   flex: 1;
-  min-width: 220px;
-  max-width: 320px;
+  min-width: 200px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);

@@ -1,7 +1,13 @@
 {
   "app": {
     "title": "InkCube",
-    "processExit": "Service process exited (code: {{code}}). Please check logs or restart the app."
+    "processExit": "Service process exited (code: {{code}}), please check logs or restart the app"
+  },
+  "common": {
+    "prev": "Previous",
+    "next": "Next",
+    "loading": "Loading...",
+    "close": "Close"
   },
   "menu": {
     "file": "File",
@@ -529,6 +535,7 @@
   },
   "baseLib": {
     "title": "Base Libraries",
+    "templateManagement": "Templates",
     "recruitmentLib": "Recruitment Library",
     "recruitmentLibDesc": "Policies, parks, industry support materials",
     "investmentLib": "Investment Library",
@@ -618,21 +625,13 @@
         "supplementaryPlaceholder": "Enter additional requirements, e.g. focus on specific aspects...",
         "startGenerate": "Start Generating",
         "cancel": "Cancel",
-        "generationProgress": "Generation Progress",
-        "done": "Done",
         "generating": "Generating...",
-        "realtimePreview": "Real-time Preview",
-        "waitingGeneration": "Waiting for generation...",
-        "finishAndReturn": "Finish & Return",
         "generatedReport": "Generated Report",
         "variables": "Template Variables",
         "variablesPlaceholder": "Fill in template variables, which will be replaced in the generated report",
         "noVariables": "No variables required for this template",
         "loadingTemplates": "Loading templates...",
-        "noTemplates": "No templates available for this project type",
-        "generationStarted": "Report generation started, please wait...",
-        "generationComplete": "Report generation complete!",
-        "generationFailed": "Report generation failed. Check logs for details."
+        "noTemplates": "No templates available for this project type"
       },
       "kanban": {
         "noReports": "No reports yet",
@@ -640,15 +639,11 @@
       },
       "preview": {
         "backToList": "Back to List",
-        "editOutline": "Edit Outline",
-        "regenerateChapter": "Regenerate Chapter",
         "sources": "This report cites {{total}} fragments from {{count}} documents",
         "fragments": "fragments",
         "exportSuccess": "{{title}} exported as {{format}}",
         "exportFailed": "Export failed: {{error}}",
         "noContent": "No content yet",
-        "chapterRegenerated": "Chapter {{chapter}} has been regenerated",
-        "regenerating": "Regenerating {{chapter}}...",
         "progressLogs": "Progress Logs",
         "noLogs": "No logs yet"
       }
@@ -788,9 +783,29 @@
       "deleteSuccess": "Template deleted",
       "copyFailed": "Failed to copy template",
       "deleteFailed": "Failed to delete template",
-      "stageLabel": "Stage",
+      "saveFailed": "Failed to save template",
       "presetReadOnly": "Preset templates are read-only. Copy to edit.",
       "edit": "Edit",
+      "searchPlaceholder": "Search templates...",
+      "noTemplates": "No templates found",
+      "viewFailed": "Failed to load template details",
+      "editFailed": "Failed to load template for editing",
+      "filter": {
+        "allTypes": "All Types",
+        "allStages": "All Stages"
+      },
+      "col": {
+        "name": "Name",
+        "type": "Type",
+        "chapters": "Chapters",
+        "stage": "Stage",
+        "actions": "Actions"
+      },
+      "detail": {
+        "reportDepth": "Report Depth",
+        "depthFull": "Full Report",
+        "depthBrief": "Brief Report"
+      },
       "editor": {
         "back": "Back",
         "newTemplate": "New Template",
@@ -817,24 +832,10 @@
         "sectionTitle": "Title",
         "description": "Description",
         "promptHint": "Writing Guide",
-        "wordCount": "Target Words",
-        "mustCite": "Must cite sources",
-        "dataSources": "Data Sources",
-        "dataSourceKnowledge": "Knowledge Base",
-        "dataSourceInternet": "Internet",
-        "queryHints": "Query Hints",
-        "queryHintsPlaceholder": "Enter keywords, comma separated",
         "globalConfig": "Global Config",
-        "terminology": "Terminology",
-        "termCanonical": "Canonical Term",
-        "termAliases": "Aliases (comma separated)",
-        "addTerm": "Add Term",
         "globalRequirements": "Global Requirements",
         "requirementPlaceholder": "Enter writing requirement",
         "addRequirement": "Add Requirement",
-        "variables": "Template Variables",
-        "variablePlaceholder": "Enter variable name",
-        "addVariable": "Add Variable",
         "nameRequired": "Please enter a template name",
         "saveSuccess": "Template saved",
         "custom": "Custom",

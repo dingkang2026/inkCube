@@ -4,43 +4,34 @@
   "version": "1.0",
   "project_types": ["general"],
   "stage": null,
-  "output_format": "Word",
+  "output_format": "docx",
   "role_hint": "资深研究分析师，中性专业",
   "audience": "内部研究备忘",
   "report_depth": "brief",
-  "variables": ["公司名"],
-  "terminology": [],
   "global_requirements": [
     "简洁明了，结论先行",
     "数据须注明来源"
   ],
   "outline": [
     {
-      "id": "overview",
+      "section_id": "overview",
       "title": "项目概览",
-      "description": "{{公司名}} 的核心业务、发展阶段和关键亮点概览",
-      "word_count": 600,
-      "query_hints": ["{{公司名}} 概况", "{{公司名}} 业务", "{{公司名}} 亮点"]
+      "description": "{{公司名}} 的核心业务、发展阶段和关键亮点概览"
     },
     {
-      "id": "highlights",
+      "section_id": "highlights",
       "title": "核心亮点与风险",
-      "description": "最值得关注的正面因素和风险因素",
-      "word_count": 500,
-      "must_cite": true,
-      "query_hints": ["{{公司名}} 优势", "{{公司名}} 风险"]
+      "description": "最值得关注的正面因素和风险因素"
     },
     {
-      "id": "outlook",
+      "section_id": "outlook",
       "title": "展望与建议",
-      "word_count": 400,
       "prompt_hint": "基于前文给出简洁的后续行动建议"
     },
     {
-      "id": "summary",
+      "section_id": "summary",
       "title": "一页纸摘要",
       "compose_mode": "post_body",
-      "word_count": 300,
       "prompt_hint": "用 3-5 个要点概括全文，适合快速浏览",
       "position": "front"
     }

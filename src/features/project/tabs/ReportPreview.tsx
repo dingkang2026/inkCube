@@ -1,7 +1,9 @@
-/** src/features/project/tabs/ReportPreview.tsx — Report edit/preview view with real data */
+/** src/features/project/tabs/ReportPreview.tsx — Report detail view (rendered markdown + sources + logs) */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2 } from 'lucide-react'
 import type { Report, ReportLog } from '../types'
 import { useToast } from '../../knowledge/Toast'
 import s from './ReportPreview.module.css'
@@ -142,19 +144,29 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
           <button className={s.exportBtn} onClick={() => handleExport('PDF')} disabled={exporting}>
             <FileText size={14} /> PDF
           </button>
-          <div className={s.divider} />
-          <button className={s.toolBtn}>
-            {t('project.report.preview.editOutline')}
-          </button>
-          <button className={s.toolBtn}>
-            {t('project.report.preview.regenerateChapter')}
-          </button>
         </div>
       </div>
 
       {/* Report content */}
       <div className={s.contentArea}>
-        <pre className={s.markdownContent}>{markdownContent}</pre>
+        {report.status === 'generating' ? (
+          <div className={s.generatingState}>
+            <Loader2 size={24} className={s.spinIcon} />
+            <span>{t('project.report.wizard.generating')} {report.progress ? `${report.progress}%` : ''}</span>
+          </div>
+        ) : report.status === 'error' ? (
+          <div className={s.errorState}>
+            <AlertCircle size={24} />
+            <span>{report.error_message || t('project.report.failed')}</span>
+          </div>
+        ) : (
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            className={s.markdownBody}
+          >
+            {markdownContent}
+          </ReactMarkdown>
+        )}
       </div>
 
       {/* Sources panel */}

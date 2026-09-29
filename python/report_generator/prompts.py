@@ -49,49 +49,21 @@ SYSTEM_PROMPT_TEMPLATE = """\
 def build_system_prompt(
     role_hint: str = "资深研究分析师",
     audience: str = "机构客户",
-    terminology: Optional[list[dict]] = None,
-    promote_subhead: bool = False,
 ) -> str:
     """构建全文共享的 System Prompt。
 
     Args:
         role_hint: 角色定位（如"投资分析师"）
         audience: 报告场景/读者
-        terminology: 术语规范列表 [{"canonical": "ROI", "aliases": [...]}]
-        promote_subhead: 是否启用 ◆ 小标题规则
 
     Returns:
         System Prompt 文本
     """
-    # 术语注入
-    if terminology:
-        terms = []
-        for t in terminology:
-            canonical = t.get("canonical", "")
-            aliases = t.get("aliases", [])
-            if aliases:
-                terms.append(f"{canonical}（亦称 {'/'.join(aliases)}）")
-            else:
-                terms.append(canonical)
-        terminology_text = "、".join(terms) if terms else "无特殊术语规范"
-    else:
-        terminology_text = "无特殊术语规范"
-
-    # 小标题规则
-    if promote_subhead:
-        subhead_rules = """\
-【章节内部标题格式】
-- 允许使用小标题，格式：以「◆ 」开头的独立行，后接不超过 15 字的标题
-- 每约 800-1000 字一个小标题
-- 禁止：markdown 的 #/##/###、数字编号小标题、加粗"""
-    else:
-        subhead_rules = ""
-
     return SYSTEM_PROMPT_TEMPLATE.format(
         role_hint=role_hint,
         audience=audience,
-        terminology_text=terminology_text,
-        subhead_rules=subhead_rules,
+        terminology_text="无特殊术语规范",
+        subhead_rules="",
     )
 
 
@@ -146,18 +118,7 @@ def build_standard_prompt(
         requirements.append(desc)
     if global_requirements:
         requirements.extend(global_requirements)
-    for note in section.get("notes", []):
-        if note not in requirements:
-            requirements.append(note)
-    for wr in section.get("writing_requirements", []):
-        if wr not in requirements:
-            requirements.append(wr)
     req_text = "\n".join(f"- {r}" for r in requirements) if requirements else "无特殊要求"
-
-    # must_cite 提示
-    must_cite_hint = ""
-    if section.get("must_cite"):
-        must_cite_hint = "\n⚠️ 本节必须有引用支撑（must_cite=true），请确保每个论述都有 [n] 引用。"
 
     # 降级模式
     degraded_hint = ""
@@ -183,15 +144,13 @@ def build_standard_prompt(
     parts = [
         f"【全局上下文】",
         f"报告题目：{report_title}",
-        f"本节位置：第 {section.get('id', '?')} 节「{section.get('title', '')}」（隶属 {chapter_title}）",
+        f"本节位置：第 {section.get('section_id', '?')} 节「{section.get('title', '')}」（隶属 {chapter_title}）",
         f"前文各节摘要（供衔接，勿重复）：",
         digest_text,
         "",
         f"【本节写作任务】",
-        f"目标字数：约 {section.get('word_count', 1200)} 字",
         f"写作要求：",
         req_text,
-        must_cite_hint,
         degraded_hint,
         sufficiency_hint,
     ]
@@ -265,7 +224,6 @@ def build_post_body_prompt(
         key_data_text or "（无提取数据）",
         "",
         f"【本节写作任务】",
-        f"目标字数：约 {section.get('word_count', 1200)} 字",
         f"写作要求：",
         req_text,
         f"附加要求：不得简单重复正文内容，须给出跨章节的综合判断",

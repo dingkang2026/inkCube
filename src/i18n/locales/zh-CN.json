@@ -3,6 +3,12 @@
     "title": "墨方",
     "processExit": "服务进程已退出 (code: {{code}})，请检查日志或重启应用"
   },
+  "common": {
+    "prev": "上一页",
+    "next": "下一页",
+    "loading": "加载中...",
+    "close": "关闭"
+  },
   "menu": {
     "file": "文件",
     "edit": "编辑",
@@ -529,6 +535,7 @@
   },
   "baseLib": {
     "title": "基础库",
+    "templateManagement": "模板管理",
     "recruitmentLib": "招商基础库",
     "recruitmentLibDesc": "政策、园区、产业扶持等基础资料",
     "investmentLib": "投资基础库",
@@ -618,21 +625,13 @@
         "supplementaryPlaceholder": "输入补充要求，如重点突出某方面内容...",
         "startGenerate": "开始生成",
         "cancel": "取消",
-        "generationProgress": "生成进度",
-        "done": "完成",
         "generating": "生成中...",
-        "realtimePreview": "实时预览",
-        "waitingGeneration": "等待生成...",
-        "finishAndReturn": "完成并返回",
         "generatedReport": "生成报告",
         "variables": "模板变量",
         "variablesPlaceholder": "请填写模板变量，将在生成时替换到报告中",
         "noVariables": "此模板无需填写变量",
         "loadingTemplates": "加载模板中...",
-        "noTemplates": "当前项目类型暂无可用模板",
-        "generationStarted": "报告生成已启动，请稍候...",
-        "generationComplete": "报告生成完成！",
-        "generationFailed": "报告生成失败，请查看日志了解详情。"
+        "noTemplates": "当前项目类型暂无可用模板"
       },
       "kanban": {
         "noReports": "暂无报告",
@@ -640,15 +639,11 @@
       },
       "preview": {
         "backToList": "返回列表",
-        "editOutline": "编辑大纲",
-        "regenerateChapter": "重新生成章节",
         "sources": "本报告引用了 {{count}} 个文档的 {{total}} 个片段",
         "fragments": "个片段",
         "exportSuccess": "{{title}} 已导出为 {{format}}",
         "exportFailed": "导出失败：{{error}}",
         "noContent": "暂无内容",
-        "chapterRegenerated": "章节 {{chapter}} 已重新生成",
-        "regenerating": "正在重新生成 {{chapter}}...",
         "progressLogs": "进展日志",
         "noLogs": "暂无日志"
       }
@@ -788,9 +783,29 @@
       "deleteSuccess": "模板已删除",
       "copyFailed": "复制模板失败",
       "deleteFailed": "删除模板失败",
-      "stageLabel": "阶段",
+      "saveFailed": "保存模板失败",
       "presetReadOnly": "预置模板为只读，可复制后编辑",
       "edit": "编辑",
+      "searchPlaceholder": "搜索模板...",
+      "noTemplates": "暂无模板",
+      "viewFailed": "加载模板详情失败",
+      "editFailed": "加载模板编辑数据失败",
+      "filter": {
+        "allTypes": "全部类型",
+        "allStages": "全部阶段"
+      },
+      "col": {
+        "name": "模板名称",
+        "type": "类型",
+        "chapters": "章节数",
+        "stage": "阶段",
+        "actions": "操作"
+      },
+      "detail": {
+        "reportDepth": "报告深度",
+        "depthFull": "完整报告",
+        "depthBrief": "简版报告"
+      },
       "editor": {
         "back": "返回",
         "newTemplate": "新建模板",
@@ -817,24 +832,10 @@
         "sectionTitle": "标题",
         "description": "内容说明",
         "promptHint": "写作指引",
-        "wordCount": "目标字数",
-        "mustCite": "必须引用支撑",
-        "dataSources": "数据来源",
-        "dataSourceKnowledge": "知识库",
-        "dataSourceInternet": "互联网",
-        "queryHints": "检索关键词",
-        "queryHintsPlaceholder": "输入关键词，逗号分隔",
         "globalConfig": "全局配置",
-        "terminology": "术语规范",
-        "termCanonical": "标准术语",
-        "termAliases": "别名（逗号分隔）",
-        "addTerm": "添加术语",
         "globalRequirements": "全局要求",
         "requirementPlaceholder": "输入写作要求",
         "addRequirement": "添加要求",
-        "variables": "模板变量",
-        "variablePlaceholder": "输入变量名",
-        "addVariable": "添加变量",
         "nameRequired": "请输入模板名称",
         "saveSuccess": "模板已保存",
         "custom": "自定义",

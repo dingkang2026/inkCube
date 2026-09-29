@@ -170,7 +170,7 @@ class ReportRunner:
             total = len(self.sections)
 
             for sec in standard_sections:
-                sid = sec["id"]
+                sid = sec["section_id"]
                 if sid in self.outputs:
                     continue  # 已恢复
 
@@ -210,7 +210,6 @@ class ReportRunner:
                     yield ProgressEvent("section_done", {
                         "section_id": sid,
                         "title": sec.get("title", ""),
-                        "word_count": 0,
                         "skipped": True,
                     })
                     self._save_checkpoint()
@@ -248,11 +247,9 @@ class ReportRunner:
                 digest = await self._summarize(output)
                 self.digests[sid] = digest
 
-                word_count = len(output)
                 yield ProgressEvent("section_done", {
                     "section_id": sid,
                     "title": sec.get("title", ""),
-                    "word_count": word_count,
                     "degraded": retrieval.is_degraded,
                 })
 
@@ -264,7 +261,7 @@ class ReportRunner:
             ]
 
             for sec in post_body_sections:
-                sid = sec["id"]
+                sid = sec["section_id"]
                 if sid in self.outputs:
                     continue
 
@@ -299,7 +296,6 @@ class ReportRunner:
                 yield ProgressEvent("section_done", {
                     "section_id": sid,
                     "title": sec.get("title", ""),
-                    "word_count": len(output),
                 })
 
                 self._save_checkpoint()
@@ -361,8 +357,6 @@ class ReportRunner:
         self.system_prompt = build_system_prompt(
             role_hint=tpl.get("role_hint", "资深研究分析师"),
             audience=tpl.get("audience", "机构客户"),
-            terminology=tpl.get("terminology"),
-            promote_subhead=any(s.get("promote_subhead") for s in self.sections),
         )
 
         # 确保输出目录
@@ -511,7 +505,7 @@ class ReportRunner:
     def _get_section_title(self, section_id: str) -> str:
         """根据 section_id 查找标题。"""
         for sec in self.sections:
-            if sec.get("id") == section_id:
+            if sec.get("section_id") == section_id:
                 return sec.get("title", "")
         return section_id
 
@@ -522,7 +516,7 @@ class ReportRunner:
         post_body_end = []
 
         for sec in self.sections:
-            sid = sec.get("id", "")
+            sid = sec.get("section_id", "")
             content = self.outputs.get(sid, "")
             if not content:
                 continue

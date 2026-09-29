@@ -3,8 +3,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  max-width: 900px;
-  margin: 0 auto;
+  width: 100%;
   overflow: hidden;
 }
 
@@ -40,7 +39,34 @@
   color: var(--text-primary);
 }
 
-/* ── Step content ── */
+/* ── Two-column layout for Step 2 ── */
+.stepTwoCols {
+  display: flex;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
+}
+
+.leftPanel {
+  flex: 0 0 42%;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.rightPanel {
+  flex: 1;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+}
+
+/* ─ Step content ── */
 .stepContent {
   flex: 1;
   overflow-y: auto;
@@ -189,6 +215,8 @@
   border-radius: 3px;
   background: rgba(37, 99, 235, 0.08);
   color: var(--accent);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* ── Chapter list ── */
@@ -297,101 +325,6 @@
 }
 
 .generateBtn:hover { opacity: 0.9; }
-
-/* ── Progress ── */
-.chapterProgress {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.progressItem {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.checkIcon { color: #22c55e; }
-.clockIcon { color: var(--accent); animation: pulse 1.5s infinite; }
-.circleIcon { color: var(--text-muted); opacity: 0.4; }
-.generatingText { font-weight: 500; color: var(--accent); }
-
-.doneTag {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
-  margin-left: auto;
-}
-
-.genTag {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: rgba(37, 99, 235, 0.08);
-  color: var(--accent);
-  margin-left: auto;
-}
-
-.progressBar {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--bg-tertiary);
-  overflow: hidden;
-  margin-bottom: 4px;
-}
-
-.progressFill {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--accent);
-  transition: width 0.5s ease;
-}
-
-.progressText {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: right;
-}
-
-/* ── Preview ── */
-.previewArea {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary, var(--bg-primary));
-  min-height: 200px;
-  max-height: 300px;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.previewContent {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-  font-family: inherit;
-}
-
-.previewEmpty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 160px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
 
 /* ── Variables ── */
 .variableGrid {

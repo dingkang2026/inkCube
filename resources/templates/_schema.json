@@ -40,9 +40,9 @@
     },
     "output_format": {
       "type": "string",
-      "enum": ["Word", "PDF"],
-      "default": "Word",
-      "description": "默认导出格式"
+      "enum": ["docx"],
+      "default": "docx",
+      "description": "默认导出格式（本阶段仅 docx）"
     },
     "role_hint": {
       "type": "string",
@@ -56,28 +56,7 @@
       "type": "string",
       "enum": ["full", "brief"],
       "default": "full",
-      "description": "报告深度：full（长文）/ brief（概文）"
-    },
-    "variables": {
-      "type": "array",
-      "items": { "type": "string" },
-      "uniqueItems": true,
-      "description": "模板变量声明，如 [\"公司名\", \"行业\"]"
-    },
-    "terminology": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["canonical"],
-        "properties": {
-          "canonical": { "type": "string" },
-          "aliases": {
-            "type": "array",
-            "items": { "type": "string" }
-          }
-        }
-      },
-      "description": "术语规范"
+      "description": "报告深度：full（长文）/ brief（精炼）"
     },
     "global_requirements": {
       "type": "array",
@@ -95,9 +74,9 @@
   "$defs": {
     "outline_node": {
       "type": "object",
-      "required": ["id", "title"],
+      "required": ["section_id", "title"],
       "properties": {
-        "id": {
+        "section_id": {
           "type": "string",
           "pattern": "^[a-zA-Z0-9_.-]+$",
           "description": "章节唯一标识"
@@ -117,35 +96,9 @@
           "default": "standard",
           "description": "生成模式"
         },
-        "word_count": {
-          "type": "integer",
-          "minimum": 200,
-          "default": 1200,
-          "description": "目标字数"
-        },
         "prompt_hint": {
           "type": "string",
           "description": "内容生成指引（给 LLM 看）"
-        },
-        "notes": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "附加写作注意事项（折叠进 writing_requirements）"
-        },
-        "promote_subhead": {
-          "type": "boolean",
-          "default": false,
-          "description": "是否要求模型使用 ◆ 内部小标题"
-        },
-        "query_hints": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "检索关键词提示"
-        },
-        "must_cite": {
-          "type": "boolean",
-          "default": false,
-          "description": "是否必须有引用支撑"
         },
         "optional": {
           "type": "boolean",
@@ -156,16 +109,6 @@
           "type": "string",
           "enum": ["front", "end"],
           "description": "post_body 章节的渲染位置"
-        },
-        "data_sources": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["knowledge", "internet", "wiki"]
-          },
-          "uniqueItems": true,
-          "default": ["knowledge"],
-          "description": "数据来源通道配置。knowledge=项目知识库RAG，internet=互联网搜索，wiki=Wiki页面（预留）"
         },
         "children": {
           "type": "array",

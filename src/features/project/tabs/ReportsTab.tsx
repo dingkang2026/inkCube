@@ -1,16 +1,15 @@
 /** src/features/project/tabs/ReportsTab.tsx — Reports tab with kanban layout (4 columns by stage) */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Plus, Settings2, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw } from 'lucide-react'
+import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw } from 'lucide-react'
 import type { ProjectType, ProjectStage, Report } from '../types'
 import { STAGE_COLUMNS } from '../types'
 import { ReportWizard } from './ReportWizard'
 import { ReportPreview } from './ReportPreview'
-import { TemplateManagement } from './TemplateManagement'
 import { useToast } from '../../knowledge/Toast'
 import s from './ReportsTab.module.css'
 
-type ViewMode = 'list' | 'wizard' | 'preview' | 'templateManagement'
+type ViewMode = 'list' | 'wizard' | 'preview'
 
 interface ReportsTabProps {
   projectId: string
@@ -25,20 +24,21 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   const [previewReport, setPreviewReport] = useState<Report | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Load reports from backend
-  useEffect(() => {
-    const loadReports = async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-        if (result.reports) {
-          setReports(result.reports)
-        }
-      } catch (err) {
-        console.error('Failed to load reports:', err)
-      } finally {
-        setLoading(false)
-      }
+  // Reload reports from backend
+  const loadReports = async () => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+      if (result.reports) setReports(result.reports)
+    } catch (err) {
+      console.error('Failed to load reports:', err)
+    } finally {
+      setLoading(false)
     }
+  }
+
+  // Load reports on mount / projectId change
+  useEffect(() => {
+    setLoading(true)
     loadReports()
   }, [projectId])
 
@@ -59,15 +59,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   }, [reports, projectId])
 
   const handleWizardComplete = async () => {
-    // Reload reports after wizard completes
-    try {
-      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-      if (result.reports) {
-        setReports(result.reports)
-      }
-    } catch (err) {
-      console.error('Failed to reload reports:', err)
-    }
+    await loadReports()
     setViewMode('list')
   }
 
@@ -80,9 +72,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     if (!confirm(t('project.report.confirmDelete'))) return
     try {
       await window.electronAPI.invoke('reports:deleteReport', report.id)
-      // Reload reports
-      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-      if (result.reports) setReports(result.reports)
+      await loadReports()
     } catch (err) {
       console.error('Failed to delete report:', err)
     }
@@ -114,9 +104,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
       if (result.error) {
         showToast(t('project.report.retryFailed', { error: result.error }), 'error')
       } else {
-        // Reload reports to show updated status
-        const res: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-        if (res.reports) setReports(res.reports)
+        await loadReports()
       }
     } catch (err) {
       console.error('Retry failed:', err)
@@ -131,7 +119,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
         projectId={projectId}
         projectType={projectType}
         onComplete={handleWizardComplete}
-        onCancel={() => setViewMode('list')}
+        onCancel={() => { loadReports(); setViewMode('list') }}
       />
     )
   }
@@ -143,13 +131,6 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
         report={previewReport}
         onBack={() => { setViewMode('list'); setPreviewReport(null) }}
       />
-    )
-  }
-
-  // ── Template management view ──
-  if (viewMode === 'templateManagement') {
-    return (
-      <TemplateManagement onBack={() => setViewMode('list')} projectType={projectType} />
     )
   }
 
@@ -176,9 +157,6 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
         <button className={s.primaryBtn} onClick={() => setViewMode('wizard')}>
           <Plus size={16} />
           {t('project.report.newReport')}
-        </button>
-        <button className={s.iconBtn} onClick={() => setViewMode('templateManagement')} title={t('project.report.templateManagement')}>
-          <Settings2 size={16} />
         </button>
       </div>
 

@@ -15,6 +15,13 @@ const DEFAULT_SETTINGS: LLMSettings = {
   vlm_model: 'glm-4v',
   max_concurrent_file_parsing: 1,
   max_concurrent_image_description: 2,
+  // Wiki compile settings
+  max_compile_concurrency: 2,
+  compile_max_retries: 3,
+  compile_backoff_base: 2,
+  // LLM timeout settings
+  llm_connect_timeout: 30,
+  llm_read_timeout: 120,
   task_model: '',
   task_planner_model: '',
   task_timeout: 30,

@@ -1,7 +1,7 @@
-/** src/features/project/tabs/ReportWizard.tsx — 3-step report creation wizard (real templates) */
+/** src/features/project/tabs/ReportWizard.tsx — 2-step report creation wizard (real templates) */
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, Search, ChevronRight, CheckCircle, Clock, Circle, GripVertical, Trash2, Plus, Loader2, Globe } from 'lucide-react'
+import { ArrowLeft, Search, ChevronRight, GripVertical, Trash2, Plus, Loader2, Globe } from 'lucide-react'
 import type { ProjectType } from '../types'
 import { STAGE_MAP } from '../types'
 import s from './ReportWizard.module.css'
@@ -67,14 +67,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
   const [supplementaryNotes, setSupplementaryNotes] = useState('')
   const [outputFormat, setOutputFormat] = useState<'Word' | 'PDF'>('Word')
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
-
-  // Step 3 state
-  const [reportId, setReportId] = useState<string | null>(null)
-  const [generatedChapters, setGeneratedChapters] = useState<Set<number>>(new Set())
-  const [currentGenerating, setCurrentGenerating] = useState(-1)
-  const [previewContent, setPreviewContent] = useState('')
-  const [isComplete, setIsComplete] = useState(false)
-  const [isError, setIsError] = useState(false)
+  const [generating, setGenerating] = useState(false)
 
   // Load templates from backend
   useEffect(() => {
@@ -177,27 +170,20 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
   }, [])
 
   const handleStartGenerate = useCallback(async () => {
-    if (!selectedTemplate) return
+    if (!selectedTemplate || generating) return
+    setGenerating(true)
 
-    setStep(3)
-    setGeneratedChapters(new Set())
-    setCurrentGenerating(0)
-    setPreviewContent('')
-    setIsComplete(false)
-    setIsError(false)
-
-    // Call the real generation API
-    try {
-      // Map checked sources → base_project_ids for backend
-      const baseProjectIds: string[] = []
-      for (const ks of knowledgeSources) {
-        if (!checkedSources.has(ks.id)) continue
-        if (ks.id === 'ks-project' || ks.id === 'ks-internet') continue
-        if (ks.baseLibId) {
-          baseProjectIds.push(ks.baseLibId)
-        }
+    // Map checked sources → base_project_ids for backend
+    const baseProjectIds: string[] = []
+    for (const ks of knowledgeSources) {
+      if (!checkedSources.has(ks.id)) continue
+      if (ks.id === 'ks-project' || ks.id === 'ks-internet') continue
+      if (ks.baseLibId) {
+        baseProjectIds.push(ks.baseLibId)
       }
+    }
 
+    try {
       const result: any = await window.electronAPI.invoke('reports:generateReport', {
         projectId,
         templateId: selectedTemplate.template_id,
@@ -209,74 +195,16 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       })
 
       if (result.report_id) {
-        // Generation started, store report_id and start polling
-        setReportId(result.report_id)
-        setPreviewContent(t('project.report.wizard.generationStarted'))
+        // Generation started in background — return to kanban
+        onComplete()
       } else {
-        setPreviewContent(result.error || t('project.report.wizard.generationFailed'))
-        setIsError(true)
+        setGenerating(false)
       }
     } catch (err) {
       console.error('Generation failed:', err)
-      setPreviewContent(t('project.report.wizard.generationFailed'))
-      setIsError(true)
+      setGenerating(false)
     }
-  }, [selectedTemplate, projectId, variableValues, outputFormat, supplementaryNotes, knowledgeSources, checkedSources, t])
-
-  // Poll for report generation progress
-  useEffect(() => {
-    if (step !== 3 || isComplete || isError || !reportId) return
-
-    let cancelled = false
-    let lastProgress = -1
-
-    const pollProgress = async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('reports:getReport', reportId)
-        if (cancelled) return
-
-        const report = result.report
-        if (!report) return
-
-        const progress = report.progress || 0
-        const status = report.status
-
-        // Update progress UI
-        if (progress !== lastProgress) {
-          lastProgress = progress
-          const completedCount = Math.floor((progress / 100) * chapters.length)
-          setGeneratedChapters(new Set(Array.from({ length: completedCount }, (_, i) => i)))
-          setCurrentGenerating(completedCount < chapters.length ? completedCount : -1)
-        }
-
-        if (status === 'done') {
-          setGeneratedChapters(new Set(chapters.map((_, i) => i)))
-          setCurrentGenerating(-1)
-          setIsComplete(true)
-          setPreviewContent(t('project.report.wizard.generationComplete'))
-        } else if (status === 'error') {
-          setIsError(true)
-          setPreviewContent(t('project.report.wizard.generationFailed'))
-        }
-      } catch (err) {
-        console.error('Poll progress failed:', err)
-      }
-    }
-
-    // Initial poll
-    pollProgress()
-
-    // Poll every 2 seconds
-    const interval = setInterval(pollProgress, 2000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [step, isComplete, isError, reportId, chapters, t])
-
-  const handleFinish = useCallback(() => {
-    onComplete()
-  }, [onComplete])
+  }, [selectedTemplate, projectId, variableValues, outputFormat, supplementaryNotes, knowledgeSources, checkedSources, generating, onComplete])
 
   const toggleSource = (id: string) => {
     setCheckedSources(prev => {
@@ -332,8 +260,6 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     return found ? t(found.labelKey) : stageKey
   }
 
-  const progress = chapters.length > 0 ? Math.round((generatedChapters.size / chapters.length) * 100) : 0
-
   return (
     <div className={s.wizard}>
       {/* Header */}
@@ -342,7 +268,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
           <ArrowLeft size={16} />
           {t('project.report.wizard.back')}
         </button>
-        <span className={s.stepIndicator}>{t('project.report.wizard.newReport')} {step}/3</span>
+        <span className={s.stepIndicator}>{t('project.report.wizard.newReport')} {step}/2</span>
       </div>
 
       {/* Step 1: Select template */}
@@ -392,166 +318,114 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       {/* Step 2: Variables + outline + knowledge sources */}
       {step === 2 && selectedTemplate && (
         <div className={s.stepContent}>
-          <div className={s.stepRow}>
-            <span className={s.stepLabel}>{t('project.report.wizard.template')}</span>
-            <span className={s.stepValue}>{selectedTemplate.template_name}</span>
-            <span className={s.stepLabel}>{t('project.report.wizard.outputFormat')}</span>
-            <select className={s.formatSelect} value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as 'Word' | 'PDF')}>
-              <option value="Word">Word</option>
-              <option value="PDF">PDF</option>
-            </select>
-          </div>
+          <div className={s.stepTwoCols}>
+            {/* Left panel: configuration */}
+            <div className={s.leftPanel}>
+              <div className={s.stepRow}>
+                <span className={s.stepLabel}>{t('project.report.wizard.template')}</span>
+                <span className={s.stepValue}>{selectedTemplate.template_name}</span>
+                <span className={s.stepLabel}>{t('project.report.wizard.outputFormat')}</span>
+                <select className={s.formatSelect} value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as 'Word' | 'PDF')}>
+                  <option value="Word">Word</option>
+                  <option value="PDF">PDF</option>
+                </select>
+              </div>
 
-          {/* Template variables */}
-          {selectedTemplate.variables && selectedTemplate.variables.length > 0 ? (
-            <div className={s.section}>
-              <div className={s.sectionTitle}>{t('project.report.wizard.variables')}</div>
-              <p className={s.sectionHint}>{t('project.report.wizard.variablesPlaceholder')}</p>
-              <div className={s.variableGrid}>
-                {selectedTemplate.variables.map((v) => (
-                  <div key={v} className={s.variableField}>
-                    <label className={s.variableLabel}>{v}</label>
-                    <input
-                      className={s.variableInput}
-                      value={variableValues[v] || ''}
-                      onChange={(e) => setVariableValues(prev => ({ ...prev, [v]: e.target.value }))}
-                      placeholder={v}
-                    />
+              {/* Template variables */}
+              {selectedTemplate.variables && selectedTemplate.variables.length > 0 ? (
+                <div className={s.section}>
+                  <div className={s.sectionTitle}>{t('project.report.wizard.variables')}</div>
+                  <p className={s.sectionHint}>{t('project.report.wizard.variablesPlaceholder')}</p>
+                  <div className={s.variableGrid}>
+                    {selectedTemplate.variables.map((v) => (
+                      <div key={v} className={s.variableField}>
+                        <label className={s.variableLabel}>{v}</label>
+                        <input
+                          className={s.variableInput}
+                          value={variableValues[v] || ''}
+                          onChange={(e) => setVariableValues(prev => ({ ...prev, [v]: e.target.value }))}
+                          placeholder={v}
+                        />
+                      </div>
+                    ))}
                   </div>
+                </div>
+              ) : (
+                <div className={s.section}>
+                  <p className={s.sectionHint}>{t('project.report.wizard.noVariables')}</p>
+                </div>
+              )}
+
+              {/* Knowledge sources */}
+              <div className={s.section}>
+                <div className={s.sectionTitle}>{t('project.report.wizard.knowledgeSources')}</div>
+                {knowledgeSources.map((ks) => (
+                  <label key={ks.id} className={s.checkboxRow}>
+                    <input
+                      type="checkbox"
+                      checked={checkedSources.has(ks.id)}
+                      onChange={() => toggleSource(ks.id)}
+                      disabled={ks.alwaysChecked}
+                    />
+                    <span className={s.checkboxLabel}>
+                      {ks.isCustom
+                        ? customBaseLibs.find(lib => `ks-custom-${lib.id}` === ks.id)?.name || ks.id
+                        : ks.id === 'ks-internet'
+                          ? <><Globe size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />{t(ks.nameKey)}</>
+                          : t(ks.nameKey)}
+                    </span>
+                    {ks.alwaysChecked && <span className={s.autoTag}>{t('project.report.wizard.autoIncluded')}</span>}
+                    {ks.autoMatched && ks.matchType === projectType && !ks.alwaysChecked && (
+                      <span className={s.matchTag}>{t('project.report.wizard.autoMatched')}</span>
+                    )}
+                  </label>
                 ))}
               </div>
-            </div>
-          ) : (
-            <div className={s.section}>
-              <p className={s.sectionHint}>{t('project.report.wizard.noVariables')}</p>
-            </div>
-          )}
 
-          {/* Knowledge sources */}
-          <div className={s.section}>
-            <div className={s.sectionTitle}>{t('project.report.wizard.knowledgeSources')}</div>
-            {knowledgeSources.map((ks) => (
-              <label key={ks.id} className={s.checkboxRow}>
-                <input
-                  type="checkbox"
-                  checked={checkedSources.has(ks.id)}
-                  onChange={() => toggleSource(ks.id)}
-                  disabled={ks.alwaysChecked}
+              {/* Supplementary notes */}
+              <div className={s.section}>
+                <div className={s.sectionTitle}>{t('project.report.wizard.supplementary')}</div>
+                <textarea
+                  className={s.notesInput}
+                  value={supplementaryNotes}
+                  onChange={(e) => setSupplementaryNotes(e.target.value)}
+                  placeholder={t('project.report.wizard.supplementaryPlaceholder')}
+                  rows={3}
                 />
-                <span className={s.checkboxLabel}>
-                  {ks.isCustom
-                    ? customBaseLibs.find(lib => `ks-custom-${lib.id}` === ks.id)?.name || ks.id
-                    : ks.id === 'ks-internet'
-                      ? <><Globe size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />{t(ks.nameKey)}</>
-                      : t(ks.nameKey)}
-                </span>
-                {ks.alwaysChecked && <span className={s.autoTag}>{t('project.report.wizard.autoIncluded')}</span>}
-                {ks.autoMatched && ks.matchType === projectType && !ks.alwaysChecked && (
-                  <span className={s.matchTag}>{t('project.report.wizard.autoMatched')}</span>
-                )}
-              </label>
-            ))}
-          </div>
-
-          {/* Outline */}
-          <div className={s.section}>
-            <div className={s.sectionTitle}>{t('project.report.wizard.outline')}</div>
-            <div className={s.chapterList}>
-              {chapters.map((ch, idx) => (
-                <div key={idx} className={s.chapterItem}>
-                  <GripVertical size={14} className={s.dragHandle} />
-                  <span className={s.chapterNum}>{idx + 1}.</span>
-                  <span className={s.chapterName}>{ch}</span>
-                  <button className={s.removeBtn} onClick={() => removeChapter(idx)} title={t('project.report.wizard.removeChapter')}>
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
+              </div>
             </div>
-            <button className={s.addChapterBtn} onClick={addChapter}>
-              <Plus size={14} />
-              {t('project.report.wizard.addChapter')}
-            </button>
-          </div>
 
-          {/* Supplementary notes */}
-          <div className={s.section}>
-            <div className={s.sectionTitle}>{t('project.report.wizard.supplementary')}</div>
-            <textarea
-              className={s.notesInput}
-              value={supplementaryNotes}
-              onChange={(e) => setSupplementaryNotes(e.target.value)}
-              placeholder={t('project.report.wizard.supplementaryPlaceholder')}
-              rows={3}
-            />
+            {/* Right panel: outline */}
+            <div className={s.rightPanel}>
+              <div className={s.section}>
+                <div className={s.sectionTitle}>{t('project.report.wizard.outline')}</div>
+                <div className={s.chapterList}>
+                  {chapters.map((ch, idx) => (
+                    <div key={idx} className={s.chapterItem}>
+                      <GripVertical size={14} className={s.dragHandle} />
+                      <span className={s.chapterNum}>{idx + 1}.</span>
+                      <span className={s.chapterName}>{ch}</span>
+                      <button className={s.removeBtn} onClick={() => removeChapter(idx)} title={t('project.report.wizard.removeChapter')}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button className={s.addChapterBtn} onClick={addChapter}>
+                  <Plus size={14} />
+                  {t('project.report.wizard.addChapter')}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className={s.stepActions}>
             <button className={s.cancelBtn} onClick={onCancel}>{t('project.report.wizard.cancel')}</button>
-            <button className={s.generateBtn} onClick={handleStartGenerate}>
-              {t('project.report.wizard.startGenerate')}
+            <button className={s.generateBtn} onClick={handleStartGenerate} disabled={generating}>
+              {generating ? t('project.report.wizard.generating') : t('project.report.wizard.startGenerate')}
               <ChevronRight size={16} />
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Step 3: Generation progress */}
-      {step === 3 && (
-        <div className={s.stepContent}>
-          {/* Progress */}
-          <div className={s.section}>
-            <div className={s.sectionTitle}>{t('project.report.wizard.generationProgress')}</div>
-            <div className={s.chapterProgress}>
-              {chapters.map((ch, idx) => (
-                <div key={idx} className={s.progressItem}>
-                  {generatedChapters.has(idx) ? (
-                    <CheckCircle size={14} className={s.checkIcon} />
-                  ) : currentGenerating === idx ? (
-                    <Clock size={14} className={s.clockIcon} />
-                  ) : (
-                    <Circle size={14} className={s.circleIcon} />
-                  )}
-                  <span className={currentGenerating === idx ? s.generatingText : ''}>
-                    {idx + 1}. {ch}
-                  </span>
-                  {generatedChapters.has(idx) && <span className={s.doneTag}>{t('project.report.wizard.done')}</span>}
-                  {currentGenerating === idx && <span className={s.genTag}>{t('project.report.wizard.generating')}</span>}
-                </div>
-              ))}
-            </div>
-            <div className={s.progressBar}>
-              <div className={s.progressFill} style={{ width: `${progress}%` }} />
-            </div>
-            <div className={s.progressText}>{progress}%</div>
-          </div>
-
-          {/* Preview */}
-          <div className={s.section}>
-            <div className={s.sectionTitle}>{t('project.report.wizard.realtimePreview')}</div>
-            <div className={s.previewArea}>
-              {previewContent ? (
-                <pre className={s.previewContent}>{previewContent}</pre>
-              ) : (
-                <div className={s.previewEmpty}>{t('project.report.wizard.waitingGeneration')}</div>
-              )}
-            </div>
-          </div>
-
-          {isComplete && (
-            <div className={s.stepActions}>
-              <button className={s.cancelBtn} onClick={onCancel}>{t('project.report.wizard.cancel')}</button>
-              <button className={s.generateBtn} onClick={handleFinish}>
-                {t('project.report.wizard.finishAndReturn')}
-                <CheckCircle size={16} />
-              </button>
-            </div>
-          )}
-          {!isComplete && (
-            <div className={s.stepActions}>
-              <button className={s.cancelBtn} onClick={onCancel}>{t('project.report.wizard.cancel')}</button>
-            </div>
-          )}
         </div>
       )}
     </div>

@@ -61,13 +61,13 @@ async def retrieve_for_section(
 
     流程：
       ① LLM 检索策略：生成搜索关键词
-      ② 按 data_sources 分发到各通道（通道间并行，通道内多 query 并行）
+      ② 知识库通道检索（默认启用）
       ③ 各通道独立检索，结果合并
       ④ LLM 构建知识卡片
       ⑤ 注册到全局 Registry
 
     Args:
-        section: 归一化后的节定义（含 query_hints、data_sources、must_cite、optional 等）
+        section: 归一化后的节定义（含 prompt_hint、optional 等）
         search_tool: 知识检索工具实例
         registry: 全局引用注册器
         project_id: 当前项目 ID
@@ -82,8 +82,7 @@ async def retrieve_for_section(
     Returns:
         (RetrievalResult, total_usage): 检索结果 + 累计 API usage
     """
-    section_id = section.get("section_id", section.get("id", "unknown"))
-    data_sources = section.get("data_sources", ["knowledge"])
+    section_id = section.get("section_id", "unknown")
     total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def _add_usage(usage: dict):
@@ -96,37 +95,18 @@ async def retrieve_for_section(
         section, digests, llm_client, llm_settings,
     )
     _add_usage(strategy_usage)
-    logger.info("Retrieval: section=%s, queries=%d, sources=%s",
-                section_id, len(queries), data_sources)
+    logger.info("Retrieval: section=%s, queries=%d", section_id, len(queries))
 
-    # ② 多通道并行检索
+    # ② 知识库通道检索（默认启用）
     raw_results: list[dict] = []
     channel_tasks = []
 
-    if "knowledge" in data_sources:
-        channel_tasks.append(
-            _search_knowledge_channel(
-                queries, search_tool, project_id, base_project_ids, top_k,
-                query_parallelism,
-            )
+    channel_tasks.append(
+        _search_knowledge_channel(
+            queries, search_tool, project_id, base_project_ids, top_k,
+            query_parallelism,
         )
-
-    if "internet" in data_sources:
-        channel_tasks.append(
-            _search_internet_channel(
-                queries, tavily_api_key, top_k, query_parallelism,
-            )
-        )
-
-    # "wiki" 通道：Wiki 页面作为高权重骨架上下文
-    if "wiki" in data_sources and db is not None:
-        channel_tasks.append(
-            _search_wiki_channel(
-                queries, db, project_id, top_k,
-            )
-        )
-    elif "wiki" in data_sources:
-        logger.info("Retrieval: wiki channel requested but no db provided, skipping")
+    )
 
     # 并行执行所有通道
     if channel_tasks:
@@ -147,19 +127,6 @@ async def retrieve_for_section(
         else:
             logger.info("Section '%s': no results, optional=false → degraded mode", section_id)
             return RetrievalResult(cards=[], is_degraded=True), total_usage
-
-    # must_cite 但知识库分数全低
-    # 注意：score 为 RRF 融合分数（通常范围 0.01~0.1），阈值 0.01 为最低下限
-    knowledge_only = [r for r in raw_results if r["source_type"] == "knowledge"]
-    if section.get("must_cite") and knowledge_only and all(
-        r.get("score", 0) < 0.01 for r in knowledge_only
-    ):
-        # 有 internet 结果时不降级，仅知识库不足时降级
-        internet_only = [r for r in raw_results if r["source_type"] == "internet"]
-        if not internet_only:
-            logger.info("Section '%s': must_cite but all knowledge scores < 0.01 → degraded",
-                        section_id)
-            return RetrievalResult(cards=[], is_degraded=True, raw_results=raw_results), total_usage
 
     # ④ LLM 构建知识卡片
     cards, sufficiency, card_usage = await build_knowledge_cards(

@@ -109,11 +109,10 @@ async def list_templates(
                 "version": tpl.get("version"),
                 "project_types": tpl.get("project_types", []),
                 "stage": tpl.get("stage"),
-                "output_format": tpl.get("output_format", "Word"),
+                "output_format": tpl.get("output_format", "docx"),
                 "role_hint": tpl.get("role_hint"),
                 "audience": tpl.get("audience"),
                 "report_depth": tpl.get("report_depth", "full"),
-                "variables": tpl.get("variables", []),
                 "chapter_count": chapter_count,
             })
 
@@ -752,7 +751,16 @@ async def _run_report_generation(
     db = get_db()
     llm_settings = db.get_settings()
     search_tool = _get_search_tool(db, data_dir)
-    llm_client = LLMClient(llm_settings)
+
+    # Report generation needs deeper reasoning — mirror wiki ingest pattern
+    report_llm_settings = dict(llm_settings)
+    report_llm_settings["reasoning_effort"] = "low"
+    logger.info(
+        "Report [%s]: reasoning_effort=%s, max_tokens=%s",
+        report_id, report_llm_settings.get("reasoning_effort"), report_llm_settings.get("max_tokens"),
+    )
+
+    llm_client = LLMClient(report_llm_settings)
 
     # 写入开始日志
     db.create_report_log(report_id, "开始生成报告", level="info")
@@ -763,7 +771,7 @@ async def _run_report_generation(
         project_id=project_id,
         search_tool=search_tool,
         llm_client=llm_client,
-        llm_settings=llm_settings,
+        llm_settings=report_llm_settings,
         output_dir=report_dir,
         base_project_ids=base_project_ids,
         db=db,
@@ -798,16 +806,14 @@ async def _run_report_generation(
                 db.update_section_content(
                     section_pk=section_record["id"],
                     content=runner.outputs.get(event.data["section_id"], ""),
-                    word_count=event.data.get("word_count", 0),
                     status="done",
                 )
 
                 # 章节完成/跳过日志
-                word_count = event.data.get("word_count", 0)
                 if skipped:
                     log_msg = f"章节跳过: {event.data.get('title', '')}（材料不足）"
                 else:
-                    log_msg = f"章节完成: {event.data.get('title', '')} ({word_count} 字)"
+                    log_msg = f"章节完成: {event.data.get('title', '')}"
                 db.create_report_log(
                     report_id,
                     log_msg,

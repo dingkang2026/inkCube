@@ -38,7 +38,7 @@ def validate_section(
     Args:
         output: LLM 生成的章节文本
         given_ref_numbers: 本节给定的引用编号集合
-        section: 节定义 dict（含 must_cite、word_count、promote_subhead 等）
+        section: 节定义 dict（含 section_id、title 等）
 
     Returns:
         违规列表。空列表表示全部通过。
@@ -69,15 +69,16 @@ def validate_section(
         ))
 
     # Rule 3: 字数偏差 > ±20%（与 System Prompt 输出契约一致）
-    target = section.get("word_count", 1200)
-    actual = len(output)
-    if target > 0:
-        ratio = actual / target
-        if ratio < 0.8 or ratio > 1.2:
-            violations.append(SectionViolation(
-                rule=3,
-                message=f"字数 {actual} 偏离目标 {target}（{ratio:.0%}，允许 ±20%）",
-            ))
+    # 注意：新设计中已删除 word_count，此规则暂时跳过
+    # target = section.get("word_count", 1200)
+    # actual = len(output)
+    # if target > 0:
+    #     ratio = actual / target
+    #     if ratio < 0.8 or ratio > 1.2:
+    #         violations.append(SectionViolation(
+    #             rule=3,
+    #             message=f"字数 {actual} 偏离目标 {target}（{ratio:.0%}，允许 ±20%）",
+    #         ))
 
     # Rule 4: ◆ 小标题超过 15 字 / 数量异常
     subheads = re.findall(r"◆\s*(.+)", output)
@@ -89,16 +90,7 @@ def validate_section(
                 rule=4,
                 message=f"小标题超过 15 字: 「{title}」（{len(title)} 字）",
             ))
-    # 数量异常：每 800-1000 字一个，如果超出 2 倍或不足 1/2
-    if section.get("promote_subhead") and target > 0:
-        expected_count = max(1, target // 900)
-        actual_count = len(subheads)
-        if actual_count > expected_count * 2 or (actual_count == 0 and expected_count >= 2):
-            violations.append(SectionViolation(
-                rule=4,
-                message=f"小标题数量异常: 期望约 {expected_count} 个，实际 {actual_count} 个",
-                severity="warning",
-            ))
+    # 注意：新设计中已删除 promote_subhead，不再检查小标题数量
 
     # Rule 5: 结尾套话
     ending_phrases = ["综上所述", "总而言之", "综上", "总之"]
@@ -111,12 +103,12 @@ def validate_section(
             ))
             break
 
-    # Rule 6: must_cite 节内无任何 [n]
-    if section.get("must_cite") and not cited:
-        violations.append(SectionViolation(
-            rule=6,
-            message="must_cite 章节无任何引用标注",
-        ))
+    # Rule 6: 必须引用检查（已删除 must_cite 字段，此规则暂时跳过）
+    # if section.get("must_cite") and not cited:
+    #     violations.append(SectionViolation(
+    #         rule=6,
+    #         message="must_cite 章节无任何引用标注",
+    #     ))
 
     # Rule 7: 首行不是正文（输出了标题/前言）
     first_line = output.strip().split("\n")[0].strip()

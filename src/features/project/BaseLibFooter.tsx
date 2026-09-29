@@ -1,7 +1,7 @@
 /** src/features/project/BaseLibFooter.tsx — Sidebar base library list (API-driven) */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Plus, Factory, DollarSign, Library, X } from 'lucide-react'
+import { Plus, Factory, DollarSign, Library, X, FileText } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useToast } from '../knowledge/Toast'
 import s from './BaseLibFooter.module.css'
@@ -31,9 +31,10 @@ function getIcon(id: string): LucideIcon {
 interface BaseLibFooterProps {
   selectedBaseLib: string | null
   onSelectBaseLib: (baseLibId: string) => void
+  onOpenTemplateManagement?: () => void
 }
 
-export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib }: BaseLibFooterProps) {
+export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplateManagement }: BaseLibFooterProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const [baseLibs, setBaseLibs] = useState<BaseLibRecord[]>([])
@@ -113,6 +114,21 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib }: BaseLibFoote
         <Plus size={13} />
         <span>{t('baseLib.addCustom')}</span>
       </button>
+      {onOpenTemplateManagement && (
+        <>
+          <div className={s.header} style={{ marginTop: '8px' }}>
+            <span className={s.title}>{t('baseLib.templateManagement')}</span>
+          </div>
+          <div
+            className={s.item}
+            onClick={onOpenTemplateManagement}
+            style={{ cursor: 'pointer', paddingLeft: '18px' }}
+          >
+            <FileText size={15} className={s.icon} />
+            <span className={s.name}>{t('project.report.templateManagement')}</span>
+          </div>
+        </>
+      )}
     </div>
   )
 }
