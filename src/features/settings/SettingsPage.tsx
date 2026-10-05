@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft } from 'lucide-react'
 import { SettingsNav } from './SettingsNav'
 import { GeneralSettings } from './GeneralSettings'
 import { ExternalModelSettings } from './ExternalModelSettings'
@@ -15,17 +14,27 @@ import s from './SettingsPage.module.css'
 interface SettingsPageProps {
   settings: LLMSettings
   onSave: (settings: LLMSettings) => void
-  onClose: () => void
+  /** 外部导航信号（含锚点 section；设置页条件渲染重挂载时用 name 初始化，同 section 重复导航靠引用变化生效） */
+  sectionSignal?: { name: string; ts: number } | null
 }
 
 const SECTIONS = ['general', 'externalModel', 'internalModel', 'gpu', 'task', 'skills', 'dataManagement'] as const
 
-export function SettingsPage({ settings, onSave, onClose }: SettingsPageProps) {
+export function SettingsPage({ settings, onSave, sectionSignal }: SettingsPageProps) {
   const { t } = useTranslation()
-  const [activeSection, setActiveSection] = useState('general')
+  const [activeSection, setActiveSection] = useState(sectionSignal?.name ?? 'general')
   const [form, setForm] = useState<LLMSettings>({ ...settings })
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [testResult, setTestResult] = useState<{
+    ok: boolean
+    message: string
+    capabilities?: { function_calling: boolean | null; reasoning_effort: boolean | null; thinking_toggle: boolean | null }
+  } | null>(null)
   const [testing, setTesting] = useState(false)
+
+  // 外部锚点直达（0.4 §7.4）：设置页已打开时再次导航（同 section 也生效，signal 每次新引用）
+  useEffect(() => {
+    if (sectionSignal) setActiveSection(sectionSignal.name)
+  }, [sectionSignal])
 
   useEffect(() => {
     setForm({ ...settings })
@@ -62,9 +71,6 @@ export function SettingsPage({ settings, onSave, onClose }: SettingsPageProps) {
   return (
     <main className={s.page}>
       <div className={s.header}>
-        <button className={s.backBtn} onClick={onClose} title={t('settings.back')}>
-          <ArrowLeft size={18} />
-        </button>
         <h2>{t('settings.title')}</h2>
       </div>
 
@@ -87,6 +93,26 @@ export function SettingsPage({ settings, onSave, onClose }: SettingsPageProps) {
               {testResult && (
                 <div className={`${s.testResult} ${testResult.ok ? s.success : s.error}`}>
                   {testResult.message}
+                </div>
+              )}
+              {testResult?.ok && testResult.capabilities && (
+                <div className={s.capabilities}>
+                  {(
+                    [
+                      ['function_calling', t('settings.capFc')],
+                      ['reasoning_effort', t('settings.capReasoning')],
+                      ['thinking_toggle', t('settings.capThinking')],
+                    ] as const
+                  ).map(([key, label]) => {
+                    const value = testResult.capabilities?.[key]
+                    const state = value === true ? s.ok : value === false ? s.no : ''
+                    const mark = value === true ? '✓' : value === false ? '✗' : '?'
+                    return (
+                      <span key={key} className={`${s.capBadge} ${state}`}>
+                        {label} {mark}
+                      </span>
+                    )
+                  })}
                 </div>
               )}
               {showTest && (

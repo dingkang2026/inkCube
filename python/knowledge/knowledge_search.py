@@ -1,4 +1,5 @@
 """python/knowledge/knowledge_search.py"""
+import asyncio
 from typing import Optional, List
 from db.database import Database
 from knowledge.vector_store import VectorStore
@@ -96,11 +97,12 @@ class KnowledgeSearchTool:
             - _rank_fts: Rank in FTS results
             - metadata: Chunk metadata
         """
-        # Generate query embedding
-        query_vector = self._embed_query(query)
-        
-        # Use HybridRetriever for fused search
-        fused_results = self.hybrid_retriever.search(
+        # Generate query embedding + run fused retrieval — both are sync
+        # CPU-bound calls (bge-m3 inference, Chroma/FTS queries) that would
+        # freeze the event loop for the duration of the search (H5)
+        query_vector = await asyncio.to_thread(self._embed_query, query)
+        fused_results = await asyncio.to_thread(
+            self.hybrid_retriever.search,
             project_id=project_id,
             query_text=query,
             query_vector=query_vector,
@@ -108,7 +110,7 @@ class KnowledgeSearchTool:
             content_type_filter=content_type_filter,
             dense_weight=dense_weight,
             fts_weight=fts_weight,
-            file_id=file_id
+            file_id=file_id,
         )
         
         return fused_results

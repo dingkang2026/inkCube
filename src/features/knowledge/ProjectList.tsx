@@ -5,6 +5,8 @@ import { Folder, MoreVertical } from 'lucide-react'
 import type { Project } from './types'
 import type { ProjectType } from '../project/types'
 import { PROJECT_TYPE_CONFIG } from '../project/types'
+import { useActivity } from '../activity/ActivityContext'
+import type { ProjectActivity } from '../activity/types'
 import s from './ProjectList.module.css'
 
 interface ProjectListProps {
@@ -25,6 +27,7 @@ export function ProjectList({
   onCreate,
 }: ProjectListProps) {
   const { t } = useTranslation()
+  const { byProject } = useActivity()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDesc, setNewProjectDesc] = useState('')
@@ -105,6 +108,16 @@ export function ProjectList({
     }
   }
 
+  /** Activity Hub L2 活跃点 tooltip（0.4 §5.3）：拼接待办活动摘要 */
+  const activityTooltip = (pa: ProjectActivity): string => {
+    const parts: string[] = []
+    if (pa.files > 0) parts.push(t('activity.tipFiles', { count: pa.files }))
+    if (pa.compiles > 0) parts.push(t('activity.tipCompiles'))
+    if (pa.reports > 0) parts.push(t('activity.tipReports', { count: pa.reports }))
+    if (pa.waitingReviews > 0) parts.push(t('activity.tipWaiting', { count: pa.waitingReviews }))
+    return parts.join(' / ')
+  }
+
   return (
     <div className={s.container}>
       {/* Create button */}
@@ -123,7 +136,11 @@ export function ProjectList({
         </div>
       ) : (
         <div className={s.list}>
-          {projects.map((project) => (
+          {projects.map((project) => {
+            const pa = byProject.get(project.id)
+            const hasOngoing = !!pa && pa.files + pa.compiles + pa.reports > 0
+            const needsReview = !!pa && pa.waitingReviews > 0
+            return (
             <div
               key={project.id}
               className={`${s.item} ${selectedProject === project.id ? s.selected : ''}`}
@@ -145,7 +162,15 @@ export function ProjectList({
                   />
                 ) : (
                   <>
-                    <h4 className={s.name}>{project.name}</h4>
+                    <h4 className={s.name}>
+                      {project.name}
+                      {(hasOngoing || needsReview) && pa && (
+                        <span
+                          className={hasOngoing ? s.activityDot : s.reviewDot}
+                          title={activityTooltip(pa)}
+                        />
+                      )}
+                    </h4>
                     {project.description && (
                       <p className={s.desc}>{project.description}</p>
                     )}
@@ -181,7 +206,8 @@ export function ProjectList({
                 </div>
               )}
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
 

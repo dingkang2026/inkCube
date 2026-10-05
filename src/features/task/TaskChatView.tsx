@@ -4,6 +4,7 @@ import { FolderOpen, Wrench, Paperclip, Pause, Square, SendHorizonal, AlertTrian
 import { TaskMessageList } from './TaskMessageList'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import type { ShellConfirmData, SkillConfirmData } from './useTaskChat'
+import { useFeatureGuard } from '../readiness/useReadiness'
 import styles from './TaskChatView.module.css'
 
 interface SlashCommand {
@@ -59,6 +60,7 @@ export function TaskChatView({
   onFilesUploaded,
 }: TaskChatViewProps) {
   const { t } = useTranslation()
+  const guard = useFeatureGuard()
   const [input, setInput] = useState('')
   const [isDragOver, setIsDragOver] = useState(false)
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
@@ -67,6 +69,7 @@ export function TaskChatView({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const dragCounterRef = useRef(0)
   const sendingRef = useRef(false)  // synchronous guard against double-submit
+  const guardPendingRef = useRef(false)  // entry-guard in flight (0.4 §7.3)
   const isEmpty = messages.length === 0 && !isGenerating
 
   // Fetch installed skills for slash command autocomplete
@@ -97,16 +100,28 @@ export function TaskChatView({
     }
   }, [isGenerating])
 
+  /** 入口 guard（0.4 §5.3 第二层）：任务发送依赖 LLM 配置；放行后才置 sending 防重标记 */
+  const guardSend = (text: string, afterSend?: () => void) => {
+    if (sendingRef.current || guardPendingRef.current) return
+    guardPendingRef.current = true
+    void guard('task', () => {
+      sendingRef.current = true
+      onSendMessage(text)
+      afterSend?.()
+    }).finally(() => {
+      guardPendingRef.current = false
+    })
+  }
+
   const handleSend = () => {
     const text = input.trim()
     if (!text) return
-    if (sendingRef.current) return  // prevent double-submit
-    sendingRef.current = true
-    onSendMessage(text)
-    setInput('')
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
+    guardSend(text, () => {
+      setInput('')
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+      }
+    })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -248,13 +263,13 @@ export function TaskChatView({
           <p className={styles.emptyGreeting}>{t('task.greeting')}</p>
           <p className={styles.emptyHint}>{t('task.hint')}</p>
           <div className={styles.quickActions}>
-            <button className={styles.quickCard} onClick={() => onSendMessage(t('task.example1'))}>
+            <button className={styles.quickCard} onClick={() => guardSend(t('task.example1'))}>
               {t('task.example1')}
             </button>
-            <button className={styles.quickCard} onClick={() => onSendMessage(t('task.example2'))}>
+            <button className={styles.quickCard} onClick={() => guardSend(t('task.example2'))}>
               {t('task.example2')}
             </button>
-            <button className={styles.quickCard} onClick={() => onSendMessage(t('task.example3'))}>
+            <button className={styles.quickCard} onClick={() => guardSend(t('task.example3'))}>
               {t('task.example3')}
             </button>
           </div>

@@ -7,6 +7,7 @@ via the shell/skill confirmation flow.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -85,12 +86,13 @@ class GitOpsTool(BaseTool):
     def set_workspace(self, workspace_dir: str):
         self.workspace_dir = workspace_dir
 
-    def _is_git_repo(self) -> bool:
+    async def _is_git_repo(self) -> bool:
         """Check if workspace is a git repository (supports worktrees)."""
         if not self.workspace_dir:
             return False
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "rev-parse", "--is-inside-work-tree"],
                 capture_output=True, encoding="utf-8", errors="replace",
                 cwd=self.workspace_dir, timeout=5,
@@ -99,15 +101,18 @@ class GitOpsTool(BaseTool):
         except Exception:
             return False
 
-    def _run_git(self, args: list[str], timeout: int = 15) -> dict:
-        """Run a git command and return structured result."""
+    async def _run_git(self, args: list[str], timeout: int = 15) -> dict:
+        """Run a git command and return structured result (blocking part in a worker thread — H1).
+
+        Note: the caller (execute) checks _is_git_repo() once up front —
+        checking again here would double the git process spawns per call (L3).
+        """
         if not self.workspace_dir:
             return {"error": "工作目录未设置", "error_type": "ConfigError"}
-        if not self._is_git_repo():
-            return {"error": "当前工作区不是 Git 仓库", "error_type": "NotGitRepo"}
 
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["git"] + args,
                 capture_output=True,
                 encoding="utf-8", errors="replace",
@@ -155,7 +160,7 @@ class GitOpsTool(BaseTool):
         if not self.workspace_dir:
             return json.dumps({"error": "工作目录未设置"}, ensure_ascii=False)
 
-        if not self._is_git_repo():
+        if not await self._is_git_repo():
             return json.dumps(
                 {"error": "当前工作区不是 Git 仓库，无法执行 git 操作"},
                 ensure_ascii=False,
@@ -171,22 +176,22 @@ class GitOpsTool(BaseTool):
             arg_list = args.split() if args.strip() else []
 
         if action == "status":
-            result = self._run_git(["status", "--short"])
+            result = await self._run_git(["status", "--short"])
 
         elif action == "diff":
             cmd = ["diff"] + arg_list
-            result = self._run_git(cmd)
+            result = await self._run_git(cmd)
 
         elif action == "diff_staged":
             cmd = ["diff", "--cached"] + arg_list
-            result = self._run_git(cmd)
+            result = await self._run_git(cmd)
 
         elif action == "log":
             cmd = ["log", "--oneline"] + arg_list
             # Default to 20 entries if no count specified
             if not any(a.startswith("-") for a in arg_list):
                 cmd = ["log", "--oneline", "-20"] + arg_list
-            result = self._run_git(cmd)
+            result = await self._run_git(cmd)
 
         elif action == "show":
             if not arg_list:
@@ -195,7 +200,7 @@ class GitOpsTool(BaseTool):
                     ensure_ascii=False,
                 )
             cmd = ["show", "--stat"] + arg_list
-            result = self._run_git(cmd)
+            result = await self._run_git(cmd)
 
         elif action == "blame":
             if not arg_list:
@@ -204,7 +209,7 @@ class GitOpsTool(BaseTool):
                     ensure_ascii=False,
                 )
             cmd = ["blame"] + arg_list
-            result = self._run_git(cmd, timeout=30)
+            result = await self._run_git(cmd, timeout=30)
 
         elif action == "commit":
             # Commit requires user confirmation (handled by agent loop)
@@ -217,12 +222,12 @@ class GitOpsTool(BaseTool):
             # We do NOT auto-stage here to avoid unintended files being committed.
 
             # Pre-commit: show what will be committed (diff --cached --stat)
-            stat_result = self._run_git(["diff", "--cached", "--stat"])
+            stat_result = await self._run_git(["diff", "--cached", "--stat"])
             pre_stat = stat_result.get("stdout", "").strip()
             if not pre_stat:
                 # Also check unstaged changes for context
-                unstaged = self._run_git(["diff", "--stat"]).get("stdout", "").strip()
-                untracked = self._run_git(["ls-files", "--others", "--exclude-standard"]).get("stdout", "").strip()
+                unstaged = await self._run_git(["diff", "--stat"]).get("stdout", "").strip()
+                untracked = await self._run_git(["ls-files", "--others", "--exclude-standard"]).get("stdout", "").strip()
                 if not unstaged and not untracked:
                     return json.dumps({
                         "exit_code": -1, "stdout": "",
@@ -231,7 +236,7 @@ class GitOpsTool(BaseTool):
                     }, ensure_ascii=False)
 
             cmd = ["commit"] + arg_list
-            result = self._run_git(cmd)
+            result = await self._run_git(cmd)
             # Inject pre-commit stat into result for user visibility
             if pre_stat and result.get("exit_code", -1) == 0:
                 result["commit_stat"] = pre_stat

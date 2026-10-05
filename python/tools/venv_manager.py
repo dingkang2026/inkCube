@@ -72,10 +72,16 @@ def create_venv(task_dir: str) -> str:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.warning("uv venv failed, falling back to stdlib: %s", e)
 
-    # Fallback: stdlib venv
+    # Fallback: stdlib venv — run as a subprocess so a hung ensurepip can't
+    # block forever (in-process venv.create() has no timeout support)
     try:
-        import venv
-        venv.create(venv_path, with_pip=True)
+        subprocess.run(
+            [resolve_python(), "-m", "venv", venv_path],
+            capture_output=True,
+            encoding="utf-8", errors="replace",
+            timeout=300,
+            check=True,
+        )
         logger.info("venv created with stdlib: %s", venv_path)
         return venv_path
     except Exception as e:

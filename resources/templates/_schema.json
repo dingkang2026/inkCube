@@ -4,8 +4,13 @@
   "title": "InkCube Report Template Schema",
   "description": "墨方报告模板 JSON Schema，用于入口校验",
   "type": "object",
-  "required": ["template_id", "template_name", "version", "project_types", "outline"],
+  "required": ["template_id", "template_name", "version", "project_types", "outline", "schema_version"],
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "模板 schema 版本，用于升级时自动迁移（当前为 2）"
+    },
     "template_id": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*$",
@@ -63,6 +68,11 @@
       "items": { "type": "string" },
       "description": "全局写作要求"
     },
+    "variables": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/variable" },
+      "description": "模板声明的变量（user / derived 两类），可选；隐式项目变量（company_name 等）无需声明"
+    },
     "outline": {
       "type": "array",
       "minItems": 1,
@@ -119,7 +129,8 @@
       "allOf": [
         {
           "if": {
-            "properties": { "compose_mode": { "const": "post_body" } }
+            "properties": { "compose_mode": { "const": "post_body" } },
+            "required": ["compose_mode"]
           },
           "then": {
             "properties": {
@@ -128,6 +139,70 @@
                 "description": "post_body 章节不得有子章节"
               }
             }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "variable": {
+      "type": "object",
+      "required": ["name", "source"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "变量唯一名，正文以 {{name}} 引用"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["user", "derived"],
+          "description": "变量来源：user（向导填写）/ derived（变量解析层算出）"
+        },
+        "label": {
+          "type": "string",
+          "description": "UI 展示名"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true,
+          "description": "user 变量是否必填"
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "user 变量输入提示"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "derived 变量依赖的变量名（构成 DAG，可指向隐式/user/其他 derived）"
+        },
+        "derive_hint": {
+          "type": "string",
+          "description": "derived 变量的自然语言解析指令（给 LLM）"
+        },
+        "data_sources": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["knowledge", "internet"] },
+          "uniqueItems": true,
+          "minItems": 1,
+          "description": "derived 变量的检索通道（恒检索，不可为空）"
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": ["scalar", "list"],
+          "default": "scalar",
+          "description": "derived 变量值形状：scalar（标量字符串）/ list（字符串数组）"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source": { "const": "derived" } },
+            "required": ["source"]
+          },
+          "then": {
+            "required": ["derive_hint", "data_sources"]
           }
         }
       ],

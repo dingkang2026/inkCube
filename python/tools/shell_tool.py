@@ -3,6 +3,7 @@ import locale
 import logging
 import os
 import re
+import asyncio
 import subprocess
 import sys
 
@@ -221,7 +222,10 @@ class ShellTool(BaseTool):
             return json.dumps({"error": danger, "exit_code": -1}, ensure_ascii=False)
 
         try:
-            result = subprocess.run(
+            # Run in a worker thread — a blocking subprocess.run on the
+            # event loop would freeze ALL tasks/APIs/SSE until timeout (H1)
+            result = await asyncio.to_thread(
+                subprocess.run,
                 command,
                 shell=True,
                 cwd=self.workspace_dir,

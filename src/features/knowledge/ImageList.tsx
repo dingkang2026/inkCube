@@ -7,6 +7,7 @@ import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './ImageList.module.css'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 interface ImageListProps {
   projectId: string
@@ -18,6 +19,7 @@ interface ImageListProps {
 export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageListProps) {
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const showToast = useToast()
   const handleError = useErrorHandler()
   const [images, setImages] = useState<ImageRecord[]>([])
@@ -58,7 +60,7 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
   }
 
   const handleArchive = async (imageId: string) => {
-    if (!confirm(t('knowledge.confirmArchive'))) return
+    if (!(await confirmDialog({ title: t('knowledge.archiveImage'), message: t('knowledge.confirmArchive'), danger: false }))) return
     try {
       await window.electronAPI.invoke(ipc.archiveImage, { projectId, imageId })
       setImages(prev => prev.map(i =>

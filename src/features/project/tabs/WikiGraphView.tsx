@@ -16,6 +16,7 @@
  *   - Orphan nodes highlighted (no inbound AND no outbound links)
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Loader2, Info, X, AlertCircle } from 'lucide-react'
 import Sigma from 'sigma'
 import { MultiGraph } from 'graphology'
@@ -36,8 +37,8 @@ const PAGE_TYPE_COLORS: Record<string, string> = {
   structure: '#6b7280', // gray
 }
 
-const PAGE_TYPE_LABELS: Record<string, string> = {
-  source: '来源', entity: '实体', concept: '概念', topic: '主题', structure: '结构',
+const PAGE_TYPE_LABEL_KEYS: Record<string, string> = {
+  source: 'project.wiki.homePage.typeSource', entity: 'project.wiki.homePage.typeEntity', concept: 'project.wiki.homePage.typeConcept', topic: 'project.wiki.homePage.typeTopic', structure: 'project.wiki.homePage.typeStructure',
 }
 
 // Community colors (up to 20 communities)
@@ -129,6 +130,7 @@ class GraphErrorBoundary extends React.Component<
 // ── Main Component ────────────────────────────────────
 
 export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: WikiGraphViewProps) {
+  const { t } = useTranslation()
   const [graphData, setGraphData] = useState<GraphData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -163,11 +165,11 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
           if (result.nodes?.length > 0) {
             setGraphData(result)
           } else {
-            setError('暂无图谱数据')
+            setError(t('project.wiki.graphView.noData'))
           }
         }
       } catch (err: any) {
-        if (!cancelled) setError(err.message || '加载图谱失败')
+        if (!cancelled) setError(err.message || t('project.wiki.graphView.loadFailed'))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -479,7 +481,7 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
       <div className={s.container}>
         <div className={s.loading}>
           <Loader2 size={24} className={s.spin} />
-          <span>加载图谱...</span>
+          <span>{t('project.wiki.graphView.loading')}</span>
         </div>
       </div>
     )
@@ -503,35 +505,35 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
       {/* Header */}
       <div className={s.header} data-graph-header>
         <div className={s.headerStats}>
-          <span>{graphData.stats.nodes} 节点</span>
+          <span>{t('project.wiki.graphView.statNodes', { count: graphData.stats.nodes })}</span>
           <span>·</span>
-          <span>{graphData.stats.edges} 链接</span>
+          <span>{t('project.wiki.graphView.statEdges', { count: graphData.stats.edges })}</span>
           <span>·</span>
-          <span>{graphData.stats.communities} 社区</span>
+          <span>{t('project.wiki.graphView.statCommunities', { count: graphData.stats.communities })}</span>
         </div>
         <div className={s.headerActions}>
           <button
             className={`${s.colorToggle} ${colorMode === 'type' ? s.colorToggleActive : ''}`}
             onClick={() => setColorMode('type')}
-            title="按页面类型着色：来源、实体、概念、主题等"
+            title={t('project.wiki.graphView.byTypeTip')}
           >
-            按类型
+            {t('project.wiki.graphView.byType')}
           </button>
           <button
             className={`${s.colorToggle} ${colorMode === 'community' ? s.colorToggleActive : ''}`}
             onClick={() => setColorMode('community')}
-            title="按知识社区着色：互相链接紧密的页面归为一组"
+            title={t('project.wiki.graphView.byCommunityTip')}
           >
-            按社区
+            {t('project.wiki.graphView.byCommunity')}
           </button>
           {graphData.insights && (
             <button
               className={`${s.insightsBtn} ${showInsights ? s.insightsBtnActive : ''}`}
               onClick={() => setShowInsights(!showInsights)}
-              title="发现意外关联和知识空白地带"
+              title={t('project.wiki.graphView.insightsTip')}
             >
               <Info size={13} />
-              洞察
+              {t('project.wiki.graphView.insights')}
             </button>
           )}
         </div>
@@ -541,7 +543,7 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
       {showOnboarding && (
         <div className={s.onboarding}>
           <Info size={14} />
-          <span>这是你的 Wiki 知识地图。每个圆点代表一个 Wiki 页面，连线代表页面间的引用关系。圆点越大 = 被引用越多 = 知识枢纽。</span>
+          <span>{t('project.wiki.graphView.intro')}</span>
           <button className={s.onboardingClose} onClick={() => setShowOnboarding(false)}>
             <X size={14} />
           </button>
@@ -555,19 +557,19 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
             {Object.entries(PAGE_TYPE_COLORS).map(([type, color]) => (
               <span key={type} className={s.legendItem}>
                 <span className={s.legendDot} style={{ backgroundColor: color }} />
-                {PAGE_TYPE_LABELS[type]}
+                {t(PAGE_TYPE_LABEL_KEYS[type] || type)}
               </span>
             ))}
             <span className={s.legendItem}>
               <span className={s.legendDot} style={{ backgroundColor: '#ef4444' }} />
-              孤儿页
+              {t('project.wiki.graphView.orphan')}
             </span>
           </>
         ) : (
-          <span className={s.legendHint}>同色节点 = 互相链接紧密的知识群组（由算法自动发现）</span>
+          <span className={s.legendHint}>{t('project.wiki.graphView.legendHint')}</span>
         )}
         <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
-          单击打开 · 双击聚焦 · 拖拽移动节点 · 悬停高亮 · 滚轮缩放
+          {t('project.wiki.graphView.mouseHints')}
         </span>
       </div>
 
@@ -577,7 +579,7 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
           <div className={s.graphCanvas}>
             <div className={s.empty}>
               <AlertCircle size={24} />
-              <p>图谱渲染失败，请检查浏览器是否支持 WebGL2</p>
+              <p>{t('project.wiki.graphView.webglError')}</p>
             </div>
           </div>
         }>
@@ -596,10 +598,10 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
             {/* Insights panel */}
             {showInsights && graphData.insights && (
               <div className={s.insightsPanel}>
-                <h4 className={s.insightsTitle}>图谱洞察</h4>
+                <h4 className={s.insightsTitle}>{t('project.wiki.graphView.insightsTitle')}</h4>
                 {graphData.insights.surprising_connections.length > 0 && (
                   <div className={s.insightsSection}>
-                    <h5>意外关联</h5>
+                    <h5>{t('project.wiki.graphView.surprising')}</h5>
                     {graphData.insights.surprising_connections.slice(0, 5).map((sc, i) => (
                       <div key={i} className={s.insightItem} onClick={() => handleInsightClick(sc)}>
                         <span className={s.insightNodes}>{sc.source} ↔ {sc.target}</span>
@@ -610,11 +612,11 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
                 )}
                 {graphData.insights.knowledge_gaps.length > 0 && (
                   <div className={s.insightsSection}>
-                    <h5>知识空白</h5>
+                    <h5>{t('project.wiki.graphView.gaps')}</h5>
                     {graphData.insights.knowledge_gaps.slice(0, 5).map((gap, i) => (
                       <div key={i} className={s.insightItem} onClick={() => handleInsightClick(gap)}>
                         <span className={s.insightType}>
-                          {gap.type === 'isolated_node' ? '孤立' : gap.type === 'sparse_community' ? '稀疏' : '桥接'}
+                          {gap.type === 'isolated_node' ? t('project.wiki.graphView.gapIsolated') : gap.type === 'sparse_community' ? t('project.wiki.graphView.gapSparse') : t('project.wiki.graphView.gapBridge')}
                         </span>
                         <span className={s.insightDesc}>{gap.description}</span>
                       </div>
@@ -633,6 +635,7 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
 // ── Tooltip sub-component ─────────────────────────────
 
 function NodeTooltip({ nodeId, graphData }: { nodeId: string | null; graphData: GraphData }) {
+  const { t } = useTranslation()
   if (!nodeId) return null
   const nodeData = graphData.nodes.find(n => n.id === nodeId)
   if (!nodeData) return null
@@ -642,12 +645,12 @@ function NodeTooltip({ nodeId, graphData }: { nodeId: string | null; graphData: 
       <div className={s.tooltipTitle}>{nodeData.label}</div>
       <div className={s.tooltipMeta}>
         <span className={s.tooltipType} style={{ color: PAGE_TYPE_COLORS[nodeData.type] }}>
-          {PAGE_TYPE_LABELS[nodeData.type] || nodeData.type}
+          {t(PAGE_TYPE_LABEL_KEYS[nodeData.type] || nodeData.type)}
         </span>
-        <span>入链 {nodeData.inDegree} · 出链 {nodeData.outDegree}</span>
+        <span>{t('project.wiki.graphView.inOutLinks', { inDegree: nodeData.inDegree, outDegree: nodeData.outDegree })}</span>
       </div>
       {nodeData.inDegree === 0 && nodeData.outDegree === 0 && (
-        <div className={s.tooltipOrphan}>孤立页 — 无入链且无出链</div>
+        <div className={s.tooltipOrphan}>{t('project.wiki.graphView.orphanTip')}</div>
       )}
     </div>
   )

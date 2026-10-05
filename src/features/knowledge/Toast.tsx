@@ -1,5 +1,5 @@
 /** src/features/knowledge/Toast.tsx */
-import { useState, useEffect, useCallback, createContext, useContext } from 'react'
+import { useState, useEffect, useCallback, useContext, useMemo, createContext } from 'react'
 import s from './Toast.module.css'
 
 type ToastType = 'success' | 'error' | 'info' | 'warning'
@@ -41,8 +41,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
+  // value 必须 memo：内联对象会在每次 toast 弹出/消失时产生新引用，
+  // 触发所有 consumer（含 ActivityMonitor 等常驻轮询）无谓 re-render，
+  // 曾间接掩盖 ActivityMonitor 轮询循环死亡的 bug（re-render 不断重新首拉）
+  const contextValue = useMemo(() => ({ showToast }), [showToast])
+
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={contextValue}>
       {children}
       <div className={s.container}>
         {toasts.map(toast => (

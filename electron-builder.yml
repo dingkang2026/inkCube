@@ -11,10 +11,13 @@ files:
   - "package.json"
 
 extraResources:
-  - from: "resources/python/"
-    to: "python/"
+  # Backend code + site-packages (packaging plan B, 0.2 §9 — no PyInstaller;
+  # assembled by scripts/build-installer.ps1 Step 2)
+  - from: "resources/python-backend/"
+    to: "python-backend/"
     filter:
       - "**/*"
+  # Agent toolchain incl. python-build-standalone (also runs the backend)
   - from: "resources/tools/"
     to: "tools/"
     filter:
@@ -23,12 +26,10 @@ extraResources:
     to: "templates/"
     filter:
       - "**/*"
-  - from: "resources/base_libraries/"
-    to: "base_libraries/"
-    filter:
-      - "**/*"
   - from: "node_modules/mermaid/dist/mermaid.min.js"
     to: "mermaid/mermaid.min.js"
+  # NOTE: resources/base_libraries/ (preset base-lib seed files) intentionally
+  # not bundled — preset libs start empty; users upload their own files (2.7 P3)
 
 win:
   target: nsis

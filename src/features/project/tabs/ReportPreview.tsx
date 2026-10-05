@@ -1,11 +1,12 @@
 /** src/features/project/tabs/ReportPreview.tsx — Report detail view (rendered markdown + sources + logs) */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2 } from 'lucide-react'
 import type { Report, ReportLog } from '../types'
 import { useToast } from '../../knowledge/Toast'
+import { usePolling } from '../../../hooks/usePolling'
 import s from './ReportPreview.module.css'
 
 interface ReportContent {
@@ -14,8 +15,6 @@ interface ReportContent {
     entries?: Array<{
       ref_number: number
       source_title: string
-      doc_name?: string
-      page?: number
       content: string
     }>
   }
@@ -58,39 +57,38 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     loadContent()
   }, [report.id])
 
-  // Load logs from backend
+  // Load logs from backend（抛错由 usePolling 计入退避，0.4 §5.8）
+  const loadLogs = useCallback(async () => {
+    const result: any = await window.electronAPI.invoke('reports:getReportLogs', {
+      reportId: report.id,
+      limit: 50,
+    })
+    if (result.logs) {
+      setLogs(result.logs)
+    }
+  }, [report.id])
+
   useEffect(() => {
-    const loadLogs = async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('reports:getReportLogs', {
-          reportId: report.id,
-          limit: 50,
-        })
-        if (result.logs) {
-          setLogs(result.logs)
-        }
-      } catch (err) {
-        console.error('Failed to load report logs:', err)
-      }
-    }
-    loadLogs()
+    // 生成中由下方轮询首次 tick 立即拉取，避免重复请求
+    if (report.status !== 'generating') void loadLogs()
+  }, [loadLogs, report.status])
 
-    // Auto-refresh logs when report is generating
-    if (report.status === 'generating') {
-      const interval = setInterval(loadLogs, 2000)
-      return () => clearInterval(interval)
-    }
-  }, [report.id, report.status])
+  // Auto-refresh logs when report is generating（#8，v1.7 迁移 usePolling 2s→5s，0.4 §8.1）
+  usePolling({
+    name: 'report-preview-logs',
+    enabled: report.status === 'generating',
+    interval: 5000,
+    task: loadLogs,
+  })
 
-  const handleExport = async (format: string) => {
+  const handleExport = async () => {
     setExporting(true)
     try {
       const result: any = await window.electronAPI.invoke('reports:exportReport', {
         reportId: report.id,
-        format,
       })
       if (result.path) {
-        showToast(t('project.report.preview.exportSuccess', { format, title: report.title }), 'success')
+        showToast(t('project.report.preview.exportSuccess', { format: 'Word', title: report.title }), 'success')
       } else {
         showToast(t('project.report.preview.exportFailed', { error: result.error }), 'error')
       }
@@ -102,11 +100,11 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     }
   }
 
-  // Extract sources from registry (source_title for new cards, doc_name for legacy)
+  // Extract sources from registry (aggregate fragment count by source_title)
   const sources = content?.registry?.entries
     ? Array.from(
         content.registry.entries.reduce((map, entry) => {
-          const name = entry.source_title || entry.doc_name || '未知来源'
+          const name = entry.source_title || '未知来源'
           const existing = map.get(name)
           if (existing) {
             existing.count++
@@ -138,11 +136,8 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
         </button>
         <h3 className={s.reportTitle}>{report.title}</h3>
         <div className={s.toolbar}>
-          <button className={s.exportBtn} onClick={() => handleExport('Word')} disabled={exporting}>
+          <button className={s.exportBtn} onClick={handleExport} disabled={exporting}>
             <FileText size={14} /> Word
-          </button>
-          <button className={s.exportBtn} onClick={() => handleExport('PDF')} disabled={exporting}>
-            <FileText size={14} /> PDF
           </button>
         </div>
       </div>

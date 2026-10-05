@@ -8,12 +8,16 @@ This module only handles HTTP communication with an OpenAI-compatible API.
 It has NO dependency on agent or knowledge subsystems.
 """
 import httpx
+import json
 import logging
 from typing import Any
 
 from errors import LLMInvalidKey, LLMNetworkError, LLMCallFailed
 
 logger = logging.getLogger(__name__)
+
+# Sentinel: key was absent before reasoning-param injection (see _apply_reasoning_params)
+_ABSENT = object()
 
 
 class LLMClient:
@@ -26,6 +30,54 @@ class LLMClient:
         self.top_p = settings.get("top_p", 0.9)
         self.connect_timeout = settings.get("llm_connect_timeout", 30)
         self.read_timeout = settings.get("llm_read_timeout", 300)
+        # Instance-level memory: this endpoint rejected reasoning params with 400
+        # → skip injection for the client's lifetime (avoids per-call 400→fallback
+        # double requests in agent loops / report pipelines).
+        self._reasoning_rejected = False
+
+    def _apply_reasoning_params(self, request_body: dict, settings: dict) -> dict:
+        """Inject reasoning/thinking parameters from settings into request_body.
+
+        Priority: ``reasoning_override`` (free-form JSON object merged into the
+        request body top-level — for vendor-specific params like GLM ``thinking``,
+        Qwen ``thinking_budget``) > ``reasoning_effort`` (standard
+        OpenAI-compatible effort level: low/medium/high/max/...).
+
+        Returns a map of injected keys to their pre-injection values (or
+        _ABSENT), consumed by ``_rollback_reasoning_params`` when the API
+        rejects the params with HTTP 400.
+        """
+        if self._reasoning_rejected:
+            logger.debug("Reasoning params skipped — endpoint rejected them earlier (400 fallback memory)")
+            return {}
+        override_raw = str(settings.get("reasoning_override") or "").strip()
+        if override_raw:
+            try:
+                override = json.loads(override_raw)
+            except ValueError:
+                logger.warning("reasoning_override is not valid JSON — ignored: %.100s", override_raw)
+            else:
+                if isinstance(override, dict) and override:
+                    originals = {k: request_body.get(k, _ABSENT) for k in override}
+                    request_body.update(override)
+                    return originals
+                if not isinstance(override, dict):
+                    logger.warning("reasoning_override must be a JSON object — ignored")
+        effort = str(settings.get("reasoning_effort") or "").strip()
+        if effort:
+            originals = {"reasoning_effort": request_body.get("reasoning_effort", _ABSENT)}
+            request_body["reasoning_effort"] = effort
+            return originals
+        return {}
+
+    @staticmethod
+    def _rollback_reasoning_params(request_body: dict, originals: dict) -> None:
+        """Restore request_body to its pre-injection state (HTTP 400 fallback)."""
+        for key, original in originals.items():
+            if original is _ABSENT:
+                request_body.pop(key, None)
+            else:
+                request_body[key] = original
 
     async def chat(self, messages: list[dict], settings: dict, tools: list[dict] | None = None) -> "str | dict":
         """Send a chat completion request to the LLM API.
@@ -64,10 +116,7 @@ class LLMClient:
         if tools:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
-        # Pass reasoning_effort if provided (GLM-5.3 etc. support: low/high/max)
-        reasoning_effort = settings.get("reasoning_effort")
-        if reasoning_effort:
-            request_body["reasoning_effort"] = reasoning_effort
+        reasoning_params = self._apply_reasoning_params(request_body, settings)
 
         import asyncio
         last_err = None
@@ -102,10 +151,22 @@ class LLMClient:
                     logger.error("LLM auth failed (401): invalid API key")
                     raise LLMInvalidKey(detail=response.text)
                 if response.status_code != 200:
+                    # 400 with reasoning params injected → retry once without them
+                    # (model doesn't support the param; see settings > 思考深度)
+                    if response.status_code == 400 and reasoning_params and attempt == 0:
+                        logger.warning(
+                            "LLM 400 with reasoning params %s — retrying without them",
+                            list(reasoning_params),
+                        )
+                        self._rollback_reasoning_params(request_body, reasoning_params)
+                        reasoning_params = {}
+                        self._reasoning_rejected = True  # remember for this client's lifetime
+                        continue
+                    detail = f"API error {response.status_code}: {response.text}"
+                    if response.status_code == 400 and tools:
+                        detail += "（模型可能不支持 function calling，可在设置中测试模型能力）"
                     logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
-                    raise LLMCallFailed(
-                        detail=f"API error {response.status_code}: {response.text}"
-                    )
+                    raise LLMCallFailed(detail=detail)
 
                 data = response.json()
                 choice = data["choices"][0]
@@ -171,6 +232,7 @@ class LLMClient:
             "top_p": self.top_p,
             "stream": False,
         }
+        reasoning_params = self._apply_reasoning_params(request_body, settings)
 
         import asyncio
         last_err = None
@@ -203,6 +265,15 @@ class LLMClient:
                 if response.status_code == 401:
                     raise LLMInvalidKey(detail=response.text)
                 if response.status_code != 200:
+                    if response.status_code == 400 and reasoning_params and attempt == 0:
+                        logger.warning(
+                            "LLM 400 with reasoning params %s — retrying without them",
+                            list(reasoning_params),
+                        )
+                        self._rollback_reasoning_params(request_body, reasoning_params)
+                        reasoning_params = {}
+                        self._reasoning_rejected = True  # remember for this client's lifetime
+                        continue
                     logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
                     raise LLMCallFailed(detail=f"API error {response.status_code}: {response.text}")
 
@@ -281,100 +352,145 @@ class LLMClient:
         if tools:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
+        reasoning_params = self._apply_reasoning_params(request_body, settings)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
-            try:
-                async with client.stream(
-                    "POST",
+        # 400 with reasoning params → one retry without them (same fallback as chat)
+        for stream_attempt in range(2):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
+                try:
+                    async with client.stream(
+                        "POST",
+                        f"{self.api_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=request_body,
+                    ) as response:
+                        if response.status_code == 401:
+                            raise LLMInvalidKey(detail="Unauthorized")
+                        if response.status_code != 200:
+                            body = await response.aread()
+                            body_text = body.decode(errors='replace')
+                            if response.status_code == 400 and reasoning_params and stream_attempt == 0:
+                                logger.warning(
+                                    "LLM stream 400 with reasoning params %s — retrying without them",
+                                    list(reasoning_params),
+                                )
+                                self._rollback_reasoning_params(request_body, reasoning_params)
+                                reasoning_params = {}
+                                self._reasoning_rejected = True  # remember for this client's lifetime
+                                continue
+                            logger.error("LLM API error: status=%d, body=%s", response.status_code, body_text[:1000])
+                            raise LLMCallFailed(
+                                detail=f"API error {response.status_code}: {body_text}"
+                            )
+
+                        # FC mode: accumulate tool call deltas
+                        tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
+                        finish_reason = "unknown"
+
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                import json as _json
+                                chunk = _json.loads(data_str)
+                            except Exception:
+                                continue
+
+                            if not chunk.get("choices"):
+                                continue
+                            choice = chunk["choices"][0]
+                            delta = choice.get("delta", {})
+                            fr = choice.get("finish_reason")
+                            if fr:
+                                finish_reason = fr
+
+                            # Reasoning/thinking content (DeepSeek R1, GLM-5, etc.)
+                            reasoning_delta = delta.get("reasoning_content")
+                            if reasoning_delta:
+                                yield {"type": "reasoning", "delta": reasoning_delta}
+
+                            # Text content delta
+                            content_delta = delta.get("content")
+                            if content_delta:
+                                yield {"type": "content", "delta": content_delta}
+
+                            # Tool call deltas (FC mode)
+                            if "tool_calls" in delta:
+                                for tc_delta in delta["tool_calls"]:
+                                    idx = tc_delta.get("index", 0)
+                                    if idx not in tc_accum:
+                                        tc_accum[idx] = {
+                                            "id": tc_delta.get("id", ""),
+                                            "type": "function",
+                                            "function": {
+                                                "name": tc_delta.get("function", {}).get("name", ""),
+                                                "arguments": tc_delta.get("function", {}).get("arguments", ""),
+                                            },
+                                        }
+                                    else:
+                                        # Accumulate arguments
+                                        existing = tc_accum[idx]
+                                        if tc_delta.get("id"):
+                                            existing["id"] = tc_delta["id"]
+                                        fn_delta = tc_delta.get("function", {})
+                                        if fn_delta.get("name"):
+                                            existing["function"]["name"] = fn_delta["name"]
+                                        if fn_delta.get("arguments"):
+                                            existing["function"]["arguments"] += fn_delta["arguments"]
+
+                        # If FC mode, yield accumulated tool calls
+                        if tools is not None and tc_accum:
+                            tool_calls_list = [
+                                tc_accum[idx] for idx in sorted(tc_accum.keys())
+                            ]
+                            logger.debug("Stream FC mode: %d tool calls accumulated", len(tool_calls_list))
+                            yield {"type": "tool_calls", "tool_calls": tool_calls_list}
+
+                        logger.debug("Stream finished: finish_reason=%s", finish_reason)
+                        yield {"type": "finish", "finish_reason": finish_reason}
+
+                except httpx.TimeoutException as e:
+                    logger.error("Stream timeout: %s", str(e))
+                    raise LLMNetworkError(detail=f"流式响应超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
+                except httpx.ConnectError as e:
+                    logger.error("Stream connection failed: %s", str(e))
+                    raise LLMNetworkError(detail=f"连接失败: {e}")
+
+    async def probe(self, extra_body: dict) -> bool | None:
+        """Send a minimal probe request to test parameter support.
+
+        Returns True (200 — supported), False (400 — parameter rejected), or
+        None (network/other failure — unknown). Used by /settings/personal_test
+        capability probing.
+        """
+        body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 5,
+            **extra_body,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
                     f"{self.api_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=request_body,
-                ) as response:
-                    if response.status_code == 401:
-                        raise LLMInvalidKey(detail="Unauthorized")
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        body_text = body.decode(errors='replace')
-                        logger.error("LLM API error: status=%d, body=%s", response.status_code, body_text[:1000])
-                        raise LLMCallFailed(
-                            detail=f"API error {response.status_code}: {body_text}"
-                        )
-
-                    # FC mode: accumulate tool call deltas
-                    tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
-                    finish_reason = "unknown"
-
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
-                        try:
-                            import json as _json
-                            chunk = _json.loads(data_str)
-                        except Exception:
-                            continue
-
-                        if not chunk.get("choices"):
-                            continue
-                        choice = chunk["choices"][0]
-                        delta = choice.get("delta", {})
-                        fr = choice.get("finish_reason")
-                        if fr:
-                            finish_reason = fr
-
-                        # Reasoning/thinking content (DeepSeek R1, GLM-5, etc.)
-                        reasoning_delta = delta.get("reasoning_content")
-                        if reasoning_delta:
-                            yield {"type": "reasoning", "delta": reasoning_delta}
-
-                        # Text content delta
-                        content_delta = delta.get("content")
-                        if content_delta:
-                            yield {"type": "content", "delta": content_delta}
-
-                        # Tool call deltas (FC mode)
-                        if "tool_calls" in delta:
-                            for tc_delta in delta["tool_calls"]:
-                                idx = tc_delta.get("index", 0)
-                                if idx not in tc_accum:
-                                    tc_accum[idx] = {
-                                        "id": tc_delta.get("id", ""),
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc_delta.get("function", {}).get("name", ""),
-                                            "arguments": tc_delta.get("function", {}).get("arguments", ""),
-                                        },
-                                    }
-                                else:
-                                    # Accumulate arguments
-                                    existing = tc_accum[idx]
-                                    if tc_delta.get("id"):
-                                        existing["id"] = tc_delta["id"]
-                                    fn_delta = tc_delta.get("function", {})
-                                    if fn_delta.get("name"):
-                                        existing["function"]["name"] = fn_delta["name"]
-                                    if fn_delta.get("arguments"):
-                                        existing["function"]["arguments"] += fn_delta["arguments"]
-
-                    # If FC mode, yield accumulated tool calls
-                    if tools is not None and tc_accum:
-                        tool_calls_list = [
-                            tc_accum[idx] for idx in sorted(tc_accum.keys())
-                        ]
-                        logger.debug("Stream FC mode: %d tool calls accumulated", len(tool_calls_list))
-                        yield {"type": "tool_calls", "tool_calls": tool_calls_list}
-
-                    logger.debug("Stream finished: finish_reason=%s", finish_reason)
-                    yield {"type": "finish", "finish_reason": finish_reason}
-
-            except httpx.TimeoutException as e:
-                logger.error("Stream timeout: %s", str(e))
-                raise LLMNetworkError(detail=f"流式响应超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
-            except httpx.ConnectError as e:
-                logger.error("Stream connection failed: %s", str(e))
-                raise LLMNetworkError(detail=f"连接失败: {e}")
+                    json=body,
+                )
+        except httpx.HTTPError as e:
+            logger.warning("Capability probe failed (network): %s", str(e))
+            return None
+        if response.status_code == 200:
+            return True
+        if response.status_code == 400:
+            return False
+        logger.warning("Capability probe inconclusive: status=%d", response.status_code)
+        return None

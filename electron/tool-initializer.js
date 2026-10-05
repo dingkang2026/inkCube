@@ -37,26 +37,30 @@ function readJson(filePath) {
 }
 
 /**
- * 写入 JSON 文件
+ * 写入 JSON 文件（异步 — L4）
  */
-function writeJson(filePath, data) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8')
+async function writeJson(filePath, data) {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
 }
 
 /**
- * 递归复制目录
+ * 递归复制目录（异步 — L4）
+ *
+ * All IO goes through fs.promises so first-run copying of hundreds of MB
+ * runs on the libuv thread pool instead of blocking the Electron main
+ * loop — the window stays responsive during initialization.
  */
-function copyDirSync(src, dest) {
-  fs.mkdirSync(dest, { recursive: true })
-  const entries = fs.readdirSync(src, { withFileTypes: true })
+async function copyDir(src, dest) {
+  await fs.promises.mkdir(dest, { recursive: true })
+  const entries = await fs.promises.readdir(src, { withFileTypes: true })
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name)
     const destPath = path.join(dest, entry.name)
     if (entry.isDirectory()) {
-      copyDirSync(srcPath, destPath)
+      await copyDir(srcPath, destPath)
     } else {
-      fs.copyFileSync(srcPath, destPath)
+      await fs.promises.copyFile(srcPath, destPath)
     }
   }
 }
@@ -129,19 +133,23 @@ async function initializeTools(onProgress) {
     return false
   }
 
+  // All IO below is async (L4): first-run copying of hundreds of MB runs
+  // on the libuv thread pool, so it never blocks the Electron main loop
+  // during startup.
+
   // 1. 复制工具二进制
   if (onProgress) onProgress('正在初始化工具链...')
   logElectron('INFO', 'Tool initializer: copying tools to ' + targetToolsDir)
 
-  fs.mkdirSync(targetToolsDir, { recursive: true })
+  await fs.promises.mkdir(targetToolsDir, { recursive: true })
 
   // 复制顶层文件（uv.exe, rg.exe, ruff.exe, pandoc.exe, tool-versions.json）
-  const toolFiles = fs.readdirSync(sourceToolsDir)
+  const toolFiles = await fs.promises.readdir(sourceToolsDir)
   for (const file of toolFiles) {
     const srcPath = path.join(sourceToolsDir, file)
-    const stat = fs.statSync(srcPath)
+    const stat = await fs.promises.stat(srcPath)
     if (stat.isFile()) {
-      fs.copyFileSync(srcPath, path.join(targetToolsDir, file))
+      await fs.promises.copyFile(srcPath, path.join(targetToolsDir, file))
       logElectron('INFO', `Tool initializer: copied ${file}`)
     }
   }
@@ -154,9 +162,9 @@ async function initializeTools(onProgress) {
 
     // 如果已存在先删除（避免残留）
     if (fs.existsSync(targetPythonDir)) {
-      fs.rmSync(targetPythonDir, { recursive: true, force: true })
+      await fs.promises.rm(targetPythonDir, { recursive: true, force: true })
     }
-    copyDirSync(sourcePythonDir, targetPythonDir)
+    await copyDir(sourcePythonDir, targetPythonDir)
     logElectron('INFO', 'Tool initializer: python-build-standalone copied')
   }
 
@@ -165,7 +173,7 @@ async function initializeTools(onProgress) {
   if (sourceVersions) {
     sourceVersions.app_version = app.getVersion()
     sourceVersions.initialized_at = new Date().toISOString()
-    writeJson(path.join(appDataDir, 'tool-versions.json'), sourceVersions)
+    await writeJson(path.join(appDataDir, 'tool-versions.json'), sourceVersions)
     logElectron('INFO', 'Tool initializer: versions written')
   }
 

@@ -113,7 +113,9 @@ class TaskAgent:
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._running_task_ids: set[str] = set()
         self._task_iterations: dict[str, int] = {}
+        self._run_outcomes: dict[str, str] = {}  # task_id -> completed/failed（终态通知用）
         self._task_messages: dict[str, list[dict]] = {}  # in-memory LLM messages for pause
+        self._paused_tasks: set[str] = set()  # paused via pause_task — state must survive error exit
 
         # Shell confirmation: pending confirmations waiting for user response
         self._pending_confirms: dict[str, dict] = {}
@@ -188,6 +190,7 @@ class TaskAgent:
         }
         ok = self.db.save_agent_state(task_id, state)
         if ok:
+            self._paused_tasks.add(task_id)
             self.request_cancel(task_id)
         return ok
 
@@ -862,18 +865,51 @@ class TaskAgent:
         """Return True if the given task is currently running."""
         return task_id in self._running_task_ids
 
+    def try_acquire_task(self, task_id: str) -> bool:
+        """Atomically reserve a run slot for a task (same-task mutual exclusion).
+
+        Returns False if this task is already running — two concurrent chats
+        on one task would run two agent loops over the same history and
+        corrupt messages/state (H4) — or the global concurrency limit is
+        reached. run()'s finally block releases the reservation.
+        """
+        if task_id in self._running_task_ids or not self.can_start_task():
+            return False
+        self._running_task_ids.add(task_id)
+        return True
+
     async def run(self, task_id: str, user_message: str) -> AsyncGenerator[dict, None]:
+        self._paused_tasks.discard(task_id)  # fresh run — a previous pause no longer applies
         self._reset_cancel(task_id)
         self._running_task_ids.add(task_id)
         self._task_iterations[task_id] = 0
+        self._run_outcomes[task_id] = "completed"
         try:
             async for event in self._run_inner(task_id, user_message):
                 yield event
+        except Exception:
+            self._run_outcomes[task_id] = "failed"
+            raise
         finally:
+            # 用户取消/暂停（cancel_event 被 set，含 pause_task 路径）静默（0.4 §6.5）
+            cancel_event = self._cancel_events.get(task_id)
+            user_stopped = cancel_event is not None and cancel_event.is_set()
             self._running_task_ids.discard(task_id)
             self._cancel_events.pop(task_id, None)
             self._task_iterations.pop(task_id, None)
             self._task_messages.pop(task_id, None)
+            outcome = self._run_outcomes.pop(task_id, "completed")
+            if not user_stopped:
+                try:
+                    task = self.db.get_task(task_id)
+                    if task:
+                        self.db.add_notification(
+                            entity_type="task", entity_id=task_id, project_id=None,
+                            kind="completed" if outcome == "completed" else "failed",
+                            entity_title=task.get("title") or task_id,
+                        )
+                except Exception:
+                    logger.warning("Task terminal notification failed for %s", task_id, exc_info=True)
 
     async def _run_planner(
         self, planner_llm: LLMClient, settings: dict,
@@ -1031,7 +1067,12 @@ class TaskAgent:
 
         # Build message history
         history = self.db.get_task_messages(task_id)
-        system_prompt = self._build_system_prompt(workspace_path, mode=task_mode)
+        # Prompt building runs git commands (3×5s timeout), scans workspace
+        # files for project detection and repo-map — keep it off the event
+        # loop so other tasks/SSE stay responsive (H1)
+        system_prompt = await asyncio.to_thread(
+            self._build_system_prompt, workspace_path, mode=task_mode,
+        )
         if settings.get("system_prompt"):
             system_prompt = settings["system_prompt"] + "\n\n" + system_prompt
 
@@ -1160,8 +1201,12 @@ class TaskAgent:
                     except Exception:
                         logger.warning("Auto-save state failed for task %s", task_id, exc_info=True)
                 elif fc_status in ("done", "error"):
-                    # Task finished or errored — clear auto-saved state
-                    self.db.delete_agent_state(task_id)
+                    # Task finished or errored — clear auto-saved state.
+                    # Exception: an error exit caused by a user pause — keep
+                    # the state so "resume" can continue from where it stopped.
+                    if fc_status == "done" or task_id not in self._paused_tasks:
+                        self.db.delete_agent_state(task_id)
+                    self._run_outcomes[task_id] = "completed" if fc_status == "done" else "failed"
                     yield {"type": "done", "data": {}}
                     return
 

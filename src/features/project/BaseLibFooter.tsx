@@ -4,7 +4,10 @@ import { useTranslation } from 'react-i18next'
 import { Plus, Factory, DollarSign, Library, X, FileText } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useToast } from '../knowledge/Toast'
+import { useActivity } from '../activity/ActivityContext'
+import type { ProjectActivity } from '../activity/types'
 import s from './BaseLibFooter.module.css'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 interface BaseLibRecord {
   id: string
@@ -32,13 +35,27 @@ interface BaseLibFooterProps {
   selectedBaseLib: string | null
   onSelectBaseLib: (baseLibId: string) => void
   onOpenTemplateManagement?: () => void
+  /** Whether the template management page is currently shown (peer highlight) */
+  templateManagementActive?: boolean
 }
 
-export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplateManagement }: BaseLibFooterProps) {
+export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplateManagement, templateManagementActive }: BaseLibFooterProps) {
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const showToast = useToast()
+  const { byProject } = useActivity()
   const [baseLibs, setBaseLibs] = useState<BaseLibRecord[]>([])
   const [loading, setLoading] = useState(true)
+
+  /** 活跃点 tooltip（0.4 §5.7）：与项目行对齐，复用 ProjectList 同一组 i18n */
+  const activityTooltip = (pa: ProjectActivity): string => {
+    const parts: string[] = []
+    if (pa.files > 0) parts.push(t('activity.tipFiles', { count: pa.files }))
+    if (pa.compiles > 0) parts.push(t('activity.tipCompiles'))
+    if (pa.reports > 0) parts.push(t('activity.tipReports', { count: pa.reports }))
+    if (pa.waitingReviews > 0) parts.push(t('activity.tipWaiting', { count: pa.waitingReviews }))
+    return parts.join(' / ')
+  }
 
   const loadBaseLibs = async () => {
     try {
@@ -68,7 +85,7 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
 
   const handleDelete = async (e: React.MouseEvent, libId: string) => {
     e.stopPropagation()
-    if (!window.confirm(t('baseLib.confirmDelete'))) return
+    if (!(await confirmDialog({ title: t('baseLib.delete'), message: t('baseLib.confirmDelete') }))) return
     try {
       await window.electronAPI.invoke('baseLib:delete', libId)
       await loadBaseLibs()
@@ -88,6 +105,10 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
         {!loading && baseLibs.map((lib) => {
           const Icon = getIcon(lib.id)
           const preset = isPreset(lib.lib_type)
+          // 活跃点与项目行对齐（0.4 §5.7）：全局心跳 byProject 派生，仅基础库容器行先小动作
+          const pa = byProject.get(lib.id)
+          const hasOngoing = !!pa && pa.container === 'baselib' && pa.files + pa.compiles + pa.reports > 0
+          const needsReview = !!pa && pa.container === 'baselib' && pa.waitingReviews > 0
           return (
             <div
               key={lib.id}
@@ -96,6 +117,12 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
             >
               <Icon size={15} className={s.icon} />
               <span className={s.name}>{lib.name}</span>
+              {(hasOngoing || needsReview) && pa && (
+                <span
+                  className={hasOngoing ? s.activityDot : s.reviewDot}
+                  title={activityTooltip(pa)}
+                />
+              )}
               {preset && <span className={s.badge}>{t('baseLib.preset')}</span>}
               {!preset && (
                 <button
@@ -120,7 +147,7 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
             <span className={s.title}>{t('baseLib.templateManagement')}</span>
           </div>
           <div
-            className={s.item}
+            className={`${s.item} ${templateManagementActive ? s.itemSelected : ''}`}
             onClick={onOpenTemplateManagement}
             style={{ cursor: 'pointer', paddingLeft: '18px' }}
           >

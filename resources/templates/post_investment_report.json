@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "template_id": "post_investment_report",
   "template_name": "投后管理报告",
   "version": "1.0",
@@ -13,6 +14,15 @@
     "对比基准须明确（预算/上期/同期）",
     "偏差分析须给出原因和建议"
   ],
+  "variables": [
+    {
+      "name": "报告期",
+      "source": "user",
+      "label": "报告期",
+      "required": true,
+      "placeholder": "如：2026 年第一季度 / 2025 年度"
+    }
+  ],
   "outline": [
     {
       "section_id": "ch1",
@@ -21,7 +31,7 @@
         {
           "section_id": "ch1.1",
           "title": "核心 KPI 完成情况",
-          "description": "{{公司名}} 在 {{报告期}} 的核心指标完成对比（预算/上期/同期）"
+          "description": "{{company_name}} 在 {{报告期}} 的核心指标完成对比（预算/上期/同期）"
         },
         {
           "section_id": "ch1.2",
@@ -49,7 +59,7 @@
     {
       "section_id": "ch3",
       "title": "风险预警",
-      "description": "{{公司名}} 当前面临的经营风险、财务风险和行业风险，按红/黄/绿灯分级"
+      "description": "{{company_name}} 当前面临的经营风险、财务风险和行业风险，按红/黄/绿灯分级"
     },
     {
       "section_id": "ch4",

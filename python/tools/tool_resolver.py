@@ -124,13 +124,15 @@ def resolve_python() -> str | None:
     """解析 python-build-standalone 的 Python 路径。
 
     用于创建任务 venv 时作为 --python 参数，确保预装 Python 不被污染。
-    注意：这不是后端运行时的 Python（后端用 PyInstaller 内嵌的 Python）。
+    注意：这不是后端运行时的解释器（生产后端用 tools/python-build-standalone/
+    直接运行 main.py，见 0.2 §9 方案 B；本函数指向 tool-initializer 解压到
+    userData 的副本，供任务 venv 隔离使用）。
 
     查找优先级：
-    1. 环境变量 INKCUBE_PYTHON_PATH
-    2. %APPDATA%/InkCube/python/python.exe（生产环境解压后）
+    1. 环境变量 INKCUBE_PYTHON_PATH（生产环境由 python-manager.js 显式传入）
+    2. %APPDATA%/InkCube/python/python.exe（历史路径，与 Electron userData 不一致，仅作兼容）
     3. resources/tools/python-build-standalone/python.exe（开发环境）
-    4. sys.executable（兜底：使用当前 Python）
+    4. sys.executable（兕底：使用当前 Python）
 
     Returns:
         Python 可执行文件的绝对路径

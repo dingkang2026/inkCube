@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ModelStatusInfo } from '../../types'
+import { usePolling } from '../../hooks/usePolling'
+import { useActivity } from '../activity/ActivityContext'
 import styles from './InternalModelSettings.module.css'
 
 const CATEGORY_ORDER = ['embedding', 'document_parsing', 'ocr'] as const
@@ -18,22 +20,19 @@ export function InternalModelSettings() {
   const [loading, setLoading] = useState(true)
   const [downloadingAll, setDownloadingAll] = useState(false)
   const [libreoffice, setLibreOffice] = useState<LibreOfficeStatus | null>(null)
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // enabled 谓词从全局心跳派生（0.4lifecycle-design.md §6.2）：存在下载中模型（不含 GPU 后端）时轮询明细，
+  // 全部终态后自停；启动间隙由触发动作后的一次立即拉取接上（见 handleDownload）
+  const { items: modelItems } = useActivity('model_download')
+  const modelsActive = modelItems.some((i) => i.entity_id !== 'gpu-backend')
 
   const fetchStatus = useCallback(async () => {
-    try {
-      const res = (await window.electronAPI.invoke('models:status')) as Record<string, ModelStatusInfo>
-      setModels(res)
-      setLoading(false)
+    // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）；初始加载侧 catch 兜底
+    const res = (await window.electronAPI.invoke('models:status')) as Record<string, ModelStatusInfo>
+    setModels(res)
+    setLoading(false)
 
-      const anyDownloading = Object.values(res).some((m) => m.downloading)
-      if (!anyDownloading && pollingRef.current) {
-        clearInterval(pollingRef.current)
-        pollingRef.current = null
-        setDownloadingAll(false)
-      }
-    } catch {
-      setLoading(false)
+    if (!Object.values(res).some((m) => m.downloading)) {
+      setDownloadingAll(false)
     }
   }, [])
 
@@ -47,27 +46,27 @@ export function InternalModelSettings() {
   }, [])
 
   useEffect(() => {
-    fetchStatus()
+    fetchStatus().catch(() => { setLoading(false) })
     fetchLibreOfficeStatus()
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current)
-    }
   }, [fetchStatus, fetchLibreOfficeStatus])
 
-  const startPolling = () => {
-    if (pollingRef.current) return
-    pollingRef.current = setInterval(fetchStatus, POLL_INTERVAL)
-  }
+  usePolling({
+    name: 'internal-model-status',
+    enabled: modelsActive,
+    interval: POLL_INTERVAL,
+    task: fetchStatus,
+  })
 
   const handleDownload = async (name: string) => {
     await window.electronAPI.invoke('models:download', name)
-    startPolling()
+    // 后台线程已同步置 downloading，立即拉一次接上启动间隙（全局心跳 ≤5/15s 后接管谓词）
+    await fetchStatus().catch(() => {})
   }
 
   const handleDownloadAll = async () => {
     setDownloadingAll(true)
     await window.electronAPI.invoke('models:download-all')
-    startPolling()
+    await fetchStatus().catch(() => {})
   }
 
   const grouped = CATEGORY_ORDER.map((cat) => ({
@@ -89,7 +88,7 @@ export function InternalModelSettings() {
           <p className={styles.description}>{t('settings.internalModel.description')}</p>
         </div>
         <div className={styles.headerActions}>
-          <button className="btn btn-secondary btn-sm" onClick={fetchStatus}>
+          <button className="btn btn-secondary btn-sm" onClick={() => void fetchStatus().catch(() => {})}>
             {t('settings.internalModel.refresh')}
           </button>
           <button

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
@@ -92,12 +93,14 @@ class PackageManagerTool(BaseTool):
                 "suggestion": "请先创建任务以初始化虚拟环境",
             }, ensure_ascii=False)
 
+        # All pip/uv subprocess calls run in worker threads — pip install can
+        # take 120s and would otherwise freeze the whole event loop (H1)
         if action == "list":
-            return self._list_packages()
+            return await asyncio.to_thread(self._list_packages)
         elif action == "install":
-            return self._install_packages(packages, requirements)
+            return await asyncio.to_thread(self._install_packages, packages, requirements)
         elif action == "uninstall":
-            return self._uninstall_packages(packages)
+            return await asyncio.to_thread(self._uninstall_packages, packages)
         else:
             return json.dumps({"error": f"未知操作: {action}"}, ensure_ascii=False)
 

@@ -1,30 +1,20 @@
 {
-  "schema_version": "1.0",
+  "manifest_version": "1.0",
   "updated_at": "2026-09-26T00:00:00Z",
   "templates": {
     "industry_research": {
-      "version": "1.0",
-      "name": "行业研究报告",
       "file": "industry_research.json"
     },
     "due_diligence": {
-      "version": "1.0",
-      "name": "尽职调查报告",
       "file": "due_diligence.json"
     },
     "recruitment_proposal": {
-      "version": "1.0",
-      "name": "招商推介方案",
       "file": "recruitment_proposal.json"
     },
     "project_brief": {
-      "version": "1.0",
-      "name": "项目简报",
       "file": "project_brief.json"
     },
     "post_investment_report": {
-      "version": "1.0",
-      "name": "投后管理报告",
       "file": "post_investment_report.json"
     }
   }

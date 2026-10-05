@@ -17,6 +17,19 @@ async function handlePythonResponse(res) {
   throw err
 }
 
+/** 默认超时：全部 IPC handler 的 Python HTTP 调用统一强制超时。
+ *  根因背景：Uvicorn 默认 5s 关闭空闲 keep-alive 连接，Node fetch 复用半关闭
+ *  socket 时会永久等待且无默认超时，曾导致 ActivityMonitor 轮询循环死亡
+ *  （UI 快照冻结，0.4lifecycle-design）。慢操作（文件上传/LLM 测试连接）显式传更大值。 */
+const PY_FETCH_DEFAULT_TIMEOUT = 15000
+
+function fetchWithTimeout(url, options = {}, timeoutMs = PY_FETCH_DEFAULT_TIMEOUT) {
+  return fetch(url, {
+    ...options,
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+}
+
 /**
  * Upload files to a task workspace using manual multipart construction.
  * Avoids FormData/Blob which are unreliable in Electron main process.
@@ -45,11 +58,11 @@ async function _uploadFilesToTask(pythonManager, taskId, filePaths) {
 
   const body = Buffer.concat(parts)
 
-  const res = await fetch(`${baseUrl}/tasks/${taskId}/files/upload`, {
+  const res = await fetchWithTimeout(`${baseUrl}/tasks/${taskId}/files/upload`, {
     method: 'POST',
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
     body: body,
-  })
+  }, 120000) // 大文件上传，放宽超时
   return handlePythonResponse(res)
 }
 
@@ -61,7 +74,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('system:getHealth', async () => {
     try {
-      const res = await fetch(`${pythonManager.getBaseUrl()}/health`)
+      const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/health`)
       if (!res.ok) {
         return { status: 'degraded', services: {}, error: `Health check failed (${res.status})` }
       }
@@ -71,6 +84,19 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       // Return error code, let frontend handle i18n
       return { status: 'down', services: {}, errorCode: 'PYTHON_SERVICE_DOWN' }
     }
+  })
+
+  // Onboarding wizard flag (persisted in backend settings kv table, 0.4lifecycle §5.3)
+  ipcMain.handle('system:getOnboarding', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/onboarding`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('system:setOnboardingDone', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/onboarding/done`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
   })
 
   ipcMain.handle('system:getLogs', async () => {
@@ -90,7 +116,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     // Build export content with system context
     let healthInfo = 'N/A'
     try {
-      const res = await fetch(`${pythonManager.getBaseUrl()}/health`)
+      const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/health`)
       if (res.ok) {
         const health = await res.json()
         healthInfo = Object.entries(health.services || {})
@@ -127,12 +153,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Data Management ──
 
   ipcMain.handle('system:getDataUsage', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/system/data/usage`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/data/usage`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('system:cleanData', async (_event, category) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/system/data/${category}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/data/${category}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
@@ -159,12 +185,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('settings:get', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/settings`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/settings`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('settings:save', async (_event, settings) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/settings`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
@@ -173,59 +199,59 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('settings:personal_test', async (_event, settings) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/settings/personal_test`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/settings/personal_test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
-    })
+    }, 60000) // LLM 测试连接，放宽超时
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('models:status', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/models/status`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/status`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('models:gpu-status', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/models/gpu-status`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/gpu-status`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('models:download', async (_event, name) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/models/${name}/download`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/${name}/download`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('models:download-all', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/models/download-all`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/download-all`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('models:gpu-download', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/models/gpu/download`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/gpu/download`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('models:libreoffice-status', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/models/libreoffice/status`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/libreoffice/status`)
     return handlePythonResponse(res)
   })
 
   // ── Knowledge Base ──
 
   ipcMain.handle('knowledge:listProjects', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:createProject', async (_event, { name, description, type, stage, companyName, creditCode }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description, type: type || 'general', stage: stage || 'none', company_name: companyName || '', credit_code: creditCode || '' }),
@@ -239,17 +265,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (beforeId) params.set('before_id', beforeId)
     if (fileType) params.set('file_type', fileType)
     if (filenameSearch) params.set('filename_search', filenameSearch)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:getActiveFiles', async (_event, projectId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/active`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/active`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:uploadFile', async (_event, { projectId, filename, fileType, data }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/upload`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId, filename, fileType, data }),
@@ -258,21 +284,21 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('knowledge:deleteFile', async (_event, { projectId, fileId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:retryFile', async (_event, { projectId, fileId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}/retry`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}/retry`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:retryFailedFiles', async (_event, projectId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/retry-failed`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/retry-failed`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -281,12 +307,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   ipcMain.handle('knowledge:recentChunks', async (_event, { projectId, limit, fileId }) => {
     const params = new URLSearchParams({ limit: String(limit || 20) })
     if (fileId) params.set('file_id', fileId)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/recent-chunks?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/recent-chunks?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:search', async (_event, { projectId, query, topK, contentTypeFilter, fileId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/search`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId, query, topK, contentTypeFilter, fileId }),
@@ -295,14 +321,14 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('knowledge:deleteProject', async (_event, projectId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:renameProject', async (_event, { projectId, name }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -316,7 +342,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (description !== undefined) body.description = description
     if (type !== undefined) body.type = type
     if (stage !== undefined) body.stage = stage
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -332,17 +358,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (category) params.set('category', category)
     if (search) params.set('search', search)
     if (size) params.set('size', size)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:getImages', async (_event, { projectId, fileId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}/images`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}/images`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:deleteImage', async (_event, { projectId, imageId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
@@ -351,19 +377,19 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   ipcMain.handle('knowledge:retryImage', async (_event, { projectId, imageId, force }) => {
     const url = `${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}/retry`
     const params = force ? '?force=true' : ''
-    const res = await fetch(url + params, { method: 'POST' })
+    const res = await fetchWithTimeout(url + params, { method: 'POST' })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:retryFailedImages', async (_event, { projectId, fileId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}/images/retry-failed`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/${fileId}/images/retry-failed`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('knowledge:updateImageCategory', async (_event, { projectId, imageId, category }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}/category`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}/category`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category }),
@@ -372,7 +398,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('knowledge:archiveImage', async (_event, { projectId, imageId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}/archive`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/images/${imageId}/archive`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -380,7 +406,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // Batch operations
   ipcMain.handle('knowledge:batchDeleteFiles', async (_event, { projectId, fileIds }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/batch-delete`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/batch-delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: fileIds }),
@@ -389,7 +415,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('knowledge:batchReprocessFiles', async (_event, { projectId, fileIds }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/batch-reprocess`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/batch-reprocess`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: fileIds }),
@@ -399,7 +425,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // Knowledge base chat (RAG Q&A) — independent from agent chat
   ipcMain.handle('knowledge:chat', async (_event, { projectId, message, fileId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/chat`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, fileId }),
@@ -410,12 +436,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Base Library ──
 
   ipcMain.handle('baseLib:list', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('baseLib:create', async (_event, { name, description }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description: description || '' }),
@@ -425,7 +451,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:update', async (_event, { libId, projectId, name, description }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description }),
@@ -434,7 +460,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('baseLib:delete', async (_event, libId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
@@ -447,18 +473,18 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (beforeId) params.set('before_id', beforeId)
     if (fileType) params.set('file_type', fileType)
     if (filenameSearch) params.set('filename_search', filenameSearch)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('baseLib:getActiveFiles', async (_event, libId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}/files/active`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}/files/active`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('baseLib:upload', async (_event, { libId, projectId, filename, fileType, data }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/upload`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId: id, filename, fileType, data }),
@@ -468,7 +494,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:deleteFile', async (_event, { libId, projectId, fileId }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/${fileId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/${fileId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
@@ -476,7 +502,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:retryFile', async (_event, { libId, projectId, fileId }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/${fileId}/retry`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/${fileId}/retry`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -484,7 +510,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:search', async (_event, { libId, projectId, query, topK, contentTypeFilter, fileId }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/search`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId: id, query, topK, contentTypeFilter, fileId }),
@@ -496,12 +522,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     const id = libId || projectId
     const params = new URLSearchParams({ limit: String(limit || 20) })
     if (fileId) params.set('file_id', fileId)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/recent-chunks?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/recent-chunks?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('baseLib:retryFailedFiles', async (_event, libId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}/files/retry-failed`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}/files/retry-failed`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -509,7 +535,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:batchDeleteFiles', async (_event, { libId, projectId, fileIds }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/batch-delete`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/batch-delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: fileIds }),
@@ -519,7 +545,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:batchReprocessFiles', async (_event, { libId, projectId, fileIds }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/batch-reprocess`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files/batch-reprocess`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_ids: fileIds }),
@@ -535,13 +561,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (category) params.set('category', category)
     if (search) params.set('search', search)
     if (size) params.set('size', size)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/images?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/images?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('baseLib:chat', async (_event, { libId, projectId, message, fileId }) => {
     const id = libId || projectId
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/chat`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, fileId }),
@@ -552,12 +578,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Project-BaseLib Association ──
 
   ipcMain.handle('project:getBaseLibs', async (_event, projectId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('project:linkBaseLib', async (_event, { projectId, baseLibId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ base_lib_id: baseLibId }),
@@ -566,7 +592,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('project:unlinkBaseLib', async (_event, { projectId, baseLibId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs/${baseLibId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/base-libs/${baseLibId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
@@ -575,7 +601,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Tasks ──
 
   ipcMain.handle('tasks:create', async (_event, { title, workspacePath, mode }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -588,19 +614,19 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('tasks:get', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:delete', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:rename', async (_event, { taskId, title }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
@@ -609,7 +635,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('tasks:setMode', async (_event, { taskId, mode }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/mode`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/mode`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),
@@ -618,62 +644,85 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('tasks:getMessages', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/messages`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/messages`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:chat', async (_event, { taskId, message, resume }) => {
     const baseUrl = pythonManager.getBaseUrl()
-    const response = await fetch(`${baseUrl}/tasks/${taskId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: taskId, message, resume: resume || false }),
-    })
+    // Abort the upstream SSE fetch when the renderer goes away (window
+    // closed / app quit) — otherwise this loop keeps streaming into a
+    // destroyed webContents until the task finishes (M2).
+    const controller = new AbortController()
+    const onSenderDestroyed = () => controller.abort()
+    _event.sender.once('destroyed', onSenderDestroyed)
 
-    if (!response.ok) {
-      const body = await response.json().catch(() => null)
-      const err = new Error(body?.message || `Python backend error (${response.status})`)
-      err.errorCode = body?.code || 'UNKNOWN_ERROR'
-      err.errorCategory = body?.category || 'INTERNAL'
-      err.errorSuggestion = body?.suggestion || ''
-      err.errorDetail = body?.detail || ''
-      throw err
-    }
+    try {
+      const baseUrl = pythonManager.getBaseUrl()
+      // SSE 流转发（任务运行可能持续分钟级）：不适用 fetchWithTimeout，
+      // 生命周期由 controller.signal 管理（渲染进程销毁时 abort）
+      const response = await fetch(`${baseUrl}/tasks/${taskId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: taskId, message, resume: resume || false }),
+        signal: controller.signal,
+      })
 
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let currentEvent = 'message'
+      if (!response.ok) {
+        const body = await response.json().catch(() => null)
+        // Backend errors use {error, code} (e.g. 409 TASK_RUNNING / 429
+        // TASK_LIMIT_REACHED); surface them so the frontend can react.
+        const err = new Error(body?.message || body?.error || `Python backend error (${response.status})`)
+        err.errorCode = body?.code || 'UNKNOWN_ERROR'
+        err.errorCategory = body?.category || 'INTERNAL'
+        err.errorSuggestion = body?.suggestion || ''
+        err.errorDetail = body?.detail || ''
+        throw err
+      }
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let currentEvent = 'message'
 
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          currentEvent = line.slice(7).trim()
-        } else if (line.startsWith('data: ')) {
-          const data = line.slice(6)
-          _event.sender.send('task:stream', { taskId, type: currentEvent, data })
-          currentEvent = 'message'
-        } else if (line === '') {
-          currentEvent = 'message'
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            if (!_event.sender.isDestroyed()) {
+              _event.sender.send('task:stream', { taskId, type: currentEvent, data })
+            }
+            currentEvent = 'message'
+          } else if (line === '') {
+            currentEvent = 'message'
+          }
         }
       }
+    } catch (err) {
+      // Aborting is an expected exit (renderer gone), not an error
+      if (controller.signal.aborted) return { aborted: true }
+      throw err
+    } finally {
+      _event.sender.removeListener('destroyed', onSenderDestroyed)
     }
   })
 
   ipcMain.handle('tasks:cancelChat', async (_event, taskId) => {
     const baseUrl = pythonManager.getBaseUrl()
-    await fetch(`${baseUrl}/tasks/${taskId}/chat/cancel`, { method: 'POST' })
+    await fetchWithTimeout(`${baseUrl}/tasks/${taskId}/chat/cancel`, { method: 'POST' })
   })
 
   ipcMain.handle('tasks:confirmShell', async (_event, { taskId, confirmed, allow_session }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/confirm-shell`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/confirm-shell`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirmed, allow_session: allow_session || false }),
@@ -682,7 +731,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('tasks:confirmSkill', async (_event, { taskId, confirmed }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/confirm-skill`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/confirm-skill`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirmed }),
@@ -691,40 +740,40 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('tasks:getFiles', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/files`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/files`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:readFile', async (_event, { taskId, path }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/files/content?path=${encodeURIComponent(path)}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/files/content?path=${encodeURIComponent(path)}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:getStatus', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/status`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/status`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:hasState', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/has-state`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/has-state`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:listFiltered', async (_event, { status }) => {
     const params = status ? `?status=${encodeURIComponent(status)}` : ''
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:archive', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/archive`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/archive`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('tasks:unarchive', async (_event, taskId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/unarchive`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/unarchive`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -736,7 +785,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     const baseUrl = pythonManager.getBaseUrl()
 
     // Get task info for the filename
-    const taskData = await handlePythonResponse(await fetch(`${baseUrl}/tasks/${taskId}`))
+    const taskData = await handlePythonResponse(
+      await fetchWithTimeout(`${baseUrl}/tasks/${taskId}`)
+    )
     const task = taskData.task
     if (!task) return { error: 'Task not found' }
 
@@ -749,7 +800,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     })
     if (canceled || !filePath) return { canceled: true }
 
-    const res = await fetch(`${baseUrl}/tasks/${taskId}/export`)
+    const res = await fetchWithTimeout(`${baseUrl}/tasks/${taskId}/export`, {}, 60000) // zip 导出，放宽超时
     const contentType = res.headers.get('content-type') || ''
     if (!res.ok || !contentType.includes('application/zip')) {
       const body = await res.json().catch(() => null)
@@ -774,12 +825,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Skills ──
 
   ipcMain.handle('skills:list', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('skills:install', async (_event, { source, sourceType }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills/install`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills/install`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source, source_type: sourceType }),
@@ -788,14 +839,14 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('skills:delete', async (_event, skillId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills/${skillId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills/${skillId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('skills:toggle', async (_event, { skillId, enabled }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills/${skillId}/toggle`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills/${skillId}/toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -804,7 +855,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('skills:confirm', async (_event, skillId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills/${skillId}/confirm`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills/${skillId}/confirm`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -822,7 +873,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('skills:builtinTools', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills/builtin-tools`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills/builtin-tools`)
     return handlePythonResponse(res)
   })
 
@@ -843,7 +894,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // ── Pause ──
   ipcMain.handle('tasks:pause', async (_event, { taskId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/pause`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/pause`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -852,19 +903,19 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Execution Logs ──
   ipcMain.handle('tasks:getLogs', async (_event, { taskId, lines }) => {
     const params = lines ? `?lines=${lines}` : ''
-    const res = await fetch(`${pythonManager.getBaseUrl()}/tasks/${taskId}/logs${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/logs${params}`)
     return handlePythonResponse(res)
   })
 
   // ── Skills list (for slash command autocomplete) ──
   ipcMain.handle('tasks:getSkills', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/skills`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills`)
     return handlePythonResponse(res)
   })
 
   // ── External Dependencies Check ──
   ipcMain.handle('system:checkDeps', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/system/deps/check`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/deps/check`)
     return handlePythonResponse(res)
   })
 
@@ -883,17 +934,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (projectType) params.set('project_type', projectType)
     if (stage) params.set('stage', stage)
     const qs = params.toString() ? `?${params.toString()}` : ''
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates${qs}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates${qs}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('reports:getTemplate', async (_event, templateId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('reports:saveTemplate', async (_event, { templateJson }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ template_json: templateJson }),
@@ -902,7 +953,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('reports:updateTemplate', async (_event, { templateId, templateJson }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ template_json: templateJson }),
@@ -911,7 +962,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('reports:copyTemplate', async (_event, { templateId, newName }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}/copy`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}/copy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ new_name: newName }),
@@ -920,8 +971,15 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('reports:deleteTemplate', async (_event, templateId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}`, {
       method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('reports:upgradeTemplate', async (_event, templateId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates/${templateId}/upgrade`, {
+      method: 'POST',
     })
     return handlePythonResponse(res)
   })
@@ -945,7 +1003,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
 
     const body = Buffer.concat(parts)
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/templates/extract-sample`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/templates/extract-sample`, {
       method: 'POST',
       headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
       body: body,
@@ -954,34 +1012,34 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('reports:refreshTemplates', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/refresh-templates`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/refresh-templates`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('reports:listReports', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports?project_id=${encodeURIComponent(projectId)}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports?project_id=${encodeURIComponent(projectId)}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('reports:getReport', async (_event, reportId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('reports:deleteReport', async (_event, reportId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
 
-  // Phase 3: Report generation (SSE streaming)
-  ipcMain.handle('reports:generateReport', async (_event, { projectId, templateId, title, variables, baseProjectIds, outputFormat, supplementaryNotes }) => {
-    // Note: SSE streaming is handled via direct HTTP connection in the frontend
-    // This handler returns the report_id for tracking
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/generate`, {
+  // Phase 3: Report generation (background task + progress polling)
+  ipcMain.handle('reports:generateReport', async (_event, { projectId, templateId, title, variables, baseProjectIds, outputFormat, supplementaryNotes, sectionInternet, internetEnabled }) => {
+    // Note: generation runs as a backend background task; the frontend polls report
+    // status/logs for progress. This handler returns the report_id for tracking.
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -992,6 +1050,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         base_project_ids: baseProjectIds || [],
         output_format: outputFormat || 'Word',
         supplementary_notes: supplementaryNotes || null,
+        section_internet: sectionInternet || {},
+        internet_enabled: !!internetEnabled,
       }),
     })
     return handlePythonResponse(res)
@@ -999,36 +1059,21 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // Phase 4: Report content retrieval
   ipcMain.handle('reports:getReportContent', async (_event, reportId) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/content`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}/content`)
     return handlePythonResponse(res)
   })
 
-  // Phase 4: Report export
-  ipcMain.handle('reports:exportReport', async (_event, { reportId, format }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/export`, {
+  // Phase 4: Report export (Word/docx only)
+  ipcMain.handle('reports:exportReport', async (_event, { reportId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}/export`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ format: format || 'Word' }),
-    })
-    return handlePythonResponse(res)
-  })
-
-  // Phase 4: Section regeneration
-  ipcMain.handle('reports:regenerateSection', async (_event, { reportId, sectionId, promptHint }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/sections/${sectionId}/regenerate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        section_id: sectionId,
-        prompt_hint: promptHint || null,
-      }),
     })
     return handlePythonResponse(res)
   })
 
   // Retry failed report
   ipcMain.handle('reports:retryReport', async (_event, { reportId, mode }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/reports/${reportId}/retry`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}/retry`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: mode || 'resume' }),
@@ -1040,24 +1085,24 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   ipcMain.handle('reports:getReportLogs', async (_event, { reportId, limit }) => {
     const url = new URL(`${pythonManager.getBaseUrl()}/reports/${reportId}/logs`)
     if (limit) url.searchParams.set('limit', String(limit))
-    const res = await fetch(url.toString())
+    const res = await fetchWithTimeout(url.toString())
     return handlePythonResponse(res)
   })
 
   // ── Wiki ──
 
   ipcMain.handle('wiki:listPages', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:getPage', async (_event, { projectId, pageKey }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:compile', async (_event, { projectId, mode, supervised, force }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: mode || 'incremental', trigger_type: 'manual', supervised: !!supervised, force: !!force }),
@@ -1066,31 +1111,46 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:compileStatus', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile-status`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile-status`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:globalReviewStatus', async () => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/review-status`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/review-status`)
+    return handlePythonResponse(res)
+  })
+
+  // ── Activity Hub (0.4lifecycle-design.md §3.1 #0) ──
+  ipcMain.handle('activities:getStatus', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/status`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('notifications:markRead', async (_event, { ids }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/notifications/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:stopCompile', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/stop`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/stop`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:continueCompile', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/continue`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/continue`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:retryPage', async (_event, { projectId, pageKey }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/retry`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/retry`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -1098,12 +1158,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('wiki:listReviews', async (_event, { projectId, resolved }) => {
     const params = resolved !== undefined ? `?resolved=${resolved}` : ''
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:resolveReview', async (_event, { projectId, reviewId, action }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/${reviewId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/${reviewId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
@@ -1112,7 +1172,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:batchResolveReviews', async (_event, { projectId, reviewIds, action }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/batch`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ review_ids: reviewIds, action }),
@@ -1121,14 +1181,14 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:deletePage', async (_event, { projectId, pageKey }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:editPage', async (_event, { projectId, pageKey, content, title }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, title: title || null }),
@@ -1137,7 +1197,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:lint', async (_event, { projectId, mode }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/lint`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/lint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: mode || 'structural' }),
@@ -1146,17 +1206,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:getSchemas', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:getPurpose', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:updatePurpose', async (_event, { projectId, purpose }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ purpose }),
@@ -1165,12 +1225,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:getOverview', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:updateOverview', async (_event, { projectId, overview }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ overview }),
@@ -1179,18 +1239,18 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:getBacklinks', async (_event, { projectId, pageKey }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/backlinks`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/backlinks`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:getChangeLog', async (_event, { projectId, limit }) => {
     const params = limit ? `?limit=${limit}` : ''
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/changelog${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/changelog${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:archive', async (_event, { projectId, title, content, pageKey, sourceQuestion }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/archive`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/archive`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1207,13 +1267,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   ipcMain.handle('wiki:search', async (_event, { projectId, query, topK, enableGraph }) => {
     const params = new URLSearchParams({ q: query || '', top_k: String(topK || 20) })
     if (enableGraph === false) params.set('enable_graph', 'false')
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/search?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/search?${params}`)
     return handlePythonResponse(res)
   })
 
   // Wiki review sweep (two-stage auto-resolution)
   ipcMain.handle('wiki:sweepReviews', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/sweep-reviews`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/sweep-reviews`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -1224,13 +1284,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     const params = new URLSearchParams()
     if (insights) params.set('insights', 'true')
     const qs = params.toString()
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/graph${qs ? '?' + qs : ''}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/graph${qs ? '?' + qs : ''}`)
     return handlePythonResponse(res)
   })
 
   // Wiki schema CRUD
   ipcMain.handle('wiki:createSchema', async (_event, { projectId, pageKey, title, compileHint, baseLibSearchHints, position }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1250,7 +1310,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (compileHint !== undefined) body.compile_hint = compileHint
     if (baseLibSearchHints !== undefined) body.base_lib_search_hints = baseLibSearchHints
     if (position !== undefined) body.position = position
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1259,7 +1319,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('wiki:deleteSchema', async (_event, { projectId, schemaId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
       method: 'DELETE',
     })
     return handlePythonResponse(res)
@@ -1268,23 +1328,23 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // Wiki page versions
   ipcMain.handle('wiki:listVersions', async (_event, { projectId, pageKey, limit }) => {
     const params = new URLSearchParams({ limit: String(limit || 20) })
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/versions?${params}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/versions?${params}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:getVersion', async (_event, { projectId, versionId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/versions/${versionId}`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/versions/${versionId}`)
     return handlePythonResponse(res)
   })
 
   // Wiki duplicate detection (§12.2.10)
   ipcMain.handle('wiki:dedupDetect', async (_event, { projectId }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/detect`)
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/detect`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:dedupMerge', async (_event, { projectId, canonicalKey, duplicateKeys }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/merge`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ canonical_key: canonicalKey, duplicate_keys: duplicateKeys }),
@@ -1294,7 +1354,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // Wiki-link enrichment (§12.2.4)
   ipcMain.handle('wiki:enrichWikilinks', async (_event, { projectId, pageKey }) => {
-    const res = await fetch(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/enrich-wikilinks`, {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/enrich-wikilinks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page_key: pageKey }),

@@ -8,6 +8,8 @@ const DEFAULT_SETTINGS: LLMSettings = {
   temperature: 0.7,
   max_tokens: 4096,
   top_p: 0.9,
+  reasoning_effort: 'low',
+  reasoning_override: '',
   system_prompt: '',
   tavily_key: '',
   vlm_api_url: 'https://open.bigmodel.cn/api/paas/v4/',
@@ -36,6 +38,8 @@ const DEFAULT_SETTINGS: LLMSettings = {
 
 export function useSettings() {
   const [settings, setSettings] = useState<LLMSettings>(DEFAULT_SETTINGS)
+  // 首启向导判定需要区分「尚未加载」与「已加载但未配置」（0.4 §7.3）
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   useEffect(() => {
     loadSettings()
@@ -47,6 +51,8 @@ export function useSettings() {
       setSettings(res as LLMSettings)
     } catch (err) {
       console.error('Failed to load settings:', err)
+    } finally {
+      setSettingsLoaded(true)
     }
   }
 
@@ -57,6 +63,7 @@ export function useSettings() {
 
   return {
     settings,
+    settingsLoaded,
     handleSaveSettings,
   }
 }

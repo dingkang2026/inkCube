@@ -3,6 +3,8 @@
 Parses Word/PDF sample documents to extract full text,
 then uses LLM to analyze the content and generate a complete template JSON draft
 including outline, prompt_hint, audience, role_hint, etc.
+
+设计参考：docs/2.5report-design.md §2.3.2 上传样例 LLM 提取流程
 """
 import json
 import logging
@@ -14,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Maximum text length to send to LLM (characters). Truncate if longer.
 MAX_TEXT_LENGTH = 30000
+
+# 隐式项目上下文变量：运行时恒可用，无需在 variables 声明（与前端 IMPLICIT_VARS 一致）。
+# derived 变量的 depends_on 可指向这些名字，清洗时视为已知。
+IMPLICIT_VARS = ("company_name", "credit_code", "project_name", "project_type", "stage")
 
 
 def extract_text_from_docx(filepath: str) -> tuple[str, list[dict]]:
@@ -139,6 +145,19 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
   "audience": "目标读者/汇报对象",
   "report_depth": "full" 或 "brief",
   "global_requirements": ["全局写作要求1", "全局写作要求2"],
+  "variables": [
+    {
+      "name": "变量名（正文以 {{name}} 引用）",
+      "source": "user 或 derived",
+      "label": "UI 展示名",
+      "required": true,
+      "placeholder": "user 变量的输入提示",
+      "depends_on": ["依赖的变量名"],
+      "derive_hint": "derived 变量的自然语言解析指令",
+      "data_sources": ["knowledge", "internet"],
+      "cardinality": "scalar 或 list"
+    }
+  ],
   "outline": [
     {
       "section_id": "ch1",
@@ -163,8 +182,89 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
 4. **目标读者**：根据报告的用语和深度推断 audience
 5. **项目类型**：推断报告属于投资分析(investment)、招商引资(recruitment)还是通用(general)
 6. **所属阶段**：推断报告属于投前/招商前(before)、投中/招商中(during)、投后/招商后(after)
+7. **变量 DAG 草稿**：识别报告中需要动态填充的「实体锚点」，产出 variables 数组（草稿，供人在编辑器 review 冻结）：
+   - **user 变量**：需用户在向导手填的输入项（如报告期、目标区域、行业），声明 source="user" + label + required + placeholder
+   - **derived 变量**：可由系统研究得出的实体锚点（如产业领域、竞争对手名单），声明 source="derived" + depends_on（依赖链，可指向 company_name 等隐式变量或其他变量）+ derive_hint（自然语言解析指令）+ data_sources（检索通道，恒非空，["knowledge"] 或 ["knowledge","internet"]）+ cardinality（scalar 单个值 / list 名单数组）
+   - **隐式项目变量**（company_name / credit_code / project_name / project_type / stage）无需声明，可直接在 depends_on 或正文 {{}} 中引用
+   - 变量值通过正文 {{name}} 注入到相关章节的 description / prompt_hint，**不改变大纲结构**；list 变量注入时以顿号连接
+   - 若报告无明显动态变量，variables 输出空数组 []
 
 直接输出 JSON，不要包含 markdown 代码块标记。"""
+
+
+def _sanitize_variables(variables) -> list[dict]:
+    """清洗 LLM 产出的 variables 草稿，确保符合 _schema.json（草稿定位：尽量治愈而非丢弃）。
+
+    两遍处理：先收集合法 name 集合，再逐个清洗（depends_on 仅保留指向已声明变量或隐式变量的引用，
+    剔除悬空依赖，使草稿能直接通过编辑器校验）。
+
+    - 仅保留带合法 name 的对象；name 去重（后者丢弃）
+    - source 非 user/derived → 默认 user
+    - user：required 默认 True；placeholder 仅保留非空字符串
+    - derived：depends_on 过滤为已知名字；derive_hint 缺失补空串；
+      data_sources 非法/为空补 ["knowledge"]；cardinality 非 scalar/list 补 scalar
+    - 仅输出 schema 允许的字段（additionalProperties=false）
+    """
+    if not isinstance(variables, list):
+        return []
+
+    # 第一遍：收集合法且去重的 name（保留首次出现顺序）
+    valid_names: list[str] = []
+    seen: set[str] = set()
+    for v in variables:
+        if not isinstance(v, dict):
+            continue
+        name = v.get("name")
+        if isinstance(name, str) and name.strip() and name.strip() not in seen:
+            seen.add(name.strip())
+            valid_names.append(name.strip())
+    known = set(valid_names) | set(IMPLICIT_VARS)
+
+    # 第二遍：逐个清洗
+    out: list[dict] = []
+    emitted: set[str] = set()
+    for v in variables:
+        if not isinstance(v, dict):
+            continue
+        name = v.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        if name in emitted:
+            continue
+        emitted.add(name)
+        label = v.get("label")
+        clean: dict = {"name": name, "label": label.strip() if isinstance(label, str) and label.strip() else name}
+        source = v.get("source")
+        if source not in ("user", "derived"):
+            source = "user"
+        clean["source"] = source
+        if source == "user":
+            clean["required"] = bool(v.get("required", True))
+            placeholder = v.get("placeholder")
+            if isinstance(placeholder, str) and placeholder.strip():
+                clean["placeholder"] = placeholder
+        else:
+            depends_on = v.get("depends_on")
+            deps = (
+                [d.strip() for d in depends_on if isinstance(d, str) and d.strip()]
+                if isinstance(depends_on, list) else []
+            )
+            # 剔除悬空依赖（仅保留已声明变量或隐式变量）+ 去重保序 + 排除自依赖
+            clean["depends_on"] = list(dict.fromkeys(d for d in deps if d in known and d != name))
+            derive_hint = v.get("derive_hint")
+            clean["derive_hint"] = derive_hint if isinstance(derive_hint, str) else ""
+            data_sources = v.get("data_sources")
+            valid_sources = (
+                [s for s in data_sources if s in ("knowledge", "internet")]
+                if isinstance(data_sources, list) else []
+            )
+            # 去重保序；恒非空（schema minItems=1）
+            clean["data_sources"] = list(dict.fromkeys(valid_sources)) or ["knowledge"]
+            cardinality = v.get("cardinality")
+            clean["cardinality"] = cardinality if cardinality in ("scalar", "list") else "scalar"
+        out.append(clean)
+    return out
 
 
 async def extract_template_with_llm(
@@ -232,6 +332,7 @@ async def extract_template_with_llm(
     template.setdefault("report_depth", "full" if len(template.get("outline", [])) >= 5 else "brief")
     template.setdefault("global_requirements", [])
     template.setdefault("outline", [])
+    template["variables"] = _sanitize_variables(template.get("variables"))
 
     # Ensure outline nodes have section_id
     for i, ch in enumerate(template["outline"], 1):

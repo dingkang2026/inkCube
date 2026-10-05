@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -87,9 +88,15 @@ class CodeSearchTool(BaseTool):
         rg = self._find_rg()
         engine = "ripgrep" if rg else "python"
         logger.info("code_search: pattern=%r, path=%s, engine=%s, file_pattern=%s", pattern[:50], path, engine, file_pattern)
+        # Both engines do blocking subprocess/IO work — run in a worker
+        # thread so the event loop stays responsive (H1)
         if rg:
-            return self._search_rg(rg, pattern, search_path, file_pattern, max_results)
-        return self._search_python(pattern, search_path, workspace, file_pattern, max_results)
+            return await asyncio.to_thread(
+                self._search_rg, rg, pattern, search_path, file_pattern, max_results,
+            )
+        return await asyncio.to_thread(
+            self._search_python, pattern, search_path, workspace, file_pattern, max_results,
+        )
 
     def _search_rg(
         self, rg: str, pattern: str, search_path: Path,

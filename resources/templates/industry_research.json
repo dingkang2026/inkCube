@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "template_id": "industry_research",
   "template_name": "行业研究报告",
   "version": "1.0",
@@ -12,6 +13,24 @@
     "数据须注明统计口径（来源机构、统计时间、币种/单位）",
     "禁止编造具体数据，无数据时须明确说明数据缺口",
     "引用行业数据时须标注来源"
+  ],
+  "variables": [
+    {
+      "name": "行业",
+      "source": "user",
+      "label": "目标行业",
+      "required": true,
+      "placeholder": "如：光伏、新能源汽车、半导体"
+    },
+    {
+      "name": "头部企业",
+      "source": "derived",
+      "label": "头部企业",
+      "depends_on": ["行业"],
+      "data_sources": ["knowledge", "internet"],
+      "derive_hint": "列出该行业 3-5 家头部/代表性企业名称",
+      "cardinality": "list"
+    }
   ],
   "outline": [
     {
@@ -64,7 +83,8 @@
         {
           "section_id": "ch3.2",
           "title": "主要参与者分析",
-          "description": "3-5 家代表性企业的多维度深度对比",
+          "description": "{{行业}} 头部企业（{{头部企业}}）的多维度深度对比",
+          "prompt_hint": "围绕 {{头部企业}} 逐一分析各家在 {{行业}} 的战略定位、规模份额与近期动态；名单为空时按材料不足处理",
           "children": [
             {
               "section_id": "ch3.2.1",

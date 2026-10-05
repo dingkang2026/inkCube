@@ -81,3 +81,40 @@
   margin-bottom: 12px;
   line-height: 1.5;
 }
+
+/* ── Advanced reasoning override (collapsible) ── */
+.advanced {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.advancedTitle {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.advanced[open] .advancedTitle {
+  margin-bottom: 8px;
+}
+
+.advanced .textarea {
+  min-height: 56px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* L2: reasoning_override JSON validation feedback */
+.textareaInvalid {
+  border-color: var(--error);
+}
+
+.overrideError {
+  margin: 4px 0 0;
+  color: var(--error);
+  font-size: 12px;
+}

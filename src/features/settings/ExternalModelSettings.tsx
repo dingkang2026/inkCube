@@ -13,6 +13,22 @@ export function ExternalModelSettings({ form, onUpdate }: ExternalModelSettingsP
   const [showKey, setShowKey] = useState(false)
   const [showVlmKey, setShowVlmKey] = useState(false)
 
+  // L2: validate reasoning_override on input — invalid JSON silently falls back
+  // to the effort level on the backend, so surface the error here instead
+  const validateOverride = (value: string): string => {
+    const trimmed = value.trim()
+    if (!trimmed) return ''
+    try {
+      const parsed: unknown = JSON.parse(trimmed)
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? ''
+        : t('settings.reasoningOverrideInvalid')
+    } catch {
+      return t('settings.reasoningOverrideInvalid')
+    }
+  }
+  const [overrideError, setOverrideError] = useState(() => validateOverride(form.reasoning_override ?? ''))
+
   return (
     <>
       <section className={styles.section}>
@@ -47,6 +63,40 @@ export function ExternalModelSettings({ form, onUpdate }: ExternalModelSettingsP
           onChange={(e) => onUpdate('model', e.target.value)}
           placeholder="gpt-4o"
         />
+        <label className={styles.label} htmlFor="reasoning-effort-input">
+          {t('settings.reasoningEffort')}
+        </label>
+        <input
+          id="reasoning-effort-input"
+          className={styles.input}
+          list="reasoning-effort-options"
+          value={form.reasoning_effort ?? ''}
+          onChange={(e) => onUpdate('reasoning_effort', e.target.value)}
+          placeholder={t('settings.reasoningEffortPlaceholder')}
+        />
+        <datalist id="reasoning-effort-options">
+          <option value="low" />
+          <option value="medium" />
+          <option value="high" />
+          <option value="max" />
+        </datalist>
+        <p className={styles.hint}>{t('settings.reasoningEffortHint')}</p>
+
+        <details className={styles.advanced}>
+          <summary className={styles.advancedTitle}>{t('settings.reasoningOverrideTitle')}</summary>
+          <p className={styles.hint}>{t('settings.reasoningOverrideHint')}</p>
+          <textarea
+            className={`${styles.textarea} ${overrideError ? styles.textareaInvalid : ''}`}
+            rows={3}
+            value={form.reasoning_override ?? ''}
+            onChange={(e) => {
+              onUpdate('reasoning_override', e.target.value)
+              setOverrideError(validateOverride(e.target.value))
+            }}
+            placeholder={'{"thinking": {"type": "disabled"}}'}
+          />
+          {overrideError && <p className={styles.overrideError}>{overrideError}</p>}
+        </details>
       </section>
 
       <section className={styles.section}>

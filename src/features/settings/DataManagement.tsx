@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import s from './DataManagement.module.css'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 interface CategoryUsage {
   size: number
@@ -37,6 +38,7 @@ function formatBytes(bytes: number): string {
 
 export function DataManagement() {
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const [usage, setUsage] = useState<DataUsage | null>(null)
   const [loading, setLoading] = useState(true)
   const [cleaning, setCleaning] = useState<string | null>(null)
@@ -58,11 +60,11 @@ export function DataManagement() {
 
   const handleClean = async (category: string) => {
     const confirmMsg = t(`data.confirmClean_${category}`)
-    if (!window.confirm(confirmMsg)) return
+    if (!(await confirmDialog({ title: t('data.clean'), message: confirmMsg }))) return
 
     // Extra confirmation for high-risk categories
     if (category === 'knowledge' || category === 'models') {
-      const doubleConfirm = window.confirm(t('data.doubleConfirm'))
+      const doubleConfirm = await confirmDialog({ title: t('data.clean'), message: t('data.doubleConfirm') })
       if (!doubleConfirm) return
     }
 
@@ -88,8 +90,8 @@ export function DataManagement() {
   }
 
   const handleResetAll = async () => {
-    if (!window.confirm(t('data.confirmResetAll'))) return
-    if (!window.confirm(t('data.doubleConfirmReset'))) return
+    if (!(await confirmDialog({ title: t('data.resetAll'), message: t('data.confirmResetAll') }))) return
+    if (!(await confirmDialog({ title: t('data.resetAll'), message: t('data.doubleConfirmReset') }))) return
 
     setCleaning('all')
     try {

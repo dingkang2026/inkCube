@@ -8,6 +8,9 @@ import { SearchBar } from './SearchBar'
 import { SearchResultList } from './SearchResultList'
 import { useToast } from './Toast'
 import { SkeletonFileList, SkeletonSearchResults } from './SkeletonLoader'
+import { useFeatureGuard } from '../readiness/useReadiness'
+import { useActivity } from '../activity/ActivityContext'
+import { usePolling } from '../../hooks/usePolling'
 import type { Project, FileRecord, SearchResult, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './KnowledgePage.module.css'
@@ -44,6 +47,7 @@ export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataCh
 function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipc }: KnowledgePageProps & { ipc: KnowledgeIpcChannels }) {
   const { t } = useTranslation()
   const showToast = useToast()
+  const guard = useFeatureGuard()
   const [files, setFiles] = useState<FileRecord[]>([])
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [recentChunks, setRecentChunks] = useState<SearchResult[]>([])
@@ -102,7 +106,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     }
   }, [])
 
-  const processFiles = useCallback(
+  const doProcessFiles = useCallback(
     async (fileList: FileList) => {
       if (!selectedProject) return
       const arr = Array.from(fileList)
@@ -137,6 +141,13 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     },
     [selectedProject, loadFiles, showToast, t]
   )
+
+  // 入口 guard（0.4 §7.3 第二层）：缺解析/embedding 模型 → 引导弹层，仅缺 VLM → 提示条放行
+  const processFiles = (fileList: FileList) => {
+    void guard('file_parsing', () => {
+      void doProcessFiles(fileList)
+    })
+  }
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
@@ -204,61 +215,57 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     }
   }
 
-  // Poll active files for status updates
+  // Poll active files for status updates（#5，v1.7 迁移 usePolling；谓词收编全局心跳 useActivity('file')，
+  // 0.4 §6.2——本地 files 是分页/搜索过滤后的快照，活跃文件不在当前页时本地谓词漏判熄火；
+  // 基础库复用本页（baseLib:* 通道）时同样生效，活跃项 container='baselib'）
   const prevActiveCountRef = useRef(-1)
-  useEffect(() => {
-    if (!selectedProject) return
-    const hasActive = files.some(f =>
-      f.status === 'pending' || f.status === 'parsing' ||
-      f.image_status === 'pending' || f.image_status === 'describing'
-    )
-    if (!hasActive) {
-      prevActiveCountRef.current = -1
-      return
-    }
+  const { items: activeFileItems } = useActivity('file')
+  const hasActiveFiles = !!selectedProject && activeFileItems.some(a =>
+    a.project_id === selectedProject.id && (a.count ?? 0) > 0
+  )
+  usePolling({
+    name: 'knowledge-active-files',
+    enabled: hasActiveFiles,
+    interval: 2000,
+    task: async () => {
+      if (!selectedProject) return
+      // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
+      const result: any = await window.electronAPI.invoke(
+        ipc.getActiveFiles, selectedProject.id
+      )
+      const activeFiles = result.files || []
 
-    const timer = setInterval(async () => {
-      try {
-        const result: any = await window.electronAPI.invoke(
-          ipc.getActiveFiles, selectedProject.id
-        )
-        const activeFiles = result.files || []
+      // Detect files that just finished (count dropped)
+      const prevCount = prevActiveCountRef.current
+      const curCount = activeFiles.length
+      prevActiveCountRef.current = curCount
 
-        // Detect files that just finished (count dropped)
-        const prevCount = prevActiveCountRef.current
-        const curCount = activeFiles.length
-        prevActiveCountRef.current = curCount
-
-        if (curCount === 0) {
-          // All processing done — full refresh including related data
-          loadFiles(selectedProject.id, 1, filenameSearch)
-          loadRecentChunks(selectedProject.id, selectedFileId)
-          onProjectDataChanged?.()
-          return
-        }
-
-        if (prevCount > 0 && curCount < prevCount) {
-          // Some files just finished — refresh related data
-          loadRecentChunks(selectedProject.id, selectedFileId)
-          onProjectDataChanged?.()
-        }
-
-        setFiles(prev => prev.map(f => {
-          const updated = activeFiles.find((af: FileRecord) => af.id === f.id)
-          return updated ? { ...f, ...updated } : f
-        }))
-      } catch (err) {
-        console.error('Polling failed:', err)
+      if (curCount === 0) {
+        // All processing done — full refresh including related data
+        loadFiles(selectedProject.id, 1, filenameSearch)
+        loadRecentChunks(selectedProject.id, selectedFileId)
+        onProjectDataChanged?.()
+        return
       }
-    }, 2000)
 
-    return () => {
-      clearInterval(timer)
-      prevActiveCountRef.current = -1
-    }
-  }, [files, selectedProject?.id])
+      if (prevCount > 0 && curCount < prevCount) {
+        // Some files just finished — refresh related data
+        loadRecentChunks(selectedProject.id, selectedFileId)
+        onProjectDataChanged?.()
+      }
 
-  const handleSearch = async (query: string, topK: number = 5) => {
+      setFiles(prev => prev.map(f => {
+        const updated = activeFiles.find((af: FileRecord) => af.id === f.id)
+        return updated ? { ...f, ...updated } : f
+      }))
+    },
+  })
+  // 无活跃文件时重置完成计数基准（原 effect cleanup 逻辑）
+  useEffect(() => {
+    if (!hasActiveFiles) prevActiveCountRef.current = -1
+  }, [hasActiveFiles])
+
+  const runSearch = async (query: string, topK: number = 5) => {
     if (!selectedProject || !query.trim()) {
       setSearchResults([])
       setHasSearched(true)
@@ -281,6 +288,13 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     } finally {
       setIsSearching(false)
     }
+  }
+
+  // 入口 guard（0.4 §7.3 第二层）：检索依赖 embedding 模型，缺失时引导下载
+  const handleSearch = (query: string, topK?: number) => {
+    void guard('knowledge_search', () => {
+      void runSearch(query, topK)
+    })
   }
 
 

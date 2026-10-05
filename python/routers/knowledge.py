@@ -1,6 +1,7 @@
 """python/routers/knowledge.py"""
 import os
 import sys
+import asyncio
 import base64
 import logging
 from pathlib import Path
@@ -15,6 +16,7 @@ from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
 from knowledge.knowledge_search import KnowledgeSearchTool
 from errors import InkCubeError, VLMNotConfigured
+from readiness import ensure_ready
 
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -85,6 +87,37 @@ class FileUpload(BaseModel):
     data: str  # base64 encoded file content
 
 
+# Upload size cap (L5): checked BEFORE base64 decoding so an oversized
+# payload fails fast with 413 instead of being materialized in memory.
+# Aligned with the 200MB workspace-export cap in routers/tasks.py.
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+
+def _check_upload_size(upload: FileUpload) -> None:
+    """Reject uploads whose decoded size would exceed MAX_UPLOAD_BYTES."""
+    # base64 encodes 3 bytes into 4 chars; strip any data-URI prefix
+    payload = upload.data.split(",", 1)[-1]
+    estimated = len(payload) * 3 // 4
+    if estimated > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"文件过大（约 {estimated // 1024 // 1024}MB），"
+                f"超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 上限"
+            ),
+        )
+
+
+def _safe_filename(name: str, fallback: str) -> str:
+    """Strip path components from a client-supplied filename.
+
+    Blocks path traversal ("../../evil.txt", "..\\..\\evil.txt") — only the
+    final path segment is kept; if nothing remains, `fallback` is returned.
+    """
+    safe = os.path.basename(str(name).replace("\\", "/")).strip()
+    return safe if safe not in ("", ".", "..") else fallback
+
+
 class SearchRequest(BaseModel):
     projectId: str
     query: str
@@ -101,21 +134,28 @@ class ChatRequest(BaseModel):
 
 async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, worker):
     """Core upload logic for base library files (shared across base lib routes)."""
+    # Reject oversized uploads before decoding (L5)
+    _check_upload_size(upload)
     import uuid
     import hashlib
     file_id = f"file_{uuid.uuid4().hex[:8]}"
 
     files_dir = Path(data_dir) / "files" / lib_id / file_id
     files_dir.mkdir(parents=True, exist_ok=True)
-    file_path = files_dir / upload.filename
+    filename = _safe_filename(upload.filename, f"{file_id}.bin")
+    file_path = files_dir / filename
 
-    file_data = base64.b64decode(
-        upload.data.split(",")[1] if "," in upload.data else upload.data
-    )
-    file_path.write_bytes(file_data)
+    # Decode, hash and save — off the event loop (H1/L5)
+    def _decode_and_save():
+        raw = base64.b64decode(
+            upload.data.split(",")[1] if "," in upload.data else upload.data
+        )
+        file_path.write_bytes(raw)
+        return raw, hashlib.md5(raw).hexdigest()
+
+    file_data, file_hash = await asyncio.to_thread(_decode_and_save)
 
     file_size = len(file_data)
-    file_hash = hashlib.md5(file_data).hexdigest()
 
     existing = db.find_duplicate_file(lib_id, file_hash)
     if existing:
@@ -129,7 +169,7 @@ async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, w
         }
 
     db.create_file(
-        project_id=lib_id, filename=upload.filename,
+        project_id=lib_id, filename=filename,
         file_type=upload.fileType, file_size=file_size,
         file_hash=file_hash, file_id=file_id,
     )
@@ -347,6 +387,10 @@ async def get_active_files(project_id: str):
 @router.post("/projects/{project_id}/upload")
 async def upload_file(project_id: str, upload: FileUpload):
     """Upload a file and enqueue for async processing."""
+    # 准入前置校验（0.4 §7.3）：缺解析/嵌入模型时结构化报错，避免逐文件 error
+    ensure_ready("file_parsing")
+    # Reject oversized uploads before decoding (L5)
+    _check_upload_size(upload)
     try:
         import deps
         db = get_db()
@@ -358,18 +402,21 @@ async def upload_file(project_id: str, upload: FileUpload):
         # Save file to disk: data/files/{project_id}/{file_id}/
         files_dir = Path(data_dir) / "files" / project_id / file_id
         files_dir.mkdir(parents=True, exist_ok=True)
-        file_path = files_dir / upload.filename
+        filename = _safe_filename(upload.filename, f"{file_id}.bin")
+        file_path = files_dir / filename
 
-        # Decode base64 and save
-        file_data = base64.b64decode(
-            upload.data.split(",")[1] if "," in upload.data else upload.data
-        )
-        file_path.write_bytes(file_data)
-
-        # Calculate file size and hash
+        # Decode, hash and save — off the event loop (H1/L5)
         import hashlib
+
+        def _decode_and_save():
+            raw = base64.b64decode(
+                upload.data.split(",")[1] if "," in upload.data else upload.data
+            )
+            file_path.write_bytes(raw)
+            return raw, hashlib.md5(raw).hexdigest()
+
+        file_data, file_hash = await asyncio.to_thread(_decode_and_save)
         file_size = len(file_data)
-        file_hash = hashlib.md5(file_data).hexdigest()
 
         # Check for duplicate
         existing = db.find_duplicate_file(project_id, file_hash)
@@ -389,7 +436,7 @@ async def upload_file(project_id: str, upload: FileUpload):
         # Insert file record (status=pending)
         db.create_file(
             project_id=project_id,
-            filename=upload.filename,
+            filename=filename,
             file_type=upload.fileType,
             file_size=file_size,
             file_hash=file_hash,
@@ -453,6 +500,8 @@ async def get_recent_chunks(project_id: str, limit: int = 20, file_id: Optional[
 @router.post("/search")
 async def search(request: SearchRequest):
     """Search knowledge base with hybrid retrieval"""
+    # 准入前置校验（0.4 §7.3）：缺嵌入模型时结构化报错
+    ensure_ready("knowledge_search")
     try:
         db = get_db()
         data_dir = get_data_dir()

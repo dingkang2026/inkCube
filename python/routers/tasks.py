@@ -10,6 +10,7 @@ from fastapi import APIRouter, UploadFile, File, Query
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 
 import deps
+from readiness import ensure_ready
 from schemas import TaskCreateRequest, TaskChatRequest
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,16 @@ async def delete_task(task_id: str):
     if deps.task_agent.is_task_running(task_id):
         logger.info("Cancelling running task before delete: %s", task_id)
         deps.task_agent.request_cancel(task_id)
+        # Wait (bounded) for the run loop to actually exit, so workspace
+        # deletion doesn't race with in-flight file writes from the agent.
+        for _ in range(20):  # up to ~10s
+            if not deps.task_agent.is_task_running(task_id):
+                break
+            await asyncio.sleep(0.5)
+        else:
+            logger.warning(
+                "Task %s still running after cancel timeout, deleting anyway", task_id
+            )
     # Run in thread pool (directory deletion can be slow)
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, deps.db.delete_task, task_id)
@@ -158,7 +169,17 @@ async def get_task_messages(task_id: str):
 @router.post("/tasks/{task_id}/chat")
 async def task_chat(task_id: str, req: TaskChatRequest):
     logger.info("Task chat: task_id=%s, message_len=%d, resume=%s", task_id, len(req.message), req.resume)
-    if not deps.task_agent.can_start_task():
+    # 准入前置校验（0.4 §7.3）：缺 LLM 配置时结构化报错，而非运行中途失败
+    ensure_ready("task")
+    # Atomic reserve (H4): rejects both the global limit AND a second chat
+    # on a task that is already running (would corrupt its message history).
+    if not deps.task_agent.try_acquire_task(task_id):
+        if deps.task_agent.is_task_running(task_id):
+            logger.warning("Task chat blocked: task %s already running", task_id)
+            return JSONResponse(
+                status_code=409,
+                content={"error": "该任务正在执行中，请等待完成或先停止", "code": "TASK_RUNNING"},
+            )
         logger.warning("Task chat blocked: max concurrent reached")
         return JSONResponse(
             status_code=429,
@@ -404,8 +425,13 @@ def _create_workspace_zip(workspace: Path, title: str):
     try:
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, dirs, files in os.walk(workspace):
-                # Skip hidden dirs and venv
-                dirs[:] = [d for d in dirs if not d.startswith(".") and d != "venv"]
+                # Skip hidden dirs, venv and heavyweight build artifacts —
+                # node_modules/__pycache__ can blow past the size cap before
+                # any user file is even zipped (L2)
+                dirs[:] = [
+                    d for d in dirs
+                    if not d.startswith(".") and d not in ("venv", "node_modules", "__pycache__")
+                ]
                 for fname in files:
                     fpath = Path(root) / fname
                     if fpath.name.startswith("."):

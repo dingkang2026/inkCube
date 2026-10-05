@@ -1,8 +1,7 @@
 """python/routers/reports.py — Report system API routes.
 
-Phase 2: Template management (CRUD, copy, extract-sample).
-Phase 3: Report generation (SSE streaming), section regeneration.
-Phase 4: Export (Word/PDF), content retrieval.
+Template management (CRUD, copy, extract-sample, upgrade).
+Report generation (background task + progress polling), retry, export (Word), content retrieval.
 """
 import json
 import logging
@@ -15,6 +14,8 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
+
+from readiness import ensure_ready
 
 logger = logging.getLogger(__name__)
 
@@ -41,27 +42,16 @@ def get_data_dir() -> str:
 
 
 def get_loader():
-    """Get template loader instance."""
-    from report_generator.loader import TemplateLoader
-    return TemplateLoader(db=get_db(), data_dir=get_data_dir())
+    """Return the process-wide TemplateLoader singleton (created at cold start).
 
-
-def _ensure_templates_loaded():
-    """Ensure preset templates are loaded into DB cache.
-
-    Called on first API access. Loads preset templates from resources/templates/
-    if they haven't been loaded yet (checks manifest version).
+    Templates are loaded once in main.py lifespan(). This lazily creates the
+    loader only if accessed before startup completed (e.g. in tests).
     """
-    db = get_db()
-    loader = get_loader()
-
-    # Check if templates are already cached
-    cached = db.list_templates(is_custom=False)
-    if cached:
-        return  # Already loaded
-
-    # Load preset templates
-    loader.load_preset_templates()
+    import deps
+    if deps.template_loader is None:
+        from report_generator.loader import TemplateLoader
+        deps.template_loader = TemplateLoader(db=get_db(), data_dir=get_data_dir())
+    return deps.template_loader
 
 
 # ── Template Models ──
@@ -77,13 +67,6 @@ class TemplateCopyRequest(BaseModel):
     new_name: str
 
 
-class ExtractSampleResponse(BaseModel):
-    """Response for template extraction from sample."""
-    template: dict
-    heading_count: int
-    outline_chapters: int
-
-
 # ── Template API Routes ──
 
 
@@ -94,7 +77,6 @@ async def list_templates(
 ):
     """Get all templates (preset + custom), optionally filtered by project_type and stage."""
     try:
-        _ensure_templates_loaded()
         loader = get_loader()
         templates = loader.get_all_templates(project_type=project_type, stage=stage)
 
@@ -116,11 +98,40 @@ async def list_templates(
                 "chapter_count": chapter_count,
             })
 
-        # Mark is_custom based on DB info
+        # Mark is_custom and merge updated_at based on DB info
         db_templates = get_db().list_templates()
-        custom_ids = {row["id"] for row in db_templates if row.get("is_custom")}
+        db_rows = {row["id"]: row for row in db_templates}
         for item in result:
-            item["is_custom"] = item["template_id"] in custom_ids
+            row = db_rows.get(item["template_id"])
+            item["is_custom"] = bool(row and row.get("is_custom"))
+            item["updated_at"] = row.get("updated_at") if row else None
+
+        # Surface custom templates needing user upgrade/repair (never silently dropped)
+        problems = loader.list_custom_problems()
+        known = {item["template_id"] for item in result}
+        for tpl_id, reason in problems.items():
+            if tpl_id in known:
+                continue
+            row = db_rows.get(tpl_id)
+            result.append({
+                "template_id": tpl_id,
+                "template_name": (row or {}).get("name") or tpl_id,
+                "version": (row or {}).get("version"),
+                "project_types": [],
+                "stage": None,
+                "output_format": "docx",
+                "role_hint": None,
+                "audience": None,
+                "report_depth": "full",
+                "chapter_count": 0,
+                "is_custom": True,
+                "updated_at": (row or {}).get("updated_at"),
+                "upgrade_needed": True,
+                "upgrade_error": reason,
+            })
+        for item in result:
+            item.setdefault("upgrade_needed", False)
+            item.setdefault("upgrade_error", None)
 
         return {"templates": result}
     except Exception as e:
@@ -132,7 +143,6 @@ async def list_templates(
 async def get_template(template_id: str):
     """Get full template details including outline."""
     try:
-        _ensure_templates_loaded()
         loader = get_loader()
         template = loader.get_template(template_id)
         if not template:
@@ -218,7 +228,6 @@ async def update_template(template_id: str, req: TemplateUpdateRequest):
 async def copy_template(template_id: str, req: TemplateCopyRequest):
     """Copy a preset template as a custom template."""
     try:
-        _ensure_templates_loaded()
         loader = get_loader()
 
         new_id = f"custom_{uuid.uuid4().hex[:8]}"
@@ -231,6 +240,45 @@ async def copy_template(template_id: str, req: TemplateCopyRequest):
         raise
     except Exception as e:
         logger.error("Failed to copy template: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/templates/{template_id}/upgrade")
+async def upgrade_template(template_id: str):
+    """Upgrade/repair a custom template to the current schema.
+
+    Auto-heals when migration+validation pass; otherwise returns the
+    best-effort migrated JSON plus validation errors for guided repair.
+    """
+    try:
+        from report_generator.loader import migrate_template
+
+        if not template_id.startswith("custom_"):
+            raise HTTPException(status_code=400, detail="预置模板无需升级。")
+
+        loader = get_loader()
+        row = get_db().get_template(template_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
+        try:
+            raw = json.loads(row["template_json"])
+        except (json.JSONDecodeError, KeyError):
+            raise HTTPException(status_code=400, detail="Cached template is corrupted.")
+
+        migrated = migrate_template(raw)
+        if migrated is None:
+            return {"success": True, "upgraded": False, "migrated": None,
+                    "errors": ["unsupported schema version"]}
+
+        errors = loader.validate_template(migrated)
+        if not errors:
+            loader.save_custom_template(migrated)
+            return {"success": True, "upgraded": True, "migrated": migrated, "errors": []}
+        return {"success": True, "upgraded": False, "migrated": migrated, "errors": errors}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to upgrade template %s: %s", template_id, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -396,8 +444,10 @@ class GenerateRequest(BaseModel):
     title: str
     variables: Optional[dict] = None
     base_project_ids: Optional[list[str]] = None
-    output_format: Optional[str] = "Word"
+    output_format: Optional[str] = "docx"
     supplementary_notes: Optional[str] = None  # 用户补充说明，注入 global_requirements
+    section_internet: Optional[dict] = None  # 章节级互联网开关 {section_id: bool}
+    internet_enabled: bool = False  # 报告级互联网总开关（总闸）
 
 
 @router.post("/generate")
@@ -406,9 +456,10 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
 
     Returns {report_id} immediately. Frontend polls GET /reports/{id} for progress.
     """
+    # 准入前置校验（0.4 §7.3）：缺 LLM/嵌入模型时结构化报错，避免向导走到一半才失败
+    ensure_ready("report")
     try:
         db = get_db()
-        _ensure_templates_loaded()
         loader = get_loader()
 
         # 并发限制检查
@@ -433,13 +484,16 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
         os.makedirs(report_dir, exist_ok=True)
 
         now = _now()
-        output_fmt = req.output_format or "Word"
+        output_fmt = req.output_format or "docx"
         variables_json = json.dumps(req.variables or {}, ensure_ascii=False)
         base_ids_json = json.dumps(req.base_project_ids or [], ensure_ascii=False)
+        section_internet = req.section_internet or {}
+        internet_enabled = 1 if req.internet_enabled else 0
+        section_internet_json = json.dumps(section_internet, ensure_ascii=False)
         db.conn.execute(
-            "INSERT INTO reports (id, project_id, template_id, title, output_format, status, progress, content_path, variables, base_project_ids, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (report_id, req.project_id, req.template_id, req.title, output_fmt, "generating", 0, report_dir, variables_json, base_ids_json, now, now),
+            "INSERT INTO reports (id, project_id, template_id, title, output_format, status, progress, content_path, variables, base_project_ids, section_internet, internet_enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (report_id, req.project_id, req.template_id, req.title, output_fmt, "generating", 0, report_dir, variables_json, base_ids_json, section_internet_json, internet_enabled, now, now),
         )
         db.conn.commit()
 
@@ -460,6 +514,8 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
             data_dir=data_dir,
             report_dir=report_dir,
             base_project_ids=req.base_project_ids or [],
+            section_internet=section_internet,
+            internet_enabled=bool(req.internet_enabled),
         )
 
         return {"report_id": report_id, "status": "generating"}
@@ -471,58 +527,14 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Section Regeneration (Phase 4) ──
-
-
-class RegenerateSectionRequest(BaseModel):
-    """Request body for regenerating a section."""
-    section_id: str
-    prompt_hint: Optional[str] = None  # 补充说明
-
-
-@router.post("/{report_id}/sections/{section_id}/regenerate")
-async def regenerate_section(report_id: str, section_id: str, req: Optional[RegenerateSectionRequest] = None):
-    """Regenerate a single section with SSE streaming.
-
-    Returns SSE stream with section content when done.
-    """
-    try:
-        db = get_db()
-        report = db.get_report(report_id)
-        if not report:
-            raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
-
-        # 获取模板
-        _ensure_templates_loaded()
-        loader = get_loader()
-        template = loader.get_template(report["template_id"])
-        if not template:
-            raise HTTPException(status_code=404, detail=f"Template not found: {report['template_id']}")
-
-        # TODO: Implement single section regeneration
-        # For now, return a placeholder
-        raise HTTPException(status_code=501, detail="Section regeneration not yet implemented")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to regenerate section: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ── Export (Phase 4) ──
 
 
-class ExportRequest(BaseModel):
-    """Request body for exporting a report."""
-    format: str = "Word"  # "Word" | "PDF"
-
-
 @router.post("/{report_id}/export")
-async def export_report(report_id: str, req: Optional[ExportRequest] = None):
-    """Export report as Word or PDF.
+async def export_report(report_id: str):
+    """Export report as Word (docx).
 
-    Returns the file path and triggers download.
+    Returns the output file path.
     """
     try:
         db = get_db()
@@ -540,25 +552,11 @@ async def export_report(report_id: str, req: Optional[ExportRequest] = None):
             raise HTTPException(status_code=404, detail="Report content file not found")
 
         markdown_text = md_path.read_text(encoding="utf-8")
-        fmt = req.format if req else "Word"
-        data_dir = get_data_dir()
 
-        if fmt == "Word":
-            from report_generator.renderer import render_markdown_to_docx
-            output_path = str(Path(content_path) / f"{report['title']}.docx")
-            render_markdown_to_docx(markdown_text, output_path, title=report["title"])
-            return {"success": True, "format": "Word", "path": output_path}
-
-        elif fmt == "PDF":
-            from report_generator.renderer import render_markdown_to_docx, render_docx_to_pdf
-            docx_path = str(Path(content_path) / f"{report['title']}.docx")
-            pdf_path = str(Path(content_path) / f"{report['title']}.pdf")
-            render_markdown_to_docx(markdown_text, docx_path, title=report["title"])
-            render_docx_to_pdf(docx_path, pdf_path)
-            return {"success": True, "format": "PDF", "path": pdf_path}
-
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported format: {fmt}")
+        from report_generator.renderer import render_markdown_to_docx
+        output_path = str(Path(content_path) / f"{report['title']}.docx")
+        render_markdown_to_docx(markdown_text, output_path, title=report["title"])
+        return {"success": True, "format": "Word", "path": output_path}
 
     except HTTPException:
         raise
@@ -658,7 +656,6 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
         db.update_report_error(report_id, "")  # 清空错误信息
 
         # 获取模板
-        _ensure_templates_loaded()
         loader = get_loader()
         template = loader.get_template(report["template_id"])
         if not template:
@@ -678,6 +675,15 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        # 从 DB 恢复互联网开关配置（供 retry 续跑时保持与首次生成一致）
+        section_internet = {}
+        if report.get("section_internet"):
+            try:
+                section_internet = json.loads(report["section_internet"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        internet_enabled = bool(report.get("internet_enabled"))
+
         # 启动后台任务
         data_dir = get_data_dir()
         background_tasks.add_task(
@@ -689,6 +695,8 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
             data_dir=data_dir,
             report_dir=report_dir,
             base_project_ids=base_project_ids,
+            section_internet=section_internet,
+            internet_enabled=internet_enabled,
         )
 
         return {"report_id": report_id, "status": "generating", "mode": mode}
@@ -743,6 +751,8 @@ async def _run_report_generation(
     data_dir: str,
     report_dir: str,
     base_project_ids: list[str],
+    section_internet: dict,
+    internet_enabled: bool = False,
 ):
     """Background task: run report generation and update DB progress."""
     from report_generator.runner import ReportRunner
@@ -752,9 +762,8 @@ async def _run_report_generation(
     llm_settings = db.get_settings()
     search_tool = _get_search_tool(db, data_dir)
 
-    # Report generation needs deeper reasoning — mirror wiki ingest pattern
+    # Copy settings — reasoning effort comes from user settings (settings page 思考深度)
     report_llm_settings = dict(llm_settings)
-    report_llm_settings["reasoning_effort"] = "low"
     logger.info(
         "Report [%s]: reasoning_effort=%s, max_tokens=%s",
         report_id, report_llm_settings.get("reasoning_effort"), report_llm_settings.get("max_tokens"),
@@ -775,6 +784,8 @@ async def _run_report_generation(
         output_dir=report_dir,
         base_project_ids=base_project_ids,
         db=db,
+        section_internet=section_internet,
+        internet_enabled=internet_enabled,
     )
 
     section_count = 0
@@ -790,11 +801,11 @@ async def _run_report_generation(
                 )
 
             elif event.event_type == "section_done":
+                section_count += 1
                 skipped = event.data.get("skipped", False)
-                if not skipped:
-                    section_count += 1
                 total = event.data.get("total", 1)
-                progress = int(section_count / total * 100)
+                # 章节阶段进度封顶 90%，收尾(finalizing)推进到 95%，完成 100%，保证单调递增
+                progress = int(section_count / total * 90)
                 db.update_report_status(report_id, "generating", progress)
 
                 # 保存章节到 DB
@@ -821,14 +832,14 @@ async def _run_report_generation(
                     section_id=event.data.get("section_id"),
                 )
 
-            elif event.event_type == "section_error":
-                # 章节错误日志
+            elif event.event_type == "progress":
+                # 收尾阶段（finalizing）进度：写日志 + 推进到 95%
                 db.create_report_log(
                     report_id,
-                    f"章节生成失败: {event.data.get('message', 'Unknown error')}",
-                    level="error",
-                    section_id=event.data.get("section_id"),
+                    event.data.get("message", "收尾处理中..."),
+                    level="info",
                 )
+                db.update_report_status(report_id, "generating", 95)
 
             elif event.event_type == "complete":
                 db.update_report_status(report_id, "done", 100)

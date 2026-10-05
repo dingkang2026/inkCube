@@ -91,15 +91,6 @@
   color: var(--text-primary);
 }
 
-.formatSelect {
-  padding: 4px 8px;
-  font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-}
-
 /* ── Search ── */
 .searchRow {
   display: flex;
@@ -156,19 +147,6 @@
   box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
 }
 
-.templateCardAdd {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-muted);
-  border-style: dashed;
-  min-height: 80px;
-}
-
-.templateCardAdd:hover { color: var(--accent); }
-
 .templateName {
   font-size: 14px;
   font-weight: 500;
@@ -219,14 +197,14 @@
   white-space: nowrap;
 }
 
-/* ── Chapter list ── */
-.chapterList {
+/* ── Outline sections (read-only) + per-section internet toggle ── */
+.sectionList {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.chapterItem {
+.sectionItem {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -236,40 +214,39 @@
   background: var(--bg-primary);
 }
 
-.dragHandle { color: var(--text-muted); cursor: grab; }
-.chapterNum { font-size: 12px; color: var(--text-muted); min-width: 20px; }
-.chapterName { flex: 1; font-size: 13px; color: var(--text-primary); }
+.sectionNum { font-size: 12px; color: var(--text-muted); min-width: 20px; }
+.sectionName { flex: 1; font-size: 13px; color: var(--text-primary); }
 
-.removeBtn {
-  padding: 2px;
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 3px;
-  opacity: 0;
-  transition: opacity 0.12s, color 0.12s;
-}
-
-.chapterItem:hover .removeBtn { opacity: 1; }
-.removeBtn:hover { color: var(--danger, #e53e3e); }
-
-.addChapterBtn {
+.internetToggle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  color: var(--accent);
-  background: transparent;
-  border: 1px dashed var(--accent);
-  border-radius: var(--radius-sm);
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.12s;
+  user-select: none;
 }
 
-.addChapterBtn:hover { background: rgba(37, 99, 235, 0.04); }
+.internetToggle input { cursor: pointer; }
+
+.internetToggleDisabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.internetToggleDisabled input { cursor: not-allowed; }
+
+/* 报告级总开关：置于大纲区顶部，与章节开关视觉区分 */
+.masterInternetToggle {
+  padding: 6px 0;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+}
 
 /* ── Notes ── */
 .notesInput {

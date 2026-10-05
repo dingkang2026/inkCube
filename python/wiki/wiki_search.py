@@ -271,18 +271,25 @@ def search_wiki(
     db,
     top_k: int = 20,
     enable_graph: bool = True,
+    pages: list[dict] | None = None,
 ) -> list[dict]:
     """Search Wiki pages using hybrid retrieval.
 
     Currently: keyword search + graph neighbor expansion.
     Returns list of page dicts with _score, _source, and optional graph_related_to.
+
+    Args:
+        pages: Pre-fetched page list to search over. If None, fetched from DB via
+            list_wiki_pages(project_id). Callers retrieving multiple queries in a
+            batch (e.g. report retrieval) can fetch once and reuse to avoid
+            repeated full-page DB loads.
     """
     if not query or not query.strip():
         return []
 
     try:
         # Fetch pages once, share between keyword search and graph expansion
-        all_pages = db.list_wiki_pages(project_id)
+        all_pages = pages if pages is not None else db.list_wiki_pages(project_id)
         if not all_pages:
             return []
 

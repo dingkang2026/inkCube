@@ -1,6 +1,7 @@
 /** src/features/settings/LogViewer.tsx — Log viewer modal dialog. */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { usePolling } from '../../hooks/usePolling'
 import s from './LogViewer.module.css'
 
 type LogLevel = 'ALL' | 'ERROR' | 'WARN' | 'INFO'
@@ -38,24 +39,17 @@ export function LogViewer({ onClose }: LogViewerProps) {
   const scrollRef = useRef<HTMLPreElement>(null)
 
   const loadLogs = useCallback(async () => {
-    try {
-      const [content, info] = await Promise.all([
-        window.electronAPI.invoke('system:getLogs') as Promise<string>,
-        window.electronAPI.invoke('system:getLogInfo') as Promise<LogInfo>,
-      ])
-      setLogContent(content || '')
-      setLogInfo(info)
-    } catch (err) {
-      console.error('Failed to load logs:', err)
-    }
+    // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
+    const [content, info] = await Promise.all([
+      window.electronAPI.invoke('system:getLogs') as Promise<string>,
+      window.electronAPI.invoke('system:getLogInfo') as Promise<LogInfo>,
+    ])
+    setLogContent(content || '')
+    setLogInfo(info)
   }, [])
 
-  useEffect(() => {
-    loadLogs()
-    // Auto-refresh every 3 seconds
-    const interval = setInterval(loadLogs, 3000)
-    return () => clearInterval(interval)
-  }, [loadLogs])
+  // Auto-refresh every 3 seconds（#9，v1.7 迁移 usePolling，0.4 §8.1；模态打开期间常驻轮询）
+  usePolling({ name: 'log-viewer', interval: 3000, task: loadLogs })
 
   // Auto-scroll to bottom
   useEffect(() => {

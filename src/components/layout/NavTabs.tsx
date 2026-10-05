@@ -1,12 +1,11 @@
 import { useTranslation } from 'react-i18next'
 import { Home, Wrench, BookOpen, Loader2 } from 'lucide-react'
+import { useActivity } from '../../features/activity/ActivityContext'
 import styles from './NavTabs.module.css'
 
 interface NavTabsProps {
   activeNav: string
   onNavChange: (nav: string) => void
-  waitingReviewCount?: number
-  hasActiveIngest?: boolean
 }
 
 const TABS = [
@@ -15,8 +14,11 @@ const TABS = [
   { key: 'projects', labelKey: 'nav.projects', Icon: BookOpen, disabled: false },
 ]
 
-export function NavTabs({ activeNav, onNavChange, waitingReviewCount, hasActiveIngest }: NavTabsProps) {
+/** L1 徽章（0.4 §5.3）：任务 Tab 运行数徽章 / 项目 Tab 活跃呼吸图标 + 待审阅数字，
+ *  数据统一来自 ActivityContext（替代原 Sidebar props 下传） */
+export function NavTabs({ activeNav, onNavChange }: NavTabsProps) {
   const { t } = useTranslation()
+  const { summary, activeProjectIds } = useActivity()
 
   return (
     <nav className={styles.nav}>
@@ -28,12 +30,17 @@ export function NavTabs({ activeNav, onNavChange, waitingReviewCount, hasActiveI
         >
           <tab.Icon className={styles.icon} size={18} strokeWidth={1.8} />
           <span className={styles.label}>{t(tab.labelKey)}</span>
-          {tab.key === 'projects' && hasActiveIngest && (
+          {tab.key === 'tasks' && summary.running_tasks > 0 && (
+            <span className={styles.taskBadge} title={t('activity.badge.runningTasks')}>
+              {summary.running_tasks}
+            </span>
+          )}
+          {tab.key === 'projects' && activeProjectIds.size > 0 && (
             <Loader2 className={styles.ingestSpinner} size={12} />
           )}
-          {tab.key === 'projects' && (waitingReviewCount ?? 0) > 0 && (
+          {tab.key === 'projects' && summary.waiting_reviews > 0 && (
             <span className={styles.reviewBadge} title={t('project.wiki.reviewWaitingNav', { defaultValue: '知识库等待审阅' })}>
-              {waitingReviewCount}
+              {summary.waiting_reviews}
             </span>
           )}
         </button>

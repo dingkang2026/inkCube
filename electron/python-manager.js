@@ -43,10 +43,16 @@ class PythonManager {
       }
     }
 
-    const exeName = process.platform === 'win32' ? 'inkcube-agent.exe' : 'inkcube-agent'
+    // Production (packaging plan B, 0.2 §9): spawn the bundled
+    // python-build-standalone interpreter against the backend code dir.
+    // PyInstaller was dropped — the RAG stack (FlagEmbedding/torch, docling,
+    // rapidocr) uses function-level imports PyInstaller's static analysis
+    // misses, and a full onefile bundle would exceed 3GB. Backend deps ship
+    // as a plain site-packages dir (resources/python-backend/site-packages).
+    const exeName = process.platform === 'win32' ? 'python.exe' : 'python3'
     return {
-      command: path.join(process.resourcesPath, 'python', exeName),
-      args: [],
+      command: path.join(process.resourcesPath, 'tools', 'python-build-standalone', exeName),
+      args: [path.join(process.resourcesPath, 'python-backend', 'main.py')],
       cwd: app.getPath('userData'),
     }
   }
@@ -82,6 +88,32 @@ class PythonManager {
         ? path.join(__dirname, '..', 'node_modules', 'electron', 'dist',
             process.platform === 'win32' ? 'electron.exe' : 'electron')
         : process.execPath,
+    }
+
+    if (!this.isDev) {
+      const userData = app.getPath('userData')
+      const toolsDir = path.join(userData, 'tools')
+      const ext = process.platform === 'win32' ? '.exe' : ''
+
+      // Shared data dir: log-utils' prod default is userData/data — keep
+      // Python on the same directory so both sides write the same app.log
+      // and share db/models/files.
+      spawnEnv.INKCUBE_DATA_DIR = path.join(userData, 'data')
+      // Preset report templates live in extraResources/templates (loader.py)
+      spawnEnv.INKCUBE_RESOURCES_DIR = process.resourcesPath
+      // Backend deps are a plain site-packages dir next to the code
+      spawnEnv.PYTHONPATH = path.join(process.resourcesPath, 'python-backend', 'site-packages')
+
+      // Tool resolver paths: tool-initializer copies tools to Electron's
+      // userData (NOT the %APPDATA%/InkCube path tool_resolver.py falls back
+      // to), so pass the locations explicitly — env vars are resolve_tool's
+      // first lookup priority.
+      spawnEnv.INKCUBE_UV_PATH = path.join(toolsDir, `uv${ext}`)
+      spawnEnv.INKCUBE_RG_PATH = path.join(toolsDir, `rg${ext}`)
+      spawnEnv.INKCUBE_RUFF_PATH = path.join(toolsDir, `ruff${ext}`)
+      spawnEnv.INKCUBE_PANDOC_PATH = path.join(toolsDir, `pandoc${ext}`)
+      spawnEnv.INKCUBE_PYTHON_PATH = path.join(
+        userData, 'python', process.platform === 'win32' ? 'python.exe' : 'python3')
     }
 
     this.process = spawn(command, [...args, '--port', String(this.port)], {
@@ -174,7 +206,10 @@ class PythonManager {
 
   async _killStaleProcesses() {
     // Kill leftover uvicorn processes on ports 8765-8799
-    // This handles the case where the app was force-closed
+    // This handles the case where the app was force-closed.
+    // Guard (M4): verify each PID's command line before killing — a bare
+    // port match could terminate an unrelated process that happens to
+    // listen on one of these ports.
     try {
       if (process.platform === 'win32') {
         const { execSync } = require('child_process')
@@ -192,10 +227,14 @@ class PythonManager {
                 const pid = parseInt(pidMatch[1])
                 if (!killedPids.has(pid)) {
                   killedPids.add(pid)
-                  try {
-                    process.kill(pid, 'SIGTERM')
-                    console.log(`[PythonManager] Killed stale PID ${pid} on port ${port}`)
-                  } catch { /* ignore */ }
+                  if (this._isInkCubeProcess(pid)) {
+                    try {
+                      process.kill(pid, 'SIGTERM')
+                      logElectron('INFO', `[PythonManager] Killed stale PID ${pid} on port ${port}`)
+                    } catch { /* already gone */ }
+                  } else {
+                    logElectron('WARN', `[PythonManager] Skipped PID ${pid} on port ${port} — not an InkCube process`)
+                  }
                 }
               }
             }
@@ -205,6 +244,35 @@ class PythonManager {
     } catch { /* ignore - non-critical cleanup */ }
     // Brief pause to let ports free up
     await new Promise(r => setTimeout(r, 300))
+  }
+
+  /**
+   * Verify a PID belongs to this app (dev uvicorn or packaged agent)
+   * before killing it. Tries wmic first, then PowerShell CIM (wmic is
+   * removed on newer Windows builds). If both fail, returns false —
+   * never kill a process we cannot verify.
+   */
+  _isInkCubeProcess(pid) {
+    const { execSync } = require('child_process')
+    let cmdline = ''
+    try {
+      const out = execSync(
+        `wmic process where processid=${pid} get commandline /value`,
+        { encoding: 'utf8', timeout: 3000 }
+      )
+      const m = out.match(/CommandLine=(.*)/i)
+      cmdline = m ? m[1] : ''
+    } catch {
+      try {
+        cmdline = execSync(
+          `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
+          { encoding: 'utf8', timeout: 5000 }
+        ).trim()
+      } catch {
+        return false
+      }
+    }
+    return /uvicorn|inkcube-agent|main:app/i.test(cmdline)
   }
 }
 

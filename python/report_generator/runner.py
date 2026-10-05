@@ -7,7 +7,7 @@
   4. 精准 Token 统计追踪
   5. 智能重试分类
 
-设计参考：docs/2.1project-design.md §6.7.7 ~ §6.7.9
+设计参考：docs/2.5report-design.md §3.8 ~ §3.9
 """
 import asyncio
 import json
@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from report_generator.normalizer import (
-    instantiate, normalize_outline, validate_execution_outline,
-    get_execution_sections,
+    instantiate, normalize_outline,
+    validate_execution_outline, get_execution_sections,
 )
 from report_generator.registry import CitationRegistry
 from report_generator.retrieval import retrieve_for_section
+from report_generator.variable_resolver import resolve_variables
 from report_generator.prompts import (
     build_system_prompt, build_standard_prompt, build_post_body_prompt,
     build_digest_prompt, build_extract_numbers_prompt,
@@ -88,15 +89,11 @@ class ReportGenerationError(Exception):
 
 
 class ProgressEvent:
-    """进度事件（用于 SSE 推送）。"""
+    """进度事件（用于进度轮询）。"""
 
     def __init__(self, event_type: str, data: dict):
-        self.event_type = event_type  # "section_start" | "section_done" | "section_error" | "progress" | "complete" | "error"
+        self.event_type = event_type  # "section_start" | "section_done" | "progress" | "complete" | "error"
         self.data = data
-
-    def to_sse(self) -> str:
-        """格式化为 SSE 消息。"""
-        return f"event: {self.event_type}\ndata: {json.dumps(self.data, ensure_ascii=False)}\n\n"
 
 
 class ReportRunner:
@@ -128,6 +125,8 @@ class ReportRunner:
         output_dir: str,
         base_project_ids: Optional[list[str]] = None,
         db=None,
+        section_internet: Optional[dict] = None,
+        internet_enabled: bool = False,
     ):
         self.template = template
         self.variables = variables
@@ -138,6 +137,13 @@ class ReportRunner:
         self.output_dir = Path(output_dir)
         self.base_project_ids = base_project_ids or []
         self.db = db
+        # 报告级互联网总开关（总闸，§1.1）：OFF 时全程仅用知识库，章节开关失效
+        self.internet_enabled = internet_enabled
+        # 章节级互联网开关 {section_id: bool}（§1.1）；report_depth 贯穿检索/生成/校验
+        self.section_internet = section_internet or {}
+        self.report_depth = template.get("report_depth", "full")
+        # Wiki 通道可用性（_prepare 中按项目已完成 Wiki 页面检测；无则仅知识库/互联网）
+        self.wiki_available = False
 
         # 状态
         self.outputs: dict[str, str] = {}
@@ -149,6 +155,8 @@ class ReportRunner:
         self.outline: list[dict] = []
         self.sections: list[dict] = []
         self.report_title = ""
+        self.resolved_variables: dict = {}
+        self.resolution_evidence: dict = {}
 
     async def run(self):
         """执行报告生成主流程。
@@ -157,11 +165,11 @@ class ReportRunner:
             ProgressEvent 实例
         """
         try:
-            # ── 准备阶段 ──
-            self._prepare()
-
-            # ── 尝试从 checkpoint 恢复 ──
+            # ── 尝试从 checkpoint 恢复（含 resolved_variables，供 _prepare 短路）──
             self._load_checkpoint()
+
+            # ── 准备阶段（解析变量 → 实例化 → 归一化 → 校验）──
+            await self._prepare()
 
             # ── 第一遍：standard 章节 ──
             standard_sections = [
@@ -200,6 +208,12 @@ class ReportRunner:
                     base_project_ids=self.base_project_ids,
                     query_parallelism=self.llm_settings.get("report_channel_parallelism", 4),
                     db=self.db,
+                    data_sources=(
+                        ["knowledge"]
+                        + (["wiki"] if self.wiki_available else [])
+                        + (["internet"] if (self.internet_enabled and self.section_internet.get(sid)) else [])
+                    ),
+                    report_depth=self.report_depth,
                 )
                 self.token_tracker.record(sid, "retrieval", retrieval_usage)
 
@@ -211,6 +225,7 @@ class ReportRunner:
                         "section_id": sid,
                         "title": sec.get("title", ""),
                         "skipped": True,
+                        "total": total,
                     })
                     self._save_checkpoint()
                     continue
@@ -251,6 +266,7 @@ class ReportRunner:
                     "section_id": sid,
                     "title": sec.get("title", ""),
                     "degraded": retrieval.is_degraded,
+                    "total": total,
                 })
 
                 self._save_checkpoint()
@@ -296,6 +312,7 @@ class ReportRunner:
                 yield ProgressEvent("section_done", {
                     "section_id": sid,
                     "title": sec.get("title", ""),
+                    "total": total,
                 })
 
                 self._save_checkpoint()
@@ -303,17 +320,7 @@ class ReportRunner:
             # ── 全局收尾 ──
             yield ProgressEvent("progress", {"phase": "finalizing", "message": "全局校验与收尾..."})
 
-            full_text = self._assemble_full_text()
-            final_text = finalize_report(full_text, self.registry, self.template, self.outline)
-
-            # 保存最终内容
-            content_path = self.output_dir / "content.md"
-            content_path.parent.mkdir(parents=True, exist_ok=True)
-            content_path.write_text(final_text, encoding="utf-8")
-
-            # 保存 registry + token 统计
-            self.registry.save(self.output_dir / "registry.json")
-            self.token_tracker.save(self.output_dir / "token_usage.json")
+            content_path = self._write_final_artifacts()
 
             yield ProgressEvent("complete", {
                 "content_path": str(content_path),
@@ -334,13 +341,32 @@ class ReportRunner:
             yield ProgressEvent("error", {"message": str(e)})
             raise
 
-    def _prepare(self):
-        """准备阶段：实例化模板、归一化大纲、校验。"""
-        # 实例化变量
-        tpl = instantiate(self.template, self.variables)
+    async def _prepare(self):
+        """准备阶段（§3.9 管线）：解析变量 → 实例化 → 归一化 → 校验。"""
+        # 变量解析（研究 DAG）。checkpoint 已含 resolved_variables 则短路，
+        # 避免重复解析（确定性 + 已付 token）。
+        if not self.resolved_variables:
+            project = self.db.get_project(self.project_id) if self.db else {}
+            resolved, evidence, resolve_usage = await resolve_variables(
+                self.template, project, self.variables,
+                search_tool=self.search_tool,
+                llm_client=self.llm_client,
+                llm_settings=self.llm_settings,
+                db=self.db,
+                base_project_ids=self.base_project_ids,
+                tavily_api_key=self.llm_settings.get("tavily_key", ""),
+                internet_enabled=self.internet_enabled,
+            )
+            self.token_tracker.record("__resolve__", "variable_resolution", resolve_usage)
+            self.resolved_variables = resolved
+            self.resolution_evidence = evidence
+
+        # 实例化变量（用 resolved 替换，非 self.variables；{{}} 注入后大纲结构不变）
+        tpl = instantiate(self.template, self.resolved_variables)
+        outline = tpl.get("outline", [])
 
         # 归一化大纲
-        self.outline = normalize_outline(tpl.get("outline", []))
+        self.outline = normalize_outline(outline)
 
         # 校验
         errors = validate_execution_outline(self.outline)
@@ -353,16 +379,38 @@ class ReportRunner:
         # 报告标题
         self.report_title = tpl.get("template_name", "报告")
 
-        # System Prompt
+        # System Prompt（注入报告主体 + 报告深度）
         self.system_prompt = build_system_prompt(
             role_hint=tpl.get("role_hint", "资深研究分析师"),
             audience=tpl.get("audience", "机构客户"),
+            company_name=self.resolved_variables.get("company_name", ""),
+            report_depth=self.report_depth,
         )
 
         # 确保输出目录
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info("Runner prepared: %d sections, title='%s'", len(self.sections), self.report_title)
+        # Wiki 通道可用性检测：项目存在已完成 Wiki 页面则报告检索自动纳入 wiki 通道
+        self.wiki_available = self._detect_wiki_available()
+
+        logger.info("Runner prepared: %d sections, depth=%s, wiki=%s, title='%s'",
+                    len(self.sections), self.report_depth, self.wiki_available, self.report_title)
+
+    def _detect_wiki_available(self) -> bool:
+        """检测项目是否有已完成（compiled / user_edited）的 Wiki 页面。
+
+        有则报告检索自动纳入 wiki 通道（无用户开关，§2.6 §8.2）；无 db、
+        查询失败或无已完成页面时返回 False，优雅降级为仅知识库 / 互联网检索。
+        """
+        if self.db is None:
+            return False
+        try:
+            pages = self.db.list_wiki_pages(self.project_id)
+        except Exception as e:
+            logger.warning("Wiki availability check failed for project=%s: %s",
+                           self.project_id, e)
+            return False
+        return any(p.get("status") in ("compiled", "user_edited") for p in pages)
 
     def _load_checkpoint(self):
         """从 checkpoint 恢复状态（如果存在）。"""
@@ -375,6 +423,8 @@ class ReportRunner:
             self.outputs = data.get("outputs", {})
             self.digests = data.get("digests", {})
             self.order = data.get("order", [])
+            self.resolved_variables = data.get("resolved_variables", {})
+            self.resolution_evidence = data.get("resolution_evidence", {})
             if "registry" in data:
                 self.registry = CitationRegistry.from_dict(data["registry"])
             if "token_tracker" in data:
@@ -393,8 +443,29 @@ class ReportRunner:
             "order": self.order,
             "registry": self.registry.to_dict(),
             "token_tracker": self.token_tracker.to_dict(),
+            "resolved_variables": self.resolved_variables,
+            "resolution_evidence": self.resolution_evidence,
         }
         ckpt_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _write_final_artifacts(self) -> Path:
+        """组装全文 → 全局收尾 → 写 content.md + registry.json + token_usage.json。
+
+        run() 收尾时调用，确保全文组装 → 全局收尾 → 落盘产物一致。
+
+        Returns:
+            content.md 路径
+        """
+        full_text = self._assemble_full_text()
+        final_text = finalize_report(full_text, self.registry, self.template)
+
+        content_path = self.output_dir / "content.md"
+        content_path.parent.mkdir(parents=True, exist_ok=True)
+        content_path.write_text(final_text, encoding="utf-8")
+
+        self.registry.save(self.output_dir / "registry.json")
+        self.token_tracker.save(self.output_dir / "token_usage.json")
+        return content_path
 
     async def _generate_with_retry(
         self,
@@ -403,7 +474,7 @@ class ReportRunner:
         given_refs: set[int],
     ) -> str:
         """生成单节内容，智能重试 + 精准 token 追踪。"""
-        sid = section.get("id", "unknown")
+        sid = section.get("section_id", "unknown")
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_prompt},
@@ -417,7 +488,7 @@ class ReportRunner:
                 self.token_tracker.record(sid, "generation", usage)
 
                 # 校验
-                violations = validate_section(output, given_refs, section)
+                violations = validate_section(output, given_refs, section, report_depth=self.report_depth)
                 if not violations:
                     return output
 
@@ -473,8 +544,10 @@ class ReportRunner:
 
         return ""  # unreachable
 
-    async def _summarize(self, text: str, max_words: int = 200) -> str:
-        """为生成的文本生成 200 字摘要。"""
+    async def _summarize(self, text: str, max_words: Optional[int] = None) -> str:
+        """为生成的文本生成摘要（长度按 report_depth：full 200 / brief 100 字，§3.9）。"""
+        if max_words is None:
+            max_words = 200 if self.report_depth == "full" else 100
         try:
             messages = build_digest_prompt(text, max_words)
             result = await self.llm_client.chat_full(messages, self.llm_settings)

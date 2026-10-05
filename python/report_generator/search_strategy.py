@@ -5,7 +5,7 @@
   - 使用 LLM 理解信息需求，输出针对性不同的搜索查询
   - 降级：LLM 调用失败时回退到标题作为关键词
 
-设计参考：docs/2.1project-design.md §6.7.3
+设计参考：docs/2.5report-design.md §3.3
 """
 import json
 import logging

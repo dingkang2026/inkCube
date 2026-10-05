@@ -1,8 +1,11 @@
 """python/knowledge/hybrid_retriever.py"""
+import logging
 from typing import Optional
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
 from db.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 class HybridRetriever:
@@ -84,14 +87,24 @@ class HybridRetriever:
             where=where if where else None
         )
         
-        # Step 2: Full-text search
-        fts_results = self.fts_store.search(
-            project_id=project_id,
-            query=query_text,
-            top_k=top_k * 2,
-            content_type_filter=content_type_filter,
-            file_id=file_id
-        )
+        # Step 2: Full-text search — degrade to dense-only on FTS failure.
+        # The two legs are independent; a broken FTS leg (bad query, index
+        # issues) must not 500 the whole retrieval — the dense leg remains
+        # the primary semantic signal.
+        try:
+            fts_results = self.fts_store.search(
+                project_id=project_id,
+                query=query_text,
+                top_k=top_k * 2,
+                content_type_filter=content_type_filter,
+                file_id=file_id
+            )
+        except Exception as e:
+            logger.warning(
+                "FTS leg failed, falling back to dense-only (query=%r): %s",
+                query_text, e,
+            )
+            fts_results = []
         
         # Step 3: RRF fusion
         fused = self._rrf_fusion(

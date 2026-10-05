@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import styles from './SkillManagement.module.css'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 interface Skill {
   id: string
@@ -23,6 +24,7 @@ interface BuiltinTool {
 
 export function SkillManagement() {
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const [skills, setSkills] = useState<Skill[]>([])
   const [builtinTools, setBuiltinTools] = useState<BuiltinTool[]>([])
   const [loading, setLoading] = useState(true)
@@ -85,7 +87,7 @@ export function SkillManagement() {
   }
 
   const handleDelete = async (skillId: string) => {
-    if (!confirm(t('skills.confirmDelete'))) return
+    if (!(await confirmDialog({ title: t('skills.delete'), message: t('skills.confirmDelete') }))) return
     try {
       await window.electronAPI.invoke('skills:delete', skillId)
       await loadSkills()

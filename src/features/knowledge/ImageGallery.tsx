@@ -7,7 +7,10 @@ import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'
 import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
+import { useActivity } from '../activity/ActivityContext'
+import { usePolling } from '../../hooks/usePolling'
 import s from './ImageGallery.module.css'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 interface ImageGalleryProps {
   projectId: string
@@ -30,6 +33,7 @@ function localFileUrl(filePath: string): string {
 export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryProps) {
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const showToast = useToast()
   const handleError = useErrorHandler()
   const [images, setImages] = useState<ImageItem[]>([])
@@ -44,7 +48,6 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
   const categoryMenuRef = useRef<HTMLDivElement>(null)
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [lightboxIndex, setLightboxIndex] = useState(-1)
   const [lightboxZoom, setLightboxZoom] = useState(1)
@@ -75,26 +78,22 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     }
   }
 
-  // Silent refresh for polling (no loading spinner)
+  // Silent refresh for polling (no loading spinner)；抛错由 usePolling 计入退避（0.4 §5.8）
   const refreshImages = useCallback(async (projId: string) => {
-    try {
-      const result: any = await window.electronAPI.invoke(ipc.getProjectImages, {
-        projectId: projId,
-        limit: LIMIT,
-        offset: 0,
-        fileId: fileId || undefined,
-        status: statusFilter || undefined,
-        category: categoryFilter !== 'all' ? categoryFilter : undefined,
-        search: searchQuery.trim() || undefined,
-        size: sizeFilter !== 'all' ? sizeFilter : undefined,
-      })
-      setImages(result.images || [])
-      setTotal(result.total || 0)
-      if (result.status_counts) setStatusCounts(result.status_counts)
-      if (result.category_counts) setCategoryCounts(result.category_counts)
-    } catch (err) {
-      console.error('Failed to refresh images:', err)
-    }
+    const result: any = await window.electronAPI.invoke(ipc.getProjectImages, {
+      projectId: projId,
+      limit: LIMIT,
+      offset: 0,
+      fileId: fileId || undefined,
+      status: statusFilter || undefined,
+      category: categoryFilter !== 'all' ? categoryFilter : undefined,
+      search: searchQuery.trim() || undefined,
+      size: sizeFilter !== 'all' ? sizeFilter : undefined,
+    })
+    setImages(result.images || [])
+    setTotal(result.total || 0)
+    if (result.status_counts) setStatusCounts(result.status_counts)
+    if (result.category_counts) setCategoryCounts(result.category_counts)
   }, [fileId, statusFilter, categoryFilter, sizeFilter, searchQuery, ipc])
 
   useEffect(() => {
@@ -117,31 +116,18 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     }
   }, [statusFilter, categoryFilter, sizeFilter, searchQuery])
 
-  // Polling: refresh every 4s when there are active (pending/processing) images
-  const hasActiveImages = images.some(img => img.status === 'pending' || img.status === 'processing')
-
-  useEffect(() => {
-    if (!projectId || !hasActiveImages) {
-      // Stop polling if no active images
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current)
-        pollTimerRef.current = null
-      }
-      return
-    }
-    // Start polling if not already running
-    if (!pollTimerRef.current) {
-      pollTimerRef.current = setInterval(() => {
-        refreshImages(projectId)
-      }, 4000)
-    }
-    return () => {
-      if (pollTimerRef.current) {
-        clearInterval(pollTimerRef.current)
-        pollTimerRef.current = null
-      }
-    }
-  }, [projectId, hasActiveImages, refreshImages])
+  // Polling: refresh every 4s while images are being described（#6，v1.7 迁移 usePolling；谓词从全局心跳
+  // file kind 的 image_describing 派生，0.4 §6.2——本地 images 受过滤/分页影响 pending 项可能不在列表，漏判熄火）
+  const { items: activeFileItems } = useActivity('file')
+  const hasActiveImages = activeFileItems.some(a =>
+    a.project_id === projectId && (a.image_describing ?? 0) > 0
+  )
+  usePolling({
+    name: 'image-gallery',
+    enabled: hasActiveImages,
+    interval: 4000,
+    task: () => refreshImages(projectId),
+  })
 
   const handlePageChange = (page: number) => {
     if (projectId && page >= 1 && page <= totalPages && page !== currentPage) {
@@ -245,7 +231,7 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
   }, [projectId])
 
   const handleArchive = useCallback(async (img: ImageItem) => {
-    if (!confirm(t('knowledge.confirmArchive'))) return
+    if (!(await confirmDialog({ title: t('knowledge.archiveImage'), message: t('knowledge.confirmArchive'), danger: false }))) return
     try {
       await window.electronAPI.invoke(ipc.archiveImage, {
         projectId,
@@ -257,7 +243,7 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     } catch (err) {
       console.error('Archive failed:', err)
     }
-  }, [projectId, t])
+  }, [projectId, t, confirmDialog])
 
   if (loading && images.length === 0) {
     return (

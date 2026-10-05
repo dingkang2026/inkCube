@@ -1,11 +1,14 @@
 /** src/features/project/ProjectDetailPage.tsx — Main project detail page with 4-tab structure */
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FolderOpen, BookOpen, FileText, ClipboardList } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import { useToast } from '../knowledge/Toast'
+import { useActivity } from '../activity/ActivityContext'
 import { ReportsTab } from './tabs/ReportsTab'
 import { WikiTab } from './tabs/WikiTab'
+import type { WikiCompileData } from './tabs/WikiTab'
+import { usePolling } from '../../hooks/usePolling'
 import { FormsTab } from './tabs/FormsTab'
 import { ProjectChatPanel } from './ProjectChatPanel'
 import type { Project } from '../knowledge/types'
@@ -15,6 +18,8 @@ import s from './ProjectDetailPage.module.css'
 
 interface ProjectDetailPageProps {
   project: Project
+  /** 通知导航信号（App 层 Activity Hub tab 导航）：收到后切换到目标 Tab */
+  tabSignal?: { tab: string; ts: number } | null
   onOpenSettings?: () => void
   onProjectDataChanged?: () => void
 }
@@ -28,9 +33,10 @@ const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
   { key: 'forms', labelKey: 'project.tab.forms', Icon: ClipboardList },
 ]
 
-export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChanged }: ProjectDetailPageProps) {
+export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjectDataChanged }: ProjectDetailPageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
+  const { byProject } = useActivity()
   const [activeTab, setActiveTab] = useState<TabKey>('materials')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
@@ -47,53 +53,48 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
     }
   }, [wikiExpanded])
 
-  // Wiki compile status polling (adaptive frequency based on state)
-  const [wikiCompileState, setWikiCompileState] = useState<'idle' | 'compiling' | 'waiting_review'>('idle')
-  const wikiCompilePollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Wiki compile status polling #4（v1.7 迁移至 usePolling，0.4 §8.1）：
+  // 保存完整快照（task + ingest_summaries + is_resumed）下发 WikiTab；Tab 角标从快照派生
+  const [wikiCompileData, setWikiCompileData] = useState<WikiCompileData | null>(null)
+  const [compileDialogOpen, setCompileDialogOpen] = useState(false)
 
+  // Activity Hub 通知导航信号：切到目标 Tab（materials/wiki/reports）
   useEffect(() => {
-    let cancelled = false
-
-    const checkStatus = async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('wiki:compileStatus', { projectId: project.id })
-        if (cancelled) return
-        const task = result?.task
-        if (task?.status === 'waiting_review') {
-          setWikiCompileState('waiting_review')
-        } else if (task && ['queued', 'ingesting', 'storing'].includes(task.status)) {
-          setWikiCompileState('compiling')
-        } else {
-          setWikiCompileState('idle')
-        }
-      } catch (err) {
-        console.debug('Wiki compile status check failed (backend may not be ready):', err)
-      }
+    if (tabSignal?.tab && ['materials', 'wiki', 'reports', 'forms'].includes(tabSignal.tab)) {
+      setActiveTab(tabSignal.tab as TabKey)
     }
+  }, [tabSignal])
 
-    // Adaptive polling: compiling=5s, waiting_review=10s, idle=30s
-    const getInterval = () => {
-      if (wikiCompileState === 'compiling') return 5000
-      if (wikiCompileState === 'waiting_review') return 10000
+  const checkWikiCompileStatus = useCallback(async () => {
+    // 抛错由 usePolling 计入连续失败并指数退避（0.4 §5.8）
+    const result: any = await window.electronAPI.invoke('wiki:compileStatus', { projectId: project.id })
+    setWikiCompileData({
+      task: result?.task ?? null,
+      ingest_summaries: result?.ingest_summaries ?? [],
+      is_resumed: !!result?.is_resumed,
+    })
+  }, [project.id])
+
+  usePolling({
+    name: 'wiki-compile-status',
+    task: checkWikiCompileStatus,
+    // Adaptive: dialog open=2s, compiling=5s, waiting_review=10s, idle=30s
+    interval: () => {
+      if (compileDialogOpen) return 2000
+      const status = wikiCompileData?.task?.status
+      if (status && ['queued', 'ingesting', 'storing'].includes(status)) return 5000
+      if (status === 'waiting_review') return 10000
       return 30000
-    }
+    },
+  })
 
-    // Initial check
-    checkStatus()
-
-    const scheduleNext = () => {
-      wikiCompilePollRef.current = setTimeout(async () => {
-        await checkStatus()
-        if (!cancelled) scheduleNext()
-      }, getInterval())
-    }
-    scheduleNext()
-
-    return () => {
-      cancelled = true
-      if (wikiCompilePollRef.current) clearTimeout(wikiCompilePollRef.current)
-    }
-  }, [project.id, wikiCompileState])
+  // Tab 角标派生态（v1.7 起从编译快照派生，不再单独轮询维护）
+  const wikiCompileState: 'idle' | 'compiling' | 'waiting_review' =
+    wikiCompileData?.task?.status === 'waiting_review'
+      ? 'waiting_review'
+      : wikiCompileData?.task && ['queued', 'ingesting', 'storing'].includes(wikiCompileData.task.status)
+        ? 'compiling'
+        : 'idle'
 
   // Read type/stage from project (persisted in backend)
   const [projectType, setProjectType] = useState<ProjectType>(project.type || 'general')
@@ -230,7 +231,19 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
               </span>
             )}
             {key === 'wiki' && wikiCompileState === 'compiling' && (
-              <span className={s.wikiBadgeCompiling} />
+              <span className={s.tabPulse} />
+            )}
+            {key === 'materials' && (byProject.get(project.id)?.files ?? 0) > 0 && (
+              <span
+                className={s.tabPulse}
+                title={t('activity.tipFiles', { count: byProject.get(project.id)?.files })}
+              />
+            )}
+            {key === 'reports' && (byProject.get(project.id)?.reports ?? 0) > 0 && (
+              <span
+                className={s.tabPulse}
+                title={t('activity.tipReports', { count: byProject.get(project.id)?.reports })}
+              />
             )}
           </button>
         ))}
@@ -257,6 +270,8 @@ export function ProjectDetailPage({ project, onOpenSettings, onProjectDataChange
               onExpandChange={setWikiExpanded}
               onPreviewOpenChange={handlePreviewOpenChange}
               closePreviewSignal={closePreviewSignal}
+              compileData={wikiCompileData}
+              onCompileDialogChange={setCompileDialogOpen}
             />
           )}
           {activeTab === 'reports' && (

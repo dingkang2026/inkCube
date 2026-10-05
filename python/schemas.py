@@ -8,6 +8,10 @@ class SettingsModel(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 8192
     top_p: float = 0.9
+    # Reasoning/thinking params (vendor-specific; effort is the de-facto OpenAI-compatible
+    # standard, override accepts a free-form JSON object for non-standard endpoints)
+    reasoning_effort: str = "low"  # low/medium/high/max/xhigh/minimal... empty = omit (model default)
+    reasoning_override: str = ""  # JSON object merged into request body top-level, highest priority
     system_prompt: str = ""
     tavily_key: str = ""
     vlm_api_url: str = "https://open.bigmodel.cn/api/paas/v4/"

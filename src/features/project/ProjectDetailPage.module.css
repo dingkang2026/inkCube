@@ -224,7 +224,8 @@
   animation: pulse-badge 2s ease-in-out infinite;
 }
 
-.wikiBadgeCompiling {
+/* Tab 角标呼吸点（Activity Hub L3，0.4 §3.5）：wiki 编译中 / 素材解析中 / 报告生成中 */
+.tabPulse {
   width: 7px;
   height: 7px;
   border-radius: 50%;

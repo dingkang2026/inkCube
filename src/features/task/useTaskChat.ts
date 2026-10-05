@@ -388,6 +388,24 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
             created_at: new Date().toISOString(),
           }
           setMessages((prev) => [...prev, limitMsg])
+        } else if (errMsg.includes('TASK_RUNNING') || errMsg.includes('执行中')) {
+          const runningMsg: TaskMessage = {
+            id: crypto.randomUUID(),
+            task_id: activeTaskId,
+            role: 'assistant',
+            content: '该任务正在执行中，请等待完成或先停止。',
+            created_at: new Date().toISOString(),
+          }
+          setMessages((prev) => [...prev, runningMsg])
+        } else {
+          const errorMsg: TaskMessage = {
+            id: crypto.randomUUID(),
+            task_id: activeTaskId,
+            role: 'assistant',
+            content: `任务启动失败：${errMsg}`,
+            created_at: new Date().toISOString(),
+          }
+          setMessages((prev) => [...prev, errorMsg])
         }
       }
     },

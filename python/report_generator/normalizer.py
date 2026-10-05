@@ -1,16 +1,16 @@
 """python/report_generator/normalizer.py — 模板归一化层。
 
 职责：
-  1. 模板变量实例化（{{variable}} → 实际值）
+  1. 模板变量实例化（{{variable}} → 实际值；list 顿号连接注入）
   2. 多级大纲归一化（任意层级折叠为两级执行大纲：章 → 节）
   3. 执行大纲入口校验
 
-设计参考：docs/2.1project-design.md §6.7.2 / §6.7.11
+设计参考：docs/2.5report-design.md §3.1.1 / §3.2
 """
 import json
 import logging
+import re
 from copy import deepcopy
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,25 +18,33 @@ logger = logging.getLogger(__name__)
 # ── 变量实例化 ─────────────────────────────────────────────
 
 
-def instantiate(template: dict, variables: dict[str, str]) -> dict:
-    """将模板中的 {{variable}} 占位符替换为实际值。
+def instantiate(template: dict, variables: dict) -> dict:
+    """将模板中的 {{variable}} 占位符替换为实际值（§3.9 管线第 2 步）。
+
+    variables 为 resolve_variables 产出的 resolved_variables（含隐式项目变量、
+    user 输入、derived 解析值）；UNRESOLVED 值以 None 表示，替换为空串；
+    list 值以顿号连接为字符串注入（如竞对名单「A、B、C」）。
+
+    大纲节点数量恒定，不因 list 长度增删节（不做 foreach 展开）；1/2 级结构
+    由模板静态定义，三级及更深由 normalize_outline 折叠为写作要求。
 
     Args:
         template: 完整模板 dict（含 outline）
-        variables: 用户填写的变量值，如 {"公司名": "XX科技"}
+        variables: 已解析变量值 {name: scalar | list | None}
 
     Returns:
         替换后的模板 dict（深拷贝，不修改原对象）
 
     Raises:
-        ValueError: 模板引用了 variables 中未声明的变量
+        ValueError: 模板引用了未声明的变量
     """
     result = deepcopy(template)
-    declared = set(result.get("variables", []))
 
-    # 校验：变量引用必须在 variables 中声明
+    # declared 集合 = resolved 变量名（隐式 + user + derived）
+    declared = set(variables.keys())
+
+    # 校验：变量引用必须已声明
     text = json.dumps(result, ensure_ascii=False)
-    import re
     referenced = set(re.findall(r"\{\{(\w+)\}\}", text))
     undeclared = referenced - declared
     if undeclared:
@@ -45,10 +53,21 @@ def instantiate(template: dict, variables: dict[str, str]) -> dict:
             f"请在模板 variables 中声明，或在用户输入中提供。"
         )
 
-    # 执行替换
+    # 执行替换（list → 顿号连接为字符串；dict 跳过；None → 空串，避免正文残留 {{}}）
     for key, value in variables.items():
+        if isinstance(value, dict):
+            continue
         placeholder = "{{" + key + "}}"
-        text = text.replace(placeholder, value)
+        if placeholder not in text:
+            continue
+        if isinstance(value, list):
+            # list 型派生变量（如竞对名单）以顿号连接注入正文/提示词
+            replacement = "、".join(str(x) for x in value if x is not None and str(x) != "")
+        else:
+            replacement = "" if value is None else str(value)
+        # 转义为 JSON 字符串上下文安全值，防止引号/换行破坏 round-trip
+        safe = json.dumps(replacement, ensure_ascii=False)[1:-1]
+        text = text.replace(placeholder, safe)
 
     return json.loads(text)
 
@@ -57,15 +76,11 @@ def instantiate(template: dict, variables: dict[str, str]) -> dict:
 
 
 def normalize_outline(outline: list[dict]) -> list[dict]:
-    """将多级大纲折叠为两级执行大纲（章 → 节）。
+    """将多级大纲折叠为两级执行大纲（章 → 节，§3.2）。
 
     折叠规则（整枝合并，不拆散）：
       - 深层节点标题 → "须覆盖：标题——子孙标题"
-      - notes → 括号附加
-      - query_hints → 上浮合并去重
-      - word_count → 累加
-      - must_cite → 上浮 OR 合并
-      - promote_subhead: true → 附加"并以内部小标题形式呈现"
+      - 深层节点 prompt_hint → 括号附加
       - 折叠后 requirements > 12 条 → 告警日志
 
     Args:
@@ -86,9 +101,12 @@ def normalize_outline(outline: list[dict]) -> list[dict]:
 
 
 def _flatten_section(sec: dict) -> None:
-    """就地折叠一个节的 children（三级及更深 → 二级）。"""
+    """就地折叠一个节的 children（三级及更深 → 二级，§3.2）。
+
+    v2 节点已无 word_count/must_cite/notes/query_hints/data_sources/promote_subhead
+    （schema additionalProperties:false），仅折叠 children 标题链 + prompt_hint。
+    """
     reqs = sec.setdefault("writing_requirements", [])
-    hints = sec.setdefault("query_hints", [])
     sub_children = sec.pop("children", [])
 
     for sub in sub_children:
@@ -96,31 +114,6 @@ def _flatten_section(sec: dict) -> None:
         r = _fold_node(sub)
         if r and r not in reqs:
             reqs.append(r)
-
-        # query_hints 上浮去重
-        for h in sub.get("query_hints", []):
-            if h not in hints:
-                hints.append(h)
-
-        # word_count 累加
-        sec["word_count"] = sec.get("word_count", 1200) + sub.get("word_count", 0)
-
-        # must_cite 上浮 OR
-        if sub.get("must_cite"):
-            sec["must_cite"] = True
-
-        # data_sources 上浮合并去重
-        sub_sources = sub.get("data_sources", [])
-        if sub_sources:
-            sec_sources = sec.setdefault("data_sources", [])
-            for ds in sub_sources:
-                if ds not in sec_sources:
-                    sec_sources.append(ds)
-
-        # notes 上浮
-        for n in sub.get("notes", []):
-            if n not in reqs:
-                reqs.append(n)
 
     # 如果没有任何 writing_requirements，添加默认
     if not reqs and sec.get("title"):
@@ -131,22 +124,20 @@ def _flatten_section(sec: dict) -> None:
         logger.warning(
             "Section '%s' has %d writing requirements (>12), "
             "consider simplifying the outline.",
-            sec.get("id", "?"), len(reqs),
+            sec.get("section_id", "?"), len(reqs),
         )
 
 
 def _fold_node(node: dict) -> str:
-    """递归折叠一个子树为一条写作要求字符串。"""
+    """递归折叠一个子树为一条写作要求字符串（§3.2）。"""
     chain = [node.get("title", "")]
     chain.extend(_collect_titles(node.get("children", [])))
     r = f"须覆盖：{'——'.join(chain)}"
 
-    notes = node.get("notes", [])
-    if notes:
-        r += f"（{'；'.join(notes)}）"
-
-    if node.get("promote_subhead"):
-        r += "，并以内部小标题形式呈现"
+    # v2 用 prompt_hint 作为附加说明（替代 v1 的 notes / promote_subhead）
+    prompt_hint = node.get("prompt_hint", "")
+    if prompt_hint:
+        r += f"（{prompt_hint}）"
 
     return r
 
@@ -173,9 +164,9 @@ def validate_execution_outline(outline: list[dict]) -> list[str]:
     seen_ids: set[str] = set()
 
     for chapter in outline:
-        ch_id = chapter.get("id", "")
+        ch_id = chapter.get("section_id", "")
         if not ch_id:
-            errors.append("Chapter missing 'id'")
+            errors.append("Chapter missing 'section_id'")
 
         children = chapter.get("children", [])
         if not children:
@@ -190,9 +181,9 @@ def validate_execution_outline(outline: list[dict]) -> list[str]:
 
 def _validate_section_fields(sec: dict, seen_ids: set[str], errors: list[str]):
     """校验单个节的必填字段。"""
-    sid = sec.get("id", "")
+    sid = sec.get("section_id", "")
     if not sid:
-        errors.append("Section missing 'id'")
+        errors.append("Section missing 'section_id'")
     elif sid in seen_ids:
         errors.append(f"Duplicate section id: {sid}")
     else:

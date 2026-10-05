@@ -5,6 +5,9 @@ export interface LLMSettings {
   temperature: number
   max_tokens: number
   top_p: number
+  // Reasoning/thinking params (vendor-specific; see ExternalModelSettings)
+  reasoning_effort: string  // '' = omit (model default); low/medium/high/max/xhigh/minimal...
+  reasoning_override: string  // advanced: JSON object merged into request body top-level
   system_prompt: string
   tavily_key: string
   vlm_api_url: string

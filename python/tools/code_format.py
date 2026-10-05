@@ -1,6 +1,7 @@
 """code_format tool — Python code formatting using ruff format."""
 import json
 import os
+import asyncio
 import subprocess
 from pathlib import Path
 
@@ -89,7 +90,9 @@ class CodeFormatTool(BaseTool):
         cmd.append(str(target_path))
 
         try:
-            result = subprocess.run(
+            # Worker thread — keep the event loop responsive (H1)
+            result = await asyncio.to_thread(
+                subprocess.run,
                 cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(workspace),
             )
 

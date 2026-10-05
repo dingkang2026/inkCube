@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { usePolling } from '../../hooks/usePolling'
 import styles from './TaskLogViewer.module.css'
 
 interface TaskLogViewerProps {
@@ -31,6 +32,8 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
       }
     } catch (err) {
       console.error('Failed to fetch logs:', err)
+      // rethrow：轮询侧由 usePolling 计入退避（0.4 §5.8）；手动侧 onClick 内 catch
+      throw err
     } finally {
       setLoading(false)
     }
@@ -42,12 +45,13 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
     }
   }, [visible, taskId, fetchLogs])
 
-  // Auto-refresh polling
-  useEffect(() => {
-    if (!autoRefresh || !visible || !taskId) return
-    const interval = setInterval(fetchLogs, 3000)
-    return () => clearInterval(interval)
-  }, [autoRefresh, visible, taskId, fetchLogs])
+  // Auto-refresh polling（#10，v1.7 迁移 usePolling，0.4 §8.1）
+  usePolling({
+    name: 'task-log-viewer',
+    enabled: autoRefresh && visible && !!taskId,
+    interval: 3000,
+    task: fetchLogs,
+  })
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -75,7 +79,7 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
               />
               {t('task.execLogAutoRefresh', '自动刷新')}
             </label>
-            <button className={styles.refreshBtn} onClick={fetchLogs} disabled={loading}>
+            <button className={styles.refreshBtn} onClick={() => void fetchLogs().catch(() => {})} disabled={loading}>
               {loading ? '⏳' : '🔄'}
             </button>
             <button className={styles.closeBtn} onClick={onClose}>✕</button>

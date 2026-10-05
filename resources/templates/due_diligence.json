@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "template_id": "due_diligence",
   "template_name": "尽职调查报告",
   "version": "1.0",
@@ -14,6 +15,26 @@
     "风险点须分级（高/中/低），并给出应对建议",
     "数据截止日须统一标注"
   ],
+  "variables": [
+    {
+      "name": "产业领域",
+      "source": "derived",
+      "label": "产业领域",
+      "depends_on": ["company_name"],
+      "data_sources": ["knowledge", "internet"],
+      "derive_hint": "根据公司主营业务与检索材料判定所属产业领域，输出一个名词短语",
+      "cardinality": "scalar"
+    },
+    {
+      "name": "竞争对手",
+      "source": "derived",
+      "label": "主要竞争对手",
+      "depends_on": ["产业领域"],
+      "data_sources": ["knowledge", "internet"],
+      "derive_hint": "列出该产业领域 3-6 家主要竞争对手公司名称",
+      "cardinality": "list"
+    }
+  ],
   "outline": [
     {
       "section_id": "ch1",
@@ -22,12 +43,12 @@
         {
           "section_id": "ch1.1",
           "title": "基本信息",
-          "description": "{{公司名}} 的注册信息、股权结构、实际控制人"
+          "description": "{{company_name}} 的注册信息、股权结构、实际控制人"
         },
         {
           "section_id": "ch1.2",
           "title": "发展历程与里程碑",
-          "description": "{{公司名}} 的创立、关键发展节点和战略转型"
+          "description": "{{company_name}} 的创立、关键发展节点和战略转型"
         },
         {
           "section_id": "ch1.3",
@@ -43,7 +64,7 @@
         {
           "section_id": "ch2.1",
           "title": "产品与服务",
-          "description": "{{公司名}} 的核心产品/服务、技术壁垒和差异化优势"
+          "description": "{{company_name}} 的核心产品/服务、技术壁垒和差异化优势"
         },
         {
           "section_id": "ch2.2",
@@ -53,7 +74,8 @@
         {
           "section_id": "ch2.3",
           "title": "竞争对比",
-          "description": "与 2-3 家可比公司在产品、规模、估值等维度的对比"
+          "description": "{{company_name}} 在 {{产业领域}} 与主要竞争对手（{{竞争对手}}）在产品、规模、估值等维度的对比",
+          "prompt_hint": "逐一分析 {{竞争对手}} 与 {{company_name}} 在 {{产业领域}} 的竞争关系、市场地位与差异化打法；竞对名单为空时按材料不足处理"
         }
       ]
     },
@@ -132,7 +154,7 @@
     {
       "section_id": "ch5",
       "title": "风险评估",
-      "description": "{{公司名}} 面临的系统性风险和特异性风险，按高/中/低分级"
+      "description": "{{company_name}} 面临的系统性风险和特异性风险，按高/中/低分级"
     },
     {
       "section_id": "exec_summary",

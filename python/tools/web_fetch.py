@@ -1,11 +1,62 @@
+import ipaddress
 import json
 import logging
+import socket
+from urllib.parse import urlparse
 
 import httpx
 
 from tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
+
+_MAX_REDIRECTS = 3
+
+
+def _is_private_host(hostname: str) -> bool:
+    """Return True if the host resolves to a private/loopback/reserved IP.
+
+    Unresolvable hostnames are also treated as private (rejected) — safest
+    default for an LLM-controlled fetch tool.
+    """
+    try:
+        addrinfos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return True
+    for info in addrinfos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_unspecified):
+            return True
+    return False
+
+
+def _validate_url(url: str) -> str | None:
+    """Return an error message if the URL is not a safe public http(s) URL, else None.
+
+    SSRF guard (H3): the URL comes from the LLM, which can be steered by
+    prompt injection embedded in fetched pages. Blocking non-http(s)
+    schemes and private/loopback hosts stops exfiltration of the app's own
+    localhost API (e.g. GET /settings returns plaintext API keys).
+
+    Note: DNS is resolved again by httpx at connect time, so a rebinding
+    attack has a small TOCTOU window — acceptable for a local desktop tool.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "无效的 URL"
+    if parsed.scheme not in ("http", "https"):
+        return "仅支持 http/https 协议"
+    host = parsed.hostname
+    if not host:
+        return "URL 缺少主机名"
+    if host.lower() == "localhost" or _is_private_host(host):
+        return "禁止访问内网/本机地址（SSRF 防护）"
+    return None
 
 
 class WebFetchTool(BaseTool):
@@ -47,15 +98,45 @@ class WebFetchTool(BaseTool):
 
     async def execute(self, url: str, max_length: int = 10000) -> str:
         logger.info("web_fetch: url=%s, max_length=%d", url[:100], max_length)
+
+        # SSRF guard: scheme + private-IP check before any request (H3)
+        err = _validate_url(url)
+        if err:
+            logger.warning("web_fetch blocked: url=%s, reason=%s", url[:100], err)
+            return json.dumps({"error": err}, ensure_ascii=False)
+
         try:
+            # Manual redirect handling: every hop is re-validated so a public
+            # URL can't redirect into localhost/private networks.
             async with httpx.AsyncClient(
-                follow_redirects=True,
+                follow_redirects=False,
                 timeout=15.0,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; InkCube/1.0)",
                 },
             ) as client:
-                resp = await client.get(url)
+                current_url = url
+                for _ in range(_MAX_REDIRECTS + 1):
+                    resp = await client.get(current_url)
+                    if not resp.is_redirect:
+                        break
+                    location = resp.headers.get("location")
+                    if not location:
+                        break
+                    current_url = str(httpx.URL(current_url).join(location))
+                    err = _validate_url(current_url)
+                    if err:
+                        logger.warning(
+                            "web_fetch redirect blocked: %s -> %s",
+                            url[:100], current_url[:100],
+                        )
+                        return json.dumps(
+                            {"error": f"重定向被拦截: {err}"}, ensure_ascii=False,
+                        )
+                else:
+                    return json.dumps(
+                        {"error": f"重定向次数过多（>{_MAX_REDIRECTS}）"}, ensure_ascii=False,
+                    )
                 resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")

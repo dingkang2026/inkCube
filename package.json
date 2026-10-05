@@ -11,7 +11,9 @@
     "pack": "npm run build && electron-builder",
     "python:dev": "cd python && uvicorn main:app --reload --host 127.0.0.1 --port 8765",
     "python:debug": "cd python && python -m debugpy --listen 5678 --wait-for-client -m uvicorn main:app --host 127.0.0.1 --port 8765",
-    "dev:debug": "concurrently -k \"npm:python:debug\" \"npm:dev:vite\" \"npm:dev:electron\""
+    "dev:debug": "concurrently -k \"npm:python:debug\" \"npm:dev:vite\" \"npm:dev:electron\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@react-sigma/core": "^5.0.6",
@@ -33,9 +35,14 @@
     "sigma": "^3.0.3"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.4",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",

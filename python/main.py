@@ -71,7 +71,7 @@ from db.database import Database
 from agent.task_agent import TaskAgent
 from knowledge.model_manager import ModelManager
 from watchdog import start_watchdog
-from routers import settings, models, knowledge, health, system, tasks, skills, reports, wiki
+from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki
 
 
 @asynccontextmanager
@@ -87,8 +87,23 @@ async def lifespan(app: FastAPI):
     # Seed Wiki schemas on startup (idempotent)
     from db.wiki_seed import get_all_wiki_schemas
     deps.db.seed_wiki_schemas(get_all_wiki_schemas())
+
+    # Load report templates once at cold start (single entry point):
+    # preset files are the source of truth (unconditional reload overwrites DB cache);
+    # custom templates are migrated/reconciled in place (auto-upgrade + flag problems).
+    from report_generator.loader import TemplateLoader
+    deps.template_loader = TemplateLoader(db=deps.db, data_dir=data_dir)
+    _preset = deps.template_loader.load_preset_templates()
+    _custom = deps.template_loader.load_custom_templates()
+    logging.getLogger(__name__).info(
+        "Templates loaded at startup: %d preset, %d custom (%d flagged for upgrade)",
+        len(_preset), len(_custom), len(deps.template_loader.list_custom_problems()),
+    )
+
     deps.task_agent = TaskAgent(deps.db)
     deps.model_manager = ModelManager()
+    # 下载状态持久化 + 终态通知（0.4 §3.3）
+    deps.model_manager.set_db(deps.db)
 
     # Configure task agent's knowledge search tool
     deps.task_agent.knowledge_search.configure(
@@ -134,6 +149,14 @@ async def lifespan(app: FastAPI):
 
     start_watchdog()
 
+    # ── Activity Hub: 启动清理旧通知（0.4 §3.2，保留最近 100 条） ──
+    try:
+        _cleaned = deps.db.cleanup_old_notifications(keep=100)
+        if _cleaned:
+            logging.getLogger(__name__).info("Cleaned %d old notifications", _cleaned)
+    except Exception as e:
+        logging.getLogger(__name__).warning("Notification cleanup failed: %s", e)
+
     # ── Detect interrupted tasks (crash recovery) ──
     _interrupted = deps.db.list_tasks_with_saved_state()
     if _interrupted:
@@ -149,6 +172,48 @@ async def lifespan(app: FastAPI):
                         "\u26a0\ufe0f \u6b64\u4efb\u52a1\u5728\u4e0a\u6b21\u7a0b\u5e8f\u5173\u95ed\u65f6\u88ab\u4e2d\u65ad\u3002"
                         "\u70b9\u51fb\u300c\u6062\u590d\u300d\u53ef\u4ece\u4e0a\u6b21\u4e2d\u65ad\u5904\u7ee7\u7eed\uff0c"
                         "\u6216\u53d1\u9001\u65b0\u6d88\u606f\u91cd\u65b0\u5f00\u59cb\u3002")
+
+    # ── Detect interrupted reports (crash recovery, §3.8.3) ──
+    # 扫描卡在 generating 且超时（>5min）未更新的报告 → 标记 error（保留 checkpoint），
+    # 用户在详情页点「重新生成」从 checkpoint 续跑；启动时不自动拉起后台续跑。
+    _stale_reports = deps.db.recover_stale_generating_reports(timeout_minutes=5)
+    if _stale_reports:
+        logging.getLogger(__name__).info(
+            "Marked %d interrupted report(s) as error (stale generating): %s",
+            len(_stale_reports), _stale_reports,
+        )
+        for _rid in _stale_reports:
+            deps.db.create_report_log(
+                _rid, "检测到中断报告，已标记失败，可重新生成续跑", level="warn",
+            )
+            # 通知联动（0.4 §2.4）：崩溃期间发生的中断也能被用户感知
+            try:
+                _meta = deps.db.get_report_meta(_rid)
+                if _meta:
+                    deps.db.add_notification(
+                        entity_type="report", entity_id=_rid,
+                        project_id=_meta["project_id"], kind="failed",
+                        entity_title=_meta["title"], detail="程序异常中断",
+                    )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Interrupted-report notification failed for %s", _rid, exc_info=True)
+
+    # ── Detect interrupted model downloads (crash recovery, 0.4 §2.4 step 6) ──
+    # 遗留 downloading 记录 → 标 failed + 发通知；不自动重新下载（断点续传）。
+    try:
+        _stale_downloads = deps.db.recover_stale_model_downloads()
+        for _dl in _stale_downloads:
+            logging.getLogger(__name__).info(
+                "Marked interrupted model download as failed: %s", _dl["name"])
+            deps.db.add_notification(
+                entity_type="model_download", entity_id=_dl["name"],
+                project_id=None, kind="failed",
+                entity_title=_dl["name"], detail="程序异常中断",
+            )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Model download recovery failed", exc_info=True)
 
     yield
 
@@ -181,9 +246,14 @@ async def _log_request(request, call_next):
     return response
 
 
+# All renderer→Python traffic goes through Electron IPC (ipc-handlers.js
+# fetches from the main process, which sends no Origin and ignores CORS),
+# so restricting origins has zero impact on the app itself. It only blocks
+# external web pages from reading localhost API responses (e.g. plaintext
+# API keys via GET /settings). Allowed: Vite dev server only.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -191,6 +261,7 @@ app.add_middleware(
 app.include_router(settings.router)
 app.include_router(models.router)
 app.include_router(knowledge.router)
+app.include_router(activities.router)
 app.include_router(health.router)
 app.include_router(system.router)
 app.include_router(tasks.router)

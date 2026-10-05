@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import difflib
 import json
 import logging
@@ -770,7 +771,9 @@ class FileOpsTool(BaseTool):
             target = self._resolve_path(path)
             if target and target.is_file():
                 try:
-                    r = subprocess.run(
+                    # Worker thread — keep the event loop responsive (H1)
+                    r = await asyncio.to_thread(
+                        subprocess.run,
                         ["python", "-m", "py_compile", str(target)],
                         capture_output=True, encoding="utf-8", errors="replace", timeout=10,
                     )
@@ -788,7 +791,9 @@ class FileOpsTool(BaseTool):
             target = self._resolve_path(path)
             if target and target.is_file():
                 try:
-                    r = subprocess.run(
+                    # Worker thread — keep the event loop responsive (H1)
+                    r = await asyncio.to_thread(
+                        subprocess.run,
                         ["node", "--check", str(target)],
                         capture_output=True, encoding="utf-8", errors="replace", timeout=10,
                     )

@@ -126,3 +126,32 @@
 .item:hover .deleteBtn {
   display: flex;
 }
+
+/* ── Activity Hub 活跃点（0.4 §5.7）：与项目行对齐（ProjectList.activityDot 同款视觉） ── */
+.activityDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  flex-shrink: 0;
+  animation: lib-pulse 1.5s ease-in-out infinite;
+}
+
+.reviewDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warning, #d97706);
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+@keyframes lib-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}

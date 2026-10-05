@@ -27,21 +27,6 @@
   flex-shrink: 0;
 }
 
-.backBtn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.backBtn:hover { background: var(--bg-hover); }
-
 .headerInfo {
   display: flex;
   align-items: center;

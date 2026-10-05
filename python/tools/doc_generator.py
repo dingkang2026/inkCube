@@ -9,6 +9,7 @@ Mermaid diagrams are pre-processed via a standalone Electron sub-process
 that renders ```mermaid blocks to SVG files using the project's bundled
 mermaid.min.js — no extra dependency (puppeteer / mmdc) needed.
 """
+import asyncio
 import json
 import logging
 import os
@@ -111,12 +112,16 @@ class DocGeneratorTool(BaseTool):
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            # Conversions run pandoc/LibreOffice subprocesses (up to 120s) and
+            # MS Office COM — the whole sync pipeline goes to a worker thread
+            # so the event loop stays responsive (H1). COM is initialized
+            # per-thread inside _convert_with_ms_office.
             if action == "md_to_pdf":
-                return self._md_to_pdf(input_file, out_file)
+                return await asyncio.to_thread(self._md_to_pdf, input_file, out_file)
             elif action == "md_to_docx":
-                return self._md_to_docx(input_file, out_file)
+                return await asyncio.to_thread(self._md_to_docx, input_file, out_file)
             elif action == "docx_to_pdf":
-                return self._docx_to_pdf(input_file, out_file)
+                return await asyncio.to_thread(self._docx_to_pdf, input_file, out_file)
             else:
                 return json.dumps({"error": f"未知操作: {action}"}, ensure_ascii=False)
         except Exception as e:
@@ -426,12 +431,24 @@ class DocGeneratorTool(BaseTool):
         }, ensure_ascii=False)
 
     def _convert_with_ms_office(self, input_path: Path, output_path: Path) -> bool:
-        """Convert using Microsoft Office COM automation (Windows)."""
+        """Convert using Microsoft Office COM automation (Windows only).
+
+        Runs inside a worker thread (asyncio.to_thread from execute) — COM
+        must be initialized per-thread, so CoInitialize/CoUninitialize
+        bracket the automation here (main-thread auto-init doesn't cover
+        worker threads).
+        """
         app = None
         doc = None
         try:
+            import pythoncom
             import win32com.client
 
+            pythoncom.CoInitialize()
+        except Exception:
+            return False  # pywin32 unavailable or COM init failed
+
+        try:
             ext = input_path.suffix.lower()
             if ext == ".docx":
                 app = win32com.client.Dispatch("Word.Application")
@@ -477,6 +494,10 @@ class DocGeneratorTool(BaseTool):
                     app.Quit()
                 except Exception:
                     pass
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
     def _convert_with_libreoffice(self, input_path: Path, output_path: Path, soffice_path: str) -> bool:
         """Convert using LibreOffice headless mode."""

@@ -1,15 +1,15 @@
-"""python/report_generator/renderer.py — Markdown → docx / PDF 渲染。
+"""python/report_generator/renderer.py — Markdown → docx 渲染。
 
 职责：
-  1. Markdown → docx 渲染（标题三层分离、引用转上标、尾注列表）
-  2. docx → PDF 转换（通过系统工具或库）
+  - Markdown → docx 渲染（标题三层分离、引用转上标、尾注列表）
 
-设计参考：docs/2.1project-design.md §6.7.7 渲染规则
+本阶段渲染目标格式为 Word（docx）。
+
+设计参考：docs/2.5report-design.md §3.7 渲染规则
 """
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,8 @@ def render_markdown_to_docx(
 
 def _add_text_with_refs(paragraph, text: str):
     """向段落中添加文本，将 [n] 引用转为上标格式。"""
+    from docx.shared import Pt
+
     # 分割文本：普通文本和单个引用标记交替
     parts = re.split(r"(\[\d+\])", text)
     for part in parts:
@@ -133,60 +135,3 @@ def _add_text_with_refs(paragraph, text: str):
         else:
             # 普通文本
             paragraph.add_run(part)
-
-
-def render_docx_to_pdf(docx_path: str, pdf_path: str) -> str:
-    """将 docx 转换为 PDF。
-
-    使用 LibreOffice 命令行转换（跨平台）。
-    如果 LibreOffice 不可用，尝试使用 docx2pdf（Windows: Word COM）。
-
-    Args:
-        docx_path: 输入 docx 文件路径
-        pdf_path: 输出 PDF 文件路径
-
-    Returns:
-        输出文件路径
-    """
-    import subprocess
-    import shutil
-
-    docx = Path(docx_path)
-    pdf = Path(pdf_path)
-    pdf.parent.mkdir(parents=True, exist_ok=True)
-
-    # 尝试 LibreOffice
-    lo_path = shutil.which("soffice") or shutil.which("libreoffice")
-    if lo_path:
-        try:
-            result = subprocess.run(
-                [lo_path, "--headless", "--convert-to", "pdf",
-                 "--outdir", str(pdf.parent), str(docx)],
-                capture_output=True, text=True, timeout=60,
-            )
-            if result.returncode == 0:
-                # LibreOffice 输出文件名可能不同，检查并重命名
-                expected = pdf.parent / f"{docx.stem}.pdf"
-                if expected.exists() and expected != pdf:
-                    expected.rename(pdf)
-                logger.info("Rendered PDF via LibreOffice: %s", pdf)
-                return str(pdf)
-        except Exception as e:
-            logger.warning("LibreOffice conversion failed: %s", e)
-
-    # 尝试 docx2pdf (Windows)
-    try:
-        from docx2pdf import convert
-        convert(str(docx), str(pdf))
-        logger.info("Rendered PDF via docx2pdf: %s", pdf)
-        return str(pdf)
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.warning("docx2pdf conversion failed: %s", e)
-
-    logger.error("No PDF conversion tool available. Install LibreOffice or docx2pdf.")
-    raise RuntimeError(
-        "PDF 导出需要安装 LibreOffice 或 docx2pdf。"
-        "请安装后重试。"
-    )

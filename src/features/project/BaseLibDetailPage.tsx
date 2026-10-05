@@ -1,7 +1,7 @@
 /** src/features/project/BaseLibDetailPage.tsx — Base library detail page (API-driven, embeds KnowledgePage) */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, Factory, DollarSign, Library } from 'lucide-react'
+import { Factory, DollarSign, Library } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import type { Project, KnowledgeIpcChannels } from '../knowledge/types'
@@ -40,7 +40,6 @@ function getIcon(id: string): LucideIcon {
 
 interface BaseLibDetailPageProps {
   baseLibId: string
-  onBack: () => void
 }
 
 interface BaseLibInfo {
@@ -50,7 +49,7 @@ interface BaseLibInfo {
   lib_type: string | null
 }
 
-export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps) {
+export function BaseLibDetailPage({ baseLibId }: BaseLibDetailPageProps) {
   const { t } = useTranslation()
   const [libInfo, setLibInfo] = useState<BaseLibInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -79,9 +78,6 @@ export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps)
     return (
       <div className={s.notFound}>
         <p>{t('baseLib.notFound')}</p>
-        <button className={s.backBtn} onClick={onBack}>
-          <ArrowLeft size={14} /> {t('baseLib.back')}
-        </button>
       </div>
     )
   }
@@ -105,10 +101,6 @@ export function BaseLibDetailPage({ baseLibId, onBack }: BaseLibDetailPageProps)
     <div className={s.page}>
       {/* Header */}
       <div className={s.header}>
-        <button className={s.backBtn} onClick={onBack}>
-          <ArrowLeft size={14} />
-          {t('baseLib.back')}
-        </button>
         <div className={s.headerInfo}>
           <span className={s.headerIcon}><Icon size={24} /></span>
           <div>

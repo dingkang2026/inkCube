@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 import re
+import asyncio
 import subprocess
 import time
 
@@ -75,7 +76,9 @@ class CodeExecutorTool(BaseTool):
         logger.info("Code executor: code_len=%d, workspace=%s", len(code), self.workspace_dir)
         start = time.time()
         try:
-            result = subprocess.run(
+            # Worker thread — keep the event loop responsive (H1)
+            result = await asyncio.to_thread(
+                subprocess.run,
                 [self._python_cmd, "-c", code],
                 cwd=self.workspace_dir,
                 capture_output=True,

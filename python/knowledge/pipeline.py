@@ -8,6 +8,7 @@ from knowledge.doc_parser import DocumentParser, ParseResult, ImageContext, Chun
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
 from knowledge.vlm_client import VLMClient
+import activity_events
 
 
 class ProcessingPipeline:
@@ -111,6 +112,8 @@ class ProcessingPipeline:
                 "images_count": len(parse_result.images),
                 "completed_at": datetime.now().isoformat()
             })
+            # 终态事件显式声明（E2，0.4 §6.4）：完成通知由框架写入
+            activity_events.complete_file(self.db, file_id)
             self._set_progress(file_id, 100)
             
             return {
@@ -123,6 +126,8 @@ class ProcessingPipeline:
         except Exception as e:
             self._set_progress(file_id, 0)
             self._update_file_status(file_id, "error", {"error_message": str(e)})
+            # 终态事件显式声明（E2）：与 task_queue 外层兑底双写，未读查重保证幂等（0.4 §3.2）
+            activity_events.fail_file(self.db, file_id, str(e))
             
             return {
                 "success": False,

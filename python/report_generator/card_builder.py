@@ -1,7 +1,7 @@
 """python/report_generator/card_builder.py — 知识卡片构建。
 
 职责：
-  - 将多通道原始检索结果（knowledge chunks + internet results）转化为结构化知识卡片
+  - 将多通道原始检索结果（wiki 页面 + knowledge chunks + internet results）转化为结构化知识卡片
   - LLM 驱动：信息提取、来源归因、语义去重、交叉验证
   - 充足性评估（充足/不足）
   - 降级：LLM 失败时将 raw results 直接转为简单卡片
@@ -11,13 +11,13 @@ Card Schema：
     "card_id": "C001",
     "section_id": "sec_xxx",
     "content": "结构化知识内容",
-    "source_type": "knowledge" | "internet",
+    "source_type": "wiki" | "knowledge" | "internet",
     "source_title": "文档名/网页标题",
     "source_from": "文件路径+页码 / URL",
     "source_date": "文档日期/网页日期（可选）"
   }
 
-设计参考：docs/2.1project-design.md §6.7.4
+设计参考：docs/2.5report-design.md §3.3
 """
 import json
 import logging
@@ -26,18 +26,21 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# 来源类型 → 展示标签（用于在用户消息中标注每条原始检索结果的来源）
+_SOURCE_LABELS = {"knowledge": "知识库", "wiki": "项目Wiki", "internet": "互联网"}
+
 CARD_BUILD_SYSTEM_PROMPT = """\
 你是一个知识管理专家。根据检索到的原始材料，构建结构化知识卡片。
 
 ## 输入
 - 章节标题和写作要求
-- 原始检索结果（来自知识库和互联网）
+- 原始检索结果（来自项目 Wiki、知识库和互联网）
 
 ## 任务
 1. **信息提取**：从每个原始结果中提取与章节主题相关的核心知识点
-2. **来源归因**：准确标注每条信息的来源（知识库文档 or 互联网网页）
+2. **来源归因**：准确标注每条信息的来源（项目 Wiki 页面 / 知识库文档 / 互联网网页）
 3. **语义去重**：合并来自不同来源但内容重复的知识点，保留更权威的版本
-4. **采信优先级**：知识库来源 > 互联网来源（当信息冲突时以知识库为准）
+4. **采信优先级**：项目 Wiki > 知识库 > 互联网。Wiki 页面是已编译的结构化结论（权威骨架），知识库是原始文档细节，互联网仅作补充；信息冲突时以更高优先级来源为准
 5. **充足性评估**：判断当前材料是否足以支撑章节写作
 
 ## 输出格式
@@ -47,7 +50,7 @@ CARD_BUILD_SYSTEM_PROMPT = """\
   "cards": [
     {
       "content": "提取的核心知识点（简洁、可直接用于写作）",
-      "source_type": "knowledge 或 internet",
+      "source_type": "wiki、knowledge 或 internet",
       "source_title": "来源文档名或网页标题",
       "source_from": "文件路径+页码 或 URL",
       "source_date": "日期（如有，否则留空）"
@@ -110,7 +113,7 @@ async def build_knowledge_cards(
 
     user_parts.append(f"\n## 原始检索结果（共 {len(raw_results)} 条）")
     for i, r in enumerate(raw_results, 1):
-        source_label = "知识库" if r.get("source_type") == "knowledge" else "互联网"
+        source_label = _SOURCE_LABELS.get(r.get("source_type"), "互联网")
         user_parts.append(f"### [{i}] [{source_label}] {r.get('source_title', '未知')}")
         user_parts.append(f"来源：{r.get('source_from', '')}")
         if r.get("source_date"):

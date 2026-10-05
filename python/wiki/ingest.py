@@ -116,8 +116,7 @@ class WikiIngestor:
         analysis_settings["max_tokens"] = max(
             int(self.settings.get("max_tokens", 4096)), 32000,
         )
-        # Reduce reasoning effort — analysis doesn't need deep reasoning
-        analysis_settings["reasoning_effort"] = "low"
+        # reasoning_effort comes from user settings (no hard override — see settings page 思考深度)
         prompt_chars = sum(len(m.get("content", "")) for m in analysis_messages)
         logger.info(
             "Ingest [%s]: Stage 1 start — model=%s, max_tokens=%d, reasoning_effort=%s, prompt_chars=%d, timeout=%ds",
@@ -158,8 +157,7 @@ class WikiIngestor:
         generation_settings["max_tokens"] = max(
             int(self.settings.get("max_tokens", 4096)), 32000,
         )
-        # Reduce reasoning effort — generation is structured output, not deep reasoning
-        generation_settings["reasoning_effort"] = "low"
+        # reasoning_effort comes from user settings (no hard override — see settings page 思考深度)
         gen_prompt_chars = sum(len(m.get("content", "")) for m in generation_messages)
         logger.info(
             "Ingest [%s]: Stage 2 start — model=%s, max_tokens=%d, reasoning_effort=%s, prompt_chars=%d, timeout=%ds",

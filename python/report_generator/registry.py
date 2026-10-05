@@ -1,12 +1,12 @@
 """python/report_generator/registry.py — 全局引用注册器。
 
 职责：
-  - 管理报告生成过程中所有知识卡片和原始片段的引用
+  - 管理报告生成过程中所有知识卡片的引用
   - 去重 key=(source_type, source_from, content_hash)，按注册顺序分配全局唯一编号
-  - 提供 Prompt 呈现格式（知识卡片格式 / 原始片段格式）
+  - 提供 Prompt 呈现格式（知识卡片）
   - 支持序列化/反序列化（用于 checkpoint 持久化）
 
-设计参考：docs/2.1project-design.md §6.7.4
+设计参考：docs/2.5report-design.md §3.4
 """
 import hashlib
 import json
@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# 来源类型 → 展示标签（知识卡片 Prompt 呈现 / 引用来源列表用）
+_TYPE_LABELS = {"knowledge": "知识库", "wiki": "项目Wiki", "internet": "互联网"}
 
 
 def _content_hash(text: str) -> str:
@@ -25,15 +28,13 @@ def _content_hash(text: str) -> str:
 class CitationRegistry:
     """全局引用注册器。
 
-    支持两种注册方式：
-      1. register_card(card) — 注册知识卡片（推荐）
-      2. register(doc_id, chunk_id, ...) — 注册原始片段（向后兼容）
+    通过 register_card(card) 注册知识卡片，去重后按注册顺序分配全局唯一编号。
 
     每个引用条目包含：
-      - card_id: 卡片 ID（知识卡片模式）
+      - card_id: 卡片 ID
       - section_id: 所属章节
       - content: 内容文本
-      - source_type: "knowledge" | "internet" | "raw"（向后兼容）
+      - source_type: "wiki" | "knowledge" | "internet"
       - source_title: 来源名称（文档名/网页标题）
       - source_from: 来源详情（文件路径+页码 / URL）
       - ref_number: 全局唯一编号（从 1 开始）
@@ -86,60 +87,6 @@ class CitationRegistry:
                      number, card.get("card_id", "?"), source_type, source_from[:40])
         return number
 
-    def register(
-        self,
-        doc_id: str = "",
-        chunk_id: str = "",
-        doc_name: str = "",
-        page: Optional[int] = None,
-        content: str = "",
-    ) -> int:
-        """注册一个原始片段（向后兼容）。
-
-        如果 (doc_id, chunk_id) 已存在，直接返回已有编号（去重）。
-
-        Args:
-            doc_id: 文档 ID
-            chunk_id: 片段 ID
-            doc_name: 文档名称
-            page: 页码
-            content: 原文片段
-
-        Returns:
-            全局引用编号 [1], [2], ...
-        """
-        # 向后兼容：用 (doc_id, chunk_id) 作为去重 key 的一部分
-        compat_key = ("raw", f"{doc_id}:{chunk_id}", _content_hash(content))
-        if compat_key in self._entries:
-            return self._entries[compat_key]["ref_number"]
-
-        page_str = f" p.{page}" if page else ""
-        source_from = f"{doc_id}{page_str}"
-
-        entry = {
-            "card_id": "",
-            "section_id": "",
-            "content": content,
-            "source_type": "raw",
-            "source_title": doc_name,
-            "source_from": source_from,
-            "source_date": "",
-            # 保留旧字段用于序列化兼容
-            "doc_id": doc_id,
-            "chunk_id": chunk_id,
-            "doc_name": doc_name,
-            "page": page,
-            "ref_number": self._next_number,
-        }
-        self._entries[compat_key] = entry
-        self._ordered.append(entry)
-        number = self._next_number
-        self._next_number += 1
-
-        logger.debug("Registry: [%d] %s (doc=%s, chunk=%s)",
-                     number, doc_name, doc_id[:8], chunk_id[:8])
-        return number
-
     def get_entry(self, ref_number: int) -> Optional[dict]:
         """根据编号获取引用条目。"""
         for entry in self._ordered:
@@ -158,19 +105,19 @@ class CitationRegistry:
     def format_cards_for_prompt(self, ref_numbers: list[int], max_content_len: int = 500) -> str:
         """将指定编号的知识卡片格式化为 Prompt 中的参考资料文本。
 
-        格式（按设计文档 §6.7.5）：
+        格式（按设计文档 §3.5）：
         【知识卡片】
         [n] card_id | 来源: source_type - source_title
             content
         """
-        lines = ["【知识卡片】"]
+        lines = []
         for num in ref_numbers:
             entry = self.get_entry(num)
             if not entry:
                 continue
 
             card_id = entry.get("card_id", "")
-            source_type = entry.get("source_type", "raw")
+            source_type = entry.get("source_type", "knowledge")
             source_title = entry.get("source_title", "未知来源")
             content = entry.get("content", "")
 
@@ -179,50 +126,18 @@ class CitationRegistry:
                 content = content[:max_content_len] + "……"
 
             # 来源类型标签
-            type_label = {"knowledge": "知识库", "internet": "互联网", "raw": "文档"}.get(source_type, source_type)
+            type_label = _TYPE_LABELS.get(source_type, source_type)
 
-            if card_id:
-                lines.append(f"[{num}] {card_id} | 来源: {type_label} - {source_title}")
-            else:
-                # 向后兼容：旧格式
-                page = entry.get("page")
-                page_str = f" p.{page}" if page else ""
-                lines.append(f"[{num}] 《{source_title}》{page_str}：「{content}」")
-                continue
-
+            lines.append(f"[{num}] {card_id} | 来源: {type_label} - {source_title}")
             lines.append(f"    {content}")
 
-        return "\n".join(lines)
+        if not lines:
+            return ""
+        return "\n".join(["【知识卡片】"] + lines)
 
     def format_for_prompt(self, ref_numbers: list[int], max_content_len: int = 500) -> str:
-        """将指定编号的引用格式化为 Prompt 中的参考资料文本。
-
-        自动检测格式：如果有 card_id 使用卡片格式，否则使用旧格式。
-        """
-        has_cards = any(
-            (entry := self.get_entry(n)) and entry.get("card_id")
-            for n in ref_numbers
-        )
-        if has_cards:
-            return self.format_cards_for_prompt(ref_numbers, max_content_len)
-
-        # 旧格式兼容
-        lines = []
-        for num in ref_numbers:
-            entry = self.get_entry(num)
-            if not entry:
-                continue
-            source_title = entry.get("source_title") or entry.get("doc_name", "未知文档")
-            page = entry.get("page")
-            content = entry.get("content", "")
-
-            if len(content) > max_content_len:
-                content = content[:max_content_len] + "……"
-
-            page_str = f" p.{page}" if page else ""
-            lines.append(f"[{num}] 《{source_title}》{page_str}：「{content}」")
-
-        return "\n".join(lines)
+        """将指定编号的引用格式化为 Prompt 中的参考资料文本（知识卡片格式）。"""
+        return self.format_cards_for_prompt(ref_numbers, max_content_len)
 
     def format_source_list(self) -> str:
         """格式化引用来源列表（用于 post_body prompt）。
@@ -233,15 +148,12 @@ class CitationRegistry:
         for entry in self._ordered:
             num = entry["ref_number"]
             card_id = entry.get("card_id", "")
-            source_title = entry.get("source_title") or entry.get("doc_name", "未知文档")
-            source_type = entry.get("source_type", "raw")
+            source_title = entry.get("source_title", "未知来源")
+            source_type = entry.get("source_type", "knowledge")
 
-            type_label = {"knowledge": "知识库", "internet": "互联网", "raw": "文档"}.get(source_type, source_type)
+            type_label = _TYPE_LABELS.get(source_type, source_type)
 
-            if card_id:
-                lines.append(f"[{num}] {card_id} | {type_label} - {source_title}")
-            else:
-                lines.append(f"[{num}] 《{source_title}》")
+            lines.append(f"[{num}] {card_id} | {type_label} - {source_title}")
         return "\n".join(lines)
 
     def mark_cited(self, ref_numbers: list[int]) -> None:
@@ -278,12 +190,9 @@ class CitationRegistry:
         """重建去重索引。"""
         self._entries = {}
         for entry in self._ordered:
-            source_type = entry.get("source_type", "raw")
+            source_type = entry.get("source_type", "knowledge")
             source_from = entry.get("source_from", "")
             content = entry.get("content", "")
-            # 旧格式条目使用 doc_id:chunk_id
-            if source_type == "raw" and entry.get("doc_id"):
-                source_from = f"{entry.get('doc_id', '')}:{entry.get('chunk_id', '')}"
             key = (source_type, source_from, _content_hash(content))
             self._entries[key] = entry
 

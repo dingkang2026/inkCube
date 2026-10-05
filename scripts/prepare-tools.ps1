@@ -1,4 +1,4 @@
-﻿# prepare-tools.ps1 — 下载任务智能体工具链到 resources/tools/
+# prepare-tools.ps1 — 下载任务智能体工具链到 resources/tools/
 #
 # 用法：.\scripts\prepare-tools.ps1
 # 功能：从 GitHub Releases 下载 uv / ripgrep / ruff / pandoc / python-build-standalone
@@ -27,8 +27,8 @@ $tools = @{
         url       = "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip"
         archive   = "uv.zip"
         type      = "zip"
-        # zip 内有一级目录 uv-x86_64-pc-windows-msvc/，内含 uv.exe
-        extractSubdir = "uv-x86_64-pc-windows-msvc"
+        # uv 0.11.7 zip ships binaries at the archive root (no subdirectory)
+        extractSubdir = ""
         files     = @("uv.exe")
     }
     rg = @{

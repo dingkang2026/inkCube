@@ -134,6 +134,33 @@
   font-size: 8px;
 }
 
+/* ── Activity Hub L2 活跃点（0.4 §3.5）：进行中呼吸点 / 待审阅静态点 ── */
+.activityDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: project-pulse 1.5s ease-in-out infinite;
+}
+
+.reviewDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--warning, #d97706);
+  vertical-align: middle;
+}
+
+@keyframes project-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
 /* ── Rename input ── */
 .renameInput {
   width: 100%;

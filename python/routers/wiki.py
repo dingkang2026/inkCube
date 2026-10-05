@@ -9,6 +9,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from readiness import ensure_ready
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/wiki", tags=["wiki"])
@@ -243,6 +245,8 @@ async def trigger_compile(project_id: str, req: CompileRequest):
     If file_ids is provided, uses the new per-file ingest engine (V2).
     Otherwise, falls back to the legacy batch compile (V1).
     """
+    # 准入前置校验（0.4 §7.3）：缺 LLM/嵌入模型时结构化报错
+    ensure_ready("wiki_compile")
     try:
         db = get_db()
         project = db.get_project(project_id)
@@ -362,7 +366,7 @@ async def continue_compile(project_id: str):
         try:
             import deps
             if hasattr(deps, "worker") and deps.worker:
-                deps.worker.signal_compile_continue(task["id"])
+                await deps.worker.signal_compile_continue(task["id"])
             else:
                 db.update_compile_task_status(task["id"], "queued")
         except Exception:

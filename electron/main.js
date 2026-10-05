@@ -122,12 +122,31 @@ ipcMain.on('menu:action', (_event, action) => {
 // using dynamic pythonManager.getBaseUrl() for correct port resolution.
 
 app.whenReady().then(async () => {
-  // Handle inkcube:// protocol → serve local files
+  // Handle inkcube:// protocol → serve local files (whitelisted)
   protocol.handle('inkcube', (request) => {
     const url = new URL(request.url)
     const filePath = url.searchParams.get('file')
     if (!filePath) {
       return new Response('Missing file parameter', { status: 400 })
+    }
+    // Whitelist (H6): only user content under <dataDir>/files (uploads and
+    // the images extracted next to them). The renderer displays
+    // LLM/markdown-derived content, so an unrestricted handler would let
+    // it read ANY local file via inkcube://app?file=...
+    const dataDir = process.env.INKCUBE_DATA_DIR
+      ? path.resolve(process.env.INKCUBE_DATA_DIR)
+      : (isDev
+          ? path.resolve(__dirname, '..', 'python', 'data')
+          : path.resolve(app.getPath('userData'), 'data'))
+    const allowedRoot = path.resolve(path.join(dataDir, 'files'))
+    // The query param uses forward slashes — convert before resolving so
+    // ../ traversal is normalized and caught by the prefix check.
+    const resolved = path.resolve(filePath.replace(/\//g, path.sep))
+    const isAllowed = process.platform === 'win32'
+      ? resolved.toLowerCase().startsWith(allowedRoot.toLowerCase() + path.sep)
+      : resolved.startsWith(allowedRoot + path.sep)
+    if (!isAllowed) {
+      return new Response('Forbidden', { status: 403 })
     }
     return net.fetch('file://' + filePath)
   })

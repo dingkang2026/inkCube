@@ -1,5 +1,6 @@
 /** src/features/project/tabs/WikiHomePage.tsx — Wiki home = index.md: purpose + overview + categorized page index */
 import { useState, useEffect, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Target, FileText, Clock, Edit3, Check, X, Loader2,
   BookOpen, Users, Lightbulb, Layers, FolderOpen,
@@ -28,13 +29,13 @@ interface WikiHomePageProps {
   onCompile: () => void
 }
 
-/** Page type config: icon, label, description, order */
-const PAGE_TYPE_CONFIG: Record<string, { Icon: typeof FileText; label: string; desc: string; order: number }> = {
-  topic:     { Icon: Layers,     label: '主题', desc: '跨文档的综合分析', order: 0 },
-  entity:    { Icon: Users,      label: '实体', desc: '人物、组织、产品', order: 1 },
-  concept:   { Icon: Lightbulb,  label: '概念', desc: '方法、理论、术语', order: 2 },
-  source:    { Icon: FolderOpen, label: '来源', desc: '每份文件的摘要', order: 3 },
-  structure: { Icon: BookOpen,   label: '结构', desc: '框架定义的页面', order: 4 },
+/** Page type config: icon, label/desc i18n keys, order */
+const PAGE_TYPE_CONFIG: Record<string, { Icon: typeof FileText; labelKey: string; descKey: string; order: number }> = {
+  topic:     { Icon: Layers,     labelKey: 'project.wiki.homePage.typeTopic', descKey: 'project.wiki.homePage.typeTopicDesc', order: 0 },
+  entity:    { Icon: Users,      labelKey: 'project.wiki.homePage.typeEntity', descKey: 'project.wiki.homePage.typeEntityDesc', order: 1 },
+  concept:   { Icon: Lightbulb,  labelKey: 'project.wiki.homePage.typeConcept', descKey: 'project.wiki.homePage.typeConceptDesc', order: 2 },
+  source:    { Icon: FolderOpen, labelKey: 'project.wiki.homePage.typeSource', descKey: 'project.wiki.homePage.typeSourceDesc', order: 3 },
+  structure: { Icon: BookOpen,   labelKey: 'project.wiki.homePage.typeStructure', descKey: 'project.wiki.homePage.typeStructureDesc', order: 4 },
 }
 
 /** Extract first meaningful line from content as a one-line summary */
@@ -54,6 +55,7 @@ export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
   onNavigate, onNavigateToPage, onCompile,
 }: WikiHomePageProps) {
+  const { t } = useTranslation()
   const [editingPurpose, setEditingPurpose] = useState(false)
   const [editingOverview, setEditingOverview] = useState(false)
   const [draftPurpose, setDraftPurpose] = useState(purpose)
@@ -117,38 +119,38 @@ export function WikiHomePage({
         <section className={s.onboardingCard}>
           <div className={s.onboardingHeader}>
             <HelpCircle size={18} className={s.onboardingIcon} />
-            <h3 className={s.onboardingTitle}>开始使用 Wiki</h3>
+            <h3 className={s.onboardingTitle}>{t('project.wiki.homePage.onboardTitle')}</h3>
           </div>
           <p className={s.onboardingDesc}>
-            Wiki 会自动将你的文件转化为结构化知识库。只需三步：
+            {t('project.wiki.homePage.onboardDesc')}
           </p>
           <div className={s.onboardingSteps}>
             <div className={s.onboardingStep}>
               <span className={s.onboardingStepNum}>1</span>
               <div className={s.onboardingStepContent}>
-                <span className={s.onboardingStepTitle}>上传文件</span>
-                <span className={s.onboardingStepHint}>在「素材」标签上传 PDF、PPT、Word 等文档</span>
+                <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step1Title')}</span>
+                <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step1Hint')}</span>
               </div>
             </div>
             <div className={s.onboardingStep}>
               <span className={s.onboardingStepNum}>2</span>
               <div className={s.onboardingStepContent}>
-                <span className={s.onboardingStepTitle}>编译知识库</span>
-                <span className={s.onboardingStepHint}>AI 读取每份文件，自动提取实体、概念、主题</span>
+                <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step2Title')}</span>
+                <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step2Hint')}</span>
               </div>
             </div>
             <div className={s.onboardingStep}>
               <span className={s.onboardingStepNum}>3</span>
               <div className={s.onboardingStepContent}>
-                <span className={s.onboardingStepTitle}>浏览和搜索</span>
-                <span className={s.onboardingStepHint}>在首页索引中浏览，或用搜索和图谱探索知识</span>
+                <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step3Title')}</span>
+                <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step3Hint')}</span>
               </div>
             </div>
           </div>
           {pendingCount > 0 && (
             <button className={s.onboardingAction} onClick={onCompile}>
               <Play size={14} />
-              开始编译 ({pendingCount} 个文件待处理)
+              {t('project.wiki.homePage.startCompile', { count: pendingCount })}
             </button>
           )}
         </section>
@@ -159,31 +161,31 @@ export function WikiHomePage({
         <div className={s.homeSectionHeader}>
           <div className={s.homeSectionTitle}>
             <Target size={15} className={s.homeSectionIcon} />
-            <h3>Wiki 目标</h3>
+            <h3>{t('project.wiki.purpose')}</h3>
           </div>
           {!editingPurpose && (
             <button className={s.editBtn} onClick={() => setEditingPurpose(true)}>
-              <Edit3 size={12} /> 编辑
+              <Edit3 size={12} /> {t('project.wiki.edit')}
             </button>
           )}
         </div>
-        <p className={s.sectionHint}>定义这个 Wiki 要研究什么、关注哪些问题</p>
+        <p className={s.sectionHint}>{t('project.wiki.homePage.purposeHint')}</p>
         {editingPurpose ? (
           <div className={s.editBlock}>
             <textarea
               className={s.editTextarea}
               value={draftPurpose}
               onChange={(e) => setDraftPurpose(e.target.value)}
-              placeholder="例如：跟踪 XX 公司的融资进展、竞争格局和核心团队变动..."
+              placeholder={t('project.wiki.homePage.purposePlaceholder')}
               rows={4}
             />
             <div className={s.editActions}>
               <button className={s.editSaveBtn} onClick={handleSavePurpose} disabled={saving}>
                 {saving ? <Loader2 size={12} className={s.spin} /> : <Check size={12} />}
-                保存
+                {t('project.wiki.save')}
               </button>
               <button className={s.editCancelBtn} onClick={() => { setEditingPurpose(false); setDraftPurpose(purpose) }}>
-                <X size={12} /> 取消
+                <X size={12} /> {t('project.wiki.cancel')}
               </button>
             </div>
           </div>
@@ -193,7 +195,7 @@ export function WikiHomePage({
               <Markdown content={purpose} />
             ) : (
               <p className={s.homePlaceholder}>
-                还没有定义 Wiki 目标。点击「编辑」来设定研究方向。
+                {t('project.wiki.noPurpose')}
               </p>
             )}
           </div>
@@ -205,34 +207,34 @@ export function WikiHomePage({
         <div className={s.homeSectionHeader}>
           <div className={s.homeSectionTitle} style={{ cursor: 'pointer' }} onClick={() => setOverviewExpanded(!overviewExpanded)}>
             <FileText size={15} className={s.homeSectionIcon} />
-            <h3>全局摘要</h3>
+            <h3>{t('project.wiki.overview')}</h3>
             {overview && (
-              <span className={s.homeToggleHint}>{overviewExpanded ? '收起' : '展开'}</span>
+              <span className={s.homeToggleHint}>{overviewExpanded ? t('project.wiki.homePage.collapse') : t('project.wiki.homePage.expand')}</span>
             )}
           </div>
           {!editingOverview && (
             <button className={s.editBtn} onClick={() => overviewExpanded ? setEditingOverview(true) : setOverviewExpanded(true)}>
-              <Edit3 size={12} /> 编辑
+              <Edit3 size={12} /> {t('project.wiki.edit')}
             </button>
           )}
         </div>
-        <p className={s.sectionHint}>AI 自动维护的知识快照，每次编译后更新。也可手动编辑修正。</p>
+        <p className={s.sectionHint}>{t('project.wiki.homePage.overviewHint')}</p>
         {editingOverview ? (
           <div className={s.editBlock}>
             <textarea
               className={s.editTextarea}
               value={draftOverview}
               onChange={(e) => setDraftOverview(e.target.value)}
-              placeholder="Wiki 全局摘要..."
+              placeholder={t('project.wiki.editOverviewPlaceholder')}
               rows={8}
             />
             <div className={s.editActions}>
               <button className={s.editSaveBtn} onClick={handleSaveOverview} disabled={saving}>
                 {saving ? <Loader2 size={12} className={s.spin} /> : <Check size={12} />}
-                保存
+                {t('project.wiki.save')}
               </button>
               <button className={s.editCancelBtn} onClick={() => { setEditingOverview(false); setDraftOverview(overview) }}>
-                <X size={12} /> 取消
+                <X size={12} /> {t('project.wiki.cancel')}
               </button>
             </div>
           </div>
@@ -246,7 +248,7 @@ export function WikiHomePage({
               )
             ) : (
               <p className={s.homePlaceholder}>
-                编译文件后，AI 会自动生成知识摘要。
+                {t('project.wiki.homePage.overviewGenerated')}
               </p>
             )}
           </div>
@@ -258,25 +260,25 @@ export function WikiHomePage({
         <div className={s.homeSectionHeader}>
           <div className={s.homeSectionTitle}>
             <BookOpen size={15} className={s.homeSectionIcon} />
-            <h3>内容索引</h3>
+            <h3>{t('project.wiki.homePage.indexTitle')}</h3>
             {pages.length > 0 && (
-              <span className={s.homeIndexCount}>{pages.length} 页</span>
+              <span className={s.homeIndexCount}>{t('project.wiki.homePage.pagesCount', { count: pages.length })}</span>
             )}
           </div>
           {pages.length > 0 && (
             <button className={s.editBtn} onClick={() => onNavigate('changelog')}>
-              <Clock size={12} /> 变更日志
+              <Clock size={12} /> {t('project.wiki.changeLog')}
             </button>
           )}
         </div>
-        <p className={s.sectionHint}>按类型浏览所有 Wiki 页面，点击查看详情。也可用左侧「搜索」和「图谱」探索。</p>
+        <p className={s.sectionHint}>{t('project.wiki.homePage.indexHint')}</p>
 
         {pages.length === 0 && !isFirstTime ? (
           <div className={s.homeSectionContent}>
             <p className={s.homePlaceholder}>
               {pendingCount > 0
-                ? `有 ${pendingCount} 个新文件待编译，点击上方「编译」按钮生成 Wiki 页面。`
-                : '暂无 Wiki 页面。在「素材」标签上传文件后，回到这里点击「编译」。'}
+                ? t('project.wiki.homePage.pendingCta', { count: pendingCount })
+                : t('project.wiki.homePage.emptyIndex')}
             </p>
           </div>
         ) : pages.length > 0 ? (
@@ -288,8 +290,8 @@ export function WikiHomePage({
                 <div key={type} className={s.homeIndexGroup}>
                   <div className={s.homeIndexGroupHeader}>
                     <Icon size={13} className={s.homeIndexGroupIcon} />
-                    <span className={s.homeIndexGroupLabel}>{config.label}</span>
-                    <span className={s.homeIndexGroupDesc}>{config.desc}</span>
+                    <span className={s.homeIndexGroupLabel}>{t(config.labelKey)}</span>
+                    <span className={s.homeIndexGroupDesc}>{t(config.descKey)}</span>
                     <span className={s.homeIndexGroupCount}>{typePages.length}</span>
                   </div>
                   <div className={s.homeIndexList}>
@@ -316,13 +318,13 @@ export function WikiHomePage({
       {/* ── Stats bar ── */}
       {(pages.length > 0 || sourcePageCount > 0) && (
         <div className={s.homeStats}>
-          <div className={s.homeStatItem} title="AI 从文件中提取的结构化知识页面">
+          <div className={s.homeStatItem} title={t('project.wiki.homePage.statPagesTip')}>
             <span className={s.homeStatValue}>{pages.length}</span>
-            <span className={s.homeStatLabel}>Wiki 页面</span>
+            <span className={s.homeStatLabel}>{t('project.wiki.wikiPages')}</span>
           </div>
-          <div className={s.homeStatItem} title="你上传的原始文档（PDF、PPT、Word 等）">
+          <div className={s.homeStatItem} title={t('project.wiki.homePage.statFilesTip')}>
             <span className={s.homeStatValue}>{sourcePageCount}</span>
-            <span className={s.homeStatLabel}>来源文件</span>
+            <span className={s.homeStatLabel}>{t('project.wiki.sourceFiles')}</span>
           </div>
         </div>
       )}

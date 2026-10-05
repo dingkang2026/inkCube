@@ -4,6 +4,7 @@ Provides endpoints for querying data usage and cleaning specific categories:
 - GET  /system/data/usage        → disk usage breakdown by category
 - DELETE /system/data/{category}  → clean a specific category
 """
+import asyncio
 import os
 import sys
 import shutil
@@ -277,7 +278,11 @@ async def check_external_deps():
     pandoc_path = shutil.which("pandoc")
     if pandoc_path:
         try:
-            proc = subprocess.run([pandoc_path, "--version"], capture_output=True, encoding="utf-8", errors="replace", timeout=5)
+            # Worker thread — subprocess must not block the event loop (H1)
+            proc = await asyncio.to_thread(
+                subprocess.run, [pandoc_path, "--version"],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=5,
+            )
             version_line = proc.stdout.split("\n")[0] if proc.stdout else ""
             deps_status["pandoc"] = {"available": True, "path": pandoc_path, "version": version_line}
         except Exception:
@@ -296,7 +301,11 @@ async def check_external_deps():
     git_path = shutil.which("git")
     if git_path:
         try:
-            proc = subprocess.run([git_path, "--version"], capture_output=True, encoding="utf-8", errors="replace", timeout=5)
+            # Worker thread — subprocess must not block the event loop (H1)
+            proc = await asyncio.to_thread(
+                subprocess.run, [git_path, "--version"],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=5,
+            )
             version_line = proc.stdout.strip() if proc.stdout else ""
             deps_status["git"] = {"available": True, "path": git_path, "version": version_line}
         except Exception:

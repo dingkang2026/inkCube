@@ -35,6 +35,11 @@
   text-overflow: ellipsis;
 }
 
+.settingsWrap {
+  position: relative;
+  display: inline-flex;
+}
+
 .settingsBtn {
   background: none;
   border: none;
@@ -49,4 +54,22 @@
 .settingsBtn:hover {
   color: var(--text-primary);
   background: var(--bg-primary);
+}
+
+/* 模型下载进行中呼吸点（Activity Hub L1 徽章，0.4 §3.5） */
+.downloadDot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #3b82f6);
+  pointer-events: none;
+  animation: dot-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
 }

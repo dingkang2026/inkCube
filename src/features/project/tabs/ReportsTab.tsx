@@ -8,6 +8,8 @@ import { ReportWizard } from './ReportWizard'
 import { ReportPreview } from './ReportPreview'
 import { useToast } from '../../knowledge/Toast'
 import s from './ReportsTab.module.css'
+import { useConfirm } from '../../../components/ConfirmDialog'
+import { usePolling } from '../../../hooks/usePolling'
 
 type ViewMode = 'list' | 'wizard' | 'preview'
 
@@ -18,6 +20,7 @@ interface ReportsTabProps {
 
 export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const showToast = useToast()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [reports, setReports] = useState<Report[]>([])
@@ -42,21 +45,18 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     loadReports()
   }, [projectId])
 
-  // Auto-refresh when any report is generating
-  useEffect(() => {
-    const hasGenerating = reports.some(r => r.status === 'generating')
-    if (!hasGenerating) return
-
-    const interval = setInterval(async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-        if (result.reports) setReports(result.reports)
-      } catch (err) {
-        console.error('Failed to poll reports:', err)
-      }
-    }, 3000)
-    return () => clearInterval(interval)
-  }, [reports, projectId])
+  // Auto-refresh when any report is generating（#7，v1.7 迁移 usePolling，0.4 §8.1）
+  const hasGenerating = reports.some(r => r.status === 'generating')
+  usePolling({
+    name: 'reports-generating',
+    enabled: hasGenerating,
+    interval: 3000,
+    task: async () => {
+      // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
+      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
+      if (result.reports) setReports(result.reports)
+    },
+  })
 
   const handleWizardComplete = async () => {
     await loadReports()
@@ -69,7 +69,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   }
 
   const handleDeleteReport = async (report: Report) => {
-    if (!confirm(t('project.report.confirmDelete'))) return
+    if (!(await confirmDialog({ title: t('project.report.delete'), message: t('project.report.confirmDelete') }))) return
     try {
       await window.electronAPI.invoke('reports:deleteReport', report.id)
       await loadReports()
@@ -82,10 +82,9 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     try {
       const result: any = await window.electronAPI.invoke('reports:exportReport', {
         reportId: report.id,
-        format: report.output_format,
       })
       if (result.path) {
-        showToast(t('project.report.exportSuccess', { format: report.output_format, title: report.title }), 'success')
+        showToast(t('project.report.exportSuccess', { format: 'Word', title: report.title }), 'success')
       } else {
         showToast(t('project.report.exportFailed', { error: result.error }), 'error')
       }

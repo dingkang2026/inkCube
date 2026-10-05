@@ -2,18 +2,81 @@ import os
 import shutil
 import sqlite3
 import json
+import logging
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class _LockedConnection:
+    """Serialize access to the shared sqlite3 connection.
+
+    The single connection is used from the event loop, worker threads
+    (run_in_executor / asyncio.to_thread) and background threads (model
+    download worker). sqlite3's serialized compile mode keeps individual
+    C-level calls safe, but interleaved transactions from two threads can
+    still corrupt logical state — one thread's commit() would finalize
+    another thread's half-written transaction. An RLock serializes all
+    connection-level operations; cursors returned by execute() each belong
+    to a single prepared statement and stay internally consistent.
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+        self._lock = threading.RLock()
+
+    def execute(self, sql: str, params=()):
+        with self._lock:
+            return self._conn.execute(sql, params)
+
+    def executemany(self, sql: str, seq_of_params):
+        with self._lock:
+            return self._conn.executemany(sql, seq_of_params)
+
+    def executescript(self, script: str):
+        with self._lock:
+            return self._conn.executescript(script)
+
+    def commit(self):
+        with self._lock:
+            return self._conn.commit()
+
+    def rollback(self):
+        with self._lock:
+            return self._conn.rollback()
+
+    def close(self):
+        with self._lock:
+            return self._conn.close()
+
+    @property
+    def row_factory(self):
+        with self._lock:
+            return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value):
+        with self._lock:
+            self._conn.row_factory = value
+
+    def __getattr__(self, name):
+        # Rare passthrough (e.g. `in_transaction`) — single calls are safe
+        # under sqlite3's serialized mode.
+        return getattr(self._conn, name)
 
 
 class Database:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.conn: sqlite3.Connection = None
+        self.conn: _LockedConnection = None
 
     def initialize(self):
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn = _LockedConnection(
+            sqlite3.connect(self.db_path, check_same_thread=False)
+        )
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")  # Enable foreign key support
@@ -150,6 +213,38 @@ class Database:
         """)
         self.conn.commit()
 
+        # ── Activity Hub tables (0.4lifecycle-design.md §3.2 / §3.3) ──
+        # notifications: 终态事件持久化（完成/失败/待审阅），弹出即已读
+        # model_downloads: 模型下载状态持久化（崩溃检测用，进度不落库）
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,   -- task / file / wiki_compile / report / model_download
+                entity_id TEXT NOT NULL,
+                project_id TEXT,             -- 所属项目（任务/模型下载无项目时为 NULL）
+                container TEXT DEFAULT 'project', -- 挂载容器 project / baselib（0.4 §3.6，前端导航分流）
+                kind TEXT NOT NULL,          -- completed / failed / waiting_review
+                entity_title TEXT NOT NULL,  -- 展示名（用户数据，不翻译）
+                detail TEXT,
+                read_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_notifications_unread
+                ON notifications(read_at, created_at);
+
+            CREATE TABLE IF NOT EXISTS model_downloads (
+                name TEXT PRIMARY KEY,      -- 模型名（GPU 后端为 'gpu-backend'）
+                status TEXT NOT NULL DEFAULT 'downloading',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+        self.conn.commit()
+
+        # Migrate: notifications — add container for base-library routing (0.4 §3.6)
+        self._migrate_add_column("notifications", "container", "TEXT DEFAULT 'project'")
+
         # Skills table
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS skills (
@@ -216,6 +311,8 @@ class Database:
         self._migrate_add_column("reports", "error_message", "TEXT")
         self._migrate_add_column("reports", "variables", "TEXT")
         self._migrate_add_column("reports", "base_project_ids", "TEXT")
+        self._migrate_add_column("reports", "section_internet", "TEXT")
+        self._migrate_add_column("reports", "internet_enabled", "INTEGER DEFAULT 0")
 
         # Report logs table (for progress tracking)
         self.conn.executescript("""
@@ -401,6 +498,10 @@ class Database:
             "temperature": 0.7,
             "max_tokens": 8192,
             "top_p": 0.9,
+            # Reasoning params (settings page 思考深度/高级覆盖) — must stay in
+            # this whitelist or get_settings() silently drops saved values
+            "reasoning_effort": "low",
+            "reasoning_override": "",
             "system_prompt": "",
             "tavily_key": "",
             "vlm_api_url": "https://open.bigmodel.cn/api/paas/v4/",
@@ -451,6 +552,24 @@ class Database:
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (key, json.dumps(value)),
             )
+        self.conn.commit()
+
+    def get_flag(self, key: str, default: bool = False) -> bool:
+        """Read a boolean flag from the settings kv table (e.g. onboarding_done)."""
+        row = self.conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return default
+        try:
+            return bool(json.loads(row["value"]))
+        except (json.JSONDecodeError, TypeError):
+            return default
+
+    def set_flag(self, key: str, value: bool):
+        """Persist a boolean flag into the settings kv table."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, json.dumps(value)),
+        )
         self.conn.commit()
 
     # ── Knowledge Base: Projects ──
@@ -598,6 +717,10 @@ class Database:
             params,
         )
         self.conn.commit()
+
+        # 终态事件已解耦（E2，0.4 §6.4 / §8.5 顺序 3）：done / error 的通知由调用方
+        # （pipeline / task_queue）经 activity_events.complete_file / fail_file 显式声明，
+        # DB 层回归纯状态写入（写入位置盘点见 0.4 §8.2）。
 
     def list_files(self, project_id: str) -> list[dict]:
         cursor = self.conn.execute(
@@ -893,10 +1016,14 @@ class Database:
     def delete_task(self, task_id: str):
         task = self.get_task(task_id)
         if task:
-            # Clean up workspace and venv directories
+            # Clean up workspace and venv directories — ONLY for app-managed
+            # task dirs (data_dir/tasks/{task_id}). For user-provided workspaces
+            # the parent dir belongs to the user; rmtree'ing it would wipe the
+            # directory the user chose (or worse, its parent).
             workspace = task["workspace_path"]
             task_dir = os.path.dirname(workspace)
-            if os.path.isdir(task_dir):
+            managed_root = os.path.join(os.path.dirname(self.db_path), "tasks")
+            if task_dir.startswith(managed_root + os.sep) and os.path.isdir(task_dir):
                 shutil.rmtree(task_dir, ignore_errors=True)
         self.conn.execute("DELETE FROM task_messages WHERE task_id = ?", (task_id,))
         self.conn.execute("DELETE FROM task_agent_state WHERE task_id = ?", (task_id,))
@@ -1187,6 +1314,31 @@ class Database:
         )
         self.conn.commit()
 
+        # 终态通知（0.4 §8.2）：报告到达 done / error 时写通知。
+        # 注意 recover_stale_generating_reports 为 SQL 直写（不走本方法），
+        # 崩溃恢复场景的通知由 main.py 启动扫描显式补发（0.4 §2.4）。
+        if status in ("done", "error"):
+            try:
+                row = self.conn.execute(
+                    "SELECT r.project_id, r.title, r.error_message, "
+                    "CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container "
+                    "FROM reports r JOIN projects p ON p.id = r.project_id "
+                    "WHERE r.id = ?",
+                    (report_id,),
+                ).fetchone()
+                if row:
+                    self.add_notification(
+                        entity_type="report", entity_id=report_id,
+                        project_id=row["project_id"],
+                        container=row["container"] or "project",
+                        kind="completed" if status == "done" else "failed",
+                        entity_title=row["title"],
+                        detail=(row["error_message"][:200] if row["error_message"] else None)
+                                if status == "error" else None,
+                    )
+            except Exception:
+                logger.warning("report terminal notification failed for %s", report_id, exc_info=True)
+
     def delete_report(self, report_id: str):
         self.conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
         self.conn.commit()
@@ -1214,6 +1366,40 @@ class Database:
         )
         row = cursor.fetchone()
         return row["cnt"] if row else 0
+
+    def recover_stale_generating_reports(self, timeout_minutes: int = 5) -> list[str]:
+        """崩溃恢复（§3.8.3）：扫描卡在 generating 且超时未更新的报告，标记为 error。
+
+        应用启动时调用。程序异常退出会遗留 status='generating' 的报告；
+        updated_at 距今 > timeout_minutes 判定为中断，标记 error 并保留 checkpoint，
+        等用户在详情页点「重新生成」从 checkpoint 续跑（启动时不自动续跑）。
+
+        Returns:
+            被标记为 error 的 report_id 列表。
+        """
+        cursor = self.conn.execute(
+            "SELECT id, updated_at FROM reports WHERE status = 'generating'"
+        )
+        rows = cursor.fetchall()
+        now = datetime.now()
+        stale_ids: list[str] = []
+        for row in rows:
+            try:
+                last = datetime.fromisoformat(row["updated_at"])
+                age_seconds = (now - last).total_seconds()
+            except (ValueError, TypeError):
+                # 时间戳无法解析 → 保守判定为陈旧，避免永久卡在 generating
+                age_seconds = timeout_minutes * 60 + 1
+            if age_seconds > timeout_minutes * 60:
+                stale_ids.append(row["id"])
+        for rid in stale_ids:
+            self.conn.execute(
+                "UPDATE reports SET status = 'error', error_message = ?, updated_at = ? WHERE id = ?",
+                ("程序异常中断，请重新生成", self._now(), rid),
+            )
+        if stale_ids:
+            self.conn.commit()
+        return stale_ids
 
     # ── Report Logs ──
 
@@ -1250,6 +1436,122 @@ class Database:
             (report_id, limit),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def get_report_meta(self, report_id: str) -> dict | None:
+        """获取报告的 project_id / title（崩溃恢复补通知用，0.4 §2.4）。"""
+        cursor = self.conn.execute(
+            "SELECT id, project_id, title FROM reports WHERE id = ?", (report_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    # ── Notifications (Activity Hub, 0.4 §3.2) ──
+
+    def add_notification(
+        self,
+        entity_type: str,
+        entity_id: str,
+        project_id: str | None,
+        kind: str,
+        entity_title: str,
+        detail: str | None = None,
+        container: str = "project",
+    ) -> int | None:
+        """写入一条终态通知。未读查重：同 (entity_type, entity_id, kind) 存在未读记录则跳过。
+
+        container: 挂载容器 project / baselib（基础库活动导航分流，0.4 §3.6），
+            由调用方 JOIN projects.kind 提供；task / model_download 等无项目实体保持默认。
+
+        Returns:
+            新通知 id；被查重跳过时返回 None。
+        """
+        dup = self.conn.execute(
+            "SELECT id FROM notifications WHERE entity_type = ? AND entity_id = ? "
+            "AND kind = ? AND read_at IS NULL",
+            (entity_type, entity_id, kind),
+        ).fetchone()
+        if dup:
+            return None
+        cursor = self.conn.execute(
+            """INSERT INTO notifications
+               (entity_type, entity_id, project_id, container, kind, entity_title, detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (entity_type, entity_id, project_id, container, kind, entity_title, detail, self._now()),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def list_unread_notifications(self) -> list[dict]:
+        """未读通知（按时间正序，逐条弹出）。"""
+        cursor = self.conn.execute(
+            "SELECT * FROM notifications WHERE read_at IS NULL ORDER BY created_at ASC, id ASC"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_recent_notifications(self, limit: int = 10) -> list[dict]:
+        """最近通知（含已读，首页「最近动态」用）。"""
+        cursor = self.conn.execute(
+            "SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def mark_notifications_read(self, ids: list[int]) -> int:
+        """批量标记已读（弹出即已读，0.4 §5.5）。"""
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        cursor = self.conn.execute(
+            f"UPDATE notifications SET read_at = ? WHERE id IN ({placeholders}) AND read_at IS NULL",
+            [self._now()] + list(ids),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def cleanup_old_notifications(self, keep: int = 100) -> int:
+        """保留最近 keep 条通知，清理更早记录（启动时调用，防无限增长）。"""
+        cursor = self.conn.execute(
+            """DELETE FROM notifications WHERE id NOT IN (
+                   SELECT id FROM notifications ORDER BY id DESC LIMIT ?
+               )""",
+            (keep,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    # ── Model Downloads (Activity Hub, 0.4 §3.3) ──
+
+    def mark_model_download_state(self, name: str, status: str, error: str | None = None):
+        """记录模型下载状态（start / 终态）。进度不落库（内存态由 check_status 提供）。"""
+        now = self._now()
+        self.conn.execute(
+            """INSERT INTO model_downloads (name, status, error, started_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET status = excluded.status,
+                   error = excluded.error, updated_at = excluded.updated_at""",
+            (name, status, error, now, now),
+        )
+        self.conn.commit()
+
+    def recover_stale_model_downloads(self) -> list[dict]:
+        """崩溃恢复（0.4 §2.4 第 6 步）：遗留 downloading 记录 → 标 failed 并返回。
+
+        只负责状态标记；failed 通知由调用方（main.py）写入。
+        不自动重新下载——用户重新点击即可，HF/ModelScope 断点续传。
+        """
+        cursor = self.conn.execute(
+            "SELECT name FROM model_downloads WHERE status = 'downloading'"
+        )
+        stale = [dict(row) for row in cursor.fetchall()]
+        for row in stale:
+            self.conn.execute(
+                "UPDATE model_downloads SET status = 'failed', "
+                "error = '程序异常中断', updated_at = ? WHERE name = ?",
+                (self._now(), row["name"]),
+            )
+        if stale:
+            self.conn.commit()
+        return stale
 
     # ── Report Sections ──
 
@@ -2188,6 +2490,40 @@ class Database:
             params,
         )
         self.conn.commit()
+
+        # 终态/待审阅通知（0.4 §8.2）：partial 按 completed 发（detail 注明部分完成）；
+        # stopped / queued / ingesting 等中间态静默（用户主动停止不算事件）。
+        # waiting_review 依赖未读查重：监督模式多次暂停不重复弹。
+        if status in ("completed", "partial", "failed", "waiting_review"):
+            try:
+                row = self.conn.execute(
+                    "SELECT wct.project_id, p.name AS project_name, "
+                    "CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container "
+                    "FROM wiki_compile_tasks wct "
+                    "LEFT JOIN projects p ON p.id = wct.project_id "
+                    "WHERE wct.id = ?",
+                    (task_id,),
+                ).fetchone()
+                if row:
+                    if status == "failed":
+                        kind = "failed"
+                        detail = error_message[:200] if error_message else None
+                    elif status == "waiting_review":
+                        kind = "waiting_review"
+                        detail = None
+                    else:
+                        kind = "completed"
+                        detail = "部分完成" if status == "partial" else None
+                    self.add_notification(
+                        entity_type="wiki_compile", entity_id=task_id,
+                        project_id=row["project_id"],
+                        container=row["container"] or "project",
+                        kind=kind,
+                        entity_title=row["project_name"] or "Wiki",
+                        detail=detail,
+                    )
+            except Exception:
+                logger.warning("compile terminal notification failed for %s", task_id, exc_info=True)
 
     def start_compile_task(self, task_id: str):
         """Record compile task start time. Status is managed by the caller."""

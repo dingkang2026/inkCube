@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "template_id": "recruitment_proposal",
   "template_name": "招商推介方案",
   "version": "1.0",
@@ -13,6 +14,29 @@
     "突出优势时须有数据支撑，避免空泛宣传",
     "政策引用须准确，注明文件名称和文号",
     "对比数据须统一口径"
+  ],
+  "variables": [
+    {
+      "name": "目标区域",
+      "source": "user",
+      "label": "目标区域",
+      "required": true,
+      "placeholder": "如：苏州工业园区"
+    },
+    {
+      "name": "目标产业",
+      "source": "user",
+      "label": "目标产业",
+      "required": true,
+      "placeholder": "如：生物医药"
+    },
+    {
+      "name": "项目名称",
+      "source": "user",
+      "label": "招商项目名称",
+      "required": true,
+      "placeholder": "如：XX 总部基地项目"
+    }
   ],
   "outline": [
     {

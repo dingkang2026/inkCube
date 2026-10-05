@@ -6,7 +6,7 @@
   - 报告完成时汇总写入 DB
   - 支持序列化/反序列化（用于 checkpoint 持久化）
 
-设计参考：docs/2.1project-design.md §6.7.8
+设计参考：docs/2.5report-design.md §3.8.7
 """
 import json
 import logging
@@ -71,6 +71,7 @@ class TokenTracker:
         """
         total_prompt = 0
         total_completion = 0
+        total_all = 0
         by_section: dict[str, dict] = {}
         by_type: dict[str, dict] = {}
 
@@ -80,6 +81,7 @@ class TokenTracker:
             tt = r["total_tokens"]
             total_prompt += pt
             total_completion += ct
+            total_all += tt
 
             # 按章节汇总
             sid = r["section_id"]
@@ -100,7 +102,7 @@ class TokenTracker:
         return {
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
-            "total_tokens": total_prompt + total_completion,
+            "total_tokens": total_all,
             "by_section": by_section,
             "by_type": by_type,
             "call_count": len(self._records),

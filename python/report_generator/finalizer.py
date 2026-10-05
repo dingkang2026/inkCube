@@ -2,16 +2,15 @@
 
 职责：
   1. 引用全局校验 → 未引用清理 + 重排
-  2. 一致性检查（术语统一、数字矛盾、章节间重复）
+  2. 一致性检查（数字矛盾、章节间重复）
   3. 衔接润色（各节首尾段轻量改写）
   4. 目录生成
   5. 组装最终报告
 
-设计参考：docs/2.1project-design.md §6.7.7
+设计参考：docs/2.5report-design.md §3.7
 """
 import logging
 import re
-from typing import Optional
 
 from report_generator.registry import CitationRegistry
 from report_generator.validator import validate_global, fix_hallucinated_refs, _extract_refs
@@ -23,7 +22,6 @@ def finalize_report(
     full_text: str,
     registry: CitationRegistry,
     template: dict,
-    outline: list[dict],
 ) -> str:
     """执行全局收尾流水线。
 
@@ -35,7 +33,6 @@ def finalize_report(
         full_text: 拼接后的完整报告文本
         registry: 全局引用注册器
         template: 模板定义
-        outline: 归一化后的执行大纲
 
     Returns:
         最终报告文本
@@ -81,7 +78,7 @@ def finalize_report(
     parts = [
         f"# {report_title}",
         "",
-        _build_toc(outline),
+        _build_toc(text),
         "",
         text,
         "",
@@ -273,18 +270,16 @@ def _smooth_transitions(text: str) -> str:
     return text
 
 
-def _build_toc(outline: list[dict]) -> str:
-    """从大纲生成目录。"""
+def _build_toc(text: str) -> str:
+    """扫描装配后正文的 ## 章节标题，按出现顺序生成目录。
+
+    目录顺序与正文严格一致：正文经 _assemble_full_text 重排
+    （post_body(front) 前置），故不能按大纲原序生成。
+    """
     lines = ["## 目录", ""]
     idx = 1
-    for chapter in outline:
-        title = chapter.get("title", "")
-        lines.append(f"{idx}. {title}")
-        children = chapter.get("children", [])
-        if children:
-            for sec in children:
-                sec_title = sec.get("title", "")
-                lines.append(f"   - {sec_title}")
+    for m in re.finditer(r"^## (.+)$", text, flags=re.MULTILINE):
+        lines.append(f"{idx}. {m.group(1).strip()}")
         idx += 1
     return "\n".join(lines)
 
@@ -298,16 +293,13 @@ def _build_endnotes(registry: CitationRegistry) -> str:
     lines = []
     for entry in entries:
         num = entry["ref_number"]
-        # 知识卡片用 source_title，旧格式用 doc_name
-        doc_name = entry.get("source_title") or entry.get("doc_name", "未知文档")
-        page = entry.get("page")
+        source_title = entry.get("source_title", "未知来源")
         content = entry.get("content", "")
 
         # 截断展示内容
         if len(content) > 100:
             content = content[:100] + "…"
 
-        page_str = f", p.{page}" if page else ""
-        lines.append(f"[{num}] 《{doc_name}》{page_str}: {content}")
+        lines.append(f"[{num}] 《{source_title}》: {content}")
 
     return "\n\n".join(lines)

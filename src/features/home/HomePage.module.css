@@ -100,7 +100,63 @@
   color: var(--text-danger);
 }
 
-/* ── Middle: Quick start cards ── */
+/* ── Middle: Ongoing activities (Activity Hub, 0.4 §3.6) ── */
+.ongoingList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 32px;
+}
+
+.ongoingItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.ongoingItem:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.ongoingIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.ongoingText {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ongoingSpinner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: ongoing-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ongoing-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+/* ── Quick start cards ── */
 .quickGrid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -225,6 +281,64 @@
 
 .recentMore:hover {
   background: rgba(37, 99, 235, 0.06);
+}
+
+/* ── Activity feed (Activity Hub, 0.4 §3.6) ── */
+.feedItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.feedItem:hover {
+  background: var(--bg-hover);
+}
+
+.feedUnread {
+  background: color-mix(in srgb, var(--accent, #2563eb) 6%, transparent);
+}
+
+.feedDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.feedDotOk {
+  background: var(--text-success, #16a34a);
+}
+
+.feedDotErr {
+  background: var(--text-danger, #ef4444);
+}
+
+.feedDotWarn {
+  background: var(--warning, #d97706);
+}
+
+.feedText {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feedUnread .feedText {
+  font-weight: 600;
+}
+
+.feedTime {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 /* ── Responsive ── */

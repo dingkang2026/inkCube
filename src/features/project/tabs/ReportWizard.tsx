@@ -1,10 +1,12 @@
 /** src/features/project/tabs/ReportWizard.tsx — 2-step report creation wizard (real templates) */
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, Search, ChevronRight, GripVertical, Trash2, Plus, Loader2, Globe } from 'lucide-react'
+import { ArrowLeft, Search, ChevronRight, Loader2, Globe } from 'lucide-react'
 import type { ProjectType } from '../types'
 import { STAGE_MAP } from '../types'
 import s from './ReportWizard.module.css'
+import { useSettings } from '../../settings/useSettings'
+import { useFeatureGuard } from '../../readiness/useReadiness'
 
 /** Template from backend */
 interface BackendTemplate {
@@ -17,25 +19,36 @@ interface BackendTemplate {
   role_hint?: string
   audience?: string
   report_depth: string
-  variables: string[]
   chapter_count: number
   is_custom: boolean
+}
+
+/** Structured template variable (schema v2, $defs/variable) */
+interface TemplateVariable {
+  name: string
+  source: 'user' | 'derived'
+  label?: string
+  required?: boolean
+  placeholder?: string
+  depends_on?: string[]
+  derive_hint?: string
+  data_sources?: string[]
+  cardinality?: 'scalar' | 'list'
 }
 
 /** Full template with outline (from getTemplate) */
 interface FullTemplate extends BackendTemplate {
   outline: OutlineNode[]
+  variables?: TemplateVariable[]
   global_requirements?: string[]
-  terminology?: { canonical: string; aliases?: string[] }[]
   [key: string]: unknown
 }
 
 interface OutlineNode {
-  id: string
+  section_id: string
   title: string
   description?: string
   compose_mode?: string
-  word_count?: number
   prompt_hint?: string
   children?: OutlineNode[]
 }
@@ -47,6 +60,33 @@ const STATIC_SOURCE_ENTRIES = [
   { id: 'ks-investment', nameKey: 'project.report.wizard.investmentLib', alwaysChecked: false, autoMatched: true, matchType: 'investment' as ProjectType, baseLibId: 'bl-investment' },
 ]
 
+/**
+ * Persist the wizard's checked sources back to project_base_libs (2.7 §5.5):
+ * the selection becomes the project's association set, so the next wizard
+ * run pre-checks the same sources. Auto-created links are refined by user
+ * choices (unchecking an auto-linked lib unlinks it). Failures are
+ * non-fatal — generation has already started; the wizard just falls back
+ * to the current associations next time.
+ */
+async function syncBaseLibAssociations(projectId: string, targetLibIds: Set<string>) {
+  try {
+    const result: any = await window.electronAPI.invoke('project:getBaseLibs', projectId)
+    const currentIds = new Set<string>(
+      (result?.base_libs || []).map((lib: any) => lib.id),
+    )
+    const toLink = [...targetLibIds].filter(id => !currentIds.has(id))
+    const toUnlink = [...currentIds].filter(id => !targetLibIds.has(id))
+    await Promise.all([
+      ...toLink.map(baseLibId =>
+        window.electronAPI.invoke('project:linkBaseLib', { projectId, baseLibId })),
+      ...toUnlink.map(baseLibId =>
+        window.electronAPI.invoke('project:unlinkBaseLib', { projectId, baseLibId })),
+    ])
+  } catch (err) {
+    console.error('Failed to sync project base-lib associations:', err)
+  }
+}
+
 interface ReportWizardProps {
   projectId: string
   projectType: ProjectType
@@ -56,17 +96,20 @@ interface ReportWizardProps {
 
 export function ReportWizard({ projectId, projectType, onComplete, onCancel }: ReportWizardProps) {
   const { t } = useTranslation()
+  const { settings } = useSettings()
+  const guard = useFeatureGuard()
+  const internetConfigured = Boolean(settings?.tavily_key)
   const [step, setStep] = useState(1)
   const [searchQuery, setSearchQuery] = useState('')
   const [templates, setTemplates] = useState<BackendTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedTemplate, setSelectedTemplate] = useState<FullTemplate | null>(null)
-  const [chapters, setChapters] = useState<string[]>([])
   const [checkedSources, setCheckedSources] = useState<Set<string>>(new Set())
   const [customBaseLibs, setCustomBaseLibs] = useState<{ id: string; name: string }[]>([])
   const [supplementaryNotes, setSupplementaryNotes] = useState('')
-  const [outputFormat, setOutputFormat] = useState<'Word' | 'PDF'>('Word')
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
+  const [internetEnabled, setInternetEnabled] = useState(false)
+  const [sectionInternet, setSectionInternet] = useState<Record<string, boolean>>({})
   const [generating, setGenerating] = useState(false)
 
   // Load templates from backend
@@ -106,17 +149,37 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     loadCustomLibs()
   }, [])
 
-  // Initialize knowledge sources based on project type
+  // Initialize knowledge sources from the project's real base-lib
+  // associations (2.7 §5.5): links may have been auto-created at project
+  // creation or edited by the user since — a projectType hard-match would
+  // check the wrong boxes and never pre-check linked custom libs.
   useEffect(() => {
-    const initial = new Set<string>()
-    initial.add('ks-project')
-    STATIC_SOURCE_ENTRIES.forEach(ks => {
-      if (ks.autoMatched && ks.matchType === projectType) {
-        initial.add(ks.id)
+    let cancelled = false
+    async function loadAssociations() {
+      const initial = new Set<string>()
+      initial.add('ks-project')
+      try {
+        const result: any = await window.electronAPI.invoke('project:getBaseLibs', projectId)
+        const linkedIds = new Set<string>(
+          (result?.base_libs || []).map((lib: any) => lib.id),
+        )
+        STATIC_SOURCE_ENTRIES.forEach(ks => {
+          if (ks.baseLibId && linkedIds.has(ks.baseLibId)) {
+            initial.add(ks.id)
+          }
+        })
+        customBaseLibs.forEach(lib => {
+          if (linkedIds.has(lib.id)) initial.add(`ks-custom-${lib.id}`)
+        })
+      } catch (err) {
+        console.error('Failed to load project base-lib associations:', err)
+        // Fallback: only the project KB stays checked
       }
-    })
-    setCheckedSources(initial)
-  }, [projectType])
+      if (!cancelled) setCheckedSources(initial)
+    }
+    loadAssociations()
+    return () => { cancelled = true }
+  }, [projectId, customBaseLibs])
 
   // Build dynamic knowledge sources list
   const knowledgeSources = useMemo(() => {
@@ -134,15 +197,31 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
         isCustom: true,
       })
     }
-    // Add internet search option
-    sources.push({
-      id: 'ks-internet',
-      nameKey: 'project.report.wizard.internetSearch',
-      alwaysChecked: false,
-      autoMatched: false,
-    })
     return sources
   }, [customBaseLibs])
+
+  // User-sourced variables that require manual input in the wizard
+  const userVariables = useMemo<TemplateVariable[]>(
+    () => (selectedTemplate?.variables || []).filter(v => v.source === 'user'),
+    [selectedTemplate],
+  )
+
+  // Flatten outline → executable standard sections (mirrors backend get_execution_sections:
+  // a chapter's children are its sections; a childless chapter is itself a section).
+  // post_body sections don't retrieve, so the internet toggle only applies to standard ones.
+  const standardSections = useMemo<{ section_id: string; title: string }[]>(() => {
+    const out: { section_id: string; title: string }[] = []
+    for (const ch of selectedTemplate?.outline || []) {
+      const children = ch.children || []
+      const nodes = children.length > 0 ? children : [ch]
+      for (const n of nodes) {
+        if ((n.compose_mode || 'standard') === 'standard') {
+          out.push({ section_id: n.section_id, title: n.title })
+        }
+      }
+    }
+    return out
+  }, [selectedTemplate])
 
   const handleSelectTemplate = useCallback(async (tpl: BackendTemplate) => {
     // Fetch full template with outline
@@ -151,17 +230,13 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       const full = res.template as FullTemplate
       setSelectedTemplate(full)
 
-      // Extract chapter titles from outline
-      const titles = (full.outline || []).map(ch => ch.title)
-      setChapters(titles)
-
-      // Set output format
-      setOutputFormat((full.output_format as 'Word' | 'PDF') || 'Word')
-
-      // Initialize variable values
+      // Initialize variable values (only user-sourced variables need manual input)
       const vars: Record<string, string> = {}
-      ;(full.variables || []).forEach(v => { vars[v] = '' })
+      ;(full.variables || []).filter(v => v.source === 'user').forEach(v => { vars[v.name] = '' })
       setVariableValues(vars)
+
+      // Reset per-section internet toggles for the newly selected template
+      setSectionInternet({})
 
       setStep(2)
     } catch (err) {
@@ -169,19 +244,27 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     }
   }, [])
 
-  const handleStartGenerate = useCallback(async () => {
+  // Entry guard per 0.4 §7.3: report generation requires LLM + embedding
+  const handleStartGenerate = useCallback(() => {
     if (!selectedTemplate || generating) return
+    void guard('report', () => {
+      void doStartGenerate()
+    })
+  }, [selectedTemplate, generating, guard])
+
+  const doStartGenerate = useCallback(async () => {
+    if (!selectedTemplate) return
     setGenerating(true)
 
-    // Map checked sources → base_project_ids for backend
-    const baseProjectIds: string[] = []
+    // Map checked sources → the set of base-lib IDs to retrieve from; the
+    // same set is persisted as project associations after generation starts.
+    const targetLibIds = new Set<string>()
     for (const ks of knowledgeSources) {
       if (!checkedSources.has(ks.id)) continue
-      if (ks.id === 'ks-project' || ks.id === 'ks-internet') continue
-      if (ks.baseLibId) {
-        baseProjectIds.push(ks.baseLibId)
-      }
+      if (ks.id === 'ks-project') continue
+      if (ks.baseLibId) targetLibIds.add(ks.baseLibId)
     }
+    const baseProjectIds: string[] = [...targetLibIds]
 
     try {
       const result: any = await window.electronAPI.invoke('reports:generateReport', {
@@ -190,13 +273,17 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
         title: selectedTemplate.template_name,
         variables: variableValues,
         baseProjectIds,
-        outputFormat,
         supplementaryNotes,
+        sectionInternet,
+        internetEnabled,
       })
 
       if (result.report_id) {
         // Generation started in background — return to kanban
         onComplete()
+        // Persist the wizard selection as project base-lib associations so
+        // the next run pre-checks the same sources (2.7 §5.5)
+        void syncBaseLibAssociations(projectId, targetLibIds)
       } else {
         setGenerating(false)
       }
@@ -204,7 +291,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       console.error('Generation failed:', err)
       setGenerating(false)
     }
-  }, [selectedTemplate, projectId, variableValues, outputFormat, supplementaryNotes, knowledgeSources, checkedSources, generating, onComplete])
+  }, [selectedTemplate, projectId, variableValues, supplementaryNotes, sectionInternet, internetEnabled, knowledgeSources, checkedSources, onComplete])
 
   const toggleSource = (id: string) => {
     setCheckedSources(prev => {
@@ -215,12 +302,17 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     })
   }
 
-  const removeChapter = (idx: number) => {
-    setChapters(prev => prev.filter((_, i) => i !== idx))
+  const toggleSectionInternet = (sectionId: string) => {
+    setSectionInternet(prev => ({ ...prev, [sectionId]: !prev[sectionId] }))
   }
 
-  const addChapter = () => {
-    setChapters(prev => [...prev, t('project.report.wizard.newChapter')])
+  // 报告级总开关：关闭时清空章节开关（避免 OFF 状态下残留逐节配置误导）
+  const toggleMasterInternet = () => {
+    setInternetEnabled(prev => {
+      const next = !prev
+      if (!next) setSectionInternet({})
+      return next
+    })
   }
 
   // Filter templates by search
@@ -325,26 +417,25 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
                 <span className={s.stepLabel}>{t('project.report.wizard.template')}</span>
                 <span className={s.stepValue}>{selectedTemplate.template_name}</span>
                 <span className={s.stepLabel}>{t('project.report.wizard.outputFormat')}</span>
-                <select className={s.formatSelect} value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as 'Word' | 'PDF')}>
-                  <option value="Word">Word</option>
-                  <option value="PDF">PDF</option>
-                </select>
+                <span className={s.stepValue}>{selectedTemplate.output_format || 'docx'}</span>
               </div>
 
-              {/* Template variables */}
-              {selectedTemplate.variables && selectedTemplate.variables.length > 0 ? (
+              {/* Template variables (user-sourced only) */}
+              {userVariables.length > 0 ? (
                 <div className={s.section}>
                   <div className={s.sectionTitle}>{t('project.report.wizard.variables')}</div>
                   <p className={s.sectionHint}>{t('project.report.wizard.variablesPlaceholder')}</p>
                   <div className={s.variableGrid}>
-                    {selectedTemplate.variables.map((v) => (
-                      <div key={v} className={s.variableField}>
-                        <label className={s.variableLabel}>{v}</label>
+                    {userVariables.map((v) => (
+                      <div key={v.name} className={s.variableField}>
+                        <label className={s.variableLabel}>
+                          {v.label || v.name}{v.required !== false ? ' *' : ''}
+                        </label>
                         <input
                           className={s.variableInput}
-                          value={variableValues[v] || ''}
-                          onChange={(e) => setVariableValues(prev => ({ ...prev, [v]: e.target.value }))}
-                          placeholder={v}
+                          value={variableValues[v.name] || ''}
+                          onChange={(e) => setVariableValues(prev => ({ ...prev, [v.name]: e.target.value }))}
+                          placeholder={v.placeholder || v.label || v.name}
                         />
                       </div>
                     ))}
@@ -370,9 +461,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
                     <span className={s.checkboxLabel}>
                       {ks.isCustom
                         ? customBaseLibs.find(lib => `ks-custom-${lib.id}` === ks.id)?.name || ks.id
-                        : ks.id === 'ks-internet'
-                          ? <><Globe size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} />{t(ks.nameKey)}</>
-                          : t(ks.nameKey)}
+                        : t(ks.nameKey)}
                     </span>
                     {ks.alwaysChecked && <span className={s.autoTag}>{t('project.report.wizard.autoIncluded')}</span>}
                     {ks.autoMatched && ks.matchType === projectType && !ks.alwaysChecked && (
@@ -395,26 +484,54 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
               </div>
             </div>
 
-            {/* Right panel: outline */}
+            {/* Right panel: outline sections + per-section internet toggle */}
             <div className={s.rightPanel}>
               <div className={s.section}>
                 <div className={s.sectionTitle}>{t('project.report.wizard.outline')}</div>
-                <div className={s.chapterList}>
-                  {chapters.map((ch, idx) => (
-                    <div key={idx} className={s.chapterItem}>
-                      <GripVertical size={14} className={s.dragHandle} />
-                      <span className={s.chapterNum}>{idx + 1}.</span>
-                      <span className={s.chapterName}>{ch}</span>
-                      <button className={s.removeBtn} onClick={() => removeChapter(idx)} title={t('project.report.wizard.removeChapter')}>
-                        <Trash2 size={13} />
-                      </button>
+                {/* 报告级互联网总开关（总闸）：未配置 Tavily key 时置灰 */}
+                <label
+                  className={`${s.internetToggle} ${s.masterInternetToggle} ${!internetConfigured ? s.internetToggleDisabled : ''}`}
+                  title={t('project.report.wizard.masterInternet')}
+                >
+                  <input
+                    type="checkbox"
+                    checked={internetEnabled && internetConfigured}
+                    onChange={toggleMasterInternet}
+                    disabled={!internetConfigured}
+                  />
+                  <Globe size={13} />
+                  <span>{t('project.report.wizard.masterInternet')}</span>
+                </label>
+                {!internetConfigured && (
+                  <p className={s.sectionHint}>{t('project.report.wizard.internetDisabledHint')}</p>
+                )}
+                <div className={s.sectionList}>
+                  {standardSections.length === 0 ? (
+                    <div className={s.emptyState}>
+                      <span>{t('project.report.wizard.noSections')}</span>
                     </div>
-                  ))}
+                  ) : (
+                    standardSections.map((sec, idx) => (
+                      <div key={sec.section_id} className={s.sectionItem}>
+                        <span className={s.sectionNum}>{idx + 1}.</span>
+                        <span className={s.sectionName}>{sec.title}</span>
+                        <label
+                          className={`${s.internetToggle} ${(!internetConfigured || !internetEnabled) ? s.internetToggleDisabled : ''}`}
+                          title={t('project.report.wizard.sectionInternet')}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!sectionInternet[sec.section_id]}
+                            onChange={() => toggleSectionInternet(sec.section_id)}
+                            disabled={!internetConfigured || !internetEnabled}
+                          />
+                          <Globe size={13} />
+                          <span>{t('project.report.wizard.sectionInternet')}</span>
+                        </label>
+                      </div>
+                    ))
+                  )}
                 </div>
-                <button className={s.addChapterBtn} onClick={addChapter}>
-                  <Plus size={14} />
-                  {t('project.report.wizard.addChapter')}
-                </button>
               </div>
             </div>
           </div>

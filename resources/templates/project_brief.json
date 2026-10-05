@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "template_id": "project_brief",
   "template_name": "项目简报",
   "version": "1.0",
@@ -16,7 +17,7 @@
     {
       "section_id": "overview",
       "title": "项目概览",
-      "description": "{{公司名}} 的核心业务、发展阶段和关键亮点概览"
+      "description": "{{company_name}} 的核心业务、发展阶段和关键亮点概览"
     },
     {
       "section_id": "highlights",

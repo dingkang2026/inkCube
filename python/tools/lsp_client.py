@@ -5,6 +5,7 @@ using external tools (pyright, tsc) when available, with
 regex-based fallback for cross-platform compatibility.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -92,14 +93,21 @@ class LSPClientTool(BaseTool):
 
         workspace = Path(self.workspace_dir).resolve()
 
+        # All four helpers block: type_check/find_references spawn subprocesses
+        # (pyright/mypy/tsc/rg), go_to_definition/hover scan workspace files —
+        # run them in a worker thread so the event loop stays responsive (H1)
         if action == "type_check":
-            return self._type_check(workspace, file_path)
+            return await asyncio.to_thread(self._type_check, workspace, file_path)
         elif action == "go_to_definition":
-            return self._go_to_definition(workspace, file_path, symbol, line, column)
+            return await asyncio.to_thread(
+                self._go_to_definition, workspace, file_path, symbol, line, column,
+            )
         elif action == "find_references":
-            return self._find_references(workspace, symbol)
+            return await asyncio.to_thread(self._find_references, workspace, symbol)
         elif action == "hover":
-            return self._hover(workspace, file_path, symbol, line, column)
+            return await asyncio.to_thread(
+                self._hover, workspace, file_path, symbol, line, column,
+            )
         else:
             return json.dumps({"error": f"未知操作: {action}"}, ensure_ascii=False)
 

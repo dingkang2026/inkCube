@@ -21,7 +21,7 @@ export interface Report {
   title: string
   template_id: string
   template_name: string
-  output_format: 'Word' | 'PDF'
+  output_format: string
   created_at: string
   status: 'done' | 'generating' | 'error'
   progress?: number

@@ -4,12 +4,13 @@
   1. LLM 驱动检索策略（query_hints → 多组搜索关键词）
   2. 多通道并行检索：
      - knowledge 通道：KnowledgeSearchTool（Vector + BM25 + RRF）
+     - wiki 通道：项目已编译 Wiki 页面（关键词 + 图谱扩展，高权重骨架上下文）
      - internet 通道：Tavily API 网络搜索
   3. 知识卡片构建（LLM 提取 + 去重 + 归因）
   4. 注册到全局 CitationRegistry
   5. 降级策略（候选池为空时的处理）
 
-设计参考：docs/2.1project-design.md §6.7.3
+设计参考：docs/2.5report-design.md §3.3
 """
 import asyncio
 import logging
@@ -53,9 +54,11 @@ async def retrieve_for_section(
     digests: list[dict],
     tavily_api_key: str = "",
     base_project_ids: Optional[list[str]] = None,
-    top_k: int = 10,
+    top_k: Optional[int] = None,
     query_parallelism: int = 4,
     db: Any = None,
+    data_sources: Optional[list[str]] = None,
+    report_depth: str = "full",
 ) -> tuple[RetrievalResult, dict]:
     """为一个章节执行多通道并行检索。
 
@@ -76,13 +79,20 @@ async def retrieve_for_section(
         digests: 前文摘要列表
         tavily_api_key: Tavily API Key（internet 通道）
         base_project_ids: 关联基础库项目 ID 列表（可选）
-        top_k: 每通道返回片段数（默认 10）
+        top_k: 每通道返回片段数（None → 按 report_depth 推算：full 20 / brief 10）
         query_parallelism: 通道内多 query 并行数（默认 4）
+        db: 数据库句柄（wiki 通道检索项目已编译 Wiki 页面时使用）
+        data_sources: 检索通道子集 {"knowledge","internet","wiki"}（None → ["knowledge"]）
+        report_depth: 报告深度 "full" | "brief"，决定知识库检索量
 
     Returns:
         (RetrievalResult, total_usage): 检索结果 + 累计 API usage
     """
     section_id = section.get("section_id", "unknown")
+    if data_sources is None:
+        data_sources = ["knowledge"]
+    if top_k is None:
+        top_k = 20 if report_depth == "full" else 10
     total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def _add_usage(usage: dict):
@@ -97,16 +107,35 @@ async def retrieve_for_section(
     _add_usage(strategy_usage)
     logger.info("Retrieval: section=%s, queries=%d", section_id, len(queries))
 
-    # ② 知识库通道检索（默认启用）
+    # ② 多通道检索装配（§3.3：knowledge 恒可用；wiki 按 data_sources + db；internet 按 data_sources + tavily_key）
     raw_results: list[dict] = []
     channel_tasks = []
 
-    channel_tasks.append(
-        _search_knowledge_channel(
-            queries, search_tool, project_id, base_project_ids, top_k,
-            query_parallelism,
+    if "knowledge" in data_sources:
+        channel_tasks.append(
+            _search_knowledge_channel(
+                queries, search_tool, project_id, base_project_ids, top_k,
+                query_parallelism,
+            )
         )
-    )
+
+    if "wiki" in data_sources and db is not None:
+        channel_tasks.append(
+            _search_wiki_channel(queries, db, project_id, top_k)
+        )
+
+    if "internet" in data_sources:
+        if tavily_api_key:
+            channel_tasks.append(
+                _search_internet_channel(
+                    queries, tavily_api_key, top_k, query_parallelism,
+                )
+            )
+        else:
+            logger.info(
+                "Retrieval: section=%s internet 通道已请求但未配置 tavily_key，跳过",
+                section_id,
+            )
 
     # 并行执行所有通道
     if channel_tasks:
@@ -182,7 +211,7 @@ async def _search_knowledge_channel(
         async with sem:
             try:
                 results = await search_tool.search(
-                    query=query, project_id=pid, top_k=20,
+                    query=query, project_id=pid, top_k=top_k,
                 )
                 return results
             except Exception as e:
@@ -206,11 +235,6 @@ async def _search_knowledge_channel(
                     "source_date": "",
                     "content": _truncate_content(r.get("content", ""), 500),
                     "score": r.get("_score", 0),
-                    # 保留旧字段用于兼容
-                    "doc_id": metadata.get("file_id", project_id),
-                    "chunk_id": cid,
-                    "doc_name": metadata.get("filename", "未知文档"),
-                    "page": metadata.get("page_no"),
                 }
 
     # 按分数排序取 top_k
@@ -357,16 +381,35 @@ async def _search_wiki_channel(
     project_id: str,
     top_k: int,
 ) -> tuple[list[dict], dict]:
-    """Wiki 通道：从已编译的 Wiki 页面中检索相关页面。
+    """Wiki 通道：从项目已编译的 Wiki 页面中检索相关页面。
 
+    设计参考 docs/2.6wiki-design.md §8.1/§8.2：Wiki 页面是已编译的结构化“骨架”
+    知识，作为报告生成的最高权重上下文（采信优先级 Wiki > 知识库 > 互联网）。
+
+    仅纳入已完成状态（compiled / user_edited）的页面，排除 draft 半成品页。
+    页面集只拉取一次并在多 query 间复用，避免重复全量加载。
     使用 wiki_search 引擎（关键词 + 图谱扩展），合并去重后按相关性排序。
-    Wiki 页面作为"骨架"上下文，赋予较高权重。
     """
     empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     from wiki.wiki_search import search_wiki
 
-    all_pages: dict[str, dict] = {}  # page_key -> result dict
+    # 只检索已完成的 Wiki 页面（compiled / user_edited），排除 draft 半成品。
+    # index/log/overview/purpose 不作为 wiki_pages 行存储，无需额外排除元页。
+    try:
+        all_pages = db.list_wiki_pages(project_id)
+    except Exception as e:
+        logger.warning("Wiki channel: failed to list pages for project=%s: %s", project_id, e)
+        return [], empty_usage
+
+    finished_pages = [
+        p for p in all_pages
+        if p.get("status") in ("compiled", "user_edited")
+    ]
+    if not finished_pages:
+        return [], empty_usage
+
+    all_results: dict[str, dict] = {}  # page_key -> result dict
 
     for query in queries:
         try:
@@ -376,6 +419,7 @@ async def _search_wiki_channel(
                 db=db,
                 top_k=top_k,
                 enable_graph=True,
+                pages=finished_pages,
             )
         except Exception as e:
             logger.warning("Wiki search failed for query='%s': %s", query, e)
@@ -383,9 +427,9 @@ async def _search_wiki_channel(
 
         for page in results:
             pk = page.get("page_key", "")
-            if pk and pk not in all_pages:
+            if pk and pk not in all_results:
                 content = page.get("content", "")
-                all_pages[pk] = {
+                all_results[pk] = {
                     "source_type": "wiki",
                     "source_title": page.get("title", pk),
                     "source_from": f"wiki:{pk}",
@@ -395,5 +439,5 @@ async def _search_wiki_channel(
                     "page_key": pk,
                 }
 
-    sorted_pages = sorted(all_pages.values(), key=lambda r: r["score"], reverse=True)
+    sorted_pages = sorted(all_results.values(), key=lambda r: r["score"], reverse=True)
     return sorted_pages[:top_k], empty_usage

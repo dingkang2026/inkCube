@@ -18,76 +18,21 @@ import { TaskList } from './features/task/TaskList'
 import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
 import { useSettings } from './features/settings/useSettings'
+import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { useResizeHandle } from './hooks/useResizeHandle'
-import { ToastProvider, useToast } from './features/knowledge/Toast'
+import { usePolling } from './hooks/usePolling'
+import { ToastProvider } from './features/knowledge/Toast'
+import { ActivityProvider } from './features/activity/ActivityContext'
+import { ActivityMonitor } from './features/activity/ActivityMonitor'
+import { useConfirm } from './components/ConfirmDialog'
 import type { Project } from './features/knowledge/types'
 import type { ProjectType } from './features/project/types'
 import { getInitialStage } from './features/project/types'
 
-/** Inner component: polls global wiki review status and shows toast notifications.
- *  Must live inside ToastProvider to access useToast. */
-function WikiReviewMonitor({
-  onWaitingReviewCountChange,
-  onActiveIngestChange,
-}: {
-  onWaitingReviewCountChange: (count: number) => void
-  onActiveIngestChange: (hasActive: boolean) => void
-}) {
-  const { t } = useTranslation()
-  const showToast = useToast()
-  const prevProjectIdsRef = useRef<Set<string>>(new Set())
-
-  useEffect(() => {
-    let cancelled = false
-    const check = async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('wiki:globalReviewStatus')
-        if (cancelled) return
-        const waiting: any[] = result?.waiting_reviews || []
-        onWaitingReviewCountChange(waiting.length)
-        const activeCompiles: any[] = result?.active_compiles || []
-        onActiveIngestChange(activeCompiles.length > 0)
-
-        // Detect NEW waiting reviews (not seen before) and show toast
-        const currentIds = new Set(waiting.map((w: any) => w.project_id))
-        for (const w of waiting) {
-          if (!prevProjectIdsRef.current.has(w.project_id)) {
-            showToast(
-              t('project.wiki.reviewWaiting', {
-                defaultValue: `「${w.project_name}」知识库编译等待审阅`,
-                projectName: w.project_name,
-              }),
-              'warning',
-              {
-                action: {
-                  label: t('project.wiki.goToReview', { defaultValue: '前往查看' }),
-                  onClick: () => {
-                    // Dispatch custom event to navigate to project wiki tab
-                    window.dispatchEvent(
-                      new CustomEvent('app:navigate-wiki', { detail: { projectId: w.project_id } })
-                    )
-                  },
-                },
-              },
-            )
-          }
-        }
-        prevProjectIdsRef.current = currentIds
-      } catch {
-        // Backend not ready yet
-      }
-    }
-    check()
-    const timer = setInterval(check, 5000)
-    return () => { cancelled = true; clearInterval(timer) }
-  }, [showToast, t, onWaitingReviewCountChange])
-
-  return null
-}
-
 export default function App() {
   const { t } = useTranslation()
-  const { settings, handleSaveSettings } = useSettings()
+  const confirmDialog = useConfirm()
+  const { settings, settingsLoaded, handleSaveSettings } = useSettings()
   const sidebar = useResizeHandle(260, 200, 480)
 
   // ── Task state ──
@@ -123,14 +68,25 @@ export default function App() {
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /** 设置页锚点直达信号（0.4 §7.4）：section + 时间戳，重复导航也生效 */
+  const [settingsSectionSignal, setSettingsSectionSignal] = useState<{ name: string; ts: number } | null>(null)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [logViewerOpen, setLogViewerOpen] = useState(false)
   const [activeNav, setActiveNav] = useState('home')
   const [processExitCode, setProcessExitCode] = useState<number | null>(null)
   const [canStartTask, setCanStartTask] = useState(true)
   const [runningTaskIds, setRunningTaskIds] = useState<Set<string>>(new Set())
-  const [waitingReviewCount, setWaitingReviewCount] = useState(0)
-  const [hasActiveIngest, setHasActiveIngest] = useState(false)
+  /** 通知导航到项目 Tab 的信号（tab + 时间戳，ProjectDetailPage 消费后切换 Tab） */
+  const [projectTabSignal, setProjectTabSignal] = useState<{ tab: string; ts: number } | null>(null)
+
+  // ── First-run onboarding (0.4 §7.3): 一次性判定所需状态 ──
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null)
+  const [anyModelDownloaded, setAnyModelDownloaded] = useState<boolean | null>(null)
+  const onboardingCheckedRef = useRef(false)
+  /** 向导挂起（§7.3 ①②流程内步骤）：「去配置 / 去下载」跳设置期间记录恢复步骤；
+   *  null = 无挂起。设置页关闭后恢复向导并推进（去配置→②，去下载→③），保证引导不断开 */
+  const [onboardingResumeStep, setOnboardingResumeStep] = useState<number | null>(null)
 
   // ── Knowledge base state ──
   const [projects, setProjects] = useState<Project[]>([])
@@ -151,6 +107,43 @@ export default function App() {
     loadProjects()
   }, [loadProjects])
 
+  // One-shot data for first-run detection (onboarding flag + any downloaded internal model)
+  useEffect(() => {
+    void window.electronAPI.invoke('system:getOnboarding')
+      .then((res) => setOnboardingDone(!!(res as { done?: boolean }).done))
+      .catch(() => setOnboardingDone(false))
+    void window.electronAPI.invoke('models:status')
+      .then((res) => {
+        const models = Object.values(res as Record<string, { downloaded?: boolean }>)
+        setAnyModelDownloaded(models.some((m) => !!m.downloaded))
+      })
+      .catch(() => setAnyModelDownloaded(false))
+  }, [])
+
+  // First-run onboarding wizard (0.4 §7.3): fire once after all data sources settle —
+  // new user = no api_key, no downloaded internal model, no projects, no tasks
+  useEffect(() => {
+    if (onboardingCheckedRef.current) return
+    if (!settingsLoaded || tasksLoading) return
+    if (onboardingDone === null || anyModelDownloaded === null) return
+    onboardingCheckedRef.current = true
+    const isNewUser =
+      !onboardingDone &&
+      !settings.api_key &&
+      !anyModelDownloaded &&
+      projects.length === 0 &&
+      currentTasks.length === 0
+    if (isNewUser) setShowOnboarding(true)
+  }, [settingsLoaded, tasksLoading, onboardingDone, anyModelDownloaded, settings.api_key, projects, currentTasks])
+
+  // 向导挂起恢复（0.4 §7.3）：设置页关闭（任意路径：NavTabs 切换 / Ctrl+1/2/3）→ 回到向导下一步，
+  // 引导流程 ①→②→③ 不因去配置 / 去下载断开；resumeStep 保留至 onFinish 才清，供 initialStep 传值
+  useEffect(() => {
+    if (!settingsOpen && onboardingResumeStep !== null) {
+      setShowOnboarding(true)
+    }
+  }, [settingsOpen, onboardingResumeStep])
+
   // Refresh projects when navigating to projects tab
   useEffect(() => {
     if (activeNav === 'projects') {
@@ -165,30 +158,28 @@ export default function App() {
     }
   }, [activeNav, projects, selectedProjectId, selectedBaseLibId])
 
-  // Poll task status only when on tasks tab or a task is generating
+  // Poll task status only when on tasks tab or a task is generating（#2，v1.7 迁移 usePolling，0.4 §8.1）
+  const shouldPollTasks = activeNav === 'tasks' || taskIsGenerating
+  usePolling({
+    name: 'task-status',
+    enabled: shouldPollTasks,
+    interval: 3000,
+    task: async () => {
+      // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
+      const status = await window.electronAPI.invoke('tasks:getStatus') as {
+        can_start: boolean; running_task_ids?: string[]
+      }
+      setCanStartTask(status.can_start)
+      setRunningTaskIds(new Set(status.running_task_ids || []))
+    },
+  })
+  // 非轮询期重置派生标记（原 shouldPoll=false 分支）
   useEffect(() => {
-    const shouldPoll = activeNav === 'tasks' || taskIsGenerating
-    if (!shouldPoll) {
+    if (!shouldPollTasks) {
       setCanStartTask(true)
       setRunningTaskIds(new Set())
-      return
     }
-    let cancelled = false
-    const poll = async () => {
-      try {
-        const status = await window.electronAPI.invoke('tasks:getStatus') as {
-          can_start: boolean; running_task_ids?: string[]
-        }
-        if (!cancelled) {
-          setCanStartTask(status.can_start)
-          setRunningTaskIds(new Set(status.running_task_ids || []))
-        }
-      } catch { /* ignore */ }
-    }
-    poll()
-    const timer = setInterval(poll, 3000)
-    return () => { cancelled = true; clearInterval(timer) }
-  }, [activeNav, taskIsGenerating])
+  }, [shouldPollTasks])
 
   // Refresh task status when generation finishes
   useEffect(() => {
@@ -208,17 +199,21 @@ export default function App() {
     : null
 
   const handleProjectSelect = (projectId: string) => {
+    setSettingsOpen(false)
+    setShowTemplateManagement(false)
     setSelectedBaseLibId(null)
     setSelectedProjectId((prev) => (prev === projectId ? null : projectId))
   }
 
   const handleBaseLibSelect = (baseLibId: string) => {
+    setSettingsOpen(false)
+    setShowTemplateManagement(false)
     setSelectedProjectId(null)
     setSelectedBaseLibId((prev) => (prev === baseLibId ? null : baseLibId))
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    if (!confirm(t('knowledge.confirmDeleteProject'))) return
+    if (!(await confirmDialog({ title: t('knowledge.deleteProject'), message: t('knowledge.confirmDeleteProject') }))) return
     try {
       await window.electronAPI.invoke('knowledge:deleteProject', projectId)
       await loadProjects()
@@ -261,21 +256,58 @@ export default function App() {
 
   const handleNavChange = useCallback((nav: string) => {
     setActiveNav(nav)
-    // Auto-close settings when switching tabs
+    // Peer pages: switching nav exits settings / template management / base lib detail
     setSettingsOpen(false)
+    setShowTemplateManagement(false)
+    setSelectedBaseLibId(null)
   }, [])
 
-  // Listen for navigate-wiki event (from WikiReviewMonitor toast action)
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const { projectId } = (e as CustomEvent).detail
-      setSelectedBaseLibId(null)
-      setSelectedProjectId(projectId)
-      setActiveNav('projects')
-    }
-    window.addEventListener('app:navigate-wiki', handler)
-    return () => window.removeEventListener('app:navigate-wiki', handler)
+  // Settings is a peer page too: opening it exits template management / base lib detail
+  // section 可选：设置页锚点直达（0.4 §7.4，首页红卡 / 引导弹层 / 向导）
+  const handleOpenSettings = useCallback((section?: string) => {
+    setShowTemplateManagement(false)
+    setSelectedBaseLibId(null)
+    setSettingsSectionSignal(section ? { name: section, ts: Date.now() } : null)
+    setSettingsOpen(true)
   }, [])
+
+  // 向导流程内步骤「去配置 / 去下载」（0.4 §7.3 ①②）：挂起向导（不写 onboarding_done）
+  // 跳设置锚点，恢复由下方 settingsOpen 关闭 effect 接管
+  const handleOnboardingSuspend = useCallback(
+    (section: 'externalModel' | 'internalModel') => {
+      setOnboardingResumeStep(section === 'externalModel' ? 2 : 3)
+      setShowOnboarding(false)
+      handleOpenSettings(section)
+    },
+    [handleOpenSettings],
+  )
+
+  // Listen for navigate-project-tab (Activity Hub toast/home feed action) and navigate-tasks
+  useEffect(() => {
+    const tabHandler = (e: Event) => {
+      const { projectId, tab, container } = (e as CustomEvent).detail
+      setSettingsOpen(false)
+      setShowTemplateManagement(false)
+      // 基础库容器（0.4 §3.6 导航分流）：projectId 即 baseLibId，与项目详情互斥；
+      // tab 信号只对项目详情页生效，基础库详情内嵌素材区即 file 活动目标位置
+      if (container === 'baselib') {
+        setSelectedProjectId(null)
+        setSelectedBaseLibId(projectId)
+      } else {
+        setSelectedBaseLibId(null)
+        setSelectedProjectId(projectId)
+      }
+      setActiveNav('projects')
+      if (tab) setProjectTabSignal({ tab, ts: Date.now() })
+    }
+    const tasksHandler = () => handleNavChange('tasks')
+    window.addEventListener('app:navigate-project-tab', tabHandler)
+    window.addEventListener('app:navigate-tasks', tasksHandler)
+    return () => {
+      window.removeEventListener('app:navigate-project-tab', tabHandler)
+      window.removeEventListener('app:navigate-tasks', tasksHandler)
+    }
+  }, [handleNavChange])
 
   // Listen for wiki immersive mode — auto-hide app sidebar to maximize content
   const prevSidebarBeforeImmersive = useRef<boolean | null>(null)
@@ -301,7 +333,7 @@ export default function App() {
   const handleNewTaskWithDir = async () => {
     const result = await window.electronAPI.invoke('tasks:selectDirectory') as { canceled?: boolean; path?: string }
     if (result.canceled || !result.path) return
-    const confirmed = window.confirm(t('task.confirmWorkspace', { path: result.path }))
+    const confirmed = await confirmDialog({ message: t('task.confirmWorkspace', { path: result.path }), danger: false })
     if (confirmed) {
       handleCreateTaskWithDir(result.path)
     }
@@ -326,7 +358,7 @@ export default function App() {
   // ── Electron IPC listeners ──
   useEffect(() => {
     const offSettings = window.electronAPI.on('menu:open-settings', () => {
-      setSettingsOpen(true)
+      handleOpenSettings()
     })
     const offViewLogs = window.electronAPI.on('menu:view-logs', () => {
       setLogViewerOpen(true)
@@ -334,8 +366,12 @@ export default function App() {
     const offExportLogs = window.electronAPI.on('menu:export-logs', () => {
       window.electronAPI.invoke('system:exportLogs')
     })
-    // Listen for navigate-settings from useErrorHandler / HealthStatus
-    const handleNavSettings = () => setSettingsOpen(true)
+    // Listen for navigate-settings from useErrorHandler / HealthStatus / readiness guard
+    // (detail.section = 设置页锚点，0.4 §7.2 action 编码)
+    const handleNavSettings = (e: Event) => {
+      const { section } = (e as CustomEvent).detail ?? {}
+      handleOpenSettings(section)
+    }
     window.addEventListener('app:navigate-settings', handleNavSettings)
     // Listen for Python process exit
     const offProcessExit = window.electronAPI.on('python:process-exit', (data: unknown) => {
@@ -351,151 +387,165 @@ export default function App() {
       offProcessExit?.()
       window.removeEventListener('app:navigate-settings', handleNavSettings)
     }
-  }, [])
+  }, [handleOpenSettings])
 
   return (
     <ToastProvider>
-      <WikiReviewMonitor onWaitingReviewCountChange={setWaitingReviewCount} onActiveIngestChange={setHasActiveIngest} />
-      <TitleBar
-        onOpenSettings={() => setSettingsOpen(true)}
-        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-        onShowAbout={() => setAboutOpen(true)}
-      />
-      <div className="app-layout">
-        {/* Sidebar */}
-        {!sidebarCollapsed && (
-          <>
-            <Sidebar
-              width={sidebar.width}
-              activeNav={activeNav}
-              onNavChange={handleNavChange}
-              onOpenSettings={() => setSettingsOpen(true)}
-              waitingReviewCount={waitingReviewCount}
-              hasActiveIngest={hasActiveIngest}
-              footer={
-                <BaseLibFooter
-                  selectedBaseLib={selectedBaseLibId}
-                  onSelectBaseLib={handleBaseLibSelect}
-                  onOpenTemplateManagement={() => setShowTemplateManagement(true)}
-                />
-              }
-            >
-              {activeNav === 'projects' && (
-                <ProjectSidebar
-                  projects={projects}
-                  selectedProject={selectedProjectId}
-                  onSelectProject={handleProjectSelect}
-                  onDeleteProject={handleDeleteProject}
-                  onRenameProject={handleRenameProject}
-                  onCreateProject={handleCreateProject}
-                />
-              )}
-              {activeNav === 'tasks' && (
-                <TaskList
-                  tasks={currentTasks}
-                  activeTaskId={activeTaskId}
-                  activeTab={activeTab}
-                  loading={tasksLoading}
-                  creating={taskCreating}
-                  onSelect={setActiveTaskId}
-                  onNew={() => handleCreateTask()}
-                  onNewWithDir={handleNewTaskWithDir}
-                  onDelete={handleDeleteTask}
-                  onRename={handleRenameTask}
-                  onArchive={handleArchiveTask}
-                  onUnarchive={handleUnarchiveTask}
-                  onExport={handleExportTask}
-                  onTabChange={setActiveTab}
-                  archivedCount={archivedTasks.length}
-                  canCreateTask={canStartTask}
-                  runningTaskIds={runningTaskIds}
-                />
-              )}
-            </Sidebar>
-            <ResizeHandle
-              onResize={sidebar.handleResize}
-              onDoubleClick={sidebar.resetWidth}
-            />
-          </>
-        )}
+      <ActivityProvider>
+        {/* 单一常驻活动轮询：Toast / 徽章 / 首页活动区共同数据源（0.4 §8.1 #0） */}
+        <ActivityMonitor />
+        <TitleBar
+          onOpenSettings={handleOpenSettings}
+          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onShowAbout={() => setAboutOpen(true)}
+        />
+        <div className="app-layout">
+          {/* Sidebar */}
+          {!sidebarCollapsed && (
+            <>
+              <Sidebar
+                width={sidebar.width}
+                activeNav={!settingsOpen && !showTemplateManagement && !selectedBaseLibId ? activeNav : ''}
+                onNavChange={handleNavChange}
+                onOpenSettings={handleOpenSettings}
+                footer={
+                  <BaseLibFooter
+                    selectedBaseLib={selectedBaseLibId}
+                    onSelectBaseLib={handleBaseLibSelect}
+                    templateManagementActive={showTemplateManagement}
+                    onOpenTemplateManagement={() => {
+                      setSettingsOpen(false)
+                      setSelectedBaseLibId(null)
+                      setShowTemplateManagement(true)
+                    }}
+                  />
+                }
+              >
+                {activeNav === 'projects' && (
+                  <ProjectSidebar
+                    projects={projects}
+                    selectedProject={selectedProjectId}
+                    onSelectProject={handleProjectSelect}
+                    onDeleteProject={handleDeleteProject}
+                    onRenameProject={handleRenameProject}
+                    onCreateProject={handleCreateProject}
+                  />
+                )}
+                {activeNav === 'tasks' && (
+                  <TaskList
+                    tasks={currentTasks}
+                    activeTaskId={activeTaskId}
+                    activeTab={activeTab}
+                    loading={tasksLoading}
+                    creating={taskCreating}
+                    onSelect={setActiveTaskId}
+                    onNew={() => handleCreateTask()}
+                    onNewWithDir={handleNewTaskWithDir}
+                    onDelete={handleDeleteTask}
+                    onRename={handleRenameTask}
+                    onArchive={handleArchiveTask}
+                    onUnarchive={handleUnarchiveTask}
+                    onExport={handleExportTask}
+                    onTabChange={setActiveTab}
+                    archivedCount={archivedTasks.length}
+                    canCreateTask={canStartTask}
+                    runningTaskIds={runningTaskIds}
+                  />
+                )}
+              </Sidebar>
+              <ResizeHandle
+                onResize={sidebar.handleResize}
+                onDoubleClick={sidebar.resetWidth}
+              />
+            </>
+          )}
 
-        {settingsOpen ? (
-          <SettingsPage
-            settings={settings}
-            onSave={handleSaveSettings}
-            onClose={() => setSettingsOpen(false)}
-          />
-        ) : showTemplateManagement ? (
-          <TemplateManagement onBack={() => setShowTemplateManagement(false)} />
-        ) : selectedBaseLibId ? (
-          /* Base library is parallel to projects — accessible from any nav */
-          <BaseLibDetailPage
-            baseLibId={selectedBaseLibId}
-            onBack={() => setSelectedBaseLibId(null)}
-          />
-        ) : activeNav === 'home' ? (
-          <HomePage
-            projects={projects}
-            onNavigate={handleNavChange}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onSelectProject={(id) => {
-              setSelectedProjectId(id)
-            }}
-          />
-        ) : activeNav === 'projects' ? (
-          selectedProject ? (
-            <ProjectDetailPage
-              project={selectedProject}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onProjectDataChanged={loadProjects}
+          {settingsOpen ? (
+            <SettingsPage
+              settings={settings}
+              onSave={handleSaveSettings}
+              sectionSignal={settingsSectionSignal}
+            />
+          ) : showTemplateManagement ? (
+            <TemplateManagement />
+          ) : selectedBaseLibId ? (
+            /* Base library is parallel to projects — accessible from any nav */
+            <BaseLibDetailPage baseLibId={selectedBaseLibId} />
+          ) : activeNav === 'home' ? (
+            <HomePage
+              projects={projects}
+              onNavigate={handleNavChange}
+              onOpenSettings={handleOpenSettings}
+              onSelectProject={(id) => {
+                setSelectedProjectId(id)
+              }}
+            />
+          ) : activeNav === 'projects' ? (
+            selectedProject ? (
+              <ProjectDetailPage
+                project={selectedProject}
+                tabSignal={projectTabSignal}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onProjectDataChanged={loadProjects}
+              />
+            ) : (
+              <KnowledgePage
+                selectedProject={null}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onProjectDataChanged={loadProjects}
+              />
+            )
+          ) : activeNav === 'tasks' ? (
+            <TaskPage
+              taskId={activeTaskId}
+              taskTitle={tasks.find((t) => t.id === activeTaskId)?.title}
+              taskMode={tasks.find((t) => t.id === activeTaskId)?.mode || 'coding'}
+              hasActiveTask={!!activeTaskId}
+              messages={taskMessages}
+              isGenerating={taskIsGenerating}
+              streamContent={taskStreamContent}
+              streamSteps={taskStreamSteps}
+              streamReasoning={taskStreamReasoning}
+              streamIteration={taskStreamIteration}
+              streamIterationThoughts={taskStreamIterationThoughts}
+              streamIterationReasoning={taskStreamIterationReasoning}
+              planData={taskPlanData}
+              pendingShellConfirm={taskPendingShellConfirm}
+              pendingSkillConfirm={taskPendingSkillConfirm}
+              onSendMessage={handleTaskSendMessage}
+              onStopGenerate={handleTaskStopGenerate}
+              onPauseTask={handleTaskPause}
+              onShellConfirm={handleTaskShellConfirm}
+              onSkillConfirm={handleTaskSkillConfirm}
+              onResumeTask={handleTaskResume}
+              canResume={taskCanResume}
+              onFilesUploaded={() => loadTasks()}
+              onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
             />
           ) : (
-            <KnowledgePage
-              selectedProject={null}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onProjectDataChanged={loadProjects}
-            />
-          )
-        ) : activeNav === 'tasks' ? (
-          <TaskPage
-            taskId={activeTaskId}
-            taskTitle={tasks.find((t) => t.id === activeTaskId)?.title}
-            taskMode={tasks.find((t) => t.id === activeTaskId)?.mode || 'coding'}
-            hasActiveTask={!!activeTaskId}
-            messages={taskMessages}
-            isGenerating={taskIsGenerating}
-            streamContent={taskStreamContent}
-            streamSteps={taskStreamSteps}
-            streamReasoning={taskStreamReasoning}
-            streamIteration={taskStreamIteration}
-            streamIterationThoughts={taskStreamIterationThoughts}
-            streamIterationReasoning={taskStreamIterationReasoning}
-            planData={taskPlanData}
-            pendingShellConfirm={taskPendingShellConfirm}
-            pendingSkillConfirm={taskPendingSkillConfirm}
-            onSendMessage={handleTaskSendMessage}
-            onStopGenerate={handleTaskStopGenerate}
-            onPauseTask={handleTaskPause}
-            onShellConfirm={handleTaskShellConfirm}
-            onSkillConfirm={handleTaskSkillConfirm}
-            onResumeTask={handleTaskResume}
-            canResume={taskCanResume}
-            onFilesUploaded={() => loadTasks()}
-            onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
-          />
-        ) : (
-          <div />
-        )}
-      </div>
-      <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      {logViewerOpen && <LogViewer onClose={() => setLogViewerOpen(false)} />}
-      {processExitCode !== null && (
-        <div className="process-exit-banner">
-          <span>{t('app.processExit', { code: processExitCode })}</span>
-          <button onClick={() => setSettingsOpen(true)}>{t('menu.viewLogs')}</button>
-          <button onClick={() => setProcessExitCode(null)}>{t('window.close')}</button>
+            <div />
+          )}
         </div>
-      )}
+        <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+        {showOnboarding && (
+          <OnboardingWizard
+            onFinish={() => {
+              setShowOnboarding(false)
+              setOnboardingResumeStep(null)
+            }}
+            onSuspend={handleOnboardingSuspend}
+            initialStep={onboardingResumeStep ?? 0}
+          />
+        )}
+        {logViewerOpen && <LogViewer onClose={() => setLogViewerOpen(false)} />}
+        {processExitCode !== null && (
+          <div className="process-exit-banner">
+            <span>{t('app.processExit', { code: processExitCode })}</span>
+            <button onClick={() => handleOpenSettings()}>{t('menu.viewLogs')}</button>
+            <button onClick={() => setProcessExitCode(null)}>{t('window.close')}</button>
+          </div>
+        )}
+      </ActivityProvider>
     </ToastProvider>
   )
 }

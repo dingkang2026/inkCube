@@ -6,6 +6,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { FileRecord, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './FileUploader.module.css'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 interface FileUploaderProps {
   projectId: string
@@ -39,6 +40,7 @@ const FILE_ICONS: Record<string, LucideIcon> = {
 export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTotal = 0, fileLimit = 20, onPageChange, selectedFileId, onSelectFile, onDeleteFile, ipcChannels }: FileUploaderProps) {
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
+  const confirmDialog = useConfirm()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [confirmingFileId, setConfirmingFileId] = useState<string | null>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -119,7 +121,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
 
   const handleBatchDelete = async () => {
     if (selectedIds.size === 0) return
-    if (!confirm(t('knowledge.confirmBatchDelete', { count: selectedIds.size }))) return
+    if (!(await confirmDialog({ title: t('knowledge.batchDelete'), message: t('knowledge.confirmBatchDelete', { count: selectedIds.size }) }))) return
     try {
       await window.electronAPI.invoke(ipc.batchDeleteFiles, {
         projectId,

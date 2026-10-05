@@ -19,6 +19,7 @@ from knowledge.pipeline import ProcessingPipeline
 from knowledge.vlm_client import VLMClient
 from knowledge.vector_store import VectorStore
 from errors import InkCubeError, FileNotFound
+import activity_events
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,8 @@ class KnowledgeWorker:
                 file_id, "error",
                 error_message=f"File not found: {file_path}",
             )
+            # 终态事件显式声明（E2，0.4 §6.4）
+            activity_events.fail_file(self.db, file_id, f"File not found: {file_path}")
             return
 
         logger.info("Setting file %s status to parsing", file_id)
@@ -247,9 +250,12 @@ class KnowledgeWorker:
                     file_id, "error",
                     error_message=result.get("error"),
                 )
+                # 兑底声明（pipeline 内部 except 已发过，未读查重去重；防状态写入与事件脱钩，0.4 §3.2）
+                activity_events.fail_file(self.db, file_id, result.get("error"))
         except Exception as e:
             logger.error("File %s exception: %s", file_id, e, exc_info=True)
             self.db.update_file_status(file_id, "error", error_message=str(e))
+            activity_events.fail_file(self.db, file_id, str(e))
 
     # ── Image Description Worker ──
 
@@ -448,6 +454,12 @@ class KnowledgeWorker:
                     logger.error("[%s] Error processing compile %s: %s", name, task_id, e, exc_info=True)
                 finally:
                     self._compile_queue.task_done()
+                    # Drop continuation-event bookkeeping once the task is no
+                    # longer mid-flight — otherwise the dict grows unboundedly
+                    # across tasks (L1).
+                    task = self.db.get_wiki_compile_task(task_id)
+                    if not task or task["status"] not in ("waiting_review", "ingesting"):
+                        self._compile_continuation_events.pop(task_id, None)
 
     async def _process_compile(self, task_id: str):
         """Process a single Wiki compile task through the two-stage pipeline."""
@@ -518,8 +530,17 @@ class KnowledgeWorker:
                         task_id, "queued",
                         error_message=f"Retry {new_count}/{max_retries}: {e}",
                     )
-                    await asyncio.sleep(backoff)
-                    await self.enqueue_compile(task_id)
+                    # Schedule the delayed re-enqueue in the background so this
+                    # worker returns immediately and releases the compile
+                    # semaphore — sleeping 30-120s while holding it (M1) would
+                    # starve every other compile task on the only slot.
+                    async def _requeue_after_backoff():
+                        await asyncio.sleep(backoff)
+                        try:
+                            await self.enqueue_compile(task_id)
+                        except Exception:
+                            logger.error("Compile re-enqueue failed for %s", task_id, exc_info=True)
+                    asyncio.create_task(_requeue_after_backoff())
                 else:
                     self.db.update_compile_task_status(
                         task_id, "failed",
@@ -609,7 +630,7 @@ class KnowledgeWorker:
             await self._compile_continuation_events[task_id].wait()
             self._compile_continuation_events[task_id].clear()
 
-    def signal_compile_continue(self, task_id: str) -> bool:
+    async def signal_compile_continue(self, task_id: str) -> bool:
         """Signal a supervised compile task to continue to the next file."""
         task = self.db.get_wiki_compile_task(task_id)
         if not task or task["status"] != "waiting_review":
@@ -620,10 +641,12 @@ class KnowledgeWorker:
         if task_id in self._compile_continuation_events:
             self._compile_continuation_events[task_id].set()
         else:
-            # Worker may not be waiting yet; create event and re-enqueue
+            # Worker is not waiting (e.g. task resumed after app restart) —
+            # re-enqueue so a compile worker picks the task up from the DB.
             self._compile_continuation_events[task_id] = asyncio.Event()
             # Remove from enqueued set so it can be re-enqueued
             self._compile_enqueued.discard(task_id)
+            await self.enqueue_compile(task_id)
         return True
 
     def signal_compile_stop(self, task_id: str) -> bool:

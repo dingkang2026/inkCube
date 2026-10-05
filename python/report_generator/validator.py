@@ -1,14 +1,13 @@
 """python/report_generator/validator.py — 校验层。
 
 职责：
-  1. 单节校验（每节生成后立即执行，8 条规则）
+  1. 单节校验（每节生成后立即执行，§3.6 规则）
   2. 全局校验（所有章节完成后执行）
 
-设计参考：docs/2.1project-design.md §6.7.6
+设计参考：docs/2.5report-design.md §3.6
 """
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +31,15 @@ def validate_section(
     output: str,
     given_ref_numbers: set[int],
     section: dict,
+    report_depth: str = "full",
 ) -> list[SectionViolation]:
-    """对单节生成结果执行 8 条校验规则。
+    """对单节生成结果执行校验规则（§3.6）。
 
     Args:
         output: LLM 生成的章节文本
         given_ref_numbers: 本节给定的引用编号集合
-        section: 节定义 dict（含 section_id、title 等）
+        section: 节定义 dict（含 section_id、title、compose_mode 等）
+        report_depth: 报告深度 "full" | "brief"，决定 Rule 3 是否启用及目标字数
 
     Returns:
         违规列表。空列表表示全部通过。
@@ -68,19 +69,22 @@ def validate_section(
             message=f"出现 Markdown 加粗: {bold_text[:3]}",
         ))
 
-    # Rule 3: 字数偏差 > ±20%（与 System Prompt 输出契约一致）
-    # 注意：新设计中已删除 word_count，此规则暂时跳过
-    # target = section.get("word_count", 1200)
-    # actual = len(output)
-    # if target > 0:
-    #     ratio = actual / target
-    #     if ratio < 0.8 or ratio > 1.2:
-    #         violations.append(SectionViolation(
-    #             rule=3,
-    #             message=f"字数 {actual} 偏离目标 {target}（{ratio:.0%}，允许 ±20%）",
-    #         ))
+    # Rule 3: 字数偏差 > ±20%（§3.6）。v2 已删除模板 word_count，目标字数按 depth 推算。
+    # 仅对 full 深度的 standard 节启用：
+    #   - post_body（摘要/结论）天然短小，不适用每节字数目标；
+    #   - brief 深度 §3.5 指示「每节 200-500 字」与 §3.6 目标 1200 存在冲突，
+    #     强校验会触发无谓重试，故 brief 不启用。
+    if report_depth == "full" and section.get("compose_mode") != "post_body":
+        target = 1200
+        actual = len(output)
+        ratio = actual / target
+        if ratio < 0.8 or ratio > 1.2:
+            violations.append(SectionViolation(
+                rule=3,
+                message=f"字数 {actual} 偏离目标 {target}（{ratio:.0%}，允许 ±20%）",
+            ))
 
-    # Rule 4: ◆ 小标题超过 15 字 / 数量异常
+    # Rule 4: ◆ 小标题超过 15 字（v2 已删除 promote_subhead，不再检查小标题数量）
     subheads = re.findall(r"◆\s*(.+)", output)
     for sh in subheads:
         # 去掉尾部可能的标点
@@ -90,7 +94,6 @@ def validate_section(
                 rule=4,
                 message=f"小标题超过 15 字: 「{title}」（{len(title)} 字）",
             ))
-    # 注意：新设计中已删除 promote_subhead，不再检查小标题数量
 
     # Rule 5: 结尾套话
     ending_phrases = ["综上所述", "总而言之", "综上", "总之"]
@@ -102,13 +105,6 @@ def validate_section(
                 message=f"结尾出现套话: 「{phrase}」",
             ))
             break
-
-    # Rule 6: 必须引用检查（已删除 must_cite 字段，此规则暂时跳过）
-    # if section.get("must_cite") and not cited:
-    #     violations.append(SectionViolation(
-    #         rule=6,
-    #         message="must_cite 章节无任何引用标注",
-    #     ))
 
     # Rule 7: 首行不是正文（输出了标题/前言）
     first_line = output.strip().split("\n")[0].strip()

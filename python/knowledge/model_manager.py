@@ -87,6 +87,11 @@ class ModelManager:
         self.models_dir = get_models_dir()
         self._downloads: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self._db = None  # Optional[Database]，由 main.py 注入（下载状态持久化 + 终态通知）
+
+    def set_db(self, db):
+        """注入 Database 实例（0.4 §3.3）：下载状态持久化 + 终态通知。"""
+        self._db = db
 
     def _get_dir_name(self, name: str) -> str:
         return MODELS[name].get("dir_name", name)
@@ -182,6 +187,7 @@ class ModelManager:
             if self._downloads.get(name, {}).get("downloading"):
                 return False
             self._downloads[name] = {"downloading": True, "progress": 0, "error": None}
+        self._persist_download(name, "downloading")
 
         thread = threading.Thread(target=self._download_worker, args=(name,), daemon=True)
         thread.start()
@@ -246,13 +252,19 @@ class ModelManager:
             if success:
                 self._cleanup_cache(model_path)
                 print(f"[ModelManager] Cleaned up cache for {name}")
+                self._persist_download(name, "completed")
+                self._notify_download(name, "completed")
             else:
                 self._set_error(name, "所有下载源均失败")
+                self._persist_download(name, "failed", "所有下载源均失败")
+                self._notify_download(name, "failed", "所有下载源均失败")
             with self._lock:
                 self._downloads[name]["downloading"] = False
 
         except Exception as e:
             self._set_error(name, str(e))
+            self._persist_download(name, "failed", str(e))
+            self._notify_download(name, "failed", str(e))
             with self._lock:
                 self._downloads[name]["downloading"] = False
 
@@ -314,6 +326,42 @@ class ModelManager:
                 self._downloads[name]["error"] = error
                 self._downloads[name]["downloading"] = False
 
+    def _persist_download(self, name: str, status: str, error: str | None = None):
+        """下载状态落库（start / 终态），best-effort 不影响下载流程。"""
+        if not self._db:
+            return
+        try:
+            self._db.mark_model_download_state(name, status, error)
+        except Exception as e:
+            print(f"[ModelManager] Persist download state failed for {name}: {e}")
+
+    def _notify_download(self, entity_id: str, kind: str, detail: str | None = None):
+        """下载终态通知（0.4 §8.2），best-effort 不影响下载流程。"""
+        if not self._db:
+            return
+        try:
+            self._db.add_notification(
+                entity_type="model_download", entity_id=entity_id,
+                project_id=None, kind=kind, entity_title=entity_id,
+                detail=detail[:200] if detail else None,
+            )
+        except Exception as e:
+            print(f"[ModelManager] Download notification failed for {entity_id}: {e}")
+
+    def get_active_downloads(self) -> list[dict]:
+        """当前下载中的条目（含 GPU 后端，0.4 §3.4 活动状态源）。"""
+        result = []
+        with self._lock:
+            for key, dl in self._downloads.items():
+                if dl.get("downloading"):
+                    entity_id = "gpu-backend" if key == "__gpu__" else key
+                    result.append({
+                        "entity_id": entity_id,
+                        "entity_title": entity_id,
+                        "progress": dl.get("progress", 0),
+                    })
+        return result
+
     def download_gpu_backend(self) -> bool:
         gpu_marker = os.path.join(self.models_dir, ".gpu-backend-installed")
         if os.path.isfile(gpu_marker):
@@ -323,6 +371,7 @@ class ModelManager:
             try:
                 with self._lock:
                     self._downloads["__gpu__"] = {"downloading": True, "progress": 0, "error": None}
+                self._persist_download("gpu-backend", "downloading")
 
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "torch[cuda]", "-q"],
@@ -338,9 +387,13 @@ class ModelManager:
 
                 with self._lock:
                     self._downloads["__gpu__"] = {"downloading": False, "progress": 100, "error": None}
+                self._persist_download("gpu-backend", "completed")
+                self._notify_download("gpu-backend", "completed")
             except Exception as e:
                 with self._lock:
                     self._downloads["__gpu__"] = {"downloading": False, "progress": 0, "error": str(e)}
+                self._persist_download("gpu-backend", "failed", str(e))
+                self._notify_download("gpu-backend", "failed", str(e))
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()

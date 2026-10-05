@@ -11,16 +11,12 @@ interface SidebarProps {
   children: ReactNode
   /** Permanent content pinned between scrollable area and UserBar */
   footer?: ReactNode
-  /** Number of projects with wiki compile waiting for review */
-  waitingReviewCount?: number
-  /** Whether any project has an active wiki compile */
-  hasActiveIngest?: boolean
 }
 
-export function Sidebar({ width, activeNav, onNavChange, onOpenSettings, children, footer, waitingReviewCount, hasActiveIngest }: SidebarProps) {
+export function Sidebar({ width, activeNav, onNavChange, onOpenSettings, children, footer }: SidebarProps) {
   return (
     <aside className={styles.sidebar} style={{ width }}>
-      <NavTabs activeNav={activeNav} onNavChange={onNavChange} waitingReviewCount={waitingReviewCount} hasActiveIngest={hasActiveIngest} />
+      <NavTabs activeNav={activeNav} onNavChange={onNavChange} />
       <div className={styles.content}>
         {children}
       </div>

@@ -62,10 +62,30 @@
   animation: nav-pulse 2s ease-in-out infinite;
 }
 
+.taskBadge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  animation: nav-pulse 2s ease-in-out infinite;
+}
+
 .ingestSpinner {
   margin-left: auto;
   color: var(--accent, #3b82f6);
   animation: nav-spin 1s linear infinite;
+}
+
+/* 任务徽章与旋转图标互斥出现，但待审阅徽章可能与旋转图标共存 → 旋转图标出现时待审阅徽章留 margin */
+.tab > .ingestSpinner + .reviewBadge {
+  margin-left: 4px;
 }
 
 @keyframes nav-pulse {
