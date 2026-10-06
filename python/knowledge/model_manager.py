@@ -1,8 +1,14 @@
+import logging
 import os
 import sys
 import shutil
-import subprocess
 import threading
+from contextlib import contextmanager
+from pathlib import Path
+
+import activity_events
+
+logger = logging.getLogger(__name__)
 
 
 def get_models_dir() -> str:
@@ -22,12 +28,13 @@ MODELS = {
     "bge-m3": {
         "category": "embedding",
         "dir_name": "bge-m3",
-        "size": "~4.4GB",
-        "size_bytes": 4_400_000_000,
+        "size": "~4.6GB",
+        "size_bytes": 4_600_000_000,  # 校准：完整 repo 实测 ≈4.59GB（pytorch + onnx 双权重）
         "min_size_bytes": 3_600_000_000,
+        # 源顺序契约：modelscope 优先（国内直连可达），hf-mirror 次之，官方 huggingface 兜底
         "sources": [
-            "hf-mirror:BAAI/bge-m3",
             "modelscope:BAAI/bge-m3",
+            "hf-mirror:BAAI/bge-m3",
             "huggingface:BAAI/bge-m3",
         ],
         "framework": "pytorch",
@@ -38,8 +45,8 @@ MODELS = {
     "docling-layout-heron": {
         "category": "document_parsing",
         "dir_name": "docling-project--docling-layout-heron",
-        "size": "~164MB",
-        "size_bytes": 164_000_000,
+        "size": "~170MB",
+        "size_bytes": 170_000_000,  # 校准：完整 repo 实测 ≈168MB
         "min_size_bytes": 130_000_000,
         "sources": [
             "modelscope:ds4sd/docling-layout-heron",
@@ -54,11 +61,12 @@ MODELS = {
     "tableformer-v2": {
         "category": "document_parsing",
         "dir_name": "docling-project--TableFormerV2",
-        "size": "~200MB",
-        "size_bytes": 200_000_000,
+        "size": "~220MB",
+        "size_bytes": 220_000_000,  # 校准：完整 repo 实测 ≈216MB
         "min_size_bytes": 150_000_000,
+        # modelscope 无此 repo（ds4sd/TableFormerV2 已验证 404），只走 HF 系；
+        # HF_HUB_OFFLINE 冲突由 _hf_online 下载窗口解除（main.py 全局离线防探测）
         "sources": [
-            "modelscope:ds4sd/TableFormerV2",
             "hf-mirror:docling-project/TableFormerV2",
             "huggingface:docling-project/TableFormerV2",
         ],
@@ -70,8 +78,8 @@ MODELS = {
     "rapidocr": {
         "category": "ocr",
         "dir_name": "RapidOcr",
-        "size": "~30MB",
-        "size_bytes": 30_000_000,
+        "size": "~32MB",
+        "size_bytes": 32_000_000,  # 校准：三个 onnx 实测 ≈31.9MB
         "min_size_bytes": 25_000_000,
         "sources": ["docling-tools:rapidocr"],
         "framework": "onnx",
@@ -88,6 +96,11 @@ class ModelManager:
         self._downloads: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._db = None  # Optional[Database]，由 main.py 注入（下载状态持久化 + 终态通知）
+        # HF 离线开关引用计数：main.py 启动时设 HF_HUB_OFFLINE=1 防止 transformers
+        # 联网探测，但同进程的模型下载需要联网——下载窗口内临时解除（0.4 §2.4）；
+        # 引用计数保证 start_download_all 并行下载线程安全（最后一个退出者负责恢复）
+        self._hf_online_lock = threading.Lock()
+        self._hf_online_refs = 0
 
     def set_db(self, db):
         """注入 Database 实例（0.4 §3.3）：下载状态持久化 + 终态通知。"""
@@ -151,11 +164,15 @@ class ModelManager:
             return False
         return True
 
-    def _dir_size(self, path: str) -> int:
+    def _dir_size(self, path: str, include_incomplete: bool = False) -> int:
+        """目录字节数。
+
+        incomplete 半成品默认排除（_verify / actual_size 的完整性语义）；
+        进度监控须传 include_incomplete=True（见 _monitor_progress）。"""
         total = 0
         for dirpath, _dirnames, filenames in os.walk(path):
             for f in filenames:
-                if f.endswith(".incomplete"):
+                if not include_incomplete and f.endswith(".incomplete"):
                     continue
                 fp = os.path.join(dirpath, f)
                 total += os.path.getsize(fp)
@@ -169,14 +186,6 @@ class ModelManager:
 
     def get_model_path(self, name: str) -> str:
         return os.path.join(self.models_dir, self._get_dir_name(name))
-
-    def get_gpu_status(self) -> dict:
-        gpu_marker = os.path.join(self.models_dir, ".gpu-backend-installed")
-        return {
-            "mode": "gpu" if os.path.isfile(gpu_marker) else "cpu",
-            "gpu_downloaded": os.path.isfile(gpu_marker),
-            "gpu_package_size": "~2.5GB",
-        }
 
     def start_download(self, name: str) -> bool:
         if name not in MODELS:
@@ -228,7 +237,7 @@ class ModelManager:
                     try:
                         self._update_progress(name, 0)
                         source_type, source_value = source.split(":", 1)
-                        print(f"[ModelManager] Downloading {name} via {source_type} → {source_value}")
+                        logger.info("Downloading %s via %s → %s", name, source_type, source_value)
 
                         if source_type in ("huggingface", "hf-mirror"):
                             self._download_from_hf(name, source_value, source_type == "hf-mirror")
@@ -243,7 +252,7 @@ class ModelManager:
                         success = True
                         break
                     except Exception as e:
-                        print(f"[ModelManager] Source {source} failed for {name}: {e}")
+                        logger.warning("Source %s failed for %s: %s", source, name, e)
                         continue
             finally:
                 stop_event.set()
@@ -251,7 +260,7 @@ class ModelManager:
 
             if success:
                 self._cleanup_cache(model_path)
-                print(f"[ModelManager] Cleaned up cache for {name}")
+                logger.info("Cleaned up cache for %s", name)
                 self._persist_download(name, "completed")
                 self._notify_download(name, "completed")
             else:
@@ -270,13 +279,63 @@ class ModelManager:
 
     def _monitor_progress(self, name: str, model_path: str, expected_bytes: int, stop_event: threading.Event):
         while not stop_event.is_set():
-            current_size = self._dir_size(model_path) if os.path.isdir(model_path) else 0
+            # 计入 *.incomplete 半成品：HF/modelscope 下载中的大文件均以该后缀落盘，
+            # 排除会导致进度条长期为 0、文件 rename 瞬间跳变（进度条失真根因）
+            current_size = (
+                self._dir_size(model_path, include_incomplete=True)
+                if os.path.isdir(model_path)
+                else 0
+            )
             if expected_bytes > 0:
                 pct = min(int(current_size / expected_bytes * 100), 99)
             else:
                 pct = 0
             self._update_progress(name, pct)
             stop_event.wait(1.0)
+
+    @contextmanager
+    def _hf_online(self):
+        """下载窗口内临时解除 HF 离线模式并禁用 Xet（引用计数，并行下载线程安全）。
+
+        main.py 启动时设 HF_HUB_OFFLINE=1 防 transformers 联网探测，但同进程的
+        snapshot_download 会同变量拦死（tableformer-v2 三连败根因）。常量在
+        huggingface_hub.constants import 时已固化 env 值，仅改 os.environ 不生效，
+        须同时 patch 模块常量；计数变更与状态切换同锁，避免并行下载竞态。
+
+        窗口内同时设 HF_HUB_DISABLE_XET=1：hf-mirror 不支持 Xet 传输协议（大文件
+        被导向官方 cas-server.xethub.hf.co 重建，镜像签发 token 对其 401
+        Unauthorized，tableformer-v2 2026-10-05 两连败根因），禁用后大文件
+        回退普通 HTTP CDN 下载。"""
+        with self._hf_online_lock:
+            self._hf_online_refs += 1
+            if self._hf_online_refs == 1:
+                self._set_hf_offline(False)
+        try:
+            yield
+        finally:
+            with self._hf_online_lock:
+                self._hf_online_refs -= 1
+                if self._hf_online_refs == 0:
+                    self._set_hf_offline(True)
+
+    @staticmethod
+    def _set_hf_offline(offline: bool):
+        """offline=True：恢复全局离线态；False：进入下载窗口（在线 + 禁 Xet）。"""
+        os.environ["HF_HUB_OFFLINE"] = "1" if offline else "0"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1" if offline else "0"
+        # Xet 开关仅下载窗口内有行为意义：窗口外全局离线（不联网）无 Xet 调用，
+        # 故退出时直接还原为未设置（库默认启用）即可，无需保存/恢复原值
+        if offline:
+            os.environ.pop("HF_HUB_DISABLE_XET", None)
+        else:
+            os.environ["HF_HUB_DISABLE_XET"] = "1"
+        try:
+            import huggingface_hub.constants as hf_constants
+
+            hf_constants.HF_HUB_OFFLINE = offline
+            hf_constants.HF_HUB_DISABLE_XET = not offline
+        except ImportError:
+            pass
 
     def _download_from_hf(self, name: str, repo_id: str, use_mirror: bool):
         from huggingface_hub import snapshot_download
@@ -285,11 +344,12 @@ class ModelManager:
         model_path = os.path.join(self.models_dir, self._get_dir_name(name))
         os.makedirs(model_path, exist_ok=True)
 
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=model_path,
-            endpoint=endpoint,
-        )
+        with self._hf_online():
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=model_path,
+                endpoint=endpoint,
+            )
 
     def _download_from_modelscope(self, name: str, model_id: str):
         try:
@@ -303,15 +363,56 @@ class ModelManager:
         ms_download(model_id, local_dir=model_path)
 
     def _download_rapidocr(self, model_path: str):
-        from pathlib import Path
-        from docling.models.stages.ocr.rapid_ocr_model import RapidOcrModel
+        """RapidOCR 三件套流式下载。
 
-        os.makedirs(model_path, exist_ok=True)
-        RapidOcrModel.download_models(
-            backend="onnxruntime",
-            local_dir=Path(model_path),
-            lang="ch",
+        docling 内置 download_models 为内存缓冲（整体下完后一次性落盘），下载期间
+        目标目录无任何增量，进度监控全程 0%；此处复用 docling 的 URL 解析结果，
+        改流式写 *.incomplete 后原子改名，与 HF/modelscope 半成品语义一致，
+        _monitor_progress 可实时反映进度（0.4 §2.4）。"""
+        from docling.models.stages.ocr.rapid_ocr_model import (
+            _backend_to_engine_type,
+            _rapidocr_artifacts,
+            _resolve_rapidocr,
         )
+
+        local_dir = Path(model_path)
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        backend = "onnxruntime"
+        resolved = _resolve_rapidocr("ch", backend)
+        engine = _backend_to_engine_type(backend)
+        artifacts = _rapidocr_artifacts(
+            local_dir, engine, resolved.ppocr_version, resolved.rapidocr_code,
+        )
+
+        for artifact in artifacts.values():
+            for dest, url in artifact.files.items():
+                if dest.exists():
+                    continue  # 已完成文件跳过（与 docling 行为一致，可断点重入）
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_name(dest.name + ".incomplete")
+                logger.info("RapidOCR streaming %s", url)
+                self._stream_to_file(url, tmp)
+                os.replace(tmp, dest)
+
+    @staticmethod
+    def _stream_to_file(url: str, dest: Path) -> None:
+        """流式下载 url 到 dest（.incomplete 半成品），失败清理半成品后上抛。"""
+        import requests
+
+        try:
+            with requests.get(url, stream=True, timeout=(10, 120)) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as fw:
+                    for chunk in resp.iter_content(chunk_size=256 * 1024):
+                        if chunk:
+                            fw.write(chunk)
+        except Exception:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            raise
 
     def _update_progress(self, name: str, progress: int):
         with self._lock:
@@ -333,71 +434,29 @@ class ModelManager:
         try:
             self._db.mark_model_download_state(name, status, error)
         except Exception as e:
-            print(f"[ModelManager] Persist download state failed for {name}: {e}")
+            logger.warning("Persist download state failed for %s: %s", name, e)
 
-    def _notify_download(self, entity_id: str, kind: str, detail: str | None = None):
-        """下载终态通知（0.4 §8.2），best-effort 不影响下载流程。"""
+    def _notify_download(self, name: str, kind: str, detail: str | None = None):
+        """下载终态通知：经 activity_events 统一入口（E2 收尾，v3.9，含 E3 事件投递）。"""
         if not self._db:
             return
-        try:
-            self._db.add_notification(
-                entity_type="model_download", entity_id=entity_id,
-                project_id=None, kind=kind, entity_title=entity_id,
-                detail=detail[:200] if detail else None,
-            )
-        except Exception as e:
-            print(f"[ModelManager] Download notification failed for {entity_id}: {e}")
+        if kind == "completed":
+            activity_events.complete_download(self._db, name)
+        else:
+            activity_events.fail_download(self._db, name, detail)
 
     def get_active_downloads(self) -> list[dict]:
-        """当前下载中的条目（含 GPU 后端，0.4 §3.4 活动状态源）。"""
+        """当前下载中的条目（0.4 §3.4 活动状态源）。"""
         result = []
         with self._lock:
             for key, dl in self._downloads.items():
                 if dl.get("downloading"):
-                    entity_id = "gpu-backend" if key == "__gpu__" else key
                     result.append({
-                        "entity_id": entity_id,
-                        "entity_title": entity_id,
+                        "entity_id": key,
+                        "entity_title": key,
                         "progress": dl.get("progress", 0),
                     })
         return result
-
-    def download_gpu_backend(self) -> bool:
-        gpu_marker = os.path.join(self.models_dir, ".gpu-backend-installed")
-        if os.path.isfile(gpu_marker):
-            return True
-
-        def worker():
-            try:
-                with self._lock:
-                    self._downloads["__gpu__"] = {"downloading": True, "progress": 0, "error": None}
-                self._persist_download("gpu-backend", "downloading")
-
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "torch[cuda]", "-q"],
-                    capture_output=True,
-                    encoding="utf-8", errors="replace",
-                    timeout=1800,
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(f"GPU 后端安装失败: {result.stderr}")
-
-                with open(gpu_marker, "w") as f:
-                    f.write("installed")
-
-                with self._lock:
-                    self._downloads["__gpu__"] = {"downloading": False, "progress": 100, "error": None}
-                self._persist_download("gpu-backend", "completed")
-                self._notify_download("gpu-backend", "completed")
-            except Exception as e:
-                with self._lock:
-                    self._downloads["__gpu__"] = {"downloading": False, "progress": 0, "error": str(e)}
-                self._persist_download("gpu-backend", "failed", str(e))
-                self._notify_download("gpu-backend", "failed", str(e))
-
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
-        return True
 
     @staticmethod
     def check_libreoffice() -> dict[str, any]:

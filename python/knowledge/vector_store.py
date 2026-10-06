@@ -1,5 +1,6 @@
 """python/knowledge/vector_store.py"""
 # CRITICAL: Set offline mode BEFORE any imports that might load transformers
+import logging
 import os
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -20,6 +21,8 @@ from typing import Optional, List
 _bge_m3_model = None
 _bge_m3_lock = threading.Lock()
 
+logger = logging.getLogger(__name__)
+
 
 def _get_bge_m3_model(model_path: str):
     """Return the singleton BGEM3FlagModel, loading it on first call.
@@ -33,7 +36,6 @@ def _get_bge_m3_model(model_path: str):
     with _bge_m3_lock:
         if _bge_m3_model is not None:          # double-check inside lock
             return _bge_m3_model
-        import sys
         from FlagEmbedding import BGEM3FlagModel
 
         resolved = Path(model_path)
@@ -50,9 +52,9 @@ def _get_bge_m3_model(model_path: str):
         if actual is None:
             actual = resolved  # fallback
 
-        print(f"[BgeM3] Loading model from: {actual}", file=sys.stderr)
+        logger.info("BgeM3 loading model from: %s", actual)
         _bge_m3_model = BGEM3FlagModel(str(actual), use_fp16=False)
-        print("[BgeM3] Model loaded successfully!", file=sys.stderr)
+        logger.info("BgeM3 model loaded successfully")
     return _bge_m3_model
 
 

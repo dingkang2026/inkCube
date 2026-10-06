@@ -183,11 +183,15 @@ class TestActivitiesStatus:
 
     def test_active_compiles_only_active_statuses(self, db, project_id):
         _insert_compile_task(db, project_id, "wc_active", "ingesting", pages_total=5, pages_completed=2)
+        # batch 编译器中间态（analyzing/generating）同样算活跃——否则 #4 谓词心跳化后
+        # batch 编译期轮询停摆、角标不亮（顺序 4 同类问题修复）
+        _insert_compile_task(db, project_id, "wc_stage1", "analyzing")
+        _insert_compile_task(db, project_id, "wc_stage2", "generating")
         _insert_compile_task(db, project_id, "wc_review", "waiting_review", pages_total=4, pages_completed=4)
         _insert_compile_task(db, project_id, "wc_done", "completed")
 
         rows = activities_router._active_compiles(db)
-        assert {r["entity_id"] for r in rows} == {"wc_active", "wc_review"}
+        assert {r["entity_id"] for r in rows} == {"wc_active", "wc_stage1", "wc_stage2", "wc_review"}
         active = next(r for r in rows if r["entity_id"] == "wc_active")
         assert active["progress_text"] == "2/5"
 
@@ -268,10 +272,10 @@ class TestContainerRouting:
         assert notifications[0]["container"] == "baselib"
 
     def test_report_terminal_notification_carries_container(self, db, project_id):
-        """报告终态通知同路径取 container（update_report_status 钩子）。"""
+        """报告终态通知经 activity_events 显式声明（E2，顺序 4），JOIN projects.kind 取 container。"""
         lib_id = db.create_base_lib(name="共享资料库")["id"]
         _insert_report(db, lib_id, "r_lib", "generating")
-        db.update_report_status("r_lib", "done")
+        activity_events.complete_report(db, "r_lib")
 
         notifications = db.list_unread_notifications()
         assert len(notifications) == 1
@@ -424,3 +428,29 @@ class TestComputeServiceStatus:
         assert set(result["features"].keys()) == {
             "file_parsing", "wiki_compile", "report", "task", "knowledge_search",
         }
+
+
+# ── F. /activities/stream SSE（0.4 §6.4 E3）──────────────────
+
+class TestActivitiesStream:
+    def test_stream_delivers_terminal_event(self, db, project_id):
+        """订阅后终态事件以 SSE 帧推送（event: activity + data: 通知行 JSON）。"""
+        import json as _json
+
+        async def scenario():
+            # 直接 await：subscribe() 需注册在当前事件循环（后续投递同 loop）
+            response = await activities_router.activities_stream()
+            gen = response.body_iterator
+            try:
+                fid = db.create_file(project_id, "strm.pdf", ".pdf", 100, "hstrm")["id"]
+                activity_events.complete_file(db, fid)
+                chunk = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+                assert chunk.startswith("event: activity\ndata: ")
+                payload = _json.loads(chunk.split("data: ", 1)[1])
+                assert payload["entity_type"] == "file"
+                assert payload["kind"] == "completed"
+                assert payload["entity_title"] == "strm.pdf"
+            finally:
+                await gen.aclose()  # 断连语义：finally 反注册
+
+        asyncio.run(scenario())

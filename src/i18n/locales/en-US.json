@@ -52,7 +52,6 @@
       "general": "General",
       "externalModel": "External Model",
       "internalModel": "Internal Model",
-      "gpu": "GPU Acceleration",
       "task": "Tasks",
       "skills": "Skills",
       "dataManagement": "Data Management"
@@ -83,7 +82,11 @@
     "systemPromptPlaceholder": "You are a professional AI assistant...",
     "testing": "Testing...",
     "testConnection": "Test & Detect",
-    "save": "Save",
+    "autoSave": {
+      "saving": "Saving…",
+      "saved": "Changes saved automatically",
+      "failed": "Auto-save failed: {{error}}"
+    },
     "vlmConfig": "VLM Vision Model Configuration",
     "vlmApiUrl": "VLM API URL",
     "vlmApiKey": "VLM API Key",
@@ -123,19 +126,6 @@
         "notInstalled": "Not detected"
       },
       "totalSize": "Total ~3.1GB"
-    },
-    "gpu": {
-      "title": "GPU Acceleration",
-      "description": "GPU acceleration significantly speeds up model inference. Requires NVIDIA GPU.",
-      "currentMode": "Current Mode",
-      "cpuMode": "CPU Mode",
-      "gpuMode": "GPU Mode (CUDA)",
-      "cpuDescription": "Currently using CPU for inference. Slower but most compatible.",
-      "gpuDescription": "GPU acceleration enabled. Inference speed significantly improved.",
-      "downloadGpu": "Download GPU Backend",
-      "gpuSize": "~2.5GB",
-      "requirement": "Requires NVIDIA GPU + CUDA 11.8+",
-      "downloading": "Downloading..."
     },
     "concurrency": {
       "fileParsing": "File parsing concurrency",

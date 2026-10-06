@@ -24,6 +24,8 @@ import logging
 import uuid
 from typing import Any
 
+from errors import actionable
+
 logger = logging.getLogger(__name__)
 
 # 来源类型 → 展示标签（用于在用户消息中标注每条原始检索结果的来源）
@@ -155,7 +157,7 @@ async def build_knowledge_cards(
             section_id, str(e),
         )
         return _fallback_cards(raw_results, section_id), \
-            {"level": "insufficient", "reason": f"LLM 调用失败: {e}"}, \
+            {"level": "insufficient", "reason": f"LLM 调用失败: {actionable(e)}"}, \
             {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 

@@ -35,6 +35,14 @@ export interface LLMSettings {
   task_auto_archive_days: number
 }
 
+/** models:* IPC 通道名集中定义（electron/ipc-handlers.js 注册），消灭调用点魔法串（0.4 §8.1 #8） */
+export const MODELS_IPC = {
+  status: 'models:status',
+  libreofficeStatus: 'models:libreoffice-status',
+  download: 'models:download',
+  downloadAll: 'models:download-all',
+} as const
+
 export interface ModelStatusInfo {
   name: string
   category: string
@@ -50,12 +58,6 @@ export interface ModelStatusInfo {
   downloading: boolean
   progress: number
   error: string | null
-}
-
-export interface GpuStatus {
-  mode: 'cpu' | 'gpu'
-  gpu_downloaded: boolean
-  gpu_package_size: string
 }
 
 export type StreamStep =

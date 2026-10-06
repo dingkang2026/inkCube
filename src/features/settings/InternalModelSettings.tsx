@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ModelStatusInfo } from '../../types'
+import { MODELS_IPC } from '../../types'
 import { usePolling } from '../../hooks/usePolling'
+import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import { useActivity } from '../activity/ActivityContext'
 import styles from './InternalModelSettings.module.css'
 
@@ -20,14 +22,14 @@ export function InternalModelSettings() {
   const [loading, setLoading] = useState(true)
   const [downloadingAll, setDownloadingAll] = useState(false)
   const [libreoffice, setLibreOffice] = useState<LibreOfficeStatus | null>(null)
-  // enabled 谓词从全局心跳派生（0.4lifecycle-design.md §6.2）：存在下载中模型（不含 GPU 后端）时轮询明细，
+  // enabled 谓词从全局心跳派生（0.4lifecycle-design.md §6.2）：存在下载中模型时轮询明细，
   // 全部终态后自停；启动间隙由触发动作后的一次立即拉取接上（见 handleDownload）
   const { items: modelItems } = useActivity('model_download')
-  const modelsActive = modelItems.some((i) => i.entity_id !== 'gpu-backend')
+  const modelsActive = modelItems.length > 0
 
   const fetchStatus = useCallback(async () => {
     // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）；初始加载侧 catch 兜底
-    const res = (await window.electronAPI.invoke('models:status')) as Record<string, ModelStatusInfo>
+    const res = (await window.electronAPI.invoke(MODELS_IPC.status)) as Record<string, ModelStatusInfo>
     setModels(res)
     setLoading(false)
 
@@ -38,7 +40,7 @@ export function InternalModelSettings() {
 
   const fetchLibreOfficeStatus = useCallback(async () => {
     try {
-      const res = await window.electronAPI.invoke('models:libreoffice-status')
+      const res = await window.electronAPI.invoke(MODELS_IPC.libreofficeStatus)
       setLibreOffice(res as LibreOfficeStatus)
     } catch {
       // ignore
@@ -57,23 +59,38 @@ export function InternalModelSettings() {
     task: fetchStatus,
   })
 
+  // 终态补拉（0.4 §6.3）：轮询随活动消失自停，最后一次快照可能停在完成前（toast 走
+  // 通知推送先于 status 上屏）→ modelsActive true→false 边沿补拉一次，立即渲染终态
+  useEdgeRefetch(modelsActive, () => { void fetchStatus().catch(() => {}) })
+
   const handleDownload = async (name: string) => {
-    await window.electronAPI.invoke('models:download', name)
+    await window.electronAPI.invoke(MODELS_IPC.download, name)
     // 后台线程已同步置 downloading，立即拉一次接上启动间隙（全局心跳 ≤5/15s 后接管谓词）
     await fetchStatus().catch(() => {})
   }
 
   const handleDownloadAll = async () => {
     setDownloadingAll(true)
-    await window.electronAPI.invoke('models:download-all')
+    await window.electronAPI.invoke(MODELS_IPC.downloadAll)
     await fetchStatus().catch(() => {})
   }
 
-  const grouped = CATEGORY_ORDER.map((cat) => ({
-    category: cat,
-    label: t(`settings.internalModel.category.${cat}`),
-    items: Object.values(models).filter((m) => m.category === cat),
-  }))
+  // 类别分组：已知顺序优先；后端新增的未知类别追加到尾部不静默丢弃（0.4 §8.1 #6），
+  // 标签缺 i18n key 时回退显示类别 id
+  const values = Object.values(models)
+  const knownSet = new Set<string>(CATEGORY_ORDER)
+  const grouped = [
+    ...CATEGORY_ORDER.map((cat) => ({
+      category: cat,
+      label: t(`settings.internalModel.category.${cat}`),
+      items: values.filter((m) => m.category === cat),
+    })),
+    ...[...new Set(values.map((m) => m.category).filter((c) => !knownSet.has(c)))].map((cat) => ({
+      category: cat,
+      label: t(`settings.internalModel.category.${cat}`, { defaultValue: cat }),
+      items: values.filter((m) => m.category === cat),
+    })),
+  ]
 
   const allDownloaded =
     Object.values(models).length > 0 &&

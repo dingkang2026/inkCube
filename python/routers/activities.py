@@ -10,12 +10,16 @@ fetch 实现（存量函数）+ 注册；新增长时活动禁止再往本文件
 
 后端零文案：entity_title 是用户数据，展示文案由前端 i18n 按 entity_type + kind 渲染。
 """
+import asyncio
+import json
 import logging
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import activities_registry as registry
+import activity_events
 import deps
 
 logger = logging.getLogger(__name__)
@@ -54,7 +58,11 @@ def _active_files(db) -> list[dict]:
 
 
 def _active_compiles(db) -> list[dict]:
-    """跨项目活跃 Wiki 编译（queued/ingesting/storing/waiting_review）。"""
+    """跨项目活跃 Wiki 编译（queued/analyzing/generating/ingesting/storing/waiting_review）。
+
+    analyzing/generating 为 batch 编译器 stage1/stage2 中间态（顺序 4 补齐——
+    缺失时 #4 谓词心跳化后 batch 编译期轮询停摆、角标不亮）。
+    """
     cursor = db.conn.execute(
         """
         SELECT wct.id, wct.project_id, wct.status,
@@ -63,7 +71,7 @@ def _active_compiles(db) -> list[dict]:
                CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container
         FROM wiki_compile_tasks wct
         JOIN projects p ON p.id = wct.project_id
-        WHERE wct.status IN ('queued', 'ingesting', 'storing', 'waiting_review')
+        WHERE wct.status IN ('queued', 'analyzing', 'generating', 'ingesting', 'storing', 'waiting_review')
         ORDER BY wct.created_at DESC
         """
     )
@@ -204,3 +212,32 @@ async def mark_notifications_read(req: MarkReadRequest):
     """批量标记通知已读（弹出即已读，0.4 §5.5）。"""
     count = deps.db.mark_notifications_read(req.ids)
     return {"ok": True, "marked": count}
+
+
+# SSE 保活间隔：无事件时发注释行，防中间层掐空闲连接（同 task:stream 语义）
+_STREAM_KEEPALIVE_S = 15.0
+
+
+@router.get("/activities/stream")
+async def activities_stream():
+    """全局终态事件流（0.4 §6.4 E3）：activity_events 发布 → SSE 推送，推为主 / 心跳轮询兜底。
+
+    事件体 = notifications 行（含 id / entity_type / kind / detail…）；前端以
+    其为「立即心跳」信号（触发一次聚合拉取，Toast 即时化），不做第二套解析。
+    客户端断开由 uvicorn 取消生成器 → finally 反注册；15s 注释行保活。
+    """
+    q = activity_events.subscribe()
+
+    async def gen():
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=_STREAM_KEEPALIVE_S)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield f"event: activity\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            activity_events.unsubscribe(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")

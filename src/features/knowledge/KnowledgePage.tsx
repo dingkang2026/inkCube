@@ -11,6 +11,7 @@ import { SkeletonFileList, SkeletonSearchResults } from './SkeletonLoader'
 import { useFeatureGuard } from '../readiness/useReadiness'
 import { useActivity } from '../activity/ActivityContext'
 import { usePolling } from '../../hooks/usePolling'
+import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import type { Project, FileRecord, SearchResult, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './KnowledgePage.module.css'
@@ -260,6 +261,15 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
       }))
     },
   })
+  // 终态边沿补拉（0.4 §6.3）：心跳先行翻 false 时轮询停摆可能早于 task 内
+  // curCount===0 的全量刷新分支 → 边沿补拉明细与关联数据
+  useEdgeRefetch(hasActiveFiles, () => {
+    if (!selectedProject) return
+    void loadFiles(selectedProject.id, 1, filenameSearch)
+    void loadRecentChunks(selectedProject.id, selectedFileId)
+    onProjectDataChanged?.()
+  })
+
   // 无活跃文件时重置完成计数基准（原 effect cleanup 逻辑）
   useEffect(() => {
     if (!hasActiveFiles) prevActiveCountRef.current = -1

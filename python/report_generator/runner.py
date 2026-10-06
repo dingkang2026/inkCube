@@ -29,6 +29,11 @@ from report_generator.prompts import (
 from report_generator.validator import validate_section, format_retry_feedback
 from report_generator.finalizer import finalize_report
 from report_generator.token_tracker import TokenTracker
+from errors import (
+    actionable,
+    LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
+    LLMNetworkError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +97,7 @@ class ProgressEvent:
     """进度事件（用于进度轮询）。"""
 
     def __init__(self, event_type: str, data: dict):
-        self.event_type = event_type  # "section_start" | "section_done" | "progress" | "complete" | "error"
+        self.event_type = event_type  # "section_start" | "section_done" | "progress" | "warning" | "complete" | "error"
         self.data = data
 
 
@@ -171,6 +176,16 @@ class ReportRunner:
             # ── 准备阶段（解析变量 → 实例化 → 归一化 → 校验）──
             await self._prepare()
 
+            # 降级显式引导（0.4 §7.3 v3.6）：互联网总开关开启但 Tavily Key 缺失，
+            # 全程实际仅用项目内材料——作为 warning 写入报告日志，而非静默降级
+            if self.internet_enabled and not str(self.llm_settings.get("tavily_key") or "").strip():
+                yield ProgressEvent("warning", {
+                    "message": (
+                        "互联网检索未生效：已开启互联网检索但未配置 Tavily API Key，"
+                        "本次报告仅使用项目内材料。请前往 设置 > 外部模型 配置 Tavily Key 后重新生成。"
+                    ),
+                })
+
             # ── 第一遍：standard 章节 ──
             standard_sections = [
                 s for s in self.sections if s.get("compose_mode", "standard") == "standard"
@@ -216,6 +231,11 @@ class ReportRunner:
                     report_depth=self.report_depth,
                 )
                 self.token_tracker.record(sid, "retrieval", retrieval_usage)
+
+                # 检索通道降级警告（如 Tavily Key 无效/额度用尽/网络不通，0.4 §7.3 v3.6）
+                # → 报告日志显式呈现，用户在报告详情页可见
+                for warning in retrieval.warnings:
+                    yield ProgressEvent("warning", {"message": warning})
 
                 if retrieval.skip:
                     self.outputs[sid] = "（本节因材料不足已跳过）"
@@ -338,7 +358,7 @@ class ReportRunner:
 
         except Exception as e:
             logger.exception("Report generation failed: %s", e)
-            yield ProgressEvent("error", {"message": str(e)})
+            yield ProgressEvent("error", {"message": actionable(e)})
             raise
 
     async def _prepare(self):
@@ -509,8 +529,15 @@ class ReportRunner:
                     return output
 
             except Exception as e:
-                error_str = str(e).lower()
-                retryable, action = _classify_error(error_str)
+                # 结构化错误类优先（llm/client 分类产物，0.4 §7.3 v3.6）：
+                # 配置/凭据类 fatal 不重试；限流/网络 retry。字符串规则兜底（历史/未知异常）
+                if isinstance(e, (LLMInvalidKey, LLMQuotaExhausted, LLMModelNotFound)):
+                    retryable, action = False, "fatal"
+                elif isinstance(e, (LLMRateLimited, LLMNetworkError)):
+                    retryable, action = True, "retry"
+                else:
+                    error_str = str(e).lower()
+                    retryable, action = _classify_error(error_str)
 
                 if not retryable:
                     logger.error("Section '%s' non-retryable error (%s): %s", sid, action, e)

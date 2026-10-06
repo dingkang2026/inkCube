@@ -4,6 +4,24 @@ const net = require('net')
 const { app, BrowserWindow } = require('electron')
 const { logElectron } = require('./log-utils')
 
+/**
+ * Derive the real log level from a Python console line.
+ * Python's console format embeds the level inline:
+ *   "2026-10-05 20:54:15 [WARNING] module: message"
+ * Blanket-INFO(stdout)/blanket-ERROR(stderr) painted routine logs red in the
+ * log viewer — stderr is logging's default stream, not an error signal.
+ */
+const _PY_LEVEL_RE = /\[(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\]/
+
+function _pyLogLevel(text, fallback) {
+  const m = text.match(_PY_LEVEL_RE)
+  if (!m) return fallback
+  const lv = m[1]
+  if (lv === 'WARNING' || lv === 'WARN') return 'WARN'
+  if (lv === 'ERROR' || lv === 'CRITICAL' || lv === 'FATAL') return 'ERROR'
+  return 'INFO' // DEBUG / INFO (DEBUG never reaches console: root level is INFO)
+}
+
 class PythonManager {
   constructor() {
     this.process = null
@@ -124,12 +142,14 @@ class PythonManager {
 
     this.process.stdout.on('data', (data) => {
       const text = data.toString().trim()
-      if (text) logElectron('INFO', `[python] ${text}`)
+      if (text) logElectron(_pyLogLevel(text, 'INFO'), `[python] ${text}`)
     })
 
     this.process.stderr.on('data', (data) => {
       const text = data.toString().trim()
-      if (text) logElectron('ERROR', `[python] ${text}`)
+      // fallback ERROR: non-logging output on stderr (tracebacks, uvicorn
+      // internals) has no inline level — stderr genuinely means trouble there
+      if (text) logElectron(_pyLogLevel(text, 'ERROR'), `[python] ${text}`)
     })
 
     this.process.on('error', (err) => {

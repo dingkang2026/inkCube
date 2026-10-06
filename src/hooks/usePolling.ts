@@ -2,9 +2,11 @@
  *
  * 统一收敛页面级轮询（#2/#4-#12）的四项能力：
  *  - 防重叠：setTimeout 链式调度，上一次 task 未完成不调度下一次；
+ *    在飞期间立即触发（visibilitychange 等）不并发启动，仅标记完成后 0ms 补一轮（v3.9）；
  *  - 指数退避：task 抛错视为失败，间隔按 backoffMultipliers 递增（成功即重置）；
- *  - 可见性感知：document.hidden 时跳过执行并按 hiddenMultiplier 降频保心跳，
- *    visibilitychange 回前台立即刷新一次；
+ *  - 可见性感知：document.hidden 时按 hiddenMultiplier 降频（仍真实拉取，禁止 hidden
+ *    早退跳过——Windows 窗口遮挡检测会把被遮挡窗口判为 hidden，早退致页面明细冻结，
+ *    与 ActivityMonitor v3.2 同源教训，0.4 §附录A），visibilitychange 回前台立即刷新一次；
  *  - dev 注册表：window.__inkcubePollings（name → 状态）供运行期排查。
  *
  * 约定：task 抛错 = 本次失败（触发退避）；task 内部自行 catch 且不抛出 = 视为成功。
@@ -80,6 +82,10 @@ export function usePolling({
     let taskTimer: ReturnType<typeof setTimeout> | null = null
     let fails = 0
     let running = false
+    // 在飞期间有立即触发到达（visibilitychange 等）→ 完成后 0ms 补一轮（v3.9）：
+    // 原实现 running 分支 schedule() 会与 finally 的调度叠加成双 timer，
+    // 每次进行中触发永久 +1 个空转 timer（频率不膨胀但空调度累积）
+    let immediateNext = false
 
     // dev 注册表（开销可忽略；测试/生产同样可用，便于问题定位）
     const registry = (window.__inkcubePollings ??= new Map<string, PollingRegistryEntry>())
@@ -91,16 +97,20 @@ export function usePolling({
       return typeof v === 'function' ? v() : v
     }
 
-    const schedule = () => {
+    const schedule = (immediate = false) => {
       if (cancelled) return
-      let delay = baseInterval()
-      if (fails > 0) {
-        const mult =
-          backoffMultipliers[Math.min(fails - 1, backoffMultipliers.length - 1)] ??
-          backoffMultipliers[backoffMultipliers.length - 1]
-        delay = Math.min(delay * mult, maxBackoffMs)
+      let delay = 0
+      if (!immediate) {
+        delay = baseInterval()
+        if (fails > 0) {
+          const mult =
+            backoffMultipliers[Math.min(fails - 1, backoffMultipliers.length - 1)] ??
+            backoffMultipliers[backoffMultipliers.length - 1]
+          delay = Math.min(delay * mult, maxBackoffMs)
+        }
+        // 隐藏时降频（仍真实拉取，禁止早退跳过——0.4 §附录A 决策，ActivityMonitor v3.2 同源教训）
+        if (document.hidden) delay *= hiddenMultiplier
       }
-      if (document.hidden) delay *= hiddenMultiplier
       entry.intervalMs = delay
       entry.fails = fails
       timer = setTimeout(tick, delay)
@@ -108,14 +118,9 @@ export function usePolling({
 
     const tick = async () => {
       if (cancelled) return
-      if (document.hidden) {
-        // 隐藏时不请求，保持最低心跳（回前台由 visibilitychange 立即刷新）
-        schedule()
-        return
-      }
       if (running) {
-        // 双保险：链式调度下理论不可达
-        schedule()
+        // 双保险：链式调度下理论不可达——仅标记下轮立即，不叠加调度
+        immediateNext = true
         return
       }
       running = true
@@ -138,7 +143,8 @@ export function usePolling({
         taskTimer = null
         running = false
         entry.lastRunAt = Date.now()
-        schedule()
+        schedule(immediateNext)
+        immediateNext = false
       }
     }
 

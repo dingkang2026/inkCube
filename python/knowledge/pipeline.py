@@ -1,5 +1,6 @@
 """python/knowledge/pipeline.py"""
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -8,7 +9,10 @@ from knowledge.doc_parser import DocumentParser, ParseResult, ImageContext, Chun
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
 from knowledge.vlm_client import VLMClient
+from errors import actionable
 import activity_events
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessingPipeline:
@@ -112,8 +116,10 @@ class ProcessingPipeline:
                 "images_count": len(parse_result.images),
                 "completed_at": datetime.now().isoformat()
             })
-            # 终态事件显式声明（E2，0.4 §6.4）：完成通知由框架写入
-            activity_events.complete_file(self.db, file_id)
+            # 终态事件显式声明（E2，0.4 §6.4）：完成通知由框架写入；
+            # 解析降级说明（如 Office 转换不可用）随通知 detail 显式呈现（0.4 §7.3 v3.6）
+            parse_warnings = parse_result.metadata.get("warnings") or []
+            activity_events.complete_file(self.db, file_id, "; ".join(parse_warnings) or None)
             self._set_progress(file_id, 100)
             
             return {
@@ -125,15 +131,17 @@ class ProcessingPipeline:
         
         except Exception as e:
             self._set_progress(file_id, 0)
-            self._update_file_status(file_id, "error", {"error_message": str(e)})
-            # 终态事件显式声明（E2）：与 task_queue 外层兑底双写，未读查重保证幂等（0.4 §3.2）
-            activity_events.fail_file(self.db, file_id, str(e))
+            # actionable：配置类异常（如解析/embedding 模型缺失）保留「设置 > 内部模型」修正指引（0.4 §7.3 v3.6）
+            error_msg = actionable(e)
+            self._update_file_status(file_id, "error", {"error_message": error_msg})
+            # 终态事件显式声明（E2）：与 task_queue 外层兜底双写，未读查重保证幂等（0.4 §3.2）
+            activity_events.fail_file(self.db, file_id, error_msg)
             
             return {
                 "success": False,
                 "chunks_count": 0,
                 "images_count": 0,
-                "error": str(e)
+                "error": error_msg
             }
     
     def _store_chunks(
@@ -229,7 +237,7 @@ class ProcessingPipeline:
                         context_text=context_text.strip() if context_text else None,
                     )
             except Exception as e:
-                print(f"[WARN] Failed to save image metadata to SQLite: {e}")
+                logger.warning("Failed to save image metadata to SQLite: %s", e)
     
     def _update_file_status(
         self,
@@ -263,7 +271,7 @@ class ProcessingPipeline:
                 )
                 self.db.conn.commit()
         except Exception as e:
-            print(f"[WARN] Failed to update file status: {e}")
+            logger.warning("Failed to update file status: %s", e)
 
     def _set_progress(self, file_id: str, progress: int):
         """Write progress (0-100) to database."""
@@ -271,7 +279,7 @@ class ProcessingPipeline:
             if hasattr(self.db, 'update_file_progress'):
                 self.db.update_file_progress(file_id, progress)
         except Exception as e:
-            print(f"[WARN] Failed to update progress: {e}")
+            logger.warning("Failed to update progress: %s", e)
     
     async def process_batch(
         self,

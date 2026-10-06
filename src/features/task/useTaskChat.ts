@@ -133,32 +133,42 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
   const handleStreamEvent = (type: string, payload: string) => {
     try {
       const parsed = JSON.parse(payload)
-      if (type === 'reasoning') {
-        // Save previous iteration's reasoning snapshot before new one arrives
-        if (streamReasoningRef.current.trim()) {
+      if (type === 'iteration') {
+        // 显式迭代边界（后端每轮 LLM 调用开始时发送）：推进轮号、开新轮。
+        // 兜底快照上一轮 reasoning（该轮无 content → 无 thought 事件时的丢失窗口）
+        if (streamReasoningRef.current.trim() && !streamIterationReasoning.current.has(streamIterationRef.current)) {
           streamIterationReasoning.current.set(streamIterationRef.current, streamReasoningRef.current)
         }
-        streamReasoningRef.current = parsed.content || ''
-        setStreamReasoning(parsed.content || '')
-      } else if (type === 'plan') {
-        setPlanData(parsed as PlanData)
-      } else if (type === 'thought') {
-        // thought = content 的完整版本，已由 answer_chunk 流式显示在 streamContent 中
-        // 将 streamContent（中间分析）独立保存为当前迭代的 thought（不与 reasoning 混合）
-        if (streamContentRef.current.trim()) {
-          streamIterationThoughts.current.set(streamIterationRef.current, streamContentRef.current)
-        }
-        // 清除 reasoning 和 streamContent，推进迭代计数器
+        streamIterationRef.current = typeof parsed.iteration === 'number' ? parsed.iteration : 0
+        setStreamIteration(streamIterationRef.current)
         streamReasoningRef.current = ''
         setStreamReasoning('')
         streamContentRef.current = ''
         setStreamContent('')
-        setStreamIteration((prev) => { streamIterationRef.current = prev + 1; return prev + 1 })
-        setStreamSteps((prev) => {
-          const next = prev.filter((s) => s.type === 'action')
-          streamStepsRef.current = next
-          return next
-        })
+      } else if (type === 'reasoning_chunk') {
+        // 推理逐字流式（1.2 §2）；DB 由后端在 flush 点存全量，前端只累积
+        streamReasoningRef.current += parsed.delta || ''
+        setStreamReasoning(streamReasoningRef.current)
+      } else if (type === 'reasoning_reset') {
+        // LLM 瞬时错误重试：清空已渲染的部分推理，重试流从头累积
+        streamReasoningRef.current = ''
+        setStreamReasoning('')
+      } else if (type === 'plan') {
+        setPlanData(parsed as PlanData)
+      } else if (type === 'thought') {
+        // 本轮 LLM 响应结束（有 tool_calls）：锁定该轮推理+分析快照，清空当前流。
+        // 迭代推进由 iteration 事件负责；仅 streamContent 非空才快照分析
+        // （planner/resume 的提示型 thought 无流式内容，不产生可见分析）
+        if (streamReasoningRef.current.trim()) {
+          streamIterationReasoning.current.set(streamIterationRef.current, streamReasoningRef.current)
+        }
+        if (streamContentRef.current.trim()) {
+          streamIterationThoughts.current.set(streamIterationRef.current, streamContentRef.current)
+        }
+        streamReasoningRef.current = ''
+        setStreamReasoning('')
+        streamContentRef.current = ''
+        setStreamContent('')
       } else if (type === 'action') {
         // Don't clear reasoning — it stays visible in the IterationCard during tool execution
         setStreamSteps((prev) => {
@@ -188,14 +198,9 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           return steps
         })
       } else if (type === 'answer_chunk') {
-        // Before clearing reasoning, save it to the map (prevents loss when
-        // reasoning was flushed during streaming and no subsequent reasoning event arrives)
-        if (streamReasoningRef.current.trim()) {
-          streamIterationReasoning.current.set(streamIterationRef.current, streamReasoningRef.current)
-        }
-        streamReasoningRef.current = ''
-        setStreamReasoning('')
-        setStreamContent((prev) => prev + (parsed.content || ''))
+        // 分析/最终回答流式累积；快照职责在 thought / iteration / done 事件
+        streamContentRef.current += parsed.content || ''
+        setStreamContent(streamContentRef.current)
       } else if (type === 'confirm_shell') {
         setPendingShellConfirm({ command: parsed.command, taskId: parsed.task_id || activeTaskIdRef.current || '' })
       } else if (type === 'confirm_skill') {
@@ -212,10 +217,12 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           streamIterationReasoning.current.set(streamIterationRef.current, streamReasoningRef.current)
         }
 
-        // Collect all iteration keys (from both reasoning and thoughts)
+        // Collect all iteration keys (maps + steps — a tool-only iteration
+        // has no map entry and must not lose its actions, e.g. resume rounds)
         const allIters = new Set<number>([
           ...streamIterationReasoning.current.keys(),
           ...streamIterationThoughts.current.keys(),
+          ...streamStepsRef.current.map((s) => s.iteration ?? 0),
         ])
 
         // Build messages per iteration: reasoning → thought → actions
@@ -280,21 +287,30 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       const bg = bgStates.current.get(taskId)
       if (!bg && type !== 'done') return
 
-      if (type === 'reasoning') {
+      if (type === 'iteration') {
+        if (!bg) return
+        if (bg.reasoning.trim() && !bg.iterationReasoning.has(bg.iteration)) {
+          bg.iterationReasoning.set(bg.iteration, bg.reasoning)
+        }
+        bg.iteration = typeof parsed.iteration === 'number' ? parsed.iteration : 0
+        bg.reasoning = ''
+        bg.content = ''
+      } else if (type === 'reasoning_chunk') {
+        if (!bg) return
+        bg.reasoning += parsed.delta || ''
+      } else if (type === 'reasoning_reset') {
+        if (!bg) return
+        bg.reasoning = ''
+      } else if (type === 'thought') {
         if (!bg) return
         if (bg.reasoning.trim()) {
           bg.iterationReasoning.set(bg.iteration, bg.reasoning)
         }
-        bg.reasoning = parsed.content || ''
-      } else if (type === 'thought') {
-        if (!bg) return
         if (bg.content.trim()) {
           bg.iterationThoughts.set(bg.iteration, bg.content)
         }
         bg.reasoning = ''
         bg.content = ''
-        bg.iteration++
-        bg.steps = bg.steps.filter((s) => s.type === 'action')
       } else if (type === 'action') {
         if (!bg) return
         bg.steps.push({ type: 'action', tool: parsed.tool, input: parsed.input, iteration: bg.iteration })
@@ -308,10 +324,6 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         }
       } else if (type === 'answer_chunk') {
         if (!bg) return
-        if (bg.reasoning.trim()) {
-          bg.iterationReasoning.set(bg.iteration, bg.reasoning)
-        }
-        bg.reasoning = ''
         bg.content += (parsed.content || '')
       } else if (type === 'plan') {
         if (!bg) return

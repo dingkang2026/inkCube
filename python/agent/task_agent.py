@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from typing import AsyncGenerator
 
+import activity_events
 from llm.client import LLMClient
 from db.database import Database
 from tools.code_executor import CodeExecutorTool
@@ -30,9 +31,27 @@ from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter
 from agent.context_manager import ContextManager, build_git_context, detect_project_context
-from errors import LLMNetworkError
+from errors import LLMNetworkError, InkCubeError, actionable
 
 logger = logging.getLogger(__name__)
+
+
+def _llm_error_msg(e: Exception) -> str:
+    """LLM 调用失败的用户可行动文案（存为助手消息 + 流式推送，0.4 §7.3 v3.6）。
+
+    配置/凭据类（Key 失效/限流额度/欠费/模型名错）经 errors.actionable()
+    自带设置页修正指引；网络类保留原双分支文案；未知异常透传 detail。
+    """
+    if isinstance(e, LLMNetworkError):
+        detail = getattr(e, "detail", "") or str(e)
+        lowered = detail.lower()
+        # httpx 超时惯用表述为 "timed out"（带空格），与 "timeout" 一并匹配
+        if "超时" in detail or "timed out" in lowered or "timeout" in lowered:
+            return "⏱️ 调用模型超时，请检查网络连接或稍后重试。"
+        return "🔌 无法连接模型服务，请检查网络连接。"
+    if isinstance(e, InkCubeError):
+        return f"❌ {actionable(e)}"
+    return f"调用模型出错: {getattr(e, 'detail', '') or str(e)}"
 
 # ── Modular System Prompt Components ──
 # Each section is independently maintained and dynamically assembled.
@@ -900,16 +919,12 @@ class TaskAgent:
             self._task_messages.pop(task_id, None)
             outcome = self._run_outcomes.pop(task_id, "completed")
             if not user_stopped:
-                try:
-                    task = self.db.get_task(task_id)
-                    if task:
-                        self.db.add_notification(
-                            entity_type="task", entity_id=task_id, project_id=None,
-                            kind="completed" if outcome == "completed" else "failed",
-                            entity_title=task.get("title") or task_id,
-                        )
-                except Exception:
-                    logger.warning("Task terminal notification failed for %s", task_id, exc_info=True)
+                # 经 activity_events 统一入口（E2 收尾，v3.9）：内部查 title + E3 事件投递，
+                # 异常自行兜底不影响业务主流程（任务不存在静默跳过，与旧直调一致）
+                if outcome == "completed":
+                    activity_events.complete_task(self.db, task_id)
+                else:
+                    activity_events.fail_task(self.db, task_id)
 
     async def _run_planner(
         self, planner_llm: LLMClient, settings: dict,
@@ -1157,6 +1172,9 @@ class TaskAgent:
             self._task_iterations[task_id] = iteration
             if cancel_event.is_set():
                 break
+            # 显式迭代边界（1.2 §2）：前端据此推进迭代编号，与 content 是否为空解耦；
+            # 后续该轮的 reasoning_chunk / answer_chunk / action / observation 均归属此轮号
+            yield {"type": "iteration", "data": {"iteration": iteration}}
 
             logger.info(
                 "TaskAgent iteration %d start: msg_count=%d recent_errors=%d task=%s",
@@ -1273,7 +1291,8 @@ class TaskAgent:
         # ── LLM call with tools (function calling) — streaming ──
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
-        reasoning_flushed = False  # Track if reasoning has been yielded
+        reasoning_flushed = False  # Track if reasoning has been persisted to DB
+        _reasoning_chunks_sent = False  # Track if reasoning_chunk events were yielded (retry needs reset)
         tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
         finish_reason = "unknown"
 
@@ -1297,6 +1316,11 @@ class TaskAgent:
                 reasoning_parts.clear()
                 tc_accum.clear()
                 finish_reason = "unknown"
+                # Frontend already rendered partial reasoning chunks — reset it
+                # so the retried stream does not append onto stale text
+                if _reasoning_chunks_sent:
+                    yield {"type": "reasoning_reset", "data": {}}
+                    _reasoning_chunks_sent = False
 
             try:
                 async for chunk in task_llm.chat_stream(messages, settings, tools=tool_defs):
@@ -1306,12 +1330,18 @@ class TaskAgent:
                     if chunk["type"] == "reasoning":
                         delta = chunk["delta"]
                         reasoning_parts.append(delta)
+                        # Stream reasoning to frontend as it arrives (1.2 §2);
+                        # DB persistence happens once at the flush points below
+                        if delta:
+                            yield {"type": "reasoning_chunk", "data": {"delta": delta}}
+                            _reasoning_chunks_sent = True
                     elif chunk["type"] == "content":
-                        # Flush reasoning before first content chunk (ensure correct order)
+                        # Persist reasoning before first content chunk (ensure DB order:
+                        # reasoning precedes content); frontend already received it
+                        # via reasoning_chunk events
                         if not reasoning_flushed and reasoning_parts:
                             rc = "".join(reasoning_parts)
                             if rc.strip():
-                                yield {"type": "reasoning", "data": {"content": rc}}
                                 self.db.save_task_message(task_id, "reasoning", rc)
                             reasoning_flushed = True
                         
@@ -1360,13 +1390,7 @@ class TaskAgent:
         if _llm_last_error is not None:
             e = _llm_last_error
             detail = getattr(e, 'detail', '') or str(e)
-            if isinstance(e, LLMNetworkError):
-                if "超时" in detail or "timeout" in detail.lower():
-                    error_msg = f"⏱️ 调用模型超时，请检查网络连接或稍后重试。"
-                else:
-                    error_msg = f"🔌 无法连接模型服务，请检查网络连接。"
-            else:
-                error_msg = f"调用模型出错: {detail}"
+            error_msg = _llm_error_msg(e)
             logger.error("TaskAgent FC LLM call failed for task %s: %s", task_id, detail)
             self.db.save_task_message(task_id, "assistant", error_msg)
             yield {"type": "answer_chunk", "data": {"content": error_msg}}
@@ -1401,9 +1425,9 @@ class TaskAgent:
             return
 
         # ── Case 2: Tool calls present ──
-        # Yield reasoning if not already flushed during streaming
+        # Persist reasoning if not already flushed during streaming (content-less
+        # iterations flush here); frontend received it via reasoning_chunk events
         if not reasoning_flushed and reasoning_content and reasoning_content.strip():
-            yield {"type": "reasoning", "data": {"content": reasoning_content}}
             self.db.save_task_message(task_id, "reasoning", reasoning_content)
 
         # Extract and yield thought before action (so frontend can clear streamContent)

@@ -531,6 +531,9 @@ async def search(request: SearchRequest):
 @router.post("/projects/{project_id}/chat")
 async def chat_project(project_id: str, request: ChatRequest):
     """Knowledge base RAG chat — independent from agent (产业洞察) chat."""
+    # 事前准入（§7.3 第三层 v3.7）：组合入口，embedding + LLM 双依赖；try 块外调用（同下）
+    ensure_ready("knowledge_search")
+    ensure_ready("task")
     try:
         db = get_db()
         data_dir = get_data_dir()
@@ -655,6 +658,8 @@ async def delete_file(project_id: str, file_id: str):
 @router.post("/projects/{project_id}/files/{file_id}/retry")
 async def retry_file(project_id: str, file_id: str):
     """Retry processing a failed file."""
+    # 事前准入（§7.3 第三层 v3.7）：与 upload 同等拦截，try 块外调用
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()
@@ -677,6 +682,8 @@ async def retry_file(project_id: str, file_id: str):
 @router.post("/projects/{project_id}/files/retry-failed")
 async def retry_failed_files(project_id: str):
     """Retry all failed files in a project."""
+    # 事前准入（§7.3 第三层 v3.7）：try 块外调用
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()
@@ -741,6 +748,8 @@ async def batch_delete_files(project_id: str, req: BatchFileRequest):
 @router.post("/projects/{project_id}/files/batch-reprocess")
 async def batch_reprocess_files(project_id: str, req: BatchFileRequest):
     """Batch reprocess multiple files."""
+    # 事前准入（§7.3 第三层 v3.7）：try 块外调用
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()

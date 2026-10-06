@@ -16,7 +16,7 @@ function makeStatus(): ActivityStatus {
   return {
     active: [
       { entity_type: 'model_download', entity_id: 'bge-m3', progress: 40 },
-      { entity_type: 'model_download', entity_id: 'gpu-backend', progress: 10 },
+      { entity_type: 'model_download', entity_id: 'tableformer-v2', progress: 10 },
       { entity_type: 'file', project_id: 'p1', count: 2 },
     ],
     notifications: { unread: [], recent: [] },
@@ -67,7 +67,7 @@ describe('useActivity(kind) overload', () => {
     apply(makeStatus())
     const parsed = JSON.parse(screen.getByTestId('probe').textContent!)
     expect(parsed.isActive).toBe(true)
-    expect(parsed.items.map((i: { entity_id?: string }) => i.entity_id)).toEqual(['bge-m3', 'gpu-backend'])
+    expect(parsed.items.map((i: { entity_id?: string }) => i.entity_id)).toEqual(['bge-m3', 'tableformer-v2'])
   })
 
   it('returns empty items when kind has no active entries', () => {

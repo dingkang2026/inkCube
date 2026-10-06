@@ -7,6 +7,8 @@ import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, Alert
 import type { Report, ReportLog } from '../types'
 import { useToast } from '../../knowledge/Toast'
 import { usePolling } from '../../../hooks/usePolling'
+import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
+import { useActivity } from '../../activity/ActivityContext'
 import s from './ReportPreview.module.css'
 
 interface ReportContent {
@@ -41,21 +43,22 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const [exporting, setExporting] = useState(false)
 
   // Load report content from backend
-  useEffect(() => {
-    const loadContent = async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('reports:getReportContent', report.id)
-        if (result.content !== undefined) {
-          setContent(result)
-        }
-      } catch (err) {
-        console.error('Failed to load report content:', err)
-      } finally {
-        setLoading(false)
+  const loadContent = useCallback(async () => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:getReportContent', report.id)
+      if (result.content !== undefined) {
+        setContent(result)
       }
+    } catch (err) {
+      console.error('Failed to load report content:', err)
+    } finally {
+      setLoading(false)
     }
-    loadContent()
   }, [report.id])
+
+  useEffect(() => {
+    void loadContent()
+  }, [loadContent])
 
   // Load logs from backend（抛错由 usePolling 计入退避，0.4 §5.8）
   const loadLogs = useCallback(async () => {
@@ -68,18 +71,30 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     }
   }, [report.id])
 
-  useEffect(() => {
-    // 生成中由下方轮询首次 tick 立即拉取，避免重复请求
-    if (report.status !== 'generating') void loadLogs()
-  }, [loadLogs, report.status])
+  // #8 谓词收编全局心跳（顺序 4）：entity 级精确匹配（区别于 #7 的项目级）——
+  // 本地 report 是打开预览时的快照，终态靠 ReportsTab applyReports 同步（v3.4），
+  // 心跳翻假可早于快照同步，轮询与边沿都以心跳为准驱动
+  const { items: activeReportItems } = useActivity('report')
+  const generating = activeReportItems.some(a => a.entity_id === report.id)
 
-  // Auto-refresh logs when report is generating（#8，v1.7 迁移 usePolling 2s→5s，0.4 §8.1）
+  // 挂载 / 报告切换即拉日志（§6.3 启动间隙）：心跳 5s 粒度可能尚未发现新生成，
+  // 轮询未开时也先有日志基线；与轮询首 tick 重复一次幂等读可接受
+  useEffect(() => {
+    void loadLogs()
+  }, [loadLogs])
+
+  // Auto-refresh logs when report is generating（#8，v1.7 迁移 usePolling 2s→5s，0.4 §8.1；
+  // 谓词收编全局心跳，顺序 4）
   usePolling({
     name: 'report-preview-logs',
-    enabled: report.status === 'generating',
+    enabled: generating,
     interval: 5000,
     task: loadLogs,
   })
+  // 终态边沿补拉（0.4 §6.3）：心跳停轮可早于终态写入与快照同步——generating
+  // 翻 false 的边沿重拉 content 渲染正文 + logs 刷终态日志（原 status effect 改为
+  // 挂载即拉后，终态日志刷新统一由本边沿负责）
+  useEdgeRefetch(generating, () => { void loadContent(); void loadLogs() })
 
   const handleExport = async () => {
     setExporting(true)

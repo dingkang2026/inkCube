@@ -16,6 +16,8 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from readiness import ensure_ready
+from errors import actionable
+import activity_events
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +621,9 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
     mode=resume: Continue from checkpoint (default)
     mode=restart: Delete checkpoint and start fresh
     """
+    # 事前准入（0.4 §7.3 第三层 v3.7）：重试入口与 generate 同等拦截；
+    # 必须在 try 块外调用，避免 InkCubeError 被 except Exception → 500 吞掉结构化字段
+    ensure_ready("report")
     try:
         db = get_db()
         report = db.get_report(report_id)
@@ -736,6 +741,24 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
+def _section_done_log(data: dict) -> tuple[str, str]:
+    """section_done 事件 → (日志文案, 日志级别)。
+
+    降级显式告知（0.4 §7.4 v3.6）：材料不足但章节以分析推理模式继续时，
+    必须写 warning 级日志让用户在报告详情页显式可见，而非静默完成。
+    """
+    title = data.get("title", "")
+    if data.get("skipped"):
+        return f"章节跳过: {title}（材料不足）", "info"
+    if data.get("degraded"):
+        return (
+            f"章节降级: {title}（材料不足，已以分析推理模式生成，"
+            "内容可能缺乏数据支撑，建议补充项目材料后重新生成）",
+            "warning",
+        )
+    return f"章节完成: {title}", "info"
+
+
 def _get_search_tool(db, data_dir: str):
     """Get knowledge search tool instance."""
     from knowledge.knowledge_search import KnowledgeSearchTool
@@ -802,7 +825,6 @@ async def _run_report_generation(
 
             elif event.event_type == "section_done":
                 section_count += 1
-                skipped = event.data.get("skipped", False)
                 total = event.data.get("total", 1)
                 # 章节阶段进度封顶 90%，收尾(finalizing)推进到 95%，完成 100%，保证单调递增
                 progress = int(section_count / total * 90)
@@ -820,15 +842,12 @@ async def _run_report_generation(
                     status="done",
                 )
 
-                # 章节完成/跳过日志
-                if skipped:
-                    log_msg = f"章节跳过: {event.data.get('title', '')}（材料不足）"
-                else:
-                    log_msg = f"章节完成: {event.data.get('title', '')}"
+                # 章节完成/跳过/降级日志（降级显式告知：0.4 §7.4 v3.6）
+                log_msg, log_level = _section_done_log(event.data)
                 db.create_report_log(
                     report_id,
                     log_msg,
-                    level="info",
+                    level=log_level,
                     section_id=event.data.get("section_id"),
                 )
 
@@ -843,6 +862,7 @@ async def _run_report_generation(
 
             elif event.event_type == "complete":
                 db.update_report_status(report_id, "done", 100)
+                activity_events.complete_report(db, report_id)  # 终态事件显式声明（E2，顺序 4）
                 # 保存 token 统计
                 token_usage = event.data.get("token_usage")
                 if token_usage:
@@ -850,13 +870,25 @@ async def _run_report_generation(
                 # 完成日志
                 db.create_report_log(report_id, "报告生成完成", level="info")
 
+            elif event.event_type == "warning":
+                # 降级/配置提示（如 Tavily Key 缺失或无效，0.4 §7.3 v3.6）：
+                # warning 级写入报告日志，用户在报告详情页显式可见
+                db.create_report_log(
+                    report_id,
+                    event.data.get("message", ""),
+                    level="warning",
+                )
+
             elif event.event_type == "error":
                 # 错误已由 runner.run() 内部 yield error 事件处理，此处不再重复写入
                 pass
 
     except Exception as e:
         logger.exception("Report generation failed for %s: %s", report_id, e)
-        error_msg = str(e)
+        error_msg = actionable(e)
         db.update_report_status(report_id, "error")
         db.update_report_error(report_id, error_msg)
         db.create_report_log(report_id, f"报告生成异常: {error_msg}", level="error")
+        # 终态事件显式声明（E2，顺序 4）：error_msg 直接传参——旧 DB 钩子在
+        # update_report_error 写入前读列恆为 NULL，失败通知 detail 从未带出过错误信息
+        activity_events.fail_report(db, report_id, error_msg)

@@ -10,6 +10,8 @@ import { useToast } from '../../knowledge/Toast'
 import s from './ReportsTab.module.css'
 import { useConfirm } from '../../../components/ConfirmDialog'
 import { usePolling } from '../../../hooks/usePolling'
+import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
+import { useActivity } from '../../activity/ActivityContext'
 
 type ViewMode = 'list' | 'wizard' | 'preview'
 
@@ -27,11 +29,18 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   const [previewReport, setPreviewReport] = useState<Report | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // 列表与 preview 快照同步：previewReport 是点击时的快照，若只 setReports 不更新它，
+  // 生成中打开的预览拿陈旧 status，ReportPreview 终态边沿（0.4 §6.3）永无触发前提
+  const applyReports = (list: Report[]) => {
+    setReports(list)
+    setPreviewReport((prev) => (prev ? list.find((r) => r.id === prev.id) ?? prev : prev))
+  }
+
   // Reload reports from backend
   const loadReports = async () => {
     try {
       const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-      if (result.reports) setReports(result.reports)
+      if (result.reports) applyReports(result.reports)
     } catch (err) {
       console.error('Failed to load reports:', err)
     } finally {
@@ -45,8 +54,11 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     loadReports()
   }, [projectId])
 
-  // Auto-refresh when any report is generating（#7，v1.7 迁移 usePolling，0.4 §8.1）
-  const hasGenerating = reports.some(r => r.status === 'generating')
+  // Auto-refresh when any report is generating（#7，v1.7 迁移 usePolling；谓词收编全局心跳
+  // useActivity('report')，顺序 4）：本地列表是挂载快照，存在陈旧漏判（如停轮期间
+  // 其他页面触发的生成）；心跳是全局事实，以它驱动轮询启停
+  const { items: activeReportItems } = useActivity('report')
+  const hasGenerating = activeReportItems.some(a => a.project_id === projectId)
   usePolling({
     name: 'reports-generating',
     enabled: hasGenerating,
@@ -54,9 +66,13 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     task: async () => {
       // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
       const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-      if (result.reports) setReports(result.reports)
+      if (result.reports) applyReports(result.reports)
     },
   })
+
+  // 终态边沿补拉（0.4 §6.3）：心跳停轮可早于最后一个轮询 tick，列表可能停在
+  // generating；hasGenerating 翻 false 的边沿补拉一次，终态（done/error）立即上屏
+  useEdgeRefetch(hasGenerating, () => { void loadReports() })
 
   const handleWizardComplete = async () => {
     await loadReports()

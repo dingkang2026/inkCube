@@ -17,10 +17,10 @@ import { TaskPage } from './features/task/TaskPage'
 import { TaskList } from './features/task/TaskList'
 import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
+import { TaskStatusMonitor } from './features/task/TaskStatusMonitor'
 import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { useResizeHandle } from './hooks/useResizeHandle'
-import { usePolling } from './hooks/usePolling'
 import { ToastProvider } from './features/knowledge/Toast'
 import { ActivityProvider } from './features/activity/ActivityContext'
 import { ActivityMonitor } from './features/activity/ActivityMonitor'
@@ -28,6 +28,7 @@ import { useConfirm } from './components/ConfirmDialog'
 import type { Project } from './features/knowledge/types'
 import type { ProjectType } from './features/project/types'
 import { getInitialStage } from './features/project/types'
+import { MODELS_IPC } from './types'
 
 export default function App() {
   const { t } = useTranslation()
@@ -112,7 +113,7 @@ export default function App() {
     void window.electronAPI.invoke('system:getOnboarding')
       .then((res) => setOnboardingDone(!!(res as { done?: boolean }).done))
       .catch(() => setOnboardingDone(false))
-    void window.electronAPI.invoke('models:status')
+    void window.electronAPI.invoke(MODELS_IPC.status)
       .then((res) => {
         const models = Object.values(res as Record<string, { downloaded?: boolean }>)
         setAnyModelDownloaded(models.some((m) => !!m.downloaded))
@@ -158,41 +159,13 @@ export default function App() {
     }
   }, [activeNav, projects, selectedProjectId, selectedBaseLibId])
 
-  // Poll task status only when on tasks tab or a task is generating（#2，v1.7 迁移 usePolling，0.4 §8.1）
-  const shouldPollTasks = activeNav === 'tasks' || taskIsGenerating
-  usePolling({
-    name: 'task-status',
-    enabled: shouldPollTasks,
-    interval: 3000,
-    task: async () => {
-      // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
-      const status = await window.electronAPI.invoke('tasks:getStatus') as {
-        can_start: boolean; running_task_ids?: string[]
-      }
-      setCanStartTask(status.can_start)
-      setRunningTaskIds(new Set(status.running_task_ids || []))
-    },
-  })
-  // 非轮询期重置派生标记（原 shouldPoll=false 分支）
-  useEffect(() => {
-    if (!shouldPollTasks) {
-      setCanStartTask(true)
-      setRunningTaskIds(new Set())
-    }
-  }, [shouldPollTasks])
-
-  // Refresh task status when generation finishes
-  useEffect(() => {
-    if (!taskIsGenerating) {
-      const timer = setTimeout(async () => {
-        try {
-          const status = await window.electronAPI.invoke('tasks:getStatus') as { can_start: boolean }
-          setCanStartTask(status.can_start)
-        } catch { /* ignore */ }
-      }, 500)
-      return () => clearTimeout(timer)
-    }
-  }, [taskIsGenerating])
+  // Task status polling（#2，v3.9 顺序 5 收编 0.4 §8.1）：谓词改全局心跳派生 + 轮询本体
+  // 在 TaskStatusMonitor（App 自身渲染 Provider，useActivity 不可用）；App 只持有
+  // 派生结果供 TaskList 消费，非轮询期重置 / 终态补拉均由组件内处理
+  const handleTaskStatus = useCallback((status: { can_start: boolean; running_task_ids?: string[] }) => {
+    setCanStartTask(status.can_start)
+    setRunningTaskIds(new Set(status.running_task_ids || []))
+  }, [])
 
   const selectedProject = selectedProjectId
     ? projects.find((p) => p.id === selectedProjectId) || null
@@ -253,6 +226,10 @@ export default function App() {
       console.error('Failed to rename project:', err)
     }
   }
+
+  // 同级页面（设置 / 模板管理 / 基础库详情）打开期间，侧边栏不残留项目 / 任务列表——
+  // 与首页同样清空；切回导航时 handleNavChange 清掉三个 peer 状态后列表复原
+  const peerPageOpen = settingsOpen || showTemplateManagement || !!selectedBaseLibId
 
   const handleNavChange = useCallback((nav: string) => {
     setActiveNav(nav)
@@ -394,6 +371,12 @@ export default function App() {
       <ActivityProvider>
         {/* 单一常驻活动轮询：Toast / 徽章 / 首页活动区共同数据源（0.4 §8.1 #0） */}
         <ActivityMonitor />
+        {/* 任务系统状态轮询（#2，顺序 5 收编）：谓词全局心跳派生，须挂 Provider 内 */}
+        <TaskStatusMonitor
+          activeOnTasks={activeNav === 'tasks'}
+          localGenerating={taskIsGenerating}
+          onStatus={handleTaskStatus}
+        />
         <TitleBar
           onOpenSettings={handleOpenSettings}
           onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -405,7 +388,7 @@ export default function App() {
             <>
               <Sidebar
                 width={sidebar.width}
-                activeNav={!settingsOpen && !showTemplateManagement && !selectedBaseLibId ? activeNav : ''}
+                activeNav={!peerPageOpen ? activeNav : ''}
                 onNavChange={handleNavChange}
                 onOpenSettings={handleOpenSettings}
                 footer={
@@ -421,7 +404,7 @@ export default function App() {
                   />
                 }
               >
-                {activeNav === 'projects' && (
+                {!peerPageOpen && activeNav === 'projects' && (
                   <ProjectSidebar
                     projects={projects}
                     selectedProject={selectedProjectId}
@@ -431,7 +414,7 @@ export default function App() {
                     onCreateProject={handleCreateProject}
                   />
                 )}
-                {activeNav === 'tasks' && (
+                {!peerPageOpen && activeNav === 'tasks' && (
                   <TaskList
                     tasks={currentTasks}
                     activeTaskId={activeTaskId}

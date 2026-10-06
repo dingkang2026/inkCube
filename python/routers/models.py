@@ -15,11 +15,6 @@ async def models_status():
     return get_manager().check_status()
 
 
-@router.get("/models/gpu-status")
-async def gpu_status():
-    return get_manager().get_gpu_status()
-
-
 @router.post("/models/{name}/download")
 async def download_model(name: str):
     if name not in MODELS:
@@ -36,12 +31,6 @@ async def download_all():
     if not started:
         return {"ok": False, "message": "所有模型已下载完成或正在下载中"}
     return {"ok": True, "message": f"开始下载: {', '.join(started)}"}
-
-
-@router.post("/models/gpu/download")
-async def download_gpu():
-    get_manager().download_gpu_backend()
-    return {"ok": True, "message": "开始下载 GPU 后端"}
 
 
 @router.get("/models/libreoffice/status")

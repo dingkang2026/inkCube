@@ -66,6 +66,72 @@ async function _uploadFilesToTask(pythonManager, taskId, filePaths) {
   return handlePythonResponse(res)
 }
 
+/** 全局终态事件流 SSE 转发（0.4 §6.4 E3）：/activities/stream → 'activity:stream' IPC。
+ *
+ *  每窗口一条；重复 invoke（StrictMode 双挂载 / 组件重挂载）先 abort 旧流防双流；
+ *  Python 后端重启窗口期退避重连；sender 销毁时 abort 上游 fetch（同 tasks:chat M2 语义）。
+ *  SSE 事件体不在主进程解析，仅作为「立即心跳」信号转发给渲染进程。 */
+const _activityStreamCtl = new Map() // sender.id -> AbortController
+
+function streamActivities(pythonManager, sender) {
+  const prev = _activityStreamCtl.get(sender.id)
+  if (prev) prev.abort()
+  const controller = new AbortController()
+  _activityStreamCtl.set(sender.id, controller)
+  const onDestroyed = () => controller.abort()
+  sender.once('destroyed', onDestroyed)
+
+  void (async () => {
+    let backoffMs = 2000
+    try {
+      while (!controller.signal.aborted && !sender.isDestroyed()) {
+        try {
+          // SSE 长连接：不适用 fetchWithTimeout，生命周期由 controller.signal 管理
+          const response = await fetch(`${pythonManager.getBaseUrl()}/activities/stream`, { signal: controller.signal })
+          if (!response.ok || !response.body) throw new Error(`activities/stream HTTP ${response.status}`)
+          backoffMs = 2000
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+          let currentEvent = 'message'
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop() || ''
+            for (const line of lines) {
+              if (line.startsWith('event: ')) {
+                currentEvent = line.slice(7).trim()
+              } else if (line.startsWith('data: ')) {
+                const data = line.slice(6)
+                if (!sender.isDestroyed()) {
+                  sender.send('activity:stream', { type: currentEvent, data })
+                }
+                currentEvent = 'message'
+              } else {
+                currentEvent = 'message'
+              }
+            }
+          }
+          // 流正常结束（后端关闭）→ 退避后重连
+        } catch (err) {
+          if (controller.signal.aborted) return
+          logElectron('WARN', `activity stream reconnect in ${backoffMs}ms: ${err.message}`)
+        }
+        if (controller.signal.aborted) return
+        await new Promise((resolve) => setTimeout(resolve, backoffMs))
+        backoffMs = Math.min(backoffMs * 2, 15000)
+      }
+    } finally {
+      sender.removeListener('destroyed', onDestroyed)
+      if (_activityStreamCtl.get(sender.id) === controller) {
+        _activityStreamCtl.delete(sender.id)
+      }
+    }
+  })()
+}
+
 function registerIpcHandlers(ipcMain, pythonManager) {
   // Expose Python backend base URL for direct HTTP calls (e.g. file upload)
   ipcMain.handle('python:getBaseUrl', () => pythonManager.getBaseUrl())
@@ -212,11 +278,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('models:gpu-status', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/gpu-status`)
-    return handlePythonResponse(res)
-  })
-
   ipcMain.handle('models:download', async (_event, name) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/${name}/download`, {
       method: 'POST',
@@ -226,13 +287,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('models:download-all', async () => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/download-all`, {
-      method: 'POST',
-    })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('models:gpu-download', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/gpu/download`, {
       method: 'POST',
     })
     return handlePythonResponse(res)
@@ -1133,6 +1187,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       body: JSON.stringify({ ids }),
     })
     return handlePythonResponse(res)
+  })
+
+  // 全局终态事件流订阅（0.4 §6.4 E3）：fire-and-forget——SSE 生命周期由 sender
+  // destroyed / 重挂载去重管理，invoke 立即返回；事件经 'activity:stream' 通道推送
+  ipcMain.handle('activities:subscribeStream', (event) => {
+    streamActivities(pythonManager, event.sender)
+    return { ok: true }
   })
 
   ipcMain.handle('wiki:stopCompile', async (_event, { projectId }) => {

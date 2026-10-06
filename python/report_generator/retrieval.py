@@ -36,12 +36,16 @@ class RetrievalResult:
         skip: bool = False,
         sufficiency: Optional[dict] = None,
         raw_results: Optional[list[dict]] = None,
+        warnings: Optional[list[str]] = None,
     ):
         self.cards = cards  # 知识卡片列表
         self.is_degraded = is_degraded  # 降级为"分析推理模式"
         self.skip = skip  # 跳过该节（optional + 无材料）
         self.sufficiency = sufficiency or {"level": "unknown", "reason": ""}
         self.raw_results = raw_results or []  # 原始检索结果（调试用）
+        # 检索通道降级/失败显式警告（如 Tavily Key 缺失/无效/额度用尽/网络不通），
+        # runner 转为 ProgressEvent("warning") → 报告日志，用户在报告详情页可见（0.4 §7.3 v3.6）
+        self.warnings = warnings or []
 
 
 async def retrieve_for_section(
@@ -110,6 +114,7 @@ async def retrieve_for_section(
     # ② 多通道检索装配（§3.3：knowledge 恒可用；wiki 按 data_sources + db；internet 按 data_sources + tavily_key）
     raw_results: list[dict] = []
     channel_tasks = []
+    channel_warnings: list[str] = []
 
     if "knowledge" in data_sources:
         channel_tasks.append(
@@ -136,6 +141,11 @@ async def retrieve_for_section(
                 "Retrieval: section=%s internet 通道已请求但未配置 tavily_key，跳过",
                 section_id,
             )
+            # 显式降级警告（0.4 §7.3 v3.6）：请求了互联网通道但 Key 缺失，不能静默跳过
+            channel_warnings.append(
+                "互联网检索未生效：未配置 Tavily API Key，本次报告仅使用项目内材料。"
+                "请前往 设置 > 外部模型 配置后重试。"
+            )
 
     # 并行执行所有通道
     if channel_tasks:
@@ -144,18 +154,19 @@ async def retrieve_for_section(
             if isinstance(result, Exception):
                 logger.warning("Channel execution failed: %s", result)
                 continue
-            channel_data, channel_usage = result
+            channel_data, channel_usage, warnings = result
             raw_results.extend(channel_data)
+            channel_warnings.extend(warnings)
             _add_usage(channel_usage)
 
     # ③ 降级判断
     if not raw_results:
         if section.get("optional"):
             logger.info("Section '%s': no results, optional=true → skip", section_id)
-            return RetrievalResult(cards=[], skip=True), total_usage
+            return RetrievalResult(cards=[], skip=True, warnings=channel_warnings), total_usage
         else:
             logger.info("Section '%s': no results, optional=false → degraded mode", section_id)
-            return RetrievalResult(cards=[], is_degraded=True), total_usage
+            return RetrievalResult(cards=[], is_degraded=True, warnings=channel_warnings), total_usage
 
     # ④ LLM 构建知识卡片
     cards, sufficiency, card_usage = await build_knowledge_cards(
@@ -178,6 +189,7 @@ async def retrieve_for_section(
         cards=cards,
         sufficiency=sufficiency,
         raw_results=raw_results,
+        warnings=channel_warnings,
     ), total_usage
 
 
@@ -239,7 +251,7 @@ async def _search_knowledge_channel(
 
     # 按分数排序取 top_k
     sorted_chunks = sorted(all_chunks.values(), key=lambda c: c["score"], reverse=True)
-    return sorted_chunks[:top_k], empty_usage
+    return sorted_chunks[:top_k], empty_usage, []
 
 
 def _format_knowledge_source(metadata: dict) -> str:
@@ -254,24 +266,50 @@ def _format_knowledge_source(metadata: dict) -> str:
 # ── internet 通道 ──────────────────────────────────────────
 
 
+def _tavily_failure_warning(e: Exception) -> str:
+    """Tavily 检索失败 → 面向用户的显式警告文案（自带修正指引，0.4 §7.3 v3.6）。
+
+    降级显式呈现：互联网通道失败时报告仍会用项目内材料完成，但用户必须被告知
+    「本次未使用互联网材料」及修正路径，不能静默降级。
+    """
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status in (401, 403):
+        return ("互联网检索未生效：Tavily API Key 无效或已失效，本次报告仅使用项目内材料。"
+                "请前往 设置 > 外部模型 更新 Tavily Key。")
+    if status == 402:
+        return ("互联网检索未生效：Tavily 账户额度已用尽，本次报告仅使用项目内材料。"
+                "请检查 Tavily 用量，或在 设置 > 外部模型 更换 API Key。")
+    if status == 429:
+        return ("互联网检索未生效：Tavily 调用频率或用量超限，本次报告仅使用项目内材料。"
+                "请稍后重试或检查 Tavily 账户用量限额。")
+    if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
+        return "互联网检索未生效：无法连接 Tavily 服务，本次报告仅使用项目内材料。请检查网络连接。"
+    return ("互联网检索未生效：Tavily 服务暂时异常，本次报告仅使用项目内材料。可稍后重新生成。")
+
+
 async def _search_internet_channel(
     queries: list[str],
     tavily_api_key: str,
     top_k: int,
     query_parallelism: int = 4,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], dict, list[str]]:
     """互联网通道：使用 Tavily API 搜索。
     
     支持多 query 并行执行，通过 semaphore 控制并发数。
     复用 httpx 连接池，内置 429 速率限制退避。
+    返回 (results, usage, warnings)：warnings 为显式降级警告（去重后，0.4 §7.3 v3.6）。
     """
     empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     if not tavily_api_key:
         logger.warning("Internet channel: tavily_api_key not configured, skipping")
-        return [], empty_usage
+        return [], empty_usage, [
+            "互联网检索未生效：未配置 Tavily API Key，本次报告仅使用项目内材料。"
+            "请前往 设置 > 外部模型 配置后重试。"
+        ]
 
     all_results: dict[str, dict] = {}  # url -> result dict
+    warning_set: set[str] = set()  # 多 query 失败去重
 
     # 使用 semaphore 控制并发
     sem = asyncio.Semaphore(query_parallelism)
@@ -285,6 +323,9 @@ async def _search_internet_channel(
                     results = await _tavily_search(query, tavily_api_key, client, max_results=5)
                     return results
                 except Exception as e:
+                    warning = _tavily_failure_warning(e)
+                    if warning:
+                        warning_set.add(warning)
                     logger.warning("Internet search failed for query='%s': %s", query, e)
                     return []
 
@@ -307,7 +348,7 @@ async def _search_internet_channel(
 
     # 按分数排序取 top_k
     sorted_results = sorted(all_results.values(), key=lambda r: r["score"], reverse=True)
-    return sorted_results[:top_k], empty_usage
+    return sorted_results[:top_k], empty_usage, list(warning_set)
 
 
 async def _tavily_search(
@@ -380,7 +421,7 @@ async def _search_wiki_channel(
     db: Any,
     project_id: str,
     top_k: int,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], dict, list[str]]:
     """Wiki 通道：从项目已编译的 Wiki 页面中检索相关页面。
 
     设计参考 docs/2.6wiki-design.md §8.1/§8.2：Wiki 页面是已编译的结构化“骨架”
@@ -400,7 +441,7 @@ async def _search_wiki_channel(
         all_pages = db.list_wiki_pages(project_id)
     except Exception as e:
         logger.warning("Wiki channel: failed to list pages for project=%s: %s", project_id, e)
-        return [], empty_usage
+        return [], empty_usage, []
 
     finished_pages = [
         p for p in all_pages
@@ -440,4 +481,4 @@ async def _search_wiki_channel(
                 }
 
     sorted_pages = sorted(all_results.values(), key=lambda r: r["score"], reverse=True)
-    return sorted_pages[:top_k], empty_usage
+    return sorted_pages[:top_k], empty_usage, []

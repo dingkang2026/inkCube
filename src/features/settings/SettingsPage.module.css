@@ -19,6 +19,17 @@
   font-weight: 600;
 }
 
+/* 自动保存状态指示（标题行右侧，0.3 §3.5 v0.8.0） */
+.autoSave {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.autoSave.failed {
+  color: var(--error);
+}
+
 .body {
   flex: 1;
   display: flex;

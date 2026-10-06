@@ -91,6 +91,9 @@ interface IterationGroup {
   thought: string | null
   actions: TaskMessage[]
   status: 'ok' | 'error' | 'running'
+  /** true while the field is still streaming live (current iteration, not yet locked by thought/done) */
+  liveReasoning?: boolean
+  liveThought?: boolean
 }
 
 /** Compute iteration status from its steps */
@@ -108,17 +111,20 @@ function computeStepsStatus(steps: StreamStep[]): 'ok' | 'error' | 'running' {
   return status
 }
 
-/** Build iteration groups from streaming state */
-function buildStreamGroups(
+/** Build iteration groups from streaming state (exported for tests).
+ *  Data-driven: an iteration card exists only when that iteration produced
+ *  content (reasoning/analysis snapshot, tool steps, or live streaming text);
+ *  the current iteration additionally renders its live streams. No range
+ *  guessing — resume (sparse iteration numbers) emits no empty cards and the
+ *  current iteration can never overlap a historical one (1.2 §4.2). */
+export function buildStreamGroups(
   streamSteps: StreamStep[],
   streamReasoning: string,
+  streamContent: string,
   streamIteration: number,
   streamIterationReasoning: Map<number, string>,
   streamIterationThoughts: Map<number, string>,
 ): IterationGroup[] {
-  const groups: IterationGroup[] = []
-
-  // Build groups from accumulated steps
   const stepsByIteration = new Map<number, StreamStep[]>()
   for (const step of streamSteps) {
     const iter = step.iteration ?? 0
@@ -126,54 +132,104 @@ function buildStreamGroups(
     stepsByIteration.get(iter)!.push(step)
   }
 
-  // Determine max iteration from steps
-  const maxStepIter = stepsByIteration.size > 0 ? Math.max(...stepsByIteration.keys()) : 0
+  const iters = new Set<number>([
+    ...streamIterationReasoning.keys(),
+    ...streamIterationThoughts.keys(),
+    ...stepsByIteration.keys(),
+  ])
+  // Include the current iteration when anything is streaming live (reasoning
+  // or analysis); otherwise an iteration that only streams text would show no card
+  if (streamReasoning.trim() || streamContent.trim()) iters.add(streamIteration)
 
-  // Build historical iterations (0..maxStepIter or streamIteration-1)
-  const lastHistoricalIter = streamIteration > 0 ? streamIteration - 1 : maxStepIter
-  for (let i = 0; i <= lastHistoricalIter; i++) {
-    const steps = stepsByIteration.get(i) || []
-    const actions = steps.map((step) => ({
-      id: `stream-${i}-${steps.indexOf(step)}`,
+  const groups: IterationGroup[] = []
+  for (const iter of [...iters].sort((a, b) => a - b)) {
+    const steps = stepsByIteration.get(iter) || []
+    const actions = steps.map((step, idx) => ({
+      id: `stream-${iter}-${idx}`,
       task_id: '',
       role: 'action' as const,
       content: '',
       metadata: { tool_name: step.tool, tool_input: step.input, tool_output: step.output, diff: step.diff, file_path: step.filePath },
       created_at: '',
     }))
+    const isCurrent = iter === streamIteration
+    // Locked snapshots win over live streams; live flags mark still-streaming fields
+    const reasoning = streamIterationReasoning.get(iter) ?? (isCurrent && streamReasoning.trim() ? streamReasoning : null)
+    const thought = streamIterationThoughts.get(iter) ?? (isCurrent && streamContent.trim() ? streamContent : null)
     let status = computeStepsStatus(steps)
+    if (status === 'ok' && isCurrent && (reasoning || thought || actions.length > 0)) status = 'running'
     groups.push({
-      iteration: i,
-      reasoning: streamIterationReasoning.get(i) || null,
-      thought: streamIterationThoughts.get(i) || null,
+      iteration: iter,
+      reasoning: reasoning || null,
+      thought: thought || null,
       actions,
       status,
-    })
-  }
-
-  // Current iteration (streamIteration)
-  const currentSteps = stepsByIteration.get(streamIteration) || []
-  if (currentSteps.length > 0 || streamReasoning) {
-    const actions = currentSteps.map((step, idx) => ({
-      id: `stream-cur-${idx}`,
-      task_id: '',
-      role: 'action' as const,
-      content: '',
-      metadata: { tool_name: step.tool, tool_input: step.input, tool_output: step.output, diff: step.diff, file_path: step.filePath },
-      created_at: '',
-    }))
-    let status = computeStepsStatus(currentSteps)
-    if (status === 'ok' && (currentSteps.length > 0 || streamReasoning)) status = 'running'
-    groups.push({
-      iteration: streamIteration,
-      reasoning: streamReasoning || null,
-      thought: streamIterationThoughts.get(streamIteration) || null,
-      actions,
-      status,
+      liveReasoning: isCurrent && !streamIterationReasoning.has(iter) && !!streamReasoning.trim(),
+      liveThought: isCurrent && !streamIterationThoughts.has(iter) && !!streamContent.trim(),
     })
   }
 
   return groups
+}
+
+type RenderItem = { type: 'bubble'; msg: TaskMessage } | { type: 'iter'; group: IterationGroup; isStreaming: boolean }
+
+/** Group persisted messages (DB replay / done-converted) into bubbles + iteration
+ *  cards, preserving message order. Iteration numbering restarts at 0 after each
+ *  user message so history matches live rendering (each dialogue round shows
+ *  Iter 1..N regardless of earlier rounds). Exported for tests (1.2 §4.1). */
+export function buildHistoryItems(msgs: TaskMessage[]): RenderItem[] {
+  const items: RenderItem[] = []
+  let currentGroup: IterationGroup | null = null
+  let iterCounter = 0
+
+  const flushGroup = () => {
+    if (currentGroup) {
+      items.push({ type: 'iter', group: currentGroup, isStreaming: false })
+      currentGroup = null
+      iterCounter++
+    }
+  }
+
+  for (const msg of msgs) {
+    if (msg.role === 'reasoning') {
+      // Start new iteration group
+      flushGroup()
+      currentGroup = { iteration: iterCounter, reasoning: msg.content, thought: null, actions: [], status: 'ok' }
+    } else if (msg.role === 'thought') {
+      // Defensive: create group if no preceding reasoning
+      if (!currentGroup) {
+        currentGroup = { iteration: iterCounter, reasoning: null, thought: msg.content, actions: [], status: 'ok' }
+      } else {
+        currentGroup.thought = msg.content
+      }
+    } else if (msg.role === 'action') {
+      if (currentGroup) {
+        currentGroup.actions.push(msg)
+        if (currentGroup.status !== 'error' && msg.metadata?.tool_output) {
+          try {
+            const parsed = JSON.parse(msg.metadata.tool_output as string)
+            if (typeof parsed === 'object' && parsed !== null) {
+              if ((parsed.exit_code !== undefined && parsed.exit_code !== 0) || parsed.error) {
+                currentGroup.status = 'error'
+              }
+            }
+          } catch { /* ok */ }
+        }
+      }
+    } else if (msg.role === 'observation') {
+      // Skip — output already merged into action by enrichMessages
+    } else {
+      // user or assistant message bubble
+      flushGroup()
+      items.push({ type: 'bubble', msg })
+      if (msg.role === 'user') iterCounter = 0 // numbering restarts per dialogue round
+    }
+  }
+  // Flush last group
+  flushGroup()
+
+  return items
 }
 
 // ── Main component ──
@@ -197,8 +253,8 @@ export function TaskMessageList({
   // Build streaming iteration groups
   const streamGroups = useMemo(() => {
     if (!isGenerating) return []
-    return buildStreamGroups(streamSteps, streamReasoning || '', streamIteration, streamIterationReasoning || new Map(), streamIterationThoughts || new Map())
-  }, [streamSteps, streamReasoning, streamIteration, streamIterationReasoning, streamIterationThoughts, isGenerating])
+    return buildStreamGroups(streamSteps, streamReasoning || '', streamContent, streamIteration, streamIterationReasoning || new Map(), streamIterationThoughts || new Map())
+  }, [streamSteps, streamReasoning, streamContent, streamIteration, streamIterationReasoning, streamIterationThoughts, isGenerating])
 
   // Auto-expand current streaming iteration, collapse previous auto-expanded ones
   useEffect(() => {
@@ -241,53 +297,9 @@ export function TaskMessageList({
   }, [messages, streamContent, streamSteps, streamIteration])
 
   // Build a unified render list preserving original message order.
-  // Interleave MessageBubbles (user/assistant) with IterationCards (reasoning+thought+action).
-  type RenderItem = { type: 'bubble'; msg: TaskMessage } | { type: 'iter'; group: IterationGroup; isStreaming: boolean }
-
+  // Interleave MessageBubbles (user/assistant) with IterationCards (reasoning+tools+analysis).
   const renderList = useMemo((): RenderItem[] => {
-    const items: RenderItem[] = []
-    let currentGroup: IterationGroup | null = null
-
-    for (const msg of enrichedMessages) {
-      if (msg.role === 'reasoning') {
-        // Start new iteration group
-        if (currentGroup) items.push({ type: 'iter', group: currentGroup, isStreaming: false })
-        currentGroup = { iteration: items.filter(i => i.type === 'iter').length, reasoning: msg.content, thought: null, actions: [], status: 'ok' }
-      } else if (msg.role === 'thought') {
-        // Defensive: create group if no preceding reasoning
-        if (!currentGroup) {
-          currentGroup = { iteration: items.filter(i => i.type === 'iter').length, reasoning: null, thought: msg.content, actions: [], status: 'ok' }
-        } else {
-          currentGroup.thought = msg.content
-        }
-      } else if (msg.role === 'action') {
-        if (currentGroup) {
-          currentGroup.actions.push(msg)
-          if (currentGroup.status !== 'error' && msg.metadata?.tool_output) {
-            try {
-              const parsed = JSON.parse(msg.metadata.tool_output as string)
-              if (typeof parsed === 'object' && parsed !== null) {
-                if ((parsed.exit_code !== undefined && parsed.exit_code !== 0) || parsed.error) {
-                  currentGroup.status = 'error'
-                }
-              }
-            } catch { /* ok */ }
-          }
-        }
-      } else if (msg.role === 'observation') {
-        // Skip — output already merged into action by enrichMessages
-      } else {
-        // user or assistant message bubble
-        if (currentGroup) {
-          items.push({ type: 'iter', group: currentGroup, isStreaming: false })
-          currentGroup = null
-        }
-        items.push({ type: 'bubble', msg })
-      }
-    }
-    // Flush last group
-    if (currentGroup) items.push({ type: 'iter', group: currentGroup, isStreaming: false })
-
+    const items = buildHistoryItems(enrichedMessages)
     // Append streaming groups (only during generation, after all historical messages)
     if (isGenerating && streamGroups.length > 0) {
       for (const g of streamGroups) {
@@ -322,15 +334,6 @@ export function TaskMessageList({
           />
         )
       })}
-
-      {/* Streaming analysis text — always outside IterationCard (doc §4.2) */}
-      {isGenerating && streamContent && (
-        <StreamThoughtBlock
-          content={streamContent}
-          isGenerating={isGenerating}
-          defaultOpen={true}
-        />
-      )}
 
       {/* Thinking indicator */}
       {isGenerating && !streamContent && streamSteps.length === 0 && renderList.length === 0 && (
@@ -375,11 +378,11 @@ function IterationCard({
       </button>
       {open && (
         <div className={s.iterBody}>
+          {/* Fixed three-section layout: reasoning → tools → analysis (1.2 §4.1);
+              live streams keep their cursor inside the card — analysis streams below
+              a still-running tool is expected (user-approved interaction) */}
           {group.reasoning && (
-            <ReasoningBlock content={group.reasoning} defaultOpen={isStreaming && open} />
-          )}
-          {group.thought && (
-            <ThoughtBlock content={group.thought} defaultOpen={isStreaming && open} />
+            <ReasoningBlock content={group.reasoning} streaming={group.liveReasoning} defaultOpen={isStreaming && open} />
           )}
           {group.actions.map((action, i) => {
             const toolName = action.metadata?.tool_name || 'unknown'
@@ -399,6 +402,9 @@ function IterationCard({
               />
             )
           })}
+          {group.thought && (
+            <ThoughtBlock content={group.thought} streaming={group.liveThought} defaultOpen={isStreaming && open} />
+          )}
         </div>
       )}
     </div>
@@ -453,7 +459,7 @@ function MessageBubble({ message }: { message: TaskMessage }) {
 
 // ── Collapsible blocks ──
 
-function ReasoningBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
+function ReasoningBlock({ content, streaming = false, defaultOpen = false }: { content: string; streaming?: boolean; defaultOpen?: boolean }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
   return (
@@ -464,32 +470,18 @@ function ReasoningBlock({ content, defaultOpen = false }: { content: string; def
         <span className={s.stepLabel}>{t('task.reasoningProcess')}</span>
       </button>
       {open && (
-        <div className={s.stepDetail}><Markdown content={content} className={s.markdown} /></div>
+        <div className={s.stepDetail}>
+          <Markdown content={content} className={s.markdown} />
+          {streaming && <span className={s.streamingCursor}>▍</span>}
+        </div>
       )}
     </div>
   )
 }
 
-function ThoughtBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
+function ThoughtBlock({ content, streaming = false, defaultOpen = false }: { content: string; streaming?: boolean; defaultOpen?: boolean }) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(defaultOpen)
-  return (
-    <div className={s.stepRow}>
-      <button className={s.stepToggle} onClick={() => setOpen(!open)}>
-        <span className={`${s.chevron} ${open ? s.chevronOpen : ''}`}>▸</span>
-        <span className={s.stepLabel}>{t('task.thoughtProcess')}</span>
-      </button>
-      {open && (
-        <div className={s.stepDetail}><Markdown content={content} className={s.markdown} /></div>
-      )}
-    </div>
-  )
-}
-
-function StreamThoughtBlock({ content, isGenerating, defaultOpen = true }: { content: string; isGenerating: boolean; defaultOpen?: boolean }) {
-  const { t } = useTranslation()
-  const [open, setOpen] = useState(defaultOpen)
-  useEffect(() => { setOpen(defaultOpen) }, [defaultOpen])
   return (
     <div className={s.stepRow}>
       <button className={s.stepToggle} onClick={() => setOpen(!open)}>
@@ -499,7 +491,7 @@ function StreamThoughtBlock({ content, isGenerating, defaultOpen = true }: { con
       {open && (
         <div className={s.stepDetail}>
           <Markdown content={content} className={s.markdown} />
-          {isGenerating && <span className={s.streamingCursor}>▍</span>}
+          {streaming && <span className={s.streamingCursor}>▍</span>}
         </div>
       )}
     </div>

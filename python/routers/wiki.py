@@ -355,6 +355,8 @@ async def stop_compile(project_id: str):
 @router.post("/projects/{project_id}/compile/continue")
 async def continue_compile(project_id: str):
     """Continue a compile task that is paused in supervised mode (waiting_review)."""
+    # 事前准入（§7.3 第三层 v3.7）：try 块外调用，InkCubeError 直接冒泡转结构化响应
+    ensure_ready("wiki_compile")
     try:
         db = get_db()
         task = db.get_latest_compile_task(project_id)
@@ -434,6 +436,8 @@ async def get_global_review_status():
 @router.post("/projects/{project_id}/pages/{page_key}/retry")
 async def retry_page(project_id: str, page_key: str):
     """Retry compiling a single failed page."""
+    # 事前准入（§7.3 第三层 v3.7）：try 块外调用
+    ensure_ready("wiki_compile")
     try:
         db = get_db()
         page = db.get_wiki_page(project_id, page_key)
@@ -520,13 +524,17 @@ async def trigger_lint(project_id: str, req: LintRequest = None):
     mode="semantic": LLM-driven checks (contradiction/stale-claim/data-gap).
     mode="full": both structural and semantic.
     """
+    # 事前准入（§7.3 第三层 v3.7）：semantic/full 依赖 LLM，structural 纯本地放行；
+    # mode 需在 try 外解析以便条件调用 ensure_ready（InkCubeError 直接冒泡）
+    mode = (req.mode if req else "structural") or "structural"
+    if mode in ("semantic", "full"):
+        ensure_ready("wiki_compile")
     try:
         db = get_db()
         project = db.get_project(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        mode = (req.mode if req else "structural") or "structural"
         total_findings = 0
 
         def _store_findings(findings):
@@ -1000,6 +1008,8 @@ async def detect_duplicate_pages(project_id: str):
 
     Returns groups of pages that appear to cover the same topic.
     """
+    # 事前准入（§7.3 第三层 v3.7）：LLM 必需，try 块外调用
+    ensure_ready("wiki_compile")
     try:
         db = get_db()
         project = db.get_project(project_id)
@@ -1035,6 +1045,8 @@ async def merge_duplicate_pages(project_id: str, req: DedupMergeRequest):
 
     User must specify which page to keep (canonical) and which to merge.
     """
+    # 事前准入（§7.3 第三层 v3.7）：LLM 必需，try 块外调用
+    ensure_ready("wiki_compile")
     try:
         db = get_db()
         project = db.get_project(project_id)
@@ -1075,6 +1087,8 @@ async def enrich_page_wikilinks(project_id: str, req: EnrichWikilinksRequest):
 
     LLM suggests links; code performs the actual text replacement.
     """
+    # 事前准入（§7.3 第三层 v3.7）：LLM 必需，try 块外调用
+    ensure_ready("wiki_compile")
     try:
         db = get_db()
         project = db.get_project(project_id)

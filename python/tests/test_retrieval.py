@@ -27,23 +27,26 @@ _STRATEGY_USAGE = {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1
 _CARD_USAGE = {"prompt_tokens": 2, "completion_tokens": 0, "total_tokens": 2}
 
 
-def _patches(know_ret=None, inet_ret=None, wiki_ret=None):
-    """返回 mocks dict。默认各通道各返回 1 条原始结果。"""
+def _patches(know_ret=None, inet_ret=None, wiki_ret=None, inet_warn=None):
+    """返回 mocks dict。默认各通道各返回 1 条原始结果（通道契约：三元组 results/usage/warnings）。"""
     gen = AsyncMock(return_value=(["q1"], dict(_STRATEGY_USAGE)))
     know = AsyncMock(return_value=(
         know_ret if know_ret is not None
         else [{"source_type": "knowledge", "content": "k", "score": 1.0}],
         dict(_ZERO),
+        [],
     ))
     inet = AsyncMock(return_value=(
         inet_ret if inet_ret is not None
         else [{"source_type": "internet", "content": "i", "score": 1.0}],
         dict(_ZERO),
+        list(inet_warn or []),
     ))
     wiki = AsyncMock(return_value=(
         wiki_ret if wiki_ret is not None
         else [{"source_type": "wiki", "content": "w", "score": 1.0}],
         dict(_ZERO),
+        [],
     ))
     cards = AsyncMock(return_value=([], {"level": "sufficient", "reason": ""}, dict(_CARD_USAGE)))
     mocks = {"gen": gen, "know": know, "inet": inet, "wiki": wiki, "cards": cards}
@@ -56,6 +59,7 @@ def _run(section=None, **kwargs):
         know_ret=kwargs.pop("_know_ret", None),
         inet_ret=kwargs.pop("_inet_ret", None),
         wiki_ret=kwargs.pop("_wiki_ret", None),
+        inet_warn=kwargs.pop("_inet_warn", None),
     )
     sec = section or {"section_id": "s1", "title": "T"}
     call_kwargs = dict(
@@ -172,6 +176,20 @@ class TestDegradation:
 
 
 # ── usage 累计 ──────────────────────────────────────────────
+
+
+class TestWarnings:
+    def test_channel_warnings_propagate(self):
+        """internet 通道的显式降级警告 → RetrievalResult.warnings（0.4 §7.3 v3.6）。"""
+        result, _, _ = _run(
+            data_sources=["knowledge", "internet"], tavily_api_key="key",
+            _inet_warn=["互联网检索未生效：Tavily API Key 无效或已失效"],
+        )
+        assert result.warnings == ["互联网检索未生效：Tavily API Key 无效或已失效"]
+
+    def test_no_warnings_by_default(self):
+        result, _, _ = _run(data_sources=["knowledge", "internet"], tavily_api_key="key")
+        assert result.warnings == []
 
 
 class TestUsage:

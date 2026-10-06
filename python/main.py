@@ -66,6 +66,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import deps
+import activity_events
 from errors import InkCubeError
 from db.database import Database
 from agent.task_agent import TaskAgent
@@ -186,18 +187,10 @@ async def lifespan(app: FastAPI):
             deps.db.create_report_log(
                 _rid, "检测到中断报告，已标记失败，可重新生成续跑", level="warn",
             )
-            # 通知联动（0.4 §2.4）：崩溃期间发生的中断也能被用户感知
-            try:
-                _meta = deps.db.get_report_meta(_rid)
-                if _meta:
-                    deps.db.add_notification(
-                        entity_type="report", entity_id=_rid,
-                        project_id=_meta["project_id"], kind="failed",
-                        entity_title=_meta["title"], detail="程序异常中断",
-                    )
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "Interrupted-report notification failed for %s", _rid, exc_info=True)
+            # 通知联动（0.4 §2.4）：崩溃期间发生的中断也能被用户感知。
+            # 经 activity_events 统一入口（E2，顺序 4）：内部 JOIN projects 补 container
+            # （旧直调缺 container，基础库报告中断通知会导航错容器），异常自行兜底
+            activity_events.fail_report(deps.db, _rid, "程序异常中断")
 
     # ── Detect interrupted model downloads (crash recovery, 0.4 §2.4 step 6) ──
     # 遗留 downloading 记录 → 标 failed + 发通知；不自动重新下载（断点续传）。
@@ -206,11 +199,8 @@ async def lifespan(app: FastAPI):
         for _dl in _stale_downloads:
             logging.getLogger(__name__).info(
                 "Marked interrupted model download as failed: %s", _dl["name"])
-            deps.db.add_notification(
-                entity_type="model_download", entity_id=_dl["name"],
-                project_id=None, kind="failed",
-                entity_title=_dl["name"], detail="程序异常中断",
-            )
+            # 经 activity_events 统一入口（E2 收尾，v3.9；内部异常自行兜底）
+            activity_events.fail_download(deps.db, _dl["name"], "程序异常中断")
     except Exception:
         logging.getLogger(__name__).warning(
             "Model download recovery failed", exc_info=True)
@@ -226,8 +216,11 @@ app = FastAPI(lifespan=lifespan)
 
 
 # ── Access log middleware with timestamps ──
-# Uses a dedicated logger that inherits root handlers (with timestamps).
+# Access log 仅写文件（v3.7 日志收敛）：每请求一条属低价值高频噪音，
+# 不进 console/stderr——否则 Electron 捕获 stderr 后回写同一 app.log 造成双写
 _access_log = logging.getLogger("inkcube.access")
+_access_log.addHandler(_file_handler)
+_access_log.propagate = False
 
 
 @app.middleware("http")

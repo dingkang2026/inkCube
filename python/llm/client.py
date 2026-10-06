@@ -12,12 +12,41 @@ import json
 import logging
 from typing import Any
 
-from errors import LLMInvalidKey, LLMNetworkError, LLMCallFailed
+from errors import (
+    LLMInvalidKey, LLMNetworkError, LLMCallFailed,
+    LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
+)
 
 logger = logging.getLogger(__name__)
 
 # Sentinel: key was absent before reasoning-param injection (see _apply_reasoning_params)
 _ABSENT = object()
+
+
+def _raise_api_error(status_code: int, body_text: str, has_tools: bool = False) -> None:
+    """Map non-200 API responses to actionable InkCubeErrors (always raises).
+
+    配置/凭据类（401 Key 失效 / 429 限流额度 / 402・403 欠费 / 404 模型名错）
+    归入 CREDENTIAL 类错误，message+suggestion 自带设置页修正指引，
+    供后台任务失败落库时经 errors.actionable() 产出可行动文案（0.4 §7.3 v3.6）。
+    """
+    if status_code == 401:
+        logger.error("LLM auth failed (401): invalid API key")
+        raise LLMInvalidKey(detail=body_text)
+    if status_code == 429:
+        logger.error("LLM rate limited (429)")
+        raise LLMRateLimited(detail=body_text)
+    if status_code in (402, 403):
+        logger.error("LLM quota error (%d)", status_code)
+        raise LLMQuotaExhausted(detail=body_text)
+    if status_code == 404:
+        logger.error("LLM model not found (404)")
+        raise LLMModelNotFound(detail=body_text)
+    detail = f"API error {status_code}: {body_text}"
+    if status_code == 400 and has_tools:
+        detail += "（模型可能不支持 function calling，可在设置中测试模型能力）"
+    logger.error("LLM API error: status=%d, body=%s", status_code, body_text[:500])
+    raise LLMCallFailed(detail=detail)
 
 
 class LLMClient:
@@ -147,9 +176,6 @@ class LLMClient:
                         continue
                     raise last_err
 
-                if response.status_code == 401:
-                    logger.error("LLM auth failed (401): invalid API key")
-                    raise LLMInvalidKey(detail=response.text)
                 if response.status_code != 200:
                     # 400 with reasoning params injected → retry once without them
                     # (model doesn't support the param; see settings > 思考深度)
@@ -162,11 +188,7 @@ class LLMClient:
                         reasoning_params = {}
                         self._reasoning_rejected = True  # remember for this client's lifetime
                         continue
-                    detail = f"API error {response.status_code}: {response.text}"
-                    if response.status_code == 400 and tools:
-                        detail += "（模型可能不支持 function calling，可在设置中测试模型能力）"
-                    logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
-                    raise LLMCallFailed(detail=detail)
+                    _raise_api_error(response.status_code, response.text, has_tools=bool(tools))
 
                 data = response.json()
                 choice = data["choices"][0]
@@ -262,8 +284,6 @@ class LLMClient:
                         continue
                     raise last_err
 
-                if response.status_code == 401:
-                    raise LLMInvalidKey(detail=response.text)
                 if response.status_code != 200:
                     if response.status_code == 400 and reasoning_params and attempt == 0:
                         logger.warning(
@@ -274,8 +294,8 @@ class LLMClient:
                         reasoning_params = {}
                         self._reasoning_rejected = True  # remember for this client's lifetime
                         continue
-                    logger.error("LLM API error: status=%d, body=%s", response.status_code, response.text[:500])
-                    raise LLMCallFailed(detail=f"API error {response.status_code}: {response.text}")
+                    # chat_full 不支持 function calling，无 tools 参数（FC 提示仅 chat/chat_stream 适用）
+                    _raise_api_error(response.status_code, response.text, has_tools=False)
 
                 data = response.json()
                 choice = data["choices"][0]
@@ -367,8 +387,6 @@ class LLMClient:
                         },
                         json=request_body,
                     ) as response:
-                        if response.status_code == 401:
-                            raise LLMInvalidKey(detail="Unauthorized")
                         if response.status_code != 200:
                             body = await response.aread()
                             body_text = body.decode(errors='replace')
@@ -381,10 +399,7 @@ class LLMClient:
                                 reasoning_params = {}
                                 self._reasoning_rejected = True  # remember for this client's lifetime
                                 continue
-                            logger.error("LLM API error: status=%d, body=%s", response.status_code, body_text[:1000])
-                            raise LLMCallFailed(
-                                detail=f"API error {response.status_code}: {body_text}"
-                            )
+                            _raise_api_error(response.status_code, body_text, has_tools=bool(tools))
 
                         # FC mode: accumulate tool call deltas
                         tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}

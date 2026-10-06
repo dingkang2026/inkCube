@@ -18,7 +18,10 @@ from typing import Optional
 from knowledge.pipeline import ProcessingPipeline
 from knowledge.vlm_client import VLMClient
 from knowledge.vector_store import VectorStore
-from errors import InkCubeError, FileNotFound
+from errors import (
+    InkCubeError, FileNotFound, actionable,
+    LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
+)
 import activity_events
 
 logger = logging.getLogger(__name__)
@@ -103,12 +106,6 @@ class KnowledgeWorker:
             self._max_file_concurrency, self._max_image_concurrency,
             self._max_compile_concurrency,
         )
-        print(
-            f"[KnowledgeWorker] Started: "
-            f"{self._max_file_concurrency} file, "
-            f"{self._max_image_concurrency} image, "
-            f"{self._max_compile_concurrency} compile workers"
-        )
 
     async def stop(self):
         """Stop all workers gracefully."""
@@ -118,7 +115,6 @@ class KnowledgeWorker:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         logger.info("[KnowledgeWorker] Stopped")
-        print("[KnowledgeWorker] Stopped")
 
     async def enqueue_file(self, file_id: str):
         """Add a file to the parsing queue."""
@@ -250,12 +246,14 @@ class KnowledgeWorker:
                     file_id, "error",
                     error_message=result.get("error"),
                 )
-                # 兑底声明（pipeline 内部 except 已发过，未读查重去重；防状态写入与事件脱钩，0.4 §3.2）
+                # 兜底声明（pipeline 内部 except 已发过，未读查重去重；防状态写入与事件脱钩，0.4 §3.2）
                 activity_events.fail_file(self.db, file_id, result.get("error"))
         except Exception as e:
             logger.error("File %s exception: %s", file_id, e, exc_info=True)
-            self.db.update_file_status(file_id, "error", error_message=str(e))
-            activity_events.fail_file(self.db, file_id, str(e))
+            # actionable：配置类异常（如解析模型缺失）保留「设置 > 内部模型」修正指引（0.4 §7.3 v3.6）
+            error_msg = actionable(e)
+            self.db.update_file_status(file_id, "error", error_message=error_msg)
+            activity_events.fail_file(self.db, file_id, error_msg)
 
     # ── Image Description Worker ──
 
@@ -413,12 +411,12 @@ class KnowledgeWorker:
                         }],
                     )
                 except Exception as e:
-                    print(f"[WARN] ChromaDB image chunk failed: {e}")
+                    logger.warning("ChromaDB image chunk failed: %s", e)
 
         except InkCubeError as e:
             logger.error("Image %s VLM error [%s]: %s", image_id, e.code, e.message)
             self.db.update_image_status(
-                image_id, "error", error_message=e.message
+                image_id, "error", error_message=actionable(e)
             )
         except Exception as e:
             logger.error("Image %s unexpected error: %s", image_id, e, exc_info=True)
@@ -478,6 +476,7 @@ class KnowledgeWorker:
         if not project:
             logger.info("Project %s deleted, skipping compile task %s", project_id, task_id)
             self.db.update_compile_task_status(task_id, "failed", error_message="Project deleted")
+            activity_events.fail_compile(self.db, task_id, "Project deleted")
             return
 
         # Mark task as started (only on first run, not on continue)
@@ -520,6 +519,16 @@ class KnowledgeWorker:
             except Exception as e:
                 logger.error("Compile task %s failed: %s", task_id, e, exc_info=True)
 
+                # 配置/凭据类错误重试无意义（Key 失效/限流额度/欠费/模型名错需用户修正），
+                # 直接终态 + 可行动文案（0.4 §7.3 v3.6）；其余异常保持退避重试
+                if isinstance(e, (LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound)):
+                    self.db.update_compile_task_status(
+                        task_id, "failed",
+                        error_message=actionable(e),
+                    )
+                    activity_events.fail_compile(self.db, task_id, actionable(e))
+                    return
+
                 # Retry with exponential backoff
                 if retry_count < max_retries:
                     new_count = self.db.increment_compile_task_retry(task_id)
@@ -528,7 +537,7 @@ class KnowledgeWorker:
                                 task_id, new_count, max_retries, backoff)
                     self.db.update_compile_task_status(
                         task_id, "queued",
-                        error_message=f"Retry {new_count}/{max_retries}: {e}",
+                        error_message=f"Retry {new_count}/{max_retries}: {actionable(e)}",
                     )
                     # Schedule the delayed re-enqueue in the background so this
                     # worker returns immediately and releases the compile
@@ -544,8 +553,9 @@ class KnowledgeWorker:
                 else:
                     self.db.update_compile_task_status(
                         task_id, "failed",
-                        error_message=str(e),
+                        error_message=actionable(e),
                     )
+                    activity_events.fail_compile(self.db, task_id, actionable(e))
 
     async def _process_supervised_ingest(
         self, task_id: str, project_id: str, llm_client, llm_settings: dict,
@@ -574,6 +584,7 @@ class KnowledgeWorker:
                     task_id, "completed",
                     pages_total=files_processed, pages_completed=files_processed,
                 )
+                activity_events.complete_compile(self.db, task_id)
                 return
 
             # Process the next pending file
@@ -595,7 +606,7 @@ class KnowledgeWorker:
                 logger.error("Supervised compile [%s]: file '%s' failed: %s", task_id, filename, e, exc_info=True)
                 self.db.append_ingest_summary(task_id, {
                     "file_id": file_id, "filename": filename,
-                    "error": str(e), "skipped": False,
+                    "error": actionable(e), "skipped": False,
                 })
 
             already_done.append(file_id)
@@ -611,14 +622,16 @@ class KnowledgeWorker:
                     task_id, "completed",
                     pages_total=files_processed, pages_completed=files_processed,
                 )
+                activity_events.complete_compile(self.db, task_id)
                 return
 
-            # Pause for user review
+            # Pause for user review（waiting_review 事件靠未读查重幂等，多次暂停不重复弹）
             self.db.update_compile_task_status(
                 task_id, "waiting_review",
                 pages_total=files_processed + len(remaining),
                 pages_completed=files_processed,
             )
+            activity_events.await_review_compile(self.db, task_id)
             logger.info("Supervised compile [%s]: waiting_review, %d files remaining",
                          task_id, len(remaining))
 

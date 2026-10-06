@@ -1,4 +1,5 @@
 """python/knowledge/doc_parser.py"""
+import logging
 import os
 import hashlib
 import threading
@@ -7,6 +8,8 @@ from typing import Optional, List
 from dataclasses import dataclass, field
 import tempfile
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -50,10 +53,9 @@ def _get_docling_converter(models_dir: Path):
                     InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_options),
                 }
             )
-            import sys
-            print(f"[Docling] Converter loaded (artifacts: {models_dir})", file=sys.stderr)
+            logger.info("Docling converter loaded (artifacts: %s)", models_dir)
         except ImportError as e:
-            print(f"[WARN] Docling not available: {e}")
+            logger.warning("Docling not available: %s", e)
             _docling_converter = None
     return _docling_converter
 
@@ -145,8 +147,11 @@ class DocumentParser:
         # Office → PDF conversion if needed (Excel handled directly by Docling)
         original_path = file_path
         temp_pdf = None
+        conversion_warnings: List[str] = []
         if file_path.suffix.lower() in ['.docx', '.pptx']:
-            pdf_path = self._convert_office_to_pdf(file_path)
+            pdf_path, conv_warning = self._convert_office_to_pdf(file_path)
+            if conv_warning:
+                conversion_warnings.append(conv_warning)
             if pdf_path:
                 temp_pdf = pdf_path
                 file_path = pdf_path
@@ -174,6 +179,9 @@ class DocumentParser:
                 "file_type": original_path.suffix.lower(),
                 "page_count": len(doc.pages) if hasattr(doc, 'pages') else 0,
             }
+            if conversion_warnings:
+                # 降级显式声明（0.4 §7.3 v3.6）：随成功结果上抛，pipeline 写入完成通知 detail
+                metadata["warnings"] = conversion_warnings
             
             return ParseResult(
                 text_chunks=text_chunks,
@@ -189,17 +197,24 @@ class DocumentParser:
                 except Exception:
                     pass
     
-    def _convert_office_to_pdf(self, file_path: Path) -> Optional[Path]:
+    def _convert_office_to_pdf(self, file_path: Path) -> tuple[Optional[Path], str]:
         """
         Convert Office document to PDF.
         
         Strategy: MS Office COM (Windows) → LibreOffice fallback
+        
+        Returns:
+            (pdf_path, warning)：warning 非空表示发生降级（回退内置解析器），文案面向
+            用户、随解析结果上抛（pipeline → 完成通知 detail，0.4 §7.3 v3.6）。
         """
         from knowledge.model_manager import ModelManager
         
         status = ModelManager.check_office_converter()
         if not status["available"]:
-            return None
+            return None, (
+                "未检测到 Microsoft Office 或 LibreOffice，已由内置解析器直接解析原文件，"
+                "复杂版式（表格/图文）还原度可能降低"
+            )
         
         output_dir = file_path.parent
         output_pdf = output_dir / f"{file_path.stem}.pdf"
@@ -209,9 +224,9 @@ class DocumentParser:
         elif status["tool"] == "libreoffice":
             return self._convert_with_libreoffice(file_path, output_pdf, status["path"])
         
-        return None
+        return None, "Office→PDF 转换器不可用，已由内置解析器直接解析原文件"
     
-    def _convert_with_ms_office(self, input_path: Path, output_path: Path) -> Optional[Path]:
+    def _convert_with_ms_office(self, input_path: Path, output_path: Path) -> tuple[Optional[Path], str]:
         """Convert using Microsoft Office COM automation"""
         try:
             import win32com.client
@@ -245,14 +260,16 @@ class DocumentParser:
                 wb.Close()
                 app.Quit()
             else:
-                return None
+                return None, f"暂不支持 {ext} 格式的 MS Office 转换，已由内置解析器直接解析原文件"
             
-            return output_path if output_path.exists() else None
+            if output_path.exists():
+                return output_path, ""
+            return None, "MS Office 转换未生成 PDF，已由内置解析器直接解析原文件"
         except Exception as e:
-            print(f"[MS Office conversion failed: {e}]")
-            return None
+            logger.warning("MS Office conversion failed for %s: %s", input_path.name, e)
+            return None, "MS Office 转换失败，已由内置解析器直接解析原文件"
     
-    def _convert_with_libreoffice(self, input_path: Path, output_path: Path, soffice_path: str) -> Optional[Path]:
+    def _convert_with_libreoffice(self, input_path: Path, output_path: Path, soffice_path: str) -> tuple[Optional[Path], str]:
         """Convert using LibreOffice command-line"""
         try:
             cmd = [
@@ -271,14 +288,14 @@ class DocumentParser:
                 libreoffice_pdf = input_path.parent / f"{input_path.stem}.pdf"
                 if libreoffice_pdf.exists():
                     libreoffice_pdf.rename(output_path)
-                    return output_path
+                    return output_path, ""
             
             if stderr_text:
-                print(f"[LibreOffice stderr: {stderr_text.strip()}]")
-            return None
+                logger.warning("LibreOffice stderr: %s", stderr_text.strip())
+            return None, "LibreOffice 转换失败，已由内置解析器直接解析原文件"
         except Exception as e:
-            print(f"[LibreOffice conversion failed: {e}]")
-            return None
+            logger.warning("LibreOffice conversion failed: %s", e)
+            return None, "LibreOffice 转换失败，已由内置解析器直接解析原文件"
     
     def _extract_chunks(self, doc) -> List[ChunkInfo]:
         """Extract text chunks from Docling document using HybridChunker.
@@ -455,7 +472,7 @@ class DocumentParser:
                             f.write(img_bytes)
                         image_saved = True
             except Exception as e:
-                print(f"[WARN] Failed to extract image: {e}")
+                logger.warning("Failed to extract image: %s", e)
             
             if not image_saved:
                 continue

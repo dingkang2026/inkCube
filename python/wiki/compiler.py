@@ -14,10 +14,14 @@ import logging
 from collections import defaultdict
 from typing import Optional
 
-from errors import LLMNetworkError, LLMCallFailed, LLMInvalidKey
+from errors import (
+    LLMNetworkError, LLMCallFailed, LLMInvalidKey,
+    LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
+)
 from wiki.parser import parse_compile_output
 from wiki.prompts import build_stage1_analysis_prompt, build_stage2_generation_prompt
 from wiki.llm_routing import get_task_settings
+import activity_events
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +263,14 @@ class WikiCompiler:
             pages_completed=pages_created + pages_updated,
             pages_failed=pages_failed,
         )
+        # 终态事件显式声明（0.4 §6.4 E2，顺序 4）：partial 按 completed 发（detail 注明部分完成）；
+        # failed 分支无 error_message（与旧钩子行为等价，pages_failed 计数在快照里）
+        if compile_status == "completed":
+            activity_events.complete_compile(self.db, task_id)
+        elif compile_status == "partial":
+            activity_events.complete_compile(self.db, task_id, partial=True)
+        else:
+            activity_events.fail_compile(self.db, task_id)
 
         summary = {
             "pages_created": pages_created,
@@ -396,7 +408,8 @@ class WikiCompiler:
         """Call LLM with pipeline-level retry for transient errors.
 
         Retries on LLMNetworkError (timeout/connection) and LLMCallFailed (5xx).
-        Does NOT retry on LLMInvalidKey (auth) — those need user action.
+        Does NOT retry on config/credential errors (401 Key 失效 / 429 限流额度 /
+        402·403 欠费 / 404 模型名错）— those need user action (0.4 §7.3 v3.6).
         Uses task-specific model if configured via llm_routing.
         """
         # Apply task routing: use ingest-specific model if configured
@@ -410,8 +423,8 @@ class WikiCompiler:
         for attempt in range(self._LLM_MAX_RETRIES + 1):
             try:
                 return await llm.chat(messages, effective_settings)
-            except LLMInvalidKey:
-                raise  # Auth errors are not retryable
+            except (LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound):
+                raise  # Config/credential errors need user action — not retryable
             except (LLMNetworkError, LLMCallFailed) as e:
                 last_err = e
                 if attempt < self._LLM_MAX_RETRIES:

@@ -9,6 +9,7 @@ import { ReportsTab } from './tabs/ReportsTab'
 import { WikiTab } from './tabs/WikiTab'
 import type { WikiCompileData } from './tabs/WikiTab'
 import { usePolling } from '../../hooks/usePolling'
+import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import { FormsTab } from './tabs/FormsTab'
 import { ProjectChatPanel } from './ProjectChatPanel'
 import type { Project } from '../knowledge/types'
@@ -37,6 +38,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const { t } = useTranslation()
   const showToast = useToast()
   const { byProject } = useActivity()
+  const { items: compileItems } = useActivity('wiki_compile')
   const [activeTab, setActiveTab] = useState<TabKey>('materials')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
@@ -53,10 +55,14 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     }
   }, [wikiExpanded])
 
-  // Wiki compile status polling #4（v1.7 迁移至 usePolling，0.4 §8.1）：
-  // 保存完整快照（task + ingest_summaries + is_resumed）下发 WikiTab；Tab 角标从快照派生
+  // Wiki compile status polling #4（v1.7 迁移至 usePolling，0.4 §8.1；谓词收编全局心跳
+  // useActivity('wiki_compile')，顺序 4）：保存完整快照（task + ingest_summaries +
+  // is_resumed）下发 WikiTab（编译对话框明细）；Tab 角标改从心跳 byProject 派生。
+  // 谓词 = 项目存在活跃编译（含 waiting_review）或对话框打开（用户盯明细，填触发
+  // 动作后心跳未发现的前几秒，§6.3 启动间隙）——空闲且对话框关时停轮，消灭旧 30s 空转。
   const [wikiCompileData, setWikiCompileData] = useState<WikiCompileData | null>(null)
   const [compileDialogOpen, setCompileDialogOpen] = useState(false)
+  const wikiCompileActive = compileItems.some(a => a.project_id === project.id)
 
   // Activity Hub 通知导航信号：切到目标 Tab（materials/wiki/reports）
   useEffect(() => {
@@ -77,22 +83,41 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
 
   usePolling({
     name: 'wiki-compile-status',
+    enabled: wikiCompileActive || compileDialogOpen,
     task: checkWikiCompileStatus,
-    // Adaptive: dialog open=2s, compiling=5s, waiting_review=10s, idle=30s
+    // Adaptive: dialog open=2s, compiling=5s, waiting_review=10s；
+    // 兕底 5s（enabled 翻真但快照尚陈旧的窄窗口，理论不可达的防御分支）
     interval: () => {
       if (compileDialogOpen) return 2000
       const status = wikiCompileData?.task?.status
-      if (status && ['queued', 'ingesting', 'storing'].includes(status)) return 5000
+      if (status && ['queued', 'analyzing', 'generating', 'ingesting', 'storing'].includes(status)) return 5000
       if (status === 'waiting_review') return 10000
-      return 30000
+      return 5000
     },
   })
 
-  // Tab 角标派生态（v1.7 起从编译快照派生，不再单独轮询维护）
+  // 终态边沿补拉（0.4 §6.3）：心跳翻假可早于最后一个轮询 tick（活跃心跳与轮询同为 5s
+  // 粒度，终态写入后 δ<5s 翻假时快照停在中间态）→ 边沿拉终态快照，驱动 WikiTab
+  // 副作用链（终态刷 pages/reviews + compiling 复位）
+  useEdgeRefetch(wikiCompileActive, () => { void checkWikiCompileStatus() })
+
+  // 挂载 / 项目切换时拉一次快照（0.4 §5.6 切回「一次性拉取」：项目切换后旧快照
+  // 防陈旧；停轮期间终态已发生后切入本页也能立即拿到终态）
+  useEffect(() => {
+    void checkWikiCompileStatus()
+  }, [checkWikiCompileStatus])
+
+  // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）
+  useEffect(() => {
+    if (activeTab === 'wiki') void checkWikiCompileStatus()
+  }, [activeTab])
+
+  // Tab 角标从心跳 byProject 派生（顺序 4：不再依赖 #4 自建快照，与心跳同源无重复查表）
+  const wikiActivity = byProject.get(project.id)
   const wikiCompileState: 'idle' | 'compiling' | 'waiting_review' =
-    wikiCompileData?.task?.status === 'waiting_review'
+    wikiActivity && wikiActivity.waitingReviews > 0
       ? 'waiting_review'
-      : wikiCompileData?.task && ['queued', 'ingesting', 'storing'].includes(wikiCompileData.task.status)
+      : wikiActivity && wikiActivity.compiles > 0
         ? 'compiling'
         : 'idle'
 

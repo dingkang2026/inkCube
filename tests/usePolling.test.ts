@@ -1,6 +1,7 @@
 /** tests/usePolling.test.ts — usePolling 通用 hook 用例（0.4lifecycle-design.md §5.8，v1.7）
  *  覆盖：mount 立即执行、interval 调度、函数形态自适应、防重叠、指数退避、
- *  document.hidden 跳过+降频、visibilitychange 回前台立即刷新、enabled 启停与注册表清理、
+ *  document.hidden 降频拉取（v3.5 对齐「禁止 hidden 早退」原则）、visibilitychange 回前台立即刷新、
+ *  enabled 启停与注册表清理、
  *  task 挂起超时退避（回归：底层 IPC 挂起不得永久杀死轮询循环）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -162,30 +163,31 @@ describe('usePolling', () => {
     expect(task.mock.calls.length).toBe(countAtCap + 1)
   })
 
-  it('skips execution and multiplies interval while document is hidden', async () => {
+  it('keeps fetching at multiplied interval while hidden, refreshes immediately on visible', async () => {
     let hidden = true
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
     const task = vi.fn().mockResolvedValue(undefined)
     renderHook(() => usePolling({ task, interval: 1000, name: 'poll-hidden' }))
     await flush()
-    // 隐藏时不执行任务（保心跳）
-    expect(task).not.toHaveBeenCalled()
+    // 隐藏时仍真实拉取（禁止早退跳过，v3.5 对齐 ActivityMonitor 原则）
+    expect(task).toHaveBeenCalledTimes(1)
+    // 降频 ×3：2.999s 内无、3s 处执行
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2999)
     })
-    expect(task).not.toHaveBeenCalled()
+    expect(task).toHaveBeenCalledTimes(1)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1)
     })
-    expect(task).not.toHaveBeenCalled()
-    // 回前台：visibilitychange 立即刷新一次
+    expect(task).toHaveBeenCalledTimes(2)
+    // 回前台：visibilitychange 立即刷新一次（不等剩余降频间隔）
     hidden = false
     await act(async () => {
       document.dispatchEvent(new Event('visibilitychange'))
       await Promise.resolve()
     })
     await flush()
-    expect(task).toHaveBeenCalledTimes(1)
+    expect(task).toHaveBeenCalledTimes(3)
   })
 
   it('treats a hung task as failure and keeps polling after taskTimeoutMs', async () => {
@@ -245,5 +247,48 @@ describe('usePolling', () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
     expect(task).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not stack extra timers when visibilitychange fires during in-flight task (regression: schedule stacking)', async () => {
+    // P2-1 回归（v3.9 修复）：原实现 tick 的 running 分支 schedule() 会与
+    // finally 的调度叠加成双 timer，每次「task 进行中的立即触发」永久 +1 个
+    // 空转 timer；修复后仅标记 immediateNext，完成后 0ms 补一轮，单链不变
+    let resolveFirst!: () => void
+    const task = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((r) => { resolveFirst = r }))
+      .mockResolvedValue(undefined)
+    renderHook(() => usePolling({ task, interval: 1000, name: 'poll-stack' }))
+    await flush()
+    expect(task).toHaveBeenCalledTimes(1) // 首跑在飞
+
+    // 在飞期间回前台：不重入（仅标记），也不叠加调度
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await Promise.resolve()
+    })
+    expect(task).toHaveBeenCalledTimes(1)
+
+    // 首跑完成 → 在飞期间的触发补一轮（0ms）
+    await act(async () => {
+      resolveFirst()
+      await Promise.resolve()
+    })
+    await flush() // finally 完成，0ms 补拉 timer 已注册
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await flush()
+    expect(task).toHaveBeenCalledTimes(2)
+
+    // 两个周期后恰 +2（叠加实现双 timer 同刻触发，第二周期后 ≥ 2 次多余）
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(task).toHaveBeenCalledTimes(3)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(task).toHaveBeenCalledTimes(4)
   })
 })

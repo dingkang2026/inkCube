@@ -233,7 +233,7 @@ class Database:
                 ON notifications(read_at, created_at);
 
             CREATE TABLE IF NOT EXISTS model_downloads (
-                name TEXT PRIMARY KEY,      -- 模型名（GPU 后端为 'gpu-backend'）
+                name TEXT PRIMARY KEY,      -- 模型名
                 status TEXT NOT NULL DEFAULT 'downloading',
                 error TEXT,
                 started_at TEXT NOT NULL,
@@ -1302,6 +1302,8 @@ class Database:
         return dict(row) if row else None
 
     def update_report_status(self, report_id: str, status: str, progress: int | None = None):
+        # 纯状态更新：终态通知由调用方经 activity_events 显式声明（0.4 §6.4 E2，顺序 4）；
+        # 崩溃恢复为 SQL 直写不走本方法，其通知由 main.py 启动扫描显式补发（0.4 §2.4）。
         updates = ["status = ?", "updated_at = ?"]
         params = [status, self._now()]
         if progress is not None:
@@ -1313,31 +1315,6 @@ class Database:
             params,
         )
         self.conn.commit()
-
-        # 终态通知（0.4 §8.2）：报告到达 done / error 时写通知。
-        # 注意 recover_stale_generating_reports 为 SQL 直写（不走本方法），
-        # 崩溃恢复场景的通知由 main.py 启动扫描显式补发（0.4 §2.4）。
-        if status in ("done", "error"):
-            try:
-                row = self.conn.execute(
-                    "SELECT r.project_id, r.title, r.error_message, "
-                    "CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container "
-                    "FROM reports r JOIN projects p ON p.id = r.project_id "
-                    "WHERE r.id = ?",
-                    (report_id,),
-                ).fetchone()
-                if row:
-                    self.add_notification(
-                        entity_type="report", entity_id=report_id,
-                        project_id=row["project_id"],
-                        container=row["container"] or "project",
-                        kind="completed" if status == "done" else "failed",
-                        entity_title=row["title"],
-                        detail=(row["error_message"][:200] if row["error_message"] else None)
-                                if status == "error" else None,
-                    )
-            except Exception:
-                logger.warning("report terminal notification failed for %s", report_id, exc_info=True)
 
     def delete_report(self, report_id: str):
         self.conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
@@ -1436,14 +1413,6 @@ class Database:
             (report_id, limit),
         )
         return [dict(row) for row in cursor.fetchall()]
-
-    def get_report_meta(self, report_id: str) -> dict | None:
-        """获取报告的 project_id / title（崩溃恢复补通知用，0.4 §2.4）。"""
-        cursor = self.conn.execute(
-            "SELECT id, project_id, title FROM reports WHERE id = ?", (report_id,)
-        )
-        row = cursor.fetchone()
-        return dict(row) if row else None
 
     # ── Notifications (Activity Hub, 0.4 §3.2) ──
 
@@ -2490,40 +2459,8 @@ class Database:
             params,
         )
         self.conn.commit()
-
-        # 终态/待审阅通知（0.4 §8.2）：partial 按 completed 发（detail 注明部分完成）；
-        # stopped / queued / ingesting 等中间态静默（用户主动停止不算事件）。
-        # waiting_review 依赖未读查重：监督模式多次暂停不重复弹。
-        if status in ("completed", "partial", "failed", "waiting_review"):
-            try:
-                row = self.conn.execute(
-                    "SELECT wct.project_id, p.name AS project_name, "
-                    "CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container "
-                    "FROM wiki_compile_tasks wct "
-                    "LEFT JOIN projects p ON p.id = wct.project_id "
-                    "WHERE wct.id = ?",
-                    (task_id,),
-                ).fetchone()
-                if row:
-                    if status == "failed":
-                        kind = "failed"
-                        detail = error_message[:200] if error_message else None
-                    elif status == "waiting_review":
-                        kind = "waiting_review"
-                        detail = None
-                    else:
-                        kind = "completed"
-                        detail = "部分完成" if status == "partial" else None
-                    self.add_notification(
-                        entity_type="wiki_compile", entity_id=task_id,
-                        project_id=row["project_id"],
-                        container=row["container"] or "project",
-                        kind=kind,
-                        entity_title=row["project_name"] or "Wiki",
-                        detail=detail,
-                    )
-            except Exception:
-                logger.warning("compile terminal notification failed for %s", task_id, exc_info=True)
+        # 纯状态更新：终态/待审阅通知由调用方经 activity_events 显式声明（0.4 §6.4 E2，
+        # 顺序 4）；stopped / queued / ingesting 等中间态静默（用户主动停止不算事件）。
 
     def start_compile_task(self, task_id: str):
         """Record compile task start time. Status is managed by the caller."""
@@ -2542,13 +2479,6 @@ class Database:
         task = self.get_wiki_compile_task(task_id)
         return task["retry_count"] if task else 0
 
-    def list_interrupted_compile_tasks(self) -> list[dict]:
-        """List compile tasks that were interrupted (status in ingesting/storing/waiting_review)."""
-        cursor = self.conn.execute(
-            "SELECT * FROM wiki_compile_tasks WHERE status IN ('ingesting', 'storing', 'waiting_review')"
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
     def get_waiting_review_compile_tasks(self) -> list[dict]:
         """Get the latest compile task per project that is in 'waiting_review' status."""
         cursor = self.conn.execute(
@@ -2563,12 +2493,14 @@ class Database:
 
     def reset_interrupted_compile_tasks(self) -> int:
         """Reset interrupted compile tasks to queued for crash recovery. Returns count.
-        
-        Only resets 'ingesting' and 'storing' (actively processing when crashed).
+
+        Resets in-flight statuses when crashed: 'analyzing' / 'generating' (batch compiler
+        stage1/stage2) and 'ingesting' / 'storing' (supervised per-file ingest).
         'waiting_review' is NOT reset — supervised mode should wait for user to return.
         """
         cursor = self.conn.execute(
-            "UPDATE wiki_compile_tasks SET status = 'queued' WHERE status IN ('ingesting', 'storing')"
+            "UPDATE wiki_compile_tasks SET status = 'queued' "
+            "WHERE status IN ('analyzing', 'generating', 'ingesting', 'storing')"
         )
         self.conn.commit()
         return cursor.rowcount

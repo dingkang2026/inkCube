@@ -44,6 +44,15 @@ class InkCubeError(Exception):
         }
 
 
+def actionable(e: BaseException) -> str:
+    """用户可行动文案：InkCubeError 拼 message + suggestion（含设置页指引）；
+    其余异常透传 str(e)。供所有后台任务失败落库（error_message / 助手消息）统一使用，
+    确保运行中配置类错误（Key 失效 / 余额不足 / 限流 / 模型名错）的文案自带修正指引。"""
+    if isinstance(e, InkCubeError):
+        return f"{e.message}。{e.suggestion}" if e.suggestion else e.message
+    return str(e)
+
+
 # ── VLM Errors ──────────────────────────────────────────────
 
 
@@ -60,8 +69,8 @@ class VLMInvalidKey(InkCubeError):
     def __init__(self, detail: str = ""):
         super().__init__(
             "VLM_INVALID_KEY", "CREDENTIAL",
-            "VLM API Key 无效",
-            "检查 VLM API Key 是否正确",
+            "VLM API Key 无效或已失效",
+            "请前往 设置 > 外部模型 > VLM 更新 API Key 后重试",
             detail=detail,
         )
 
@@ -80,8 +89,8 @@ class VLMRateLimited(InkCubeError):
     def __init__(self, detail: str = ""):
         super().__init__(
             "VLM_RATE_LIMITED", "NETWORK",
-            "VLM API 调用频率超限",
-            "稍后重试",
+            "VLM API 调用频率或用量超限",
+            "稍后重试；若持续出现请检查 VLM 账户用量限额",
             detail=detail,
         )
 
@@ -112,8 +121,44 @@ class LLMInvalidKey(InkCubeError):
     def __init__(self, detail: str = ""):
         super().__init__(
             "LLM_INVALID_KEY", "CREDENTIAL",
-            "LLM API Key 无效",
-            "检查 LLM API Key 是否正确",
+            "LLM API Key 无效或已失效",
+            "请前往 设置 > 外部模型 更新 API Key 后重试",
+            detail=detail,
+        )
+
+
+class LLMRateLimited(InkCubeError):
+    """429：限流或用量超限。需用户检查账户/稍后重试，不可自动重试。"""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(
+            "LLM_RATE_LIMITED", "CREDENTIAL",
+            "API 调用频率或用量超限",
+            "请检查服务商控制台的余额与用量限额，稍后重试",
+            detail=detail,
+        )
+
+
+class LLMQuotaExhausted(InkCubeError):
+    """402/403：余额不足或欠费。需用户充值或更换 Key，不可重试。"""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(
+            "LLM_QUOTA_EXHAUSTED", "CREDENTIAL",
+            "API 账户余额不足或已欠费",
+            "请前往服务商控制台充值，或在 设置 > 外部模型 更换 API Key",
+            detail=detail,
+        )
+
+
+class LLMModelNotFound(InkCubeError):
+    """404：模型名不存在或无访问权限。需用户改模型名，不可重试。"""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(
+            "LLM_MODEL_NOT_FOUND", "CREDENTIAL",
+            "模型不存在或当前 Key 无权访问该模型",
+            "请检查模型名称是否正确（设置 > 外部模型）",
             detail=detail,
         )
 
@@ -123,7 +168,7 @@ class LLMNetworkError(InkCubeError):
         super().__init__(
             "LLM_NETWORK_ERROR", "NETWORK",
             "无法连接 LLM 服务",
-            "检查网络连接",
+            "检查网络连接；若网络正常，请检查 API 地址是否正确（设置 > 外部模型）",
             detail=detail,
         )
 

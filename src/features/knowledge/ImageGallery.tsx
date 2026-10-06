@@ -9,6 +9,7 @@ import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import { useActivity } from '../activity/ActivityContext'
 import { usePolling } from '../../hooks/usePolling'
+import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import s from './ImageGallery.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 
@@ -127,6 +128,11 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     enabled: hasActiveImages,
     interval: 4000,
     task: () => refreshImages(projectId),
+  })
+  // 终态边沿补拉（0.4 §6.3）：轮询随 image_describing 归零自停，最后一批完成图
+  // 可能落在末次刷新之后（默认 statusFilter='done'，新完成图不在列表）→ 边沿补拉
+  useEdgeRefetch(hasActiveImages, () => {
+    if (projectId) void refreshImages(projectId).catch(() => {})
   })
 
   const handlePageChange = (page: number) => {

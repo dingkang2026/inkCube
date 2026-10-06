@@ -52,7 +52,6 @@
       "general": "通用",
       "externalModel": "外部模型",
       "internalModel": "内部模型",
-      "gpu": "GPU 加速",
       "task": "任务",
       "skills": "Skill 管理",
       "dataManagement": "数据管理"
@@ -83,7 +82,11 @@
     "systemPromptPlaceholder": "你是一个专业的 AI 助手...",
     "testing": "测试中...",
     "testConnection": "测试并检测能力",
-    "save": "保存配置",
+    "autoSave": {
+      "saving": "保存中…",
+      "saved": "更改已自动保存",
+      "failed": "自动保存失败：{{error}}"
+    },
     "vlmConfig": "VLM 视觉模型配置",
     "vlmApiUrl": "VLM API 地址",
     "vlmApiKey": "VLM API Key",
@@ -123,19 +126,6 @@
         "notInstalled": "未检测到"
       },
       "totalSize": "总计约 3.1GB"
-    },
-    "gpu": {
-      "title": "GPU 加速",
-      "description": "启用 GPU 加速可显著提升模型推理速度，需要 NVIDIA 显卡",
-      "currentMode": "当前模式",
-      "cpuMode": "CPU 模式",
-      "gpuMode": "GPU 模式 (CUDA)",
-      "cpuDescription": "当前使用 CPU 进行推理计算，速度较慢但兼容性最好",
-      "gpuDescription": "已启用 GPU 加速，推理速度大幅提升",
-      "downloadGpu": "下载 GPU 后端",
-      "gpuSize": "约 2.5GB",
-      "requirement": "需要 NVIDIA GPU + CUDA 11.8+",
-      "downloading": "下载中..."
     },
     "concurrency": {
       "fileParsing": "文件解析并发数",
