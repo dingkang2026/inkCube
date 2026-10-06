@@ -9,6 +9,4 @@
 
 
 
-skill tier 缺失 
-
 

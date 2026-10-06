@@ -58,6 +58,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     streamIterationRef.current = 0
     streamContentRef.current = ''
     streamReasoningRef.current = ''
+    // Terminal/cleanup state must not leave stale confirm dialogs on screen
+    // (backend already popped the pending confirm on timeout/done)
+    setPendingShellConfirm(null)
+    setPendingSkillConfirm(null)
     if (activeTaskIdRef.current) {
       bgStates.current.delete(activeTaskIdRef.current)
     }
@@ -208,6 +212,11 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         setPendingShellConfirm({ command: parsed.command, taskId: parsed.task_id || activeTaskIdRef.current || '' })
       } else if (type === 'confirm_skill') {
         setPendingSkillConfirm({ skillName: parsed.skill_name, taskId: parsed.task_id || activeTaskIdRef.current || '' })
+      } else if (type === 'confirm_expired') {
+        // Backend confirm wait timed out: dismiss the stale dialog; the skip
+        // reason is traced via the action's observation (1.1 §7.2)
+        if (parsed.kind === 'shell') setPendingShellConfirm(null)
+        else setPendingSkillConfirm(null)
       } else if (type === 'done') {
         setIsGenerating(false)
         // Convert ALL streaming state to permanent messages (no DB reload)
@@ -350,6 +359,12 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           skillName: parsed.skill_name,
           taskId: parsed.task_id || taskId,
         }
+      } else if (type === 'confirm_expired') {
+        // Timeout dismissal must also clear the bgState copy (restored on
+        // task switch — otherwise a dead dialog reappears, 1.1 §7.2)
+        if (!bg) return
+        if (parsed.kind === 'shell') bg.pendingShellConfirm = null
+        else bg.pendingSkillConfirm = null
       } else if (type === 'done') {
         // Background task finished — clean up. DB already has the messages.
         bgStates.current.delete(taskId)
@@ -462,7 +477,18 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     if (!activeTaskId) return
     setPendingSkillConfirm(null)
     try {
-      await window.electronAPI.invoke('tasks:confirmSkill', { taskId: activeTaskId, confirmed })
+      const res = await window.electronAPI.invoke('tasks:confirmSkill', { taskId: activeTaskId, confirmed }) as { found?: boolean } | null
+      if (res && res.found === false) {
+        // Pending confirm already popped server-side (timeout): surface it
+        // instead of silently swallowing the click (1.1 §7.2)
+        setMessages((prev) => [...prev, {
+          id: crypto.randomUUID(),
+          task_id: activeTaskId,
+          role: 'assistant',
+          content: '⚠️ 该确认已超时失效，任务已跳过此 Skill。如需使用请重新发起请求。',
+          created_at: new Date().toISOString(),
+        }])
+      }
     } catch (err) {
       console.error('Skill confirm error:', err)
     }

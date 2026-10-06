@@ -55,20 +55,24 @@ class BuiltinToolAdapter(BaseSkill):
 class AgentSkillAdapter(BaseSkill):
     """Wraps an Agent Skills standard skill (SKILL.md format) into the BaseSkill protocol.
 
-    Agent Skills is an open standard (https://agenticskills.io/) supported by
+    Agent Skills is an open standard (https://agentskills.io/) supported by
     Claude Code, Cursor, Codex, VS Code, etc.  A skill is a directory with:
       - SKILL.md (required): YAML frontmatter + Markdown instructions
       - scripts/ (optional): executable scripts
       - references/ (optional): reference documents
       - assets/ (optional): templates, resources
 
-    Scripts are run in the task's venv.  Dependencies are declared in the
-    'compatibility' frontmatter field and installed on demand.
+    Scripts are run in the task's venv.  'compatibility' is a free-text
+    environment note (per the standard, NOT a pip dependency list): it is
+    surfaced to the LLM, which installs any real dependencies itself via
+    shell/pip when the skill's instructions call for them.
 
     The function calling definition is generated from the skill's name and
     description.  Since Agent Skills don't have structured parameter schemas,
-    the LLM sees a simple tool with a 'command' string parameter that contains
-    the natural-language instruction for the skill.
+    the LLM sees a simple tool with a 'command' string parameter containing
+    the CLI arguments for the skill's script — the LLM must translate the
+    user's request into them (subcommands/flags live in SKILL.md, attached
+    to the first execution result and to the slash fallthrough hint).
     """
 
     def __init__(self, skill_dir: str, parsed: dict, skill_info: dict | None = None):
@@ -87,29 +91,88 @@ class AgentSkillAdapter(BaseSkill):
         self.description = fm.get("description", self._skill_info.get("description", ""))
         self._compatibility = fm.get("compatibility", "")
         self._body = parsed.get("body", "")
+        # Level 2 progressive disclosure: the SKILL.md guide attaches to the
+        # FIRST execution result only ("load on activation, once"); later
+        # results stay lean.  Reset per run — TaskAgent re-registers adapters
+        # each run, and tool results don't persist into rebuilt LLM history.
+        self._guide_sent = False
 
         # Agent Skills don't have structured parameter schemas.
-        # We expose a simple 'command' parameter for the LLM to pass
-        # natural-language instructions.
+        # We expose a single 'command' parameter holding the CLI arguments
+        # for the skill's script — the description must demand CLI form:
+        # saying "natural language" here misleads the LLM into passing the
+        # raw user text, which argparse then rejects.
         self.input_schema = {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": f"The command or instruction for the {self.name} skill. "
-                                   f"Describe what you want to do in natural language.",
+                    "description": f"CLI arguments for the {self.name} skill's script, "
+                                   f"e.g. 'greet --name Alice'. Translate the user's request "
+                                   f"into the subcommand and flags documented in the skill's "
+                                   f"instructions; never pass natural language directly.",
                 },
             },
             "required": ["command"],
         }
 
+    @property
+    def usage_instructions(self) -> str:
+        """SKILL.md body — the usage guide (subcommands/flags/examples).
+
+        Consumed by the slash fallthrough hint (TaskAgent._build_slash_hint)
+        so the LLM can build correct CLI args on its FIRST call instead of
+        guessing and self-correcting from the errored tool result.
+        """
+        return self._body
+
+    def mark_guide_sent(self) -> None:
+        """Record that the guide was already delivered out-of-band (slash hint).
+
+        Suppresses the copy that would otherwise attach to the first
+        execution result — avoids sending the same 4000 chars twice.
+        """
+        self._guide_sent = True
+
+    def reference_note(self) -> str:
+        """L3 pointer to the references/ directory ("" when absent).
+
+        Tells the LLM where the skill's reference files live and how to read
+        them on demand (file_ops read/list over the read-only root that
+        TaskAgent registers for the skill directory) — the standard
+        progressive-disclosure path, so big tables stay out of prompts.
+        """
+        refs_dir = os.path.join(self._skill_dir, "references")
+        if not os.path.isdir(refs_dir):
+            return ""
+        files = [f for f in sorted(os.listdir(refs_dir)) if not f.startswith(".")]
+        if not files:
+            return ""
+        shown = ", ".join(files[:8]) + (" 等" if len(files) > 8 else "")
+        return (
+            f"该 Skill 的详细参考文件位于 {refs_dir}（{shown}），"
+            f"需要时可用 file_ops 的 read/list 读取，无需提前全部加载。"
+        )
+
+    def _attach_guide(self, result_obj: dict) -> None:
+        """Attach SKILL.md guide + references note on first execution only."""
+        if self._guide_sent:
+            return
+        if self._body:
+            result_obj["instructions"] = self._body[:4000]
+        note = self.reference_note()
+        if note:
+            result_obj["references"] = note
+        self._guide_sent = True
+
     async def execute(self, params: dict, context: SkillContext) -> str:
         """Execute the Agent Skill.
 
         For Agent Skills, execution means:
-        1. Check and install dependencies (from 'compatibility' field)
-        2. If the skill has scripts, run them in the task's venv
-        3. Otherwise, return the skill's instructions for the agent to follow
+        1. If the skill has scripts, run them in the task's venv
+        2. Otherwise, return the skill's instructions for the agent to follow
+        3. On the first execution, attach the SKILL.md guide + references
+           note to the result (progressive disclosure, loaded once)
 
         Args:
             params: Dict with 'command' key containing the user's instruction.
@@ -128,11 +191,6 @@ class AgentSkillAdapter(BaseSkill):
         )
 
         if has_scripts and context.venv_python:
-            # Ensure dependencies are installed
-            dep_result = await self._ensure_dependencies(context)
-            if dep_result:
-                return dep_result
-
             # Find the primary script (first .py or .sh file)
             script_path = self._find_primary_script(scripts_dir)
             if script_path:
@@ -146,74 +204,8 @@ class AgentSkillAdapter(BaseSkill):
             "note": "This skill provides instructions rather than executable code. "
                     "Follow the steps above to complete the task.",
         }
-        # Level 2: inject full SKILL.md body into execution result
-        if self._body:
-            result_obj["instructions"] = self._body[:4000]
+        self._attach_guide(result_obj)
         return json.dumps(result_obj, ensure_ascii=False)
-
-    async def _ensure_dependencies(self, context: SkillContext) -> str | None:
-        """Check and install dependencies from the 'compatibility' field.
-
-        Uses uv (faster, better cache) if available, falls back to pip.
-
-        Returns:
-            None if successful, or a JSON error string if installation fails.
-        """
-        from skills.parser import parse_compatibility
-
-        required = parse_compatibility(self._compatibility)
-        if not required:
-            return None
-
-        if not context.venv_python:
-            return None  # Can't install without a Python interpreter
-
-        # Check which packages are already installed
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                context.venv_python, "-m", "pip", "list", "--format=json",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-            installed = {
-                pkg["name"].lower()
-                for pkg in json.loads(stdout.decode("utf-8", errors="replace"))
-            }
-        except Exception:
-            installed = set()
-
-        missing = [pkg for pkg in required if pkg.lower() not in installed]
-        if not missing:
-            return None
-
-        # Install missing packages: prefer uv (faster, better cache), fallback to pip
-        from tools.tool_resolver import resolve_tool
-        uv = resolve_tool("uv")
-
-        try:
-            if uv:
-                cmd = [uv, "pip", "install", "--python", context.venv_python] + missing
-            else:
-                cmd = [context.venv_python, "-m", "pip", "install", "--quiet"] + missing
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-            if proc.returncode != 0:
-                return json.dumps({
-                    "error": f"安装依赖失败: {stderr.decode('utf-8', errors='replace')[:500]}",
-                    "missing_packages": missing,
-                }, ensure_ascii=False)
-        except asyncio.TimeoutError:
-            return json.dumps({"error": "安装依赖超时 (120s)"}, ensure_ascii=False)
-        except FileNotFoundError:
-            return json.dumps({"error": f"找不到解释器: {cmd[0]}"}, ensure_ascii=False)
-
-        return None
 
     def _find_primary_script(self, scripts_dir: str) -> str | None:
         """Find the primary script to execute.
@@ -288,9 +280,8 @@ class AgentSkillAdapter(BaseSkill):
         else:
             result_obj = {"output": ""}
 
-        # Level 2: inject full SKILL.md body into execution result
-        if self._body:
-            result_obj["instructions"] = self._body[:4000]
+        # Level 2/3 (first execution only): SKILL.md guide + references note
+        self._attach_guide(result_obj)
 
         if proc.returncode != 0:
             result_obj.setdefault("error", stderr_text or f"脚本执行失败 (exit code {proc.returncode})")
@@ -305,7 +296,8 @@ class AgentSkillAdapter(BaseSkill):
     def prompt_description(self) -> str:
         """Level 1: only name + description (saves tokens).
 
-        Full SKILL.md body is injected into tool result at execution time (Level 2).
+        The SKILL.md body attaches to the FIRST execution result (Level 2);
+        references/ are readable on demand via file_ops (Level 3).
         """
         lines = [
             f"## {self.name}",

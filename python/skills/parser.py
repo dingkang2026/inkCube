@@ -1,8 +1,10 @@
 """SKILL.md parser — parse Agent Skills standard markdown files.
 
-Supports the open standard defined at https://agenticskills.io/
+Supports the open standard defined at https://agentskills.io/
 A SKILL.md file consists of:
-  - YAML frontmatter (between --- markers): name, description, compatibility, etc.
+  - YAML frontmatter (between --- markers): name, description, license,
+    compatibility, etc. (unknown fields are tolerated — external skills
+    must work when copied in as-is)
   - Markdown body: instructions, steps, examples, etc.
 """
 
@@ -132,45 +134,11 @@ def discover_skill_type(skill_dir: str) -> str | None:
     return None
 
 
-def parse_compatibility(compatibility: str) -> list[str]:
-    """Parse the 'compatibility' field to extract package names.
-
-    Examples:
-      "Requires Python 3.8+ with weasyprint" -> ["weasyprint"]
-      "Requires pandas and numpy" -> ["pandas", "numpy"]
-      "Python 3.10+, requests, pillow" -> ["requests", "pillow"]
-
-    Args:
-        compatibility: The compatibility string from frontmatter.
-
-    Returns:
-        List of package names that need to be installed.
-    """
-    if not compatibility:
-        return []
-
-    # Common words to filter out
-    stop_words = {
-        "requires", "required", "python", "with", "and", "or",
-        "needs", "need", "requires", "version", "or higher",
-        "pip", "install", "must", "have", "the", "a", "an",
-    }
-
-    # Remove Python version specs like "Python 3.8+", ">=3.10", etc.
-    text = re.sub(r"[Pp]ython\s*[\d\.]+\+?", "", compatibility)
-    text = re.sub(r">=?\s*[\d\.]+", "", text)
-    text = re.sub(r"<\s*[\d\.]+", "", text)
-
-    # Extract potential package names (word characters, possibly with hyphens)
-    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]*", text)
-
-    # Filter out stop words and very short tokens
-    packages = []
-    seen = set()
-    for token in tokens:
-        lower = token.lower()
-        if lower not in stop_words and len(lower) >= 2 and lower not in seen:
-            seen.add(lower)
-            packages.append(lower)
-
-    return packages
+# NOTE (1.1 §4.4): the 'compatibility' frontmatter field is a free-text
+# environment note per the Agent Skills standard (e.g. "Requires Python 3.10+;
+# no third-party packages") — NOT a pip dependency list.  An earlier
+# implementation parsed it into package names and auto-installed them
+# ("uses only the standard library" → pip install uses only standard library),
+# which broke spec-compliant external skills; the logic was removed.
+# Real dependencies are installed by the agent itself (shell/pip) following
+# the skill's own instructions.

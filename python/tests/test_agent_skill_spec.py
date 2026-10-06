@@ -1,0 +1,226 @@
+"""Agent Skills 标准合规回归测试。
+
+回归背景（1.1 §4.4）：为验证「外部标准 skill 拷来即用」承诺，仓库内置
+dev/demo-skills/color-conv（严格遵循 agentskills.io 规范：name 与目录一致、
+第三人称 description、license/compatibility 标准语义、references/ 渐进式
+披露、脚本不自知颜色名）。本文件覆盖由它暴露的四个平台侧问题：
+
+1. compatibility 是自由文本环境说明，不是 pip 依赖清单 —— 旧实现会把
+   "uses only the standard library" 解析成包名并 pip install，已删除；
+2. SKILL.md 指南只在首次执行结果附带（激活时加载一次），不再每次注入；
+3. references/ 通过 file_ops 只读根按需读取（L3 渐进式披露）；
+4. 标准格式（license 等额外 frontmatter 字段）解析零报错。
+"""
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from skills.context import SkillContext
+from skills.loader import AgentSkillAdapter
+from skills.parser import parse_skill_md, validate_skill_md
+from tools.file_ops import FileOpsTool
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEMO_SKILL = REPO_ROOT / "dev" / "demo-skills" / "color-conv"
+
+# 标准 compatibility 字段（旧实现会误解析出一堆英文词当包名）
+STD_COMPAT = (
+    "Requires Python 3.10+; uses only the standard library "
+    "(argparse, colorsys). No third-party packages."
+)
+
+MINI_SKILL_MD = f"""---
+name: mini-demo
+description: "Mini skill for tests. Use when testing Agent Skill execution."
+license: MIT
+compatibility: "{STD_COMPAT}"
+---
+
+# Mini Demo
+
+## Subcommands
+
+| Subcommand | Arguments |
+|------------|-----------|
+| `hello` | `--name <str>` (optional) |
+
+Run `scripts/mini.py hello --name World`.
+"""
+
+MINI_SCRIPT = """import argparse, json
+p = argparse.ArgumentParser()
+p.add_argument("cmd", choices=["hello"])
+p.add_argument("--name", default="World")
+a = p.parse_args()
+print(json.dumps({"output": f"hello {a.name}"}))
+"""
+
+
+@pytest.fixture
+def mini_skill(tmp_path: Path) -> Path:
+    """Build a spec-compliant mini skill (scripts + references) in tmp_path."""
+    skill_dir = tmp_path / "mini-demo"
+    (skill_dir / "scripts").mkdir(parents=True)
+    (skill_dir / "references").mkdir()
+    (skill_dir / "SKILL.md").write_text(MINI_SKILL_MD, encoding="utf-8")
+    (skill_dir / "scripts" / "mini.py").write_text(MINI_SCRIPT, encoding="utf-8")
+    (skill_dir / "references" / "TABLE.md").write_text(
+        "| key | value |\n|-----|-------|\n| a | 1 |", encoding="utf-8",
+    )
+    return skill_dir
+
+
+def _adapter(skill_dir: Path) -> AgentSkillAdapter:
+    parsed = parse_skill_md(str(skill_dir / "SKILL.md"))
+    return AgentSkillAdapter(str(skill_dir), parsed)
+
+
+def _context() -> SkillContext:
+    return SkillContext(
+        workspace_path=os.getcwd(),
+        venv_python=sys.executable,
+        settings={},
+    )
+
+
+def _run(coro):
+    """Synchronously drive a coroutine (project uses plain pytest, no pytest-asyncio)."""
+    return asyncio.run(coro)
+
+
+class TestSpecCompliance:
+    """标准格式容错 + compatibility 语义。"""
+
+    def test_repo_demo_skill_parses_with_zero_errors(self):
+        """dev/demo-skills/color-conv（标准格式）解析校验零错误。"""
+        assert DEMO_SKILL.is_dir(), "color-conv demo skill missing from repo"
+        parsed = parse_skill_md(str(DEMO_SKILL / "SKILL.md"))
+        assert validate_skill_md(parsed) == []
+        fm = parsed["frontmatter"]
+        assert fm["name"] == "color-conv"
+        assert fm.get("license") == "MIT"  # 多余字段被容忍
+        assert "third-party" in fm.get("compatibility", "")
+
+    def test_mini_skill_extra_frontmatter_tolerated(self, mini_skill: Path):
+        parsed = parse_skill_md(str(mini_skill / "SKILL.md"))
+        assert validate_skill_md(parsed) == []
+        assert parsed["frontmatter"]["license"] == "MIT"
+
+    def test_parse_compatibility_removed(self):
+        """旧的误装解析已删除：parser 不再暴露 parse_compatibility。"""
+        import skills.parser as parser_mod
+
+        assert not hasattr(parser_mod, "parse_compatibility")
+
+    def test_execute_never_runs_pip(self, mini_skill: Path, monkeypatch):
+        """标准 compatibility 文本绝不触发 pip 安装（回归 #2）。"""
+        import skills.loader as loader_mod
+
+        calls: list[list[str]] = []
+        orig_exec = loader_mod.asyncio.create_subprocess_exec
+
+        async def spy_exec(*cmd, **kwargs):
+            calls.append(list(cmd))
+            return await orig_exec(*cmd, **kwargs)
+
+        monkeypatch.setattr(loader_mod.asyncio, "create_subprocess_exec", spy_exec)
+
+        adapter = _adapter(mini_skill)
+        result = json.loads(
+            _run(adapter.execute({"command": "hello --name Spec"}, _context()))
+        )
+
+        assert result["output"] == "hello Spec"
+        assert calls, "script should have been executed via subprocess"
+        for cmd in calls:
+            assert "pip" not in cmd and "install" not in cmd, f"unexpected pip call: {cmd}"
+
+
+class TestProgressiveDisclosure:
+    """指南首次附带（#1）+ references 注记（#3）。"""
+
+    def test_guide_attached_only_on_first_execution(self, mini_skill: Path):
+        adapter = _adapter(mini_skill)
+        ctx = _context()
+
+        first = json.loads(_run(adapter.execute({"command": "hello"}, ctx)))
+        second = json.loads(_run(adapter.execute({"command": "hello"}, ctx)))
+
+        assert "instructions" in first  # 首次：激活时加载
+        assert "references" in first
+        assert "instructions" not in second  # 之后不重复
+        assert "references" not in second
+
+    def test_mark_guide_sent_suppresses_first_attachment(self, mini_skill: Path):
+        """slash hint 已带指南 → 首次执行结果不再重复（联动）。"""
+        adapter = _adapter(mini_skill)
+        adapter.mark_guide_sent()
+        result = json.loads(_run(adapter.execute({"command": "hello"}, _context())))
+        assert "instructions" not in result
+        assert "references" not in result
+
+    def test_reference_note_lists_files(self, mini_skill: Path):
+        note = _adapter(mini_skill).reference_note()
+        assert "references" in note
+        assert "TABLE.md" in note
+        assert "file_ops" in note  # 告知读取途径
+
+    def test_reference_note_empty_without_dir(self, tmp_path: Path):
+        skill_dir = tmp_path / "no-refs"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(MINI_SKILL_MD, encoding="utf-8")
+        assert _adapter(skill_dir).reference_note() == ""
+
+    def test_no_script_path_attaches_guide(self, tmp_path: Path):
+        """无脚本 skill（指令型）首执结果同样附指南。"""
+        skill_dir = tmp_path / "instr-only"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(MINI_SKILL_MD, encoding="utf-8")
+        adapter = _adapter(skill_dir)
+        result = json.loads(_run(adapter.execute({"command": "hi"}, _context())))
+        assert "instructions" in result
+
+
+class TestFileOpsReadonlyRoot:
+    """file_ops 只读根（#3）：read/list 可达、写仍被拒。"""
+
+    def _tool(self, workspace: Path) -> FileOpsTool:
+        tool = FileOpsTool()
+        tool.set_workspace(str(workspace))
+        return tool
+
+    def test_read_absolute_path_via_readonly_root(self, mini_skill: Path, tmp_path: Path):
+        tool = self._tool(tmp_path / "ws")
+        ref_abs = str(mini_skill / "references" / "TABLE.md")
+
+        # 未注册：拒绝（沙箱仍然生效）
+        denied = json.loads(_run(tool.execute(action="read", path=ref_abs)))
+        assert "error" in denied
+
+        tool.add_readonly_root(str(mini_skill))
+        ok = json.loads(_run(tool.execute(action="read", path=ref_abs)))
+        assert "content" in ok and "key" in ok["content"]
+
+    def test_write_to_readonly_root_rejected(self, mini_skill: Path, tmp_path: Path):
+        tool = self._tool(tmp_path / "ws")
+        tool.add_readonly_root(str(mini_skill))
+        target = str(mini_skill / "references" / "TABLE.md")
+        result = json.loads(
+            _run(tool.execute(action="write", path=target, content="x"))
+        )
+        assert "error" in result  # 写路径不接受只读根
+
+    def test_list_readonly_root_dir(self, mini_skill: Path, tmp_path: Path):
+        tool = self._tool(tmp_path / "ws")
+        tool.add_readonly_root(str(mini_skill))
+        result = json.loads(
+            _run(tool.execute(action="list", path=str(mini_skill)))
+        )
+        names = [e["name"] for e in result.get("entries", [])]
+        assert "SKILL.md" in names and "references" in names

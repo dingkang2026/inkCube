@@ -124,4 +124,41 @@ describe('buildHistoryItems — history grouping matches live rendering', () => 
     expect(iter.group.thought).toBe('C')
     expect(iter.group.actions).toHaveLength(1)
   })
+
+  it('action without preceding reasoning/thought creates its own card (not dropped)', () => {
+    // 回归：模型直接出 tool_calls 时历史无 thought/reasoning，旧版静默丢弃
+    // action 导致 Iter 卡消失（历史看不到工具步骤）
+    const items = buildHistoryItems([
+      msg('user', '/hello-world 回声测试'),
+      msg('action', '', { tool_name: 'hello-world', tool_input: { command: 'echo --message 回声' } }),
+      msg('observation', '', { tool_output: '{"exit_code":0}' }),
+      msg('assistant', '已回声'),
+    ])
+    expect(items).toHaveLength(3) // user bubble + iteration card + assistant bubble
+    const iter = items[1] as {
+      type: 'iter'
+      group: { iteration: number; reasoning: string | null; thought: string | null; actions: unknown[]; status: string }
+    }
+    expect(iter.group.iteration).toBe(0)
+    expect(iter.group.reasoning).toBeNull()
+    expect(iter.group.thought).toBeNull()
+    expect(iter.group.actions).toHaveLength(1)
+    expect(iter.group.status).toBe('ok')
+  })
+
+  it('consecutive orphan actions share one card; error output marks it error', () => {
+    const items = buildHistoryItems([
+      msg('user', '问'),
+      msg('action', '', { tool_name: 'hello-world', tool_input: {} }),
+      msg('action', '', { tool_name: 'shell', tool_input: {}, tool_output: '{"error":"boom"}' }),
+      msg('assistant', '答'),
+    ])
+    expect(items).toHaveLength(3)
+    const iter = items[1] as {
+      type: 'iter'
+      group: { actions: unknown[]; status: string }
+    }
+    expect(iter.group.actions).toHaveLength(2) // 同一轮多次工具调用归入同一卡
+    expect(iter.group.status).toBe('error')
+  })
 })

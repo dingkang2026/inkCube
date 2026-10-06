@@ -183,9 +183,6 @@ class Database:
         # Migrate: tasks table - venv_path for per-task isolation
         self._migrate_add_column("tasks", "venv_path", "TEXT DEFAULT ''")
 
-        # Migrate: skills table - needs_confirm for first-use confirmation
-        self._migrate_add_column("skills", "needs_confirm", "INTEGER DEFAULT 1")
-
         # Migrate: tasks table - mode for coding/general mode
         self._migrate_add_column("tasks", "mode", "TEXT DEFAULT 'coding'")
 
@@ -307,6 +304,12 @@ class Database:
         self.conn.commit()
 
         # ── Migrations ──
+        # Migrate: skills table - needs_confirm for first-use confirmation.
+        # Must run AFTER the skills CREATE TABLE above: on a fresh database the
+        # table doesn't exist when the earlier migration block executes, and
+        # _migrate_add_column silently skips missing tables — the column would
+        # never be added (broke confirm_skill_by_name with "no such column").
+        self._migrate_add_column("skills", "needs_confirm", "INTEGER DEFAULT 1")
         self._migrate_add_column("reports", "token_usage", "TEXT")
         self._migrate_add_column("reports", "error_message", "TEXT")
         self._migrate_add_column("reports", "variables", "TEXT")
@@ -1211,6 +1214,18 @@ class Database:
         cursor = self.conn.execute(
             "UPDATE skills SET needs_confirm = 0 WHERE id = ?",
             (skill_id,),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def confirm_skill_by_name(self, name: str) -> bool:
+        """Permanent trust by skill name (task-dialog confirmation, 1.1 §7.2).
+
+        The task confirm dialog is the first-use acknowledgement point; after
+        this the skill never prompts again (settings toggle can still disable)."""
+        cursor = self.conn.execute(
+            "UPDATE skills SET needs_confirm = 0 WHERE name = ?",
+            (name,),
         )
         self.conn.commit()
         return cursor.rowcount > 0

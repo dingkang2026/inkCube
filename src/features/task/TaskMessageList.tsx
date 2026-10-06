@@ -204,18 +204,24 @@ export function buildHistoryItems(msgs: TaskMessage[]): RenderItem[] {
         currentGroup.thought = msg.content
       }
     } else if (msg.role === 'action') {
-      if (currentGroup) {
-        currentGroup.actions.push(msg)
-        if (currentGroup.status !== 'error' && msg.metadata?.tool_output) {
-          try {
-            const parsed = JSON.parse(msg.metadata.tool_output as string)
-            if (typeof parsed === 'object' && parsed !== null) {
-              if ((parsed.exit_code !== undefined && parsed.exit_code !== 0) || parsed.error) {
-                currentGroup.status = 'error'
-              }
+      // Defensive: persisted history often lacks reasoning/thought (models
+      // that emit tool_calls directly store no preceding text), so an action
+      // may arrive with no open group — create one instead of silently
+      // dropping the step, keeping history replay aligned with the
+      // streaming view (matches the thought branch above).
+      if (!currentGroup) {
+        currentGroup = { iteration: iterCounter, reasoning: null, thought: null, actions: [], status: 'ok' }
+      }
+      currentGroup.actions.push(msg)
+      if (currentGroup.status !== 'error' && msg.metadata?.tool_output) {
+        try {
+          const parsed = JSON.parse(msg.metadata.tool_output as string)
+          if (typeof parsed === 'object' && parsed !== null) {
+            if ((parsed.exit_code !== undefined && parsed.exit_code !== 0) || parsed.error) {
+              currentGroup.status = 'error'
             }
-          } catch { /* ok */ }
-        }
+          }
+        } catch { /* ok */ }
       }
     } else if (msg.role === 'observation') {
       // Skip — output already merged into action by enrichMessages

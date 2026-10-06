@@ -21,7 +21,7 @@ import { TaskStatusMonitor } from './features/task/TaskStatusMonitor'
 import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { useResizeHandle } from './hooks/useResizeHandle'
-import { ToastProvider } from './features/knowledge/Toast'
+import { useToast } from './features/knowledge/Toast'
 import { ActivityProvider } from './features/activity/ActivityContext'
 import { ActivityMonitor } from './features/activity/ActivityMonitor'
 import { useConfirm } from './components/ConfirmDialog'
@@ -33,6 +33,7 @@ import { MODELS_IPC } from './types'
 export default function App() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
+  const showToast = useToast()
   const { settings, settingsLoaded, handleSaveSettings } = useSettings()
   const sidebar = useResizeHandle(260, 200, 480)
 
@@ -195,6 +196,7 @@ export default function App() {
       if (selectedProjectId === projectId) setSelectedProjectId(null)
     } catch (err) {
       console.error('Failed to delete project:', err)
+      showToast(t('knowledge.deleteProjectFailed'), 'error')
     }
   }
 
@@ -217,6 +219,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to create project:', err)
+      showToast(t('knowledge.createProjectFailed'), 'error')
     }
   }
 
@@ -226,6 +229,7 @@ export default function App() {
       await loadProjects()
     } catch (err) {
       console.error('Failed to rename project:', err)
+      showToast(t('knowledge.renameProjectFailed'), 'error')
     }
   }
 
@@ -369,174 +373,172 @@ export default function App() {
   }, [handleOpenSettings])
 
   return (
-    <ToastProvider>
-      <ActivityProvider>
-        {/* 单一常驻活动轮询：Toast / 徽章 / 首页活动区共同数据源（0.4 §8.1 #0） */}
-        <ActivityMonitor />
-        {/* 任务系统状态轮询（#2，顺序 5 收编）：谓词全局心跳派生，须挂 Provider 内 */}
-        <TaskStatusMonitor
-          activeOnTasks={activeNav === 'tasks'}
-          localGenerating={taskIsGenerating}
-          onStatus={handleTaskStatus}
-        />
-        <TitleBar
-          onOpenSettings={handleOpenSettings}
-          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-          onShowAbout={() => setAboutOpen(true)}
-        />
-        <div className="app-layout">
-          {/* Sidebar */}
-          {!sidebarCollapsed && (
-            <>
-              <Sidebar
-                width={sidebar.width}
-                activeNav={!peerPageOpen ? activeNav : ''}
-                onNavChange={handleNavChange}
-                onOpenSettings={handleOpenSettings}
-                footer={
-                  <BaseLibFooter
-                    selectedBaseLib={selectedBaseLibId}
-                    onSelectBaseLib={handleBaseLibSelect}
-                    templateManagementActive={showTemplateManagement}
-                    onOpenTemplateManagement={() => {
-                      setSettingsOpen(false)
-                      setSelectedBaseLibId(null)
-                      setShowTemplateManagement(true)
-                    }}
-                  />
-                }
-              >
-                {!peerPageOpen && activeNav === 'projects' && (
-                  <ProjectSidebar
-                    projects={projects}
-                    selectedProject={selectedProjectId}
-                    onSelectProject={handleProjectSelect}
-                    onDeleteProject={handleDeleteProject}
-                    onRenameProject={handleRenameProject}
-                    onCreateProject={handleCreateProject}
-                  />
-                )}
-                {!peerPageOpen && activeNav === 'tasks' && (
-                  <TaskList
-                    tasks={currentTasks}
-                    activeTaskId={activeTaskId}
-                    activeTab={activeTab}
-                    loading={tasksLoading}
-                    creating={taskCreating}
-                    onSelect={setActiveTaskId}
-                    onNew={() => handleCreateTask()}
-                    onNewWithDir={handleNewTaskWithDir}
-                    onDelete={handleDeleteTask}
-                    onRename={handleRenameTask}
-                    onArchive={handleArchiveTask}
-                    onUnarchive={handleUnarchiveTask}
-                    onExport={handleExportTask}
-                    onTabChange={setActiveTab}
-                    archivedCount={archivedTasks.length}
-                    canCreateTask={canStartTask}
-                    runningTaskIds={runningTaskIds}
-                    hasMore={activeTab === 'active' ? tasksHasMore.active : tasksHasMore.archived}
-                    onLoadMore={() => loadMoreTasks(activeTab)}
-                  />
-                )}
-              </Sidebar>
-              <ResizeHandle
-                onResize={sidebar.handleResize}
-                onDoubleClick={sidebar.resetWidth}
-              />
-            </>
-          )}
-
-          {settingsOpen ? (
-            <SettingsPage
-              settings={settings}
-              onSave={handleSaveSettings}
-              sectionSignal={settingsSectionSignal}
-            />
-          ) : showTemplateManagement ? (
-            <TemplateManagement />
-          ) : selectedBaseLibId ? (
-            /* Base library is parallel to projects — accessible from any nav */
-            <BaseLibDetailPage baseLibId={selectedBaseLibId} />
-          ) : activeNav === 'home' ? (
-            <HomePage
-              projects={projects}
-              onNavigate={handleNavChange}
+    <ActivityProvider>
+      {/* 单一常驻活动轮询：Toast / 徽章 / 首页活动区共同数据源（0.4 §8.1 #0） */}
+      <ActivityMonitor />
+      {/* 任务系统状态轮询（#2，顺序 5 收编）：谓词全局心跳派生，须挂 Provider 内 */}
+      <TaskStatusMonitor
+        activeOnTasks={activeNav === 'tasks'}
+        localGenerating={taskIsGenerating}
+        onStatus={handleTaskStatus}
+      />
+      <TitleBar
+        onOpenSettings={handleOpenSettings}
+        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onShowAbout={() => setAboutOpen(true)}
+      />
+      <div className="app-layout">
+        {/* Sidebar */}
+        {!sidebarCollapsed && (
+          <>
+            <Sidebar
+              width={sidebar.width}
+              activeNav={!peerPageOpen ? activeNav : ''}
+              onNavChange={handleNavChange}
               onOpenSettings={handleOpenSettings}
-              onSelectProject={(id) => {
-                setSelectedProjectId(id)
-              }}
+              footer={
+                <BaseLibFooter
+                  selectedBaseLib={selectedBaseLibId}
+                  onSelectBaseLib={handleBaseLibSelect}
+                  templateManagementActive={showTemplateManagement}
+                  onOpenTemplateManagement={() => {
+                    setSettingsOpen(false)
+                    setSelectedBaseLibId(null)
+                    setShowTemplateManagement(true)
+                  }}
+                />
+              }
+            >
+              {!peerPageOpen && activeNav === 'projects' && (
+                <ProjectSidebar
+                  projects={projects}
+                  selectedProject={selectedProjectId}
+                  onSelectProject={handleProjectSelect}
+                  onDeleteProject={handleDeleteProject}
+                  onRenameProject={handleRenameProject}
+                  onCreateProject={handleCreateProject}
+                />
+              )}
+              {!peerPageOpen && activeNav === 'tasks' && (
+                <TaskList
+                  tasks={currentTasks}
+                  activeTaskId={activeTaskId}
+                  activeTab={activeTab}
+                  loading={tasksLoading}
+                  creating={taskCreating}
+                  onSelect={setActiveTaskId}
+                  onNew={() => handleCreateTask()}
+                  onNewWithDir={handleNewTaskWithDir}
+                  onDelete={handleDeleteTask}
+                  onRename={handleRenameTask}
+                  onArchive={handleArchiveTask}
+                  onUnarchive={handleUnarchiveTask}
+                  onExport={handleExportTask}
+                  onTabChange={setActiveTab}
+                  archivedCount={archivedTasks.length}
+                  canCreateTask={canStartTask}
+                  runningTaskIds={runningTaskIds}
+                  hasMore={activeTab === 'active' ? tasksHasMore.active : tasksHasMore.archived}
+                  onLoadMore={() => loadMoreTasks(activeTab)}
+                />
+              )}
+            </Sidebar>
+            <ResizeHandle
+              onResize={sidebar.handleResize}
+              onDoubleClick={sidebar.resetWidth}
             />
-          ) : activeNav === 'projects' ? (
-            selectedProject ? (
-              <ProjectDetailPage
-                project={selectedProject}
-                tabSignal={projectTabSignal}
-                onOpenSettings={() => setSettingsOpen(true)}
-                onProjectDataChanged={loadProjects}
-              />
-            ) : (
-              <KnowledgePage
-                selectedProject={null}
-                onOpenSettings={() => setSettingsOpen(true)}
-                onProjectDataChanged={loadProjects}
-              />
-            )
-          ) : activeNav === 'tasks' ? (
-            <TaskPage
-              taskId={activeTaskId}
-              taskTitle={tasks.find((t) => t.id === activeTaskId)?.title}
-              taskMode={tasks.find((t) => t.id === activeTaskId)?.mode || 'coding'}
-              hasActiveTask={!!activeTaskId}
-              messages={taskMessages}
-              isGenerating={taskIsGenerating}
-              streamContent={taskStreamContent}
-              streamSteps={taskStreamSteps}
-              streamReasoning={taskStreamReasoning}
-              streamIteration={taskStreamIteration}
-              streamIterationThoughts={taskStreamIterationThoughts}
-              streamIterationReasoning={taskStreamIterationReasoning}
-              planData={taskPlanData}
-              pendingShellConfirm={taskPendingShellConfirm}
-              pendingSkillConfirm={taskPendingSkillConfirm}
-              onSendMessage={handleTaskSendMessage}
-              onStopGenerate={handleTaskStopGenerate}
-              onPauseTask={handleTaskPause}
-              onShellConfirm={handleTaskShellConfirm}
-              onSkillConfirm={handleTaskSkillConfirm}
-              onResumeTask={handleTaskResume}
-              canResume={taskCanResume}
-              onFilesUploaded={() => {
-                loadTasks()
-                // 上传成功后立即刷新消息列表：后端写入的「[系统] 用户上传了文件」马上可见
-                if (activeTaskId) loadTaskMessages(activeTaskId)
-              }}
-              onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
+          </>
+        )}
+  
+        {settingsOpen ? (
+          <SettingsPage
+            settings={settings}
+            onSave={handleSaveSettings}
+            sectionSignal={settingsSectionSignal}
+          />
+        ) : showTemplateManagement ? (
+          <TemplateManagement />
+        ) : selectedBaseLibId ? (
+          {/* Base library is parallel to projects — accessible from any nav */}
+          <BaseLibDetailPage baseLibId={selectedBaseLibId} />
+        ) : activeNav === 'home' ? (
+          <HomePage
+            projects={projects}
+            onNavigate={handleNavChange}
+            onOpenSettings={handleOpenSettings}
+            onSelectProject={(id) => {
+              setSelectedProjectId(id)
+            }}
+          />
+        ) : activeNav === 'projects' ? (
+          selectedProject ? (
+            <ProjectDetailPage
+              project={selectedProject}
+              tabSignal={projectTabSignal}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onProjectDataChanged={loadProjects}
             />
           ) : (
-            <div />
-          )}
-        </div>
-        <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-        {showOnboarding && (
-          <OnboardingWizard
-            onFinish={() => {
-              setShowOnboarding(false)
-              setOnboardingResumeStep(null)
+            <KnowledgePage
+              selectedProject={null}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onProjectDataChanged={loadProjects}
+            />
+          )
+        ) : activeNav === 'tasks' ? (
+          <TaskPage
+            taskId={activeTaskId}
+            taskTitle={tasks.find((t) => t.id === activeTaskId)?.title}
+            taskMode={tasks.find((t) => t.id === activeTaskId)?.mode || 'coding'}
+            hasActiveTask={!!activeTaskId}
+            messages={taskMessages}
+            isGenerating={taskIsGenerating}
+            streamContent={taskStreamContent}
+            streamSteps={taskStreamSteps}
+            streamReasoning={taskStreamReasoning}
+            streamIteration={taskStreamIteration}
+            streamIterationThoughts={taskStreamIterationThoughts}
+            streamIterationReasoning={taskStreamIterationReasoning}
+            planData={taskPlanData}
+            pendingShellConfirm={taskPendingShellConfirm}
+            pendingSkillConfirm={taskPendingSkillConfirm}
+            onSendMessage={handleTaskSendMessage}
+            onStopGenerate={handleTaskStopGenerate}
+            onPauseTask={handleTaskPause}
+            onShellConfirm={handleTaskShellConfirm}
+            onSkillConfirm={handleTaskSkillConfirm}
+            onResumeTask={handleTaskResume}
+            canResume={taskCanResume}
+            onFilesUploaded={() => {
+              loadTasks()
+              // 上传成功后立即刷新消息列表：后端写入的「[系统] 用户上传了文件」马上可见
+              if (activeTaskId) loadTaskMessages(activeTaskId)
             }}
-            onSuspend={handleOnboardingSuspend}
-            initialStep={onboardingResumeStep ?? 0}
+            onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
           />
+        ) : (
+          <div />
         )}
-        {logViewerOpen && <LogViewer onClose={() => setLogViewerOpen(false)} />}
-        {processExitCode !== null && (
-          <div className="process-exit-banner">
-            <span>{t('app.processExit', { code: processExitCode })}</span>
-            <button onClick={() => handleOpenSettings()}>{t('menu.viewLogs')}</button>
-            <button onClick={() => setProcessExitCode(null)}>{t('window.close')}</button>
-          </div>
-        )}
-      </ActivityProvider>
-    </ToastProvider>
+      </div>
+      <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      {showOnboarding && (
+        <OnboardingWizard
+          onFinish={() => {
+            setShowOnboarding(false)
+            setOnboardingResumeStep(null)
+          }}
+          onSuspend={handleOnboardingSuspend}
+          initialStep={onboardingResumeStep ?? 0}
+        />
+      )}
+      {logViewerOpen && <LogViewer onClose={() => setLogViewerOpen(false)} />}
+      {processExitCode !== null && (
+        <div className="process-exit-banner">
+          <span>{t('app.processExit', { code: processExitCode })}</span>
+          <button onClick={() => handleOpenSettings()}>{t('menu.viewLogs')}</button>
+          <button onClick={() => setProcessExitCode(null)}>{t('window.close')}</button>
+        </div>
+      )}
+    </ActivityProvider>
   )
 }

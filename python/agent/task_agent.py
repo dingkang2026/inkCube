@@ -96,7 +96,10 @@ _PROMPT_SELF_REVIEW = """🔍 自我审查原则：
 _PROMPT_RICH_TEXT = """📊 富文本支持：
 你可以在 Final Answer 中使用 Markdown 格式：
 - Mermaid 图表：用 ```mermaid 代码块绘制流程图、时序图、甘特图等
-- SVG 图形：直接嵌入 <svg> 标签绘制自定义图形
+- SVG 图形：直接嵌入 <svg> 标签绘制自定义图形（仅图形元素：rect/circle/text/path/g 等）
+- 行内样式：用 <span style="color:#663399">标注颜色/强调，style 仅支持视觉属性
+  （color、background、font-weight、font-size、padding、border-radius 等）；
+  不要在表格单元格内使用 HTML 标签
 - 代码块、表格、列表等标准 Markdown 语法"""
 
 # ── Planner / Editor dual-model prompts ──
@@ -122,6 +125,12 @@ Strategy: [整体策略说明]
 SNIP_THRESHOLD = 32000  # chars (~8K tokens, ~6% of 128K context)
 # After collapse, keep this many recent messages intact
 KEEP_RECENT = 10
+
+# Confirmation wait windows (1.1 §7.1/§7.2): on timeout the action is skipped
+# (fail-safe — never auto-approve third-party code), the dialog is dismissed
+# via confirm_expired, and the skip is traced in the action's observation.
+SHELL_CONFIRM_TIMEOUT = 120
+SKILL_CONFIRM_TIMEOUT = 180
 
 
 class TaskAgent:
@@ -192,12 +201,28 @@ class TaskAgent:
                 self._session_auto_allow.add(task_id)
             pending["event"].set()
 
-    def respond_skill_confirm(self, task_id: str, confirmed: bool):
-        """Respond to a pending skill confirmation from the frontend."""
+    def respond_skill_confirm(self, task_id: str, confirmed: bool) -> bool:
+        """Respond to a pending skill confirmation from the frontend.
+
+        Confirming also persists permanent trust (needs_confirm=0, 1.1 §7.2):
+        the task dialog IS the first-use acknowledgement point, so the skill
+        never prompts again (settings-page toggle can still disable it).
+        Returns False when no pending confirmation exists (e.g. already timed
+        out) so the frontend can tell the user the click had no effect.
+        """
         pending = self._pending_skill_confirms.get(task_id)
-        if pending:
-            pending["confirmed"] = confirmed
-            pending["event"].set()
+        if not pending:
+            return False
+        pending["confirmed"] = confirmed
+        if confirmed:
+            try:
+                self.db.confirm_skill_by_name(pending.get("skill_name", ""))
+            except Exception as e:
+                # Degraded to this-run-only allow on DB failure; next run
+                # re-prompts (logged for diagnosis, 1.1 §7.2)
+                logger.warning("Failed to persist skill confirmation: %s", e)
+        pending["event"].set()
+        return True
 
     def pause_task(self, task_id: str, messages: list[dict], iteration: int, recent_errors: list[str]) -> bool:
         """Pause a running task: save state and request cancellation."""
@@ -224,15 +249,19 @@ class TaskAgent:
     def can_start_task(self) -> bool:
         return len(self._running_task_ids) < self.MAX_CONCURRENT
 
-    def _register_external_skills(self, skill_registry: SkillRegistry):
+    def _register_external_skills(self, skill_registry: SkillRegistry, tools: dict | None = None):
         """Load external skills from DB and register them into SkillRegistry.
 
+        Also registers each skill directory as a file_ops read-only root so
+        the LLM can read references/ on demand (Agent Skills L3 progressive
+        disclosure, 1.1 §4.4).
         Supports Agent Skills standard format (SKILL.md).
         Uses mtime-based cache to avoid re-parsing unchanged SKILL.md files (Phase 15.4).
         """
         try:
             from skills.parser import parse_skill_md, discover_skill_type, validate_skill_md
             all_skills = self.db.list_skills()
+            file_ops = tools.get("file_ops") if tools else None
             for skill_info in all_skills:
                 if not skill_info.get("enabled", 1):
                     continue
@@ -275,6 +304,9 @@ class TaskAgent:
 
                     adapter = AgentSkillAdapter(install_path, parsed, skill_info)
                     skill_registry.register(adapter, {"type": "agent_skill", "enabled": True})
+                    # L3: keep skill files readable (read/list only) for this task
+                    if file_ops is not None and hasattr(file_ops, "add_readonly_root"):
+                        file_ops.add_readonly_root(install_path)
                     logger.info("Registered Agent Skill: %s (from %s)", adapter.name, install_path)
 
                 else:
@@ -706,19 +738,76 @@ class TaskAgent:
         params_str = parts[1] if len(parts) > 1 else ""
         return (cmd, params_str)
 
-    async def _execute_slash_command(
-        self, task_id: str, cmd: str, params_str: str, tools: dict,
-        settings: dict | None = None,
-        skill_registry: SkillRegistry | None = None,
-        workspace_path: str = "", venv_path: str = "",
-    ) -> AsyncGenerator[dict, None]:
-        """Execute a slash command directly, bypassing the LLM.
+    def _slash_routing(self, user_message: str, tools: dict) -> tuple[tuple[str, str] | None, bool]:
+        """Route a slash command: returns (parsed, direct_execute).
 
-        Handles /help and /skill-name [params].
-        Supports Agent Skills (SKILL.md) format.
+        parsed is (cmd, params) when the message is a slash command, else None.
+        direct_execute=True means _execute_slash_command handles it directly
+        (bypassing the LLM): /help, unknown skill names, or no skill_runner.
+        Installed Agent Skills always return direct_execute=False — the input
+        (often natural language like「回声测试」) is translated into CLI args
+        by the LLM in the normal agent loop. A static CLI-vs-NL pre-check over
+        SKILL.md prose is unreliable:「何时使用」bullet lines can false-match
+        as CLI syntax.
         """
-        # Reconstruct original user message for saving
-        text = f"/{cmd} {params_str}".strip() if params_str else f"/{cmd}"
+        parsed = self._is_slash_command(user_message)
+        if not parsed:
+            return None, False
+        cmd, _params = parsed
+        if cmd == "help":
+            return parsed, True
+        sr = tools.get("skill_runner")
+        if not sr:
+            return parsed, True
+        sr._refresh_cache()
+        return parsed, sr._find_skill(cmd) is None
+
+    @staticmethod
+    def _build_slash_hint(cmd: str, params: str, guide: str = "", refs_note: str = "") -> str:
+        """Build the user-role hint injected when a slash-invoked Agent Skill
+        falls through to the agent loop.
+
+        ``guide`` is the skill's SKILL.md body (usage_instructions): without
+        it the LLM has no subcommand/flag documentation on its first call and
+        must guess (one error + self-correct round); with it the first call
+        is usually right.
+        ``refs_note`` is the skill's references/ pointer (L3): when present,
+        the LLM knows where to read detailed references on demand instead of
+        having everything preloaded.
+        """
+        input_line = (
+            f"用户的完整输入: `{params}`\n" if params
+            else "用户未提供具体参数，请根据 Skill 能力选择合适的子命令。\n"
+        )
+        hint = (
+            f"[系统提示] 用户通过 `/{cmd}` 调用了名为 `{cmd}` 的 Skill。\n"
+            f"你 **必须** 使用工具来执行此 Skill，不要自己直接回答。\n\n"
+            f"可用工具（任选其一）：\n"
+            f"1. **优先**: 调用 `{cmd}` 函数（将需求翻译为 CLI 参数传入 `command` 字段）\n"
+            f"2. **备选**: 调用 `skill_runner` 工具，参数 skill=\"{cmd}\", input={{\"command\": \"CLI参数\"}}\n\n"
+            f"示例：用户说「统计字数 Hello」→ command=\"wordcount --text Hello\"\n"
+            f"{input_line}"
+        )
+        if guide:
+            hint += (
+                f"\n`{cmd}` 使用指南（首次调用即应据此构造正确的 CLI 参数）：\n"
+                f"<guide>\n{guide[:4000]}\n</guide>\n"
+            )
+        if refs_note:
+            hint += f"\n{refs_note}\n"
+        hint += f"请参考 `{cmd}` 的使用指南构造正确的 CLI 参数。"
+        return hint
+
+    async def _execute_slash_command(
+        self, task_id: str, cmd: str, tools: dict,
+    ) -> AsyncGenerator[dict, None]:
+        """Execute a non-skill slash command directly, bypassing the LLM.
+
+        Handles /help (usage listing) and unknown skill names (availability
+        report). Installed Agent Skills never reach here — _slash_routing
+        routes them through the normal agent loop so the LLM translates the
+        input into CLI args (1.1 §4.5).
+        """
 
         # ── /help ──
         if cmd == "help":
@@ -755,117 +844,19 @@ class TaskAgent:
             yield {"type": "done", "data": {}}
             return
 
-        # Check if this matches an installed skill
+        # Only unknown names arrive here — installed skills fall through to
+        # the agent loop (see _slash_routing). Defensive: an installed name
+        # that slips through is never direct-run; point the user at the agent
+        # path instead.
         skill_runner._refresh_cache()
-        skill_info = skill_runner._find_skill(cmd)
-        if not skill_info:
-            available = [s["name"] for s in skill_runner._skill_cache]
-            if available:
-                answer = f"未找到 Skill: `{cmd}`\n\n可用 Skill: {', '.join(f'`{s}`' for s in available)}"
-            else:
-                answer = "当前无已安装的第三方 Skill。请在设置页安装。"
-            # NOTE: user message already saved by routers/tasks.py task_chat()
-            self.db.save_task_message(task_id, "assistant", answer)
-            yield {"type": "answer_chunk", "data": {"content": answer}}
-            yield {"type": "done", "data": {}}
-            return
-
-        # Parse optional JSON params
-        params: dict = {}
-        if params_str:
-            try:
-                params = json.loads(params_str)
-            except json.JSONDecodeError:
-                # Treat as a plain text input
-                params = {"input": params_str}
-
-        # ── Skill confirmation check (for unconfirmed third-party skills) ──
-        if skill_info.get("needs_confirm"):
-            confirm_event = asyncio.Event()
-            self._pending_skill_confirms[task_id] = {
-                "skill_name": cmd,
-                "confirmed": False,
-                "event": confirm_event,
-            }
-            yield {"type": "confirm_skill", "data": {
-                "skill_name": cmd,
-                "task_id": task_id,
-            }}
-            try:
-                await asyncio.wait_for(confirm_event.wait(), timeout=60)
-            except asyncio.TimeoutExpired:
-                pass
-            pending_skill = self._pending_skill_confirms.pop(task_id, {})
-            if not pending_skill.get("confirmed"):
-                answer = f"⚠️ Skill `{cmd}` 未经用户确认，已取消执行。"
-                self.db.save_task_message(task_id, "assistant", answer)
-                yield {"type": "answer_chunk", "data": {"content": answer}}
-                yield {"type": "done", "data": {}}
-                return
-
-        # Execute the skill directly
-        # NOTE: user message already saved by routers/tasks.py task_chat()
-        yield {"type": "thought", "data": {"content": f"🧩 直接调用 Skill: {cmd}"}}
-
-        install_path = skill_info.get("install_path", "")
-        skill_md = os.path.join(install_path, "SKILL.md") if install_path else ""
-
-        # ── Direct execution path (CLI input or isolated skill) ──
-        # Note: Agent Skills with NL input are handled by the normal agent loop
-        # (see pre-check in _run_inner), so we only reach here for CLI input.
-        action_meta = {"tool_name": "skill_runner", "tool_input": {"skill": cmd, "input": params}}
-        self.db.save_task_message(task_id, "action", "", metadata=action_meta)
-        yield {"type": "action", "data": {"tool": "skill_runner", "input": {"skill": cmd, "input": params}}}
-
-        exec_start = time.time()
-
-        # Detect Agent Skill (SKILL.md format) and use AgentSkillAdapter
-        if os.path.isfile(skill_md):
-            try:
-                from skills.parser import parse_skill_md, validate_skill_md
-                parsed = parse_skill_md(skill_md)
-                errors = validate_skill_md(parsed)
-                if errors:
-                    result = json.dumps({"error": f"SKILL.md 验证失败: {'; '.join(errors)}"}, ensure_ascii=False)
-                else:
-                    adapter = AgentSkillAdapter(install_path, parsed, skill_info)
-                    # Build SkillContext with task's venv
-                    venv_python = get_venv_python(venv_path) if venv_path else ""
-                    ctx = SkillContext(
-                        workspace_path=workspace_path,
-                        venv_python=venv_python,
-                        task_id=task_id,
-                        settings=settings or {},
-                    )
-                    # Map slash command params → Agent Skill 'command' param
-                    agent_params = {"command": params_str}
-                    result = await adapter.execute(agent_params, ctx)
-            except Exception as e:
-                result = json.dumps({"error": str(e)}, ensure_ascii=False)
+        available = [s["name"] for s in skill_runner._skill_cache]
+        if skill_runner._find_skill(cmd):
+            answer = f"Skill `{cmd}` 已安装，请以「/{cmd} 需求描述」方式调用，由 Agent 负责执行。"
+        elif available:
+            answer = f"未找到 Skill: `{cmd}`\n\n可用 Skill: {', '.join(f'`{s}`' for s in available)}"
         else:
-            # Not a recognized Agent Skill
-            result = json.dumps({"error": f"Skill `{cmd}` 不是有效的 Agent Skill (缺少 SKILL.md)"}, ensure_ascii=False)
-        exec_duration = int((time.time() - exec_start) * 1000)
-
-        # Format result for display
-        try:
-            result_obj = json.loads(result)
-            if "error" in result_obj:
-                answer = f"❌ Skill `{cmd}` 执行失败: {result_obj['error']}"
-            elif "output" in result_obj:
-                answer = result_obj["output"]
-            else:
-                answer = f"```json\n{json.dumps(result_obj, ensure_ascii=False, indent=2)}\n```"
-        except (json.JSONDecodeError, TypeError):
-            answer = result
-
-        yield {"type": "observation", "data": {"content": result}}
-        self.db.save_task_message(
-            task_id, "observation", result,
-            metadata={**action_meta, "tool_output": result[:5000]},
-        )
-        self._log_execution(task_id, "skill_runner", {"skill": cmd, "input": params}, result, exec_duration)
-
+            answer = "当前无已安装的第三方 Skill。请在设置页安装。"
+        # NOTE: user message already saved by routers/tasks.py task_chat()
         self.db.save_task_message(task_id, "assistant", answer)
         yield {"type": "answer_chunk", "data": {"content": answer}}
         yield {"type": "done", "data": {}}
@@ -1023,7 +1014,7 @@ class TaskAgent:
         skill_registry.register_builtin_tools(tools)
 
         # ── Load external skills from DB and register them ──
-        self._register_external_skills(skill_registry)
+        self._register_external_skills(skill_registry, tools)
 
         model_name = settings.get("model", "gpt-4o")
         logger.info("Using Function Calling mode for task %s (model=%s)", task_id, model_name)
@@ -1034,51 +1025,14 @@ class TaskAgent:
             keep_recent=KEEP_RECENT,
         )
 
-        # ── Slash command interception: /skill-name bypasses LLM ──
-        slash_parsed = self._is_slash_command(user_message)
-        if slash_parsed:
-            slash_cmd, slash_params = slash_parsed
-
-            # Pre-check: Agent Skill + natural language → let normal agent loop handle it
-            # so the LLM has tool access and can call the skill's script for real data.
-            _should_fallthrough = False
-            if slash_params:
-                _sr = tools.get("skill_runner")
-                if _sr:
-                    _sr._refresh_cache()
-                    _si = _sr._find_skill(slash_cmd)
-                    if _si:
-                        _ip = _si.get("install_path", "")
-                        _smd = os.path.join(_ip, "SKILL.md") if _ip else ""
-                        if os.path.isfile(_smd):
-                            # It's an Agent Skill — check if input is CLI or NL
-                            import shlex as _sh
-                            try:
-                                _toks = _sh.split(slash_params)
-                            except ValueError:
-                                _toks = []
-                            if _toks:
-                                from skills.parser import parse_skill_md as _psm
-                                _p = _psm(_smd)
-                                _body_text = _p.get("body", "") if _p else ""
-                                _is_cli = False
-                                for _ln in _body_text.splitlines():
-                                    _s = _ln.strip().lstrip("-").strip("`").strip()
-                                    if _s and _toks[0] in _s and _s.startswith(_toks[0]):
-                                        _is_cli = True
-                                        break
-                                if not _is_cli:
-                                    _should_fallthrough = True
-
-            if not _should_fallthrough:
-                async for event in self._execute_slash_command(
-                    task_id, slash_cmd, slash_params, tools, settings,
-                    skill_registry=skill_registry,
-                    workspace_path=workspace_path, venv_path=venv_path,
-                ):
-                    yield event
-                return
-            # else: fall through to normal agent loop below
+        # ── Slash command routing: installed skills → agent loop ──
+        slash_parsed, _slash_direct = self._slash_routing(user_message, tools)
+        if slash_parsed and _slash_direct:
+            async for event in self._execute_slash_command(task_id, slash_parsed[0], tools):
+                yield event
+            return
+        # else: fall through to the normal agent loop below — an installed
+        # Agent Skill (any params form) or a plain message
 
         # Build message history
         history = self.db.get_task_messages(task_id)
@@ -1108,22 +1062,33 @@ class TaskAgent:
             recent_errors_saved = None
 
         # ── Slash command fallthrough hint ──
-        # When an Agent Skill is invoked via /skill-name with natural language,
-        # guide the LLM to call the skill tool instead of answering directly.
-        if slash_parsed and _should_fallthrough:
+        # An installed Agent Skill invoked via /skill-name is handled by the
+        # normal agent loop: guide the LLM to call the skill tool instead of
+        # answering directly, with the skill's SKILL.md instructions attached
+        # so the first tool call already carries correct CLI args.
+        if slash_parsed and not _slash_direct:
             _fc, _p = slash_parsed
-            _hint = (
-                f"[系统提示] 用户通过 `/{_fc}` 调用了名为 `{_fc}` 的 Skill。\n"
-                f"你 **必须** 使用工具来执行此 Skill，不要自己直接回答。\n\n"
-                f"可用工具（任选其一）：\n"
-                f"1. **优先**: 调用 `{_fc}` 函数（将自然语言翻译为 CLI 参数传入 `command` 字段）\n"
-                f"2. **备选**: 调用 `skill_runner` 工具，参数 skill=\"{_fc}\", input={{\"command\": \"CLI参数\"}}\n\n"
-                f"示例：用户说「统计字数 Hello」→ command=\"wordcount --text Hello\"\n"
-                f"用户的完整输入: `{_p}`\n"
-                f"请参考 `{_fc}` 的使用指南构造正确的 CLI 参数。"
+            _guide = ""
+            _refs_note = ""
+            _adapter = skill_registry.get(_fc)
+            if _adapter is not None:
+                _guide = getattr(_adapter, "usage_instructions", "") or ""
+                _note_fn = getattr(_adapter, "reference_note", None)
+                if callable(_note_fn):
+                    _refs_note = _note_fn() or ""
+                # The hint below already carries the guide — suppress the
+                # duplicate copy that would attach to the first tool result
+                _mark = getattr(_adapter, "mark_guide_sent", None)
+                if callable(_mark):
+                    _mark()
+            messages.append({
+                "role": "user",
+                "content": self._build_slash_hint(_fc, _p, _guide, _refs_note),
+            })
+            logger.info(
+                "Injected slash fallthrough hint for skill '%s' (guide=%d chars)",
+                _fc, len(_guide),
             )
-            messages.append({"role": "user", "content": _hint})
-            logger.info("Injected slash fallthrough hint for skill '%s'", _fc)
 
         # ── Phase 1: Planner (if configured) ──
         # Skip planner when resuming from saved state (user_message is empty/irrelevant)
@@ -1520,15 +1485,20 @@ class TaskAgent:
                         "command": command,
                         "task_id": task_id,
                     }}
+                    timed_out = False
                     try:
-                        await asyncio.wait_for(confirm_event.wait(), timeout=30)
+                        await asyncio.wait_for(confirm_event.wait(), timeout=SHELL_CONFIRM_TIMEOUT)
                     except asyncio.TimeoutExpired:
-                        pass
+                        timed_out = True
                     pending = self._pending_confirms.pop(task_id, {})
                     if not pending.get("confirmed"):
+                        if timed_out:
+                            # Nobody answered in time: dismiss the stale dialog;
+                            # the skip itself is traced via the action's observation
+                            yield {"type": "confirm_expired", "data": {"kind": "shell", "task_id": task_id}}
                         result_str = json.dumps({
                             "exit_code": -1, "stdout": "",
-                            "stderr": "用户拒绝了此 shell 命令的执行。",
+                            "stderr": "确认超时，已跳过此 shell 命令的执行。" if timed_out else "用户拒绝了此 shell 命令的执行。",
                             "error_type": "UserDenied",
                         }, ensure_ascii=False)
 
@@ -1551,14 +1521,18 @@ class TaskAgent:
                             "skill_name": _skill_name,
                             "task_id": task_id,
                         }}
+                        _timed_out = False
                         try:
-                            await asyncio.wait_for(_confirm_event.wait(), timeout=60)
+                            await asyncio.wait_for(_confirm_event.wait(), timeout=SKILL_CONFIRM_TIMEOUT)
                         except asyncio.TimeoutExpired:
-                            pass
+                            _timed_out = True
                         _pending = self._pending_skill_confirms.pop(task_id, {})
                         if not _pending.get("confirmed"):
+                            if _timed_out:
+                                yield {"type": "confirm_expired", "data": {"kind": "skill", "task_id": task_id}}
                             result_str = json.dumps({
-                                "error": f"用户未确认 Skill '{_skill_name}' 的执行权限",
+                                "error": (f"确认超时，已跳过 Skill '{_skill_name}' 的执行" if _timed_out
+                                          else f"用户未确认 Skill '{_skill_name}' 的执行权限"),
                                 "error_type": "UserDenied",
                             }, ensure_ascii=False)
 
@@ -1580,15 +1554,18 @@ class TaskAgent:
                         "command": f"git commit {_commit_msg}",
                         "task_id": task_id,
                     }}
+                    _commit_timed_out = False
                     try:
-                        await asyncio.wait_for(_confirm_event.wait(), timeout=30)
+                        await asyncio.wait_for(_confirm_event.wait(), timeout=SHELL_CONFIRM_TIMEOUT)
                     except asyncio.TimeoutExpired:
-                        pass
+                        _commit_timed_out = True
                     _pending = self._pending_confirms.pop(task_id, {})
                     if not _pending.get("confirmed"):
+                        if _commit_timed_out:
+                            yield {"type": "confirm_expired", "data": {"kind": "shell", "task_id": task_id}}
                         result_str = json.dumps({
                             "exit_code": -1, "stdout": "",
-                            "stderr": "用户拒绝了此 git commit 操作。",
+                            "stderr": "确认超时，已跳过此 git commit 操作。" if _commit_timed_out else "用户拒绝了此 git commit 操作。",
                             "error_type": "UserDenied",
                         }, ensure_ascii=False)
 
@@ -1630,21 +1607,59 @@ class TaskAgent:
                     # Check if it's an external skill registered in skill_registry
                     skill = skill_registry.get(tool_name)
                     if skill:
+                        # ── First-use confirmation for external skills (1.1 §7.2) ──
+                        # Checked via skill_runner's live DB cache (not the
+                        # adapter's startup snapshot) so settings-page
+                        # confirmation takes effect within the running task.
+                        if result_str is None:
+                            _sr_chk = tools.get("skill_runner")
+                            _needs_confirm = False
+                            if _sr_chk:
+                                _sr_chk._refresh_cache()
+                                _si_chk = _sr_chk._find_skill(tool_name)
+                                _needs_confirm = bool(_si_chk and _si_chk.get("needs_confirm"))
+                            if _needs_confirm:
+                                _skill_event = asyncio.Event()
+                                self._pending_skill_confirms[task_id] = {
+                                    "skill_name": tool_name,
+                                    "confirmed": False,
+                                    "event": _skill_event,
+                                }
+                                # Yield confirm event so the dialog appears
+                                yield {"type": "confirm_skill", "data": {
+                                    "skill_name": tool_name,
+                                    "task_id": task_id,
+                                }}
+                                _skill_timed_out = False
+                                try:
+                                    await asyncio.wait_for(_skill_event.wait(), timeout=SKILL_CONFIRM_TIMEOUT)
+                                except asyncio.TimeoutExpired:
+                                    _skill_timed_out = True
+                                _pending = self._pending_skill_confirms.pop(task_id, {})
+                                if not _pending.get("confirmed"):
+                                    if _skill_timed_out:
+                                        yield {"type": "confirm_expired", "data": {"kind": "skill", "task_id": task_id}}
+                                    result_str = json.dumps({
+                                        "error": (f"确认超时，已跳过 Skill '{tool_name}' 的执行" if _skill_timed_out
+                                                  else f"用户未确认 Skill '{tool_name}' 的执行权限"),
+                                        "error_type": "UserDenied",
+                                    }, ensure_ascii=False)
                         # External skill execution via SkillRegistry
-                        try:
-                            _venv_py = ""
-                            if venv_path:
-                                _venv_py = get_venv_python(venv_path)
-                            context = SkillContext(
-                                workspace_path=workspace_path,
-                                venv_python=_venv_py,
-                                task_id=task_id,
-                                settings=settings,
-                                cancel_event=cancel_event,
-                            )
-                            result_str = await skill_registry.execute(tool_name, tool_params, context)
-                        except Exception as e:
-                            result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
+                        if result_str is None:
+                            try:
+                                _venv_py = ""
+                                if venv_path:
+                                    _venv_py = get_venv_python(venv_path)
+                                context = SkillContext(
+                                    workspace_path=workspace_path,
+                                    venv_python=_venv_py,
+                                    task_id=task_id,
+                                    settings=settings,
+                                    cancel_event=cancel_event,
+                                )
+                                result_str = await skill_registry.execute(tool_name, tool_params, context)
+                            except Exception as e:
+                                result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
                     else:
                         result_str = f"未知工具: {tool_name}"
 

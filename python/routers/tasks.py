@@ -259,11 +259,15 @@ async def confirm_shell(task_id: str, body: dict):
 
 @router.post("/tasks/{task_id}/confirm-skill")
 async def confirm_skill(task_id: str, body: dict):
-    """Respond to a pending skill execution confirmation."""
+    """Respond to a pending skill execution confirmation.
+
+    found=False means the confirmation already timed out server-side; the
+    frontend surfaces this instead of silently swallowing the click (1.1 §7.2).
+    """
     confirmed = body.get("confirmed", False)
     logger.info("Skill confirm: task=%s, confirmed=%s", task_id, confirmed)
-    deps.task_agent.respond_skill_confirm(task_id, confirmed)
-    return {"ok": True}
+    found = deps.task_agent.respond_skill_confirm(task_id, confirmed)
+    return {"ok": True, "found": found}
 
 
 @router.get("/tasks/{task_id}/files")

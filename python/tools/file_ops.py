@@ -113,6 +113,18 @@ class FileOpsTool(BaseTool):
         self.workspace_dir = workspace_dir
         self.max_workspace_bytes: int = 0  # 0 = unlimited
         self._cached_size: int = -1  # -1 = not yet calculated
+        # Read-only roots outside the workspace (installed Agent Skill
+        # directories): readable via read/list only — the Agent Skills L3
+        # progressive-disclosure path (references/) needs them.
+        self._readonly_roots: list[str] = []
+
+    def add_readonly_root(self, path: str):
+        """Allow read-only access (read/list) to a directory outside the workspace.
+
+        Write-style actions never resolve against these roots.
+        """
+        if path and path not in self._readonly_roots:
+            self._readonly_roots.append(path)
 
     def set_workspace(self, workspace_dir: str):
         self.workspace_dir = workspace_dir
@@ -193,16 +205,30 @@ class FileOpsTool(BaseTool):
             )
         return None
 
-    def _resolve_path(self, rel_path: str) -> Path | None:
-        """Resolve a relative path within workspace, preventing directory traversal."""
-        if not self.workspace_dir:
-            return None
-        workspace = Path(self.workspace_dir).resolve()
-        target = (workspace / rel_path).resolve()
-        # Ensure the resolved path is within workspace (os.sep prevents prefix bypass)
-        if target != workspace and not str(target).startswith(str(workspace) + os.sep):
-            return None
-        return target
+    def _resolve_path(self, rel_path: str, readonly: bool = False) -> Path | None:
+        """Resolve a path within workspace (or read-only roots), preventing traversal.
+
+        With ``readonly=True`` (read/list actions only), paths inside
+        registered read-only roots — installed Agent Skill directories —
+        also resolve, enabling on-demand access to references/ (L3).
+        Write-style actions must keep ``readonly=False``.
+        """
+        candidates: list[tuple[Path, Path]] = []
+        if self.workspace_dir:
+            workspace = Path(self.workspace_dir).resolve()
+            candidates.append((workspace, (workspace / rel_path).resolve()))
+        if readonly:
+            for root in self._readonly_roots:
+                base = Path(root).resolve()
+                # An absolute rel_path replaces the base (pathlib semantics),
+                # which is exactly what we want for skill reference paths.
+                candidates.append((base, (base / rel_path).resolve()))
+        for base, target in candidates:
+            # Ensure the resolved path is within its base (os.sep prevents prefix bypass)
+            if target != base and not str(target).startswith(str(base) + os.sep):
+                continue
+            return target
+        return None
 
     @staticmethod
     def _fuzzy_replace(file_text: str, old: str, new: str) -> tuple[str, str | None, int]:
@@ -543,6 +569,10 @@ class FileOpsTool(BaseTool):
             return await self._batch_edit(edits)
 
         target = self._resolve_path(path)
+        if target is None and action in ("read", "list"):
+            # Read-only actions may also reach registered roots outside the
+            # workspace sandbox (Agent Skill references/, 1.1 §4.4)
+            target = self._resolve_path(path, readonly=True)
         if target is None:
             return json.dumps({"error": "路径无效或超出工作区范围"}, ensure_ascii=False)
 
