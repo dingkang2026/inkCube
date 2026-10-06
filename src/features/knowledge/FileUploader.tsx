@@ -1,5 +1,5 @@
 /** src/features/knowledge/FileUploader.tsx */
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -42,8 +42,6 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [confirmingFileId, setConfirmingFileId] = useState<string | null>(null)
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [menuOpenFileId, setMenuOpenFileId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -59,16 +57,8 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
   }, [menuOpenFileId])
 
   const handleDelete = async (fileId: string) => {
-    if (confirmingFileId === fileId) {
-      // Second click — confirmed
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
-      setConfirmingFileId(null)
-    } else {
-      // First click — show confirmation
-      setConfirmingFileId(fileId)
-      confirmTimerRef.current = setTimeout(() => setConfirmingFileId(null), 3000)
-      return
-    }
+    setMenuOpenFileId(null)
+    if (!(await confirmDialog({ title: t('knowledge.deleteFile'), message: t('common.confirmDelete') }))) return
     try {
       await window.electronAPI.invoke(ipc.deleteFile, { projectId, fileId })
       onRefresh()
@@ -76,11 +66,6 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
     } catch (err) {
       console.error('Delete failed:', err)
     }
-  }
-
-  const cancelDelete = () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
-    setConfirmingFileId(null)
   }
 
   const handleRetry = async (fileId: string) => {
@@ -215,33 +200,19 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
               </div>
               <span className={`${s.statusDot} ${statusClass}`} title={getStatusLabel(file.status, t)} />
               <div className={s.menuBtnWrap} onClick={(e) => e.stopPropagation()}>
-                {confirmingFileId === file.id ? (
-                  <div className={s.inlineConfirm}>
-                    <span>{t('conversation.confirmDelete')}</span>
-                    <button className={s.confirmCancelBtn} onClick={(e) => { e.stopPropagation(); cancelDelete() }}>
-                      {t('conversation.cancel')}
+                <button className={s.menuBtn} onClick={(e) => { e.stopPropagation(); setMenuOpenFileId(menuOpenFileId === file.id ? null : file.id) }}><MoreVertical size={15} /></button>
+                <div className={`${s.dropdownMenu} ${menuOpenFileId === file.id ? s.dropdownMenuOpen : ''}`}>
+                  {file.status === 'error' && (
+                    <button className={s.menuItem} onClick={(e) => { e.stopPropagation(); handleRetry(file.id) }}>
+                      <RefreshCw size={13} />
+                      {t('knowledge.retry')}
                     </button>
-                    <button className={s.confirmDeleteBtn} onClick={(e) => { e.stopPropagation(); handleDelete(file.id) }}>
-                      {t('conversation.delete')}
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <button className={s.menuBtn} onClick={(e) => { e.stopPropagation(); setMenuOpenFileId(menuOpenFileId === file.id ? null : file.id) }}><MoreVertical size={15} /></button>
-                    <div className={`${s.dropdownMenu} ${menuOpenFileId === file.id ? s.dropdownMenuOpen : ''}`}>
-                      {file.status === 'error' && (
-                        <button className={s.menuItem} onClick={(e) => { e.stopPropagation(); handleRetry(file.id) }}>
-                          <RefreshCw size={13} />
-                          {t('knowledge.retry')}
-                        </button>
-                      )}
-                      <button className={`${s.menuItem} ${s.menuItemDanger}`} onClick={(e) => { e.stopPropagation(); handleDelete(file.id) }}>
-                        <Trash2 size={13} />
-                        {t('knowledge.deleteFile')}
-                      </button>
-                    </div>
-                  </>
-                )}
+                  )}
+                  <button className={`${s.menuItem} ${s.menuItemDanger}`} onClick={(e) => { e.stopPropagation(); handleDelete(file.id) }}>
+                    <Trash2 size={13} />
+                    {t('knowledge.deleteFile')}
+                  </button>
+                </div>
               </div>
             </div>
             )

@@ -64,6 +64,8 @@ vi.mock('../src/features/task/useTasks', () => ({
     activeTaskId: null,
     setActiveTaskId: vi.fn(),
     loadTasks: vi.fn(),
+    loadMore: vi.fn(),
+    hasMore: { active: false, archived: false },
     loading: false,
     creating: false,
     handleCreateTask: vi.fn(),
@@ -84,7 +86,7 @@ vi.mock('../src/features/task/useTaskChat', () => ({
     pendingShellConfirm: null, pendingSkillConfirm: null,
     handleSendMessage: vi.fn(), handleStopGenerate: vi.fn(), handlePauseTask: vi.fn(),
     handleShellConfirm: vi.fn(), handleSkillConfirm: vi.fn(), handleResumeTask: vi.fn(),
-    canResume: false, resetGeneratingState: vi.fn(),
+    canResume: false, resetGeneratingState: vi.fn(), loadMessages: vi.fn(),
   }),
 }))
 vi.mock('../src/features/settings/useSettings', () => ({

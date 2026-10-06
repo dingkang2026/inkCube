@@ -23,6 +23,8 @@ interface TaskListProps {
   archivedCount: number
   canCreateTask?: boolean
   runningTaskIds?: Set<string>
+  hasMore?: boolean
+  onLoadMore?: () => void
 }
 
 export function TaskList({
@@ -43,6 +45,8 @@ export function TaskList({
   archivedCount,
   canCreateTask = true,
   runningTaskIds,
+  hasMore,
+  onLoadMore,
 }: TaskListProps) {
   const { t } = useTranslation()
 
@@ -94,20 +98,27 @@ export function TaskList({
           {activeTab === 'archived' ? t('task.archivedEmpty') : t('task.empty')}
         </div>
       ) : (
-        tasks.map((task) => (
-          <TaskItem
-            key={task.id}
-            task={task}
-            isActive={task.id === activeTaskId}
-            isRunning={runningTaskIds?.has(task.id) ?? false}
-            onSelect={() => onSelect(task.id)}
-            onDelete={() => onDelete(task.id)}
-            onRename={(title) => onRename(task.id, title)}
-            onArchive={onArchive ? () => onArchive(task.id) : undefined}
-            onUnarchive={onUnarchive ? () => onUnarchive(task.id) : undefined}
-            onExport={onExport ? () => onExport(task.id) : undefined}
-          />
-        ))
+        <>
+          {tasks.map((task) => (
+            <TaskItem
+              key={task.id}
+              task={task}
+              isActive={task.id === activeTaskId}
+              isRunning={runningTaskIds?.has(task.id) ?? false}
+              onSelect={() => onSelect(task.id)}
+              onDelete={() => onDelete(task.id)}
+              onRename={(title) => onRename(task.id, title)}
+              onArchive={onArchive ? () => onArchive(task.id) : undefined}
+              onUnarchive={onUnarchive ? () => onUnarchive(task.id) : undefined}
+              onExport={onExport ? () => onExport(task.id) : undefined}
+            />
+          ))}
+          {hasMore && onLoadMore && (
+            <button className={styles.loadMoreBtn} onClick={onLoadMore}>
+              {t('task.loadMore')}
+            </button>
+          )}
+        </>
       )}
     </div>
   )

@@ -179,7 +179,7 @@ class TestWorkspaceZipExclusions:
         (ws / "docs").mkdir()
         (ws / "docs" / "readme.md").write_text("hi")
 
-        result = _create_workspace_zip(ws, "t")
+        result = _create_workspace_zip(ws)
         assert not isinstance(result, dict), result  # no error payload
 
         with zipfile.ZipFile(result) as zf:

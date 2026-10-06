@@ -259,54 +259,6 @@
   color: var(--error, #ef4444);
 }
 
-/* ── Inline delete confirmation ── */
-.inlineConfirm {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  background: var(--bg-primary);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-  white-space: nowrap;
-  z-index: 2;
-}
-
-.confirmCancelBtn {
-  padding: 2px 8px;
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-primary);
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.confirmCancelBtn:hover {
-  background: var(--bg-hover);
-}
-
-.confirmDeleteBtn {
-  padding: 2px 8px;
-  font-size: 11px;
-  border: 1px solid var(--error, #dc2626);
-  border-radius: 4px;
-  background: var(--error, #dc2626);
-  color: white;
-  cursor: pointer;
-  transition: opacity 0.12s;
-}
-
-.confirmDeleteBtn:hover {
-  opacity: 0.85;
-}
-
 /* ── Modal overlay ── */
 .overlay {
   position: fixed;

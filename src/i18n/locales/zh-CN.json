@@ -9,7 +9,8 @@
     "loading": "加载中...",
     "close": "关闭",
     "confirm": "确认",
-    "cancel": "取消"
+    "cancel": "取消",
+    "confirmDelete": "确认删除？"
   },
   "menu": {
     "file": "文件",
@@ -170,7 +171,9 @@
       "maxCount": "任务数量上限",
       "maxCountHint": "最多允许创建的任务数量，0 = 不限制，默认 50",
       "autoArchiveDays": "自动归档天数",
-      "autoArchiveDaysHint": "超过指定天数未更新的任务自动归档，0 = 不自动归档，默认 30 天"
+      "autoArchiveDaysHint": "超过指定天数未更新的任务自动归档，0 = 不自动归档，默认 30 天",
+      "shellDomainWhitelist": "Shell 域名白名单",
+      "shellDomainWhitelistHint": "每行一个域名，如 pypi.org、github.com。智能模式下匹配到白名单域名的网络命令将自动放行"
     }
   },
   "knowledge": {
@@ -306,7 +309,12 @@
     "size_all": "全部尺寸",
     "size_small": "小图",
     "size_medium": "中图",
-    "size_large": "大图"
+    "size_large": "大图",
+    "filename": "文件名",
+    "dimensions": "尺寸",
+    "page": "页码",
+    "status": "状态",
+    "description": "描述"
   },
   "about": {
     "tagline": "智能产业洞察与知识平台"
@@ -326,6 +334,7 @@
     "sendBtn": "发送",
     "renameBtn": "重命名",
     "deleteBtn": "删除",
+    "confirmDelete": "确认删除此任务？工作区文件与对话记录将被永久清除。",
     "archiveBtn": "归档",
     "unarchiveBtn": "取消归档",
     "empty": "点击 ＋ 创建第一个任务",
@@ -393,12 +402,16 @@
     "slashHint": "查看命令",
     "slashHelpDesc": "查看可用命令和 Skill",
     "viewExecLog": "查看执行日志",
+    "execLogTitle": "执行日志",
+    "execLogLines": "行",
+    "execLogTruncated": "显示最后 {{shown}} / 共 {{total}} 行",
+    "execLogAutoRefresh": "自动刷新",
+    "execLogEmpty": "暂无执行日志",
+    "loadMore": "加载更多",
     "skillConfirmTitle": "第三方 Skill 需要确认",
     "skillConfirmDesc": "即将执行未确认的 Skill:",
     "skillConfirmAllow": "允许执行",
     "skillConfirmDeny": "拒绝",
-    "shellDomainWhitelist": "Shell 域名白名单",
-    "shellDomainWhitelistHint": "每行一个域名，如 pypi.org、github.com。智能模式下匹配到白名单域名的网络命令将自动放行",
     "externalDeps": "外部依赖",
     "externalDepsDesc": "检测系统已安装的外部工具",
     "depDetected": "已检测到",
@@ -430,6 +443,10 @@
       "git_ops": "Git",
       "lsp_client": "代码分析"
     }
+  },
+  "chat": {
+    "copy": "复制",
+    "copied": "已复制"
   },
   "home": {
     "statusTitle": "服务状态",
@@ -897,7 +914,32 @@
       "searchPlaceholder": "搜索 Wiki 页面...",
       "searchHint": "输入关键词搜索 Wiki 页面",
       "noResults": "未找到相关页面",
-      "graphRelated": "图谱关联"
+      "graphRelated": "图谱关联",
+      "lintView": "Lint 检查",
+      "lintFull": "完整检查",
+      "lintStructural": "结构层",
+      "lintSemantic": "语义层",
+      "lintClean": "未发现任何问题",
+      "oneClickFix": "一键修复",
+      "rescan": "重新扫描",
+      "allTypes": "全部类型",
+      "allSeverities": "全部级别",
+      "archiveToWiki": "保存为 Wiki",
+      "archiveConfirm": "保存",
+      "archiveTitlePlaceholder": "页面标题",
+      "archiveFailed": "保存失败",
+      "archived": "已保存到 Wiki",
+      "reviewBadge": "待审阅",
+      "reviewWaitingNav": "知识库等待审阅",
+      "waitingReview": "编译等待审阅",
+      "compileResumed": "上次编译被中断，已从第 {{fileNum}} 个文件恢复继续",
+      "compileDoneWithErrors": "编译完成: {{success}} 成功, {{errors}} 失败",
+      "viewDetails": "查看详情",
+      "supervisedCompletedWithErrors": "编译完成: {{success}} 成功, {{errors}} 失败",
+      "supervisedErrors": "个失败",
+      "supervisedProcessing": "正在处理第一个文件...",
+      "supervisedProgressCalculating": "正在计算任务规模...",
+      "supervisedSkippedCount": "个跳过"
     },
     "forms": {
       "newForm": "新建表格",
@@ -914,6 +956,7 @@
       "confirmExport": "确认导出",
       "exportSuccess": "{{name}} 已导出"
     },
+    "advanceStage": "进入下一阶段",
     "stageUpdateFailed": "阶段更新失败",
     "typeUpdateFailed": "类型更新失败",
     "chat": {

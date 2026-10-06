@@ -1,7 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { Task } from '../../types'
 
 export type TaskTab = 'active' | 'archived'
+
+/** 「加载更多」分页步长（后端 list_tasks 同款 limit+1 探测 has_more） */
+const PAGE_SIZE = 50
 
 export function useTasks(defaultTaskTitle = 'New Task') {
   const [tasks, setTasks] = useState<Task[]>([])
@@ -10,20 +13,39 @@ export function useTasks(defaultTaskTitle = 'New Task') {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  // 每个 tab 独立分页：ref 保存当前已加载量——刷新按原量重拉（外部持久化闭包如
+  // useTaskChat 的 loadTasks 回调也读到最新值，不会退回第一页）
+  const limitsRef = useRef<Record<TaskTab, number>>({ active: PAGE_SIZE, archived: PAGE_SIZE })
+  const [hasMore, setHasMore] = useState<Record<TaskTab, boolean>>({ active: false, archived: false })
+
+  const fetchPage = useCallback(async (tab: TaskTab, limit: number) => {
+    const res = await window.electronAPI.invoke('tasks:listFiltered', { status: tab, limit }) as {
+      tasks?: Task[]
+      has_more?: boolean
+    }
+    const list = res?.tasks ?? []
+    if (tab === 'active') setTasks(list)
+    else setArchivedTasks(list)
+    setHasMore((prev) => ({ ...prev, [tab]: !!res?.has_more }))
+  }, [])
 
   const loadTasks = useCallback(async () => {
     setLoading(true)
     try {
-      const [activeRes, archivedRes] = await Promise.all([
-        window.electronAPI.invoke('tasks:listFiltered', { status: 'active' }),
-        window.electronAPI.invoke('tasks:listFiltered', { status: 'archived' }),
+      await Promise.all([
+        fetchPage('active', limitsRef.current.active),
+        fetchPage('archived', limitsRef.current.archived),
       ])
-      setTasks(activeRes as Task[])
-      setArchivedTasks(archivedRes as Task[])
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [fetchPage])
+
+  const loadMore = useCallback(async (tab: TaskTab) => {
+    const next = limitsRef.current[tab] + PAGE_SIZE
+    limitsRef.current = { ...limitsRef.current, [tab]: next }
+    await fetchPage(tab, next)
+  }, [fetchPage])
 
   useEffect(() => {
     loadTasks()
@@ -161,6 +183,8 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     activeTaskId,
     setActiveTaskId,
     loadTasks,
+    loadMore,
+    hasMore,
     loading,
     creating,
     handleCreateTask,

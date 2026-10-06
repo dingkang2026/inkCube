@@ -18,8 +18,13 @@ router = APIRouter()
 
 
 @router.get("/tasks")
-async def list_tasks(status: str | None = Query(None, description="Filter: active, archived, or None for all")):
-    return deps.db.list_tasks(status=status)
+async def list_tasks(
+    status: str | None = Query(None, description="Filter: active, archived, or None for all"),
+    limit: int = Query(0, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
+    tasks, has_more = deps.db.list_tasks(status=status, limit=limit, offset=offset)
+    return {"tasks": tasks, "has_more": has_more}
 
 
 @router.post("/tasks")
@@ -31,7 +36,7 @@ async def create_task(req: TaskCreateRequest):
     settings = deps.db.get_settings()
     max_count = settings.get("task_max_count", 50)
     if max_count > 0:
-        all_tasks = deps.db.list_tasks()
+        all_tasks = deps.db.list_tasks()[0]
         active_count = sum(1 for t in all_tasks if t.get("status") != "deleted")
         if active_count >= max_count:
             logger.warning("Task creation blocked: quota reached (%d/%d)", active_count, max_count)
@@ -120,6 +125,13 @@ async def set_task_mode(task_id: str, body: dict):
 @router.post("/tasks/{task_id}/archive")
 async def archive_task(task_id: str):
     """Archive a task (hide from active list, keep data)."""
+    # 纵深防御：前端已隐藏运行中任务的归档入口，此处拦截保证 API 层规则一致
+    if deps.task_agent.is_task_running(task_id):
+        logger.warning("Archive blocked: task %s is running", task_id)
+        return JSONResponse(
+            status_code=409,
+            content={"error": "任务正在执行中，请先停止再归档", "code": "TASK_RUNNING"},
+        )
     ok = deps.db.archive_task(task_id)
     if not ok:
         return {"error": "任务不存在或已删除"}
@@ -146,17 +158,15 @@ async def export_task(task_id: str):
         return {"error": "工作区目录不存在"}
 
     loop = asyncio.get_event_loop()
-    zip_buffer = await loop.run_in_executor(None, _create_workspace_zip, workspace, task["title"])
+    zip_buffer = await loop.run_in_executor(None, _create_workspace_zip, workspace)
     if isinstance(zip_buffer, dict):
         return zip_buffer  # error response
 
-    safe_name = task["title"].replace("/", "_").replace("\\", "_")[:50]
-    filename = f"{safe_name}_{task_id[:8]}.zip"
-
+    # 文件名由 Electron 保存对话框决定（tasks:export 用 task.title 拼 defaultPath），
+    # 响应不携带 Content-Disposition：HTTP header 仅允许 latin-1，中文标题会直接 500
     return Response(
         content=zip_buffer.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -418,7 +428,7 @@ def _build_file_tree(root: Path, current: Path, max_depth: int, _depth: int = 0)
     return entries
 
 
-def _create_workspace_zip(workspace: Path, title: str):
+def _create_workspace_zip(workspace: Path):
     """Create a zip of the workspace directory. Returns io.BytesIO or error dict."""
     MAX_ZIP_SIZE = 200 * 1024 * 1024  # 200MB
     buf = io.BytesIO()

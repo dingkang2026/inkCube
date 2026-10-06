@@ -813,9 +813,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('tasks:listFiltered', async (_event, { status }) => {
-    const params = status ? `?status=${encodeURIComponent(status)}` : ''
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks${params}`)
+  ipcMain.handle('tasks:listFiltered', async (_event, { status, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (status) params.set('status', status)
+    if (limit) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 

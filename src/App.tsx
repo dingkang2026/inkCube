@@ -39,7 +39,8 @@ export default function App() {
   // ── Task state ──
   const {
     tasks, archivedTasks, currentTasks, activeTab, setActiveTab,
-    activeTaskId, setActiveTaskId, loadTasks, loading: tasksLoading,
+    activeTaskId, setActiveTaskId, loadTasks, loadMore: loadMoreTasks,
+    hasMore: tasksHasMore, loading: tasksLoading,
     creating: taskCreating,
     handleCreateTask, handleCreateTaskWithDir, handleDeleteTask, handleRenameTask,
     handleArchiveTask, handleUnarchiveTask, handleExportTask, handleSetTaskMode,
@@ -65,6 +66,7 @@ export default function App() {
     handleResumeTask: handleTaskResume,
     canResume: taskCanResume,
     resetGeneratingState: resetTaskGeneratingState,
+    loadMessages: loadTaskMessages,
   } = useTaskChat(activeTaskId, useCallback(() => loadTasks(), []))
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -433,6 +435,8 @@ export default function App() {
                     archivedCount={archivedTasks.length}
                     canCreateTask={canStartTask}
                     runningTaskIds={runningTaskIds}
+                    hasMore={activeTab === 'active' ? tasksHasMore.active : tasksHasMore.archived}
+                    onLoadMore={() => loadMoreTasks(activeTab)}
                   />
                 )}
               </Sidebar>
@@ -502,7 +506,11 @@ export default function App() {
               onSkillConfirm={handleTaskSkillConfirm}
               onResumeTask={handleTaskResume}
               canResume={taskCanResume}
-              onFilesUploaded={() => loadTasks()}
+              onFilesUploaded={() => {
+                loadTasks()
+                // 上传成功后立即刷新消息列表：后端写入的「[系统] 用户上传了文件」马上可见
+                if (activeTaskId) loadTaskMessages(activeTaskId)
+              }}
               onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
             />
           ) : (

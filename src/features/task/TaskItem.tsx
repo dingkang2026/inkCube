@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MoreVertical } from 'lucide-react'
 import type { Task } from '../../types'
-import { useConfirmDelete } from '../../hooks/useConfirmDelete'
+import { useConfirm } from '../../components/ConfirmDialog'
 import s from './TaskItem.module.css'
 
 interface TaskItemProps {
@@ -33,7 +33,7 @@ export function TaskItem({
   const [editTitle, setEditTitle] = useState(task.title)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
-  const { confirming, requestDelete, cancel } = useConfirmDelete()
+  const confirmDialog = useConfirm()
 
   useEffect(() => {
     if (!menuOpen) return
@@ -53,23 +53,23 @@ export function TaskItem({
     setIsEditing(false)
   }
 
-  const handleDelete = () => {
-    if (requestDelete()) {
-      onDelete()
-    }
+  const handleDelete = async () => {
+    setMenuOpen(false)
+    if (!(await confirmDialog({ title: t('task.deleteBtn'), message: t('task.confirmDelete') }))) return
+    onDelete()
   }
 
-  const time = new Date(task.updated_at).toLocaleTimeString(i18n.language, {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  // 智能日期：今天 HH:mm / 今年 MM-DD / 跨年 YYYY-MM-DD（hover 显示完整时间）
+  const updated = new Date(task.updated_at)
+  const now = new Date()
+  const time = updated.toDateString() === now.toDateString()
+    ? updated.toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })
+    : updated.getFullYear() === now.getFullYear()
+      ? updated.toLocaleDateString(i18n.language, { month: '2-digit', day: '2-digit' })
+      : updated.toLocaleDateString(i18n.language, { year: 'numeric', month: '2-digit', day: '2-digit' })
+  const fullTime = updated.toLocaleString(i18n.language)
 
   const isArchived = task.status === 'archived'
-
-  // Extract last 2 path segments for workspace display
-  const workspaceName = task.workspace_path
-    ? task.workspace_path.split(/[\\/]/).filter(Boolean).slice(-2).join('/')
-    : ''
 
   return (
     <div
@@ -100,51 +100,40 @@ export function TaskItem({
               )}
             </div>
             <div className={s.meta}>
-              {t('task.messages', { count: task.message_count ?? 0 })} · {time}
-              {workspaceName && <span> · {workspaceName}</span>}
+              {t('task.messages', { count: task.message_count ?? 0 })} · <span title={fullTime}>{time}</span>
             </div>
           </>
         )}
       </div>
       {!isEditing && (
-        confirming ? (
-          <div className={s.inlineConfirm} onClick={(e) => e.stopPropagation()}>
-            <span>{t('conversation.confirmDelete')}</span>
-            <button className={s.confirmCancelBtn} onClick={(e) => { e.stopPropagation(); cancel() }}>
-              {t('conversation.cancel')}
-            </button>
-            <button className={s.confirmDeleteBtn} onClick={(e) => { e.stopPropagation(); handleDelete() }}>
-              {t('conversation.delete')}
-            </button>
-          </div>
-        ) : (
-          <div className={s.menuBtnWrap} onClick={(e) => e.stopPropagation()} ref={menuRef}>
-            <button className={s.menuBtn} onClick={() => setMenuOpen(!menuOpen)}><MoreVertical size={15} /></button>
-            <div className={`${s.dropdownMenu} ${menuOpen ? s.dropdownMenuOpen : ''}`}>
-              {onExport && (
-                <button className={s.menuItem} onClick={onExport}>
-                  {t('task.export')}
-                </button>
-              )}
-              {!isArchived && onArchive && (
-                <button className={s.menuItem} onClick={onArchive}>
-                  {t('task.archive')}
-                </button>
-              )}
-              {isArchived && onUnarchive && (
-                <button className={s.menuItem} onClick={onUnarchive}>
-                  {t('task.unarchive')}
-                </button>
-              )}
-              <button className={s.menuItem} onClick={() => setIsEditing(true)}>
-                {t('task.renameBtn')}
+        <div className={s.menuBtnWrap} onClick={(e) => e.stopPropagation()} ref={menuRef}>
+          <button className={s.menuBtn} onClick={() => setMenuOpen(!menuOpen)}><MoreVertical size={15} /></button>
+          <div className={`${s.dropdownMenu} ${menuOpen ? s.dropdownMenuOpen : ''}`}>
+            {onExport && (
+              <button className={s.menuItem} onClick={onExport}>
+                {t('task.export')}
               </button>
+            )}
+            {!isArchived && onArchive && !isRunning && (
+              <button className={s.menuItem} onClick={onArchive}>
+                {t('task.archive')}
+              </button>
+            )}
+            {isArchived && onUnarchive && (
+              <button className={s.menuItem} onClick={onUnarchive}>
+                {t('task.unarchive')}
+              </button>
+            )}
+            <button className={s.menuItem} onClick={() => setIsEditing(true)}>
+              {t('task.renameBtn')}
+            </button>
+            {isArchived && (
               <button className={`${s.menuItem} ${s.menuItemDanger}`} onClick={handleDelete}>
                 {t('task.deleteBtn')}
               </button>
-            </div>
+            )}
           </div>
-        )
+        </div>
       )}
     </div>
   )

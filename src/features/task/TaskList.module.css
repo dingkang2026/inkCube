@@ -11,6 +11,27 @@
   font-size: 13px;
 }
 
+/* ── Load more — dashed secondary button, same family as newBtn ── */
+.loadMoreBtn {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 4px 12px 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.loadMoreBtn:hover {
+  background: rgba(37, 99, 235, 0.06);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ── New button — matches ConversationList / ProjectList style ── */
 .newBtnRow {
   display: flex;

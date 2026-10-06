@@ -989,24 +989,34 @@ class Database:
             "updated_at": now,
         }
 
-    def list_tasks(self, status: str | None = None) -> list[dict]:
+    def list_tasks(
+        self, status: str | None = None, limit: int = 0, offset: int = 0,
+    ) -> tuple[list[dict], bool]:
         """List tasks. If status is None, return all non-deleted tasks.
-        If status='active', return only active. If status='archived', return only archived."""
+        If status='active', return only active. If status='archived', return only archived.
+        limit=0 → no pagination (backward compatible); limit>0 → fetch limit+1 rows
+        to detect has_more without a COUNT query. Returns (tasks, has_more)."""
         if status == "archived":
             where = "t.status = 'archived'"
         elif status == "active":
             where = "t.status = 'active'"
         else:
             where = "t.status != 'deleted'"
-        cursor = self.conn.execute(
-            f"""SELECT t.*, COUNT(m.id) as message_count
+        sql = f"""SELECT t.*, COUNT(m.id) as message_count
                FROM tasks t
                LEFT JOIN task_messages m ON t.id = m.task_id
                WHERE {where}
                GROUP BY t.id
                ORDER BY t.updated_at DESC"""
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit + 1, offset])
+        rows = [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+        if limit > 0:
+            has_more = len(rows) > limit
+            return rows[:limit], has_more
+        return rows, False
 
     def get_task(self, task_id: str) -> dict | None:
         cursor = self.conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))

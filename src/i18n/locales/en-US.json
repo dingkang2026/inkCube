@@ -9,7 +9,8 @@
     "loading": "Loading...",
     "close": "Close",
     "confirm": "Confirm",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "confirmDelete": "Delete?"
   },
   "menu": {
     "file": "File",
@@ -170,7 +171,9 @@
       "maxCount": "Max Task Count",
       "maxCountHint": "Maximum number of tasks allowed, 0 = unlimited, default 50",
       "autoArchiveDays": "Auto-archive Days",
-      "autoArchiveDaysHint": "Tasks not updated for N days are auto-archived, 0 = disabled, default 30"
+      "autoArchiveDaysHint": "Tasks not updated for N days are auto-archived, 0 = disabled, default 30",
+      "shellDomainWhitelist": "Shell Domain Whitelist",
+      "shellDomainWhitelistHint": "One domain per line, e.g. pypi.org, github.com. In smart mode, network commands matching whitelisted domains are auto-approved"
     }
   },
   "knowledge": {
@@ -306,7 +309,12 @@
     "size_all": "All Sizes",
     "size_small": "Small",
     "size_medium": "Medium",
-    "size_large": "Large"
+    "size_large": "Large",
+    "filename": "Filename",
+    "dimensions": "Dimensions",
+    "page": "Page",
+    "status": "Status",
+    "description": "Description"
   },
   "about": {
     "tagline": "Intelligent Industry Insights & Knowledge Platform"
@@ -326,6 +334,7 @@
     "sendBtn": "Send",
     "renameBtn": "Rename",
     "deleteBtn": "Delete",
+    "confirmDelete": "Delete this task? Workspace files and chat history will be permanently removed.",
     "archiveBtn": "Archive",
     "unarchiveBtn": "Unarchive",
     "empty": "Click ＋ to create your first task",
@@ -393,12 +402,16 @@
     "slashHint": "view commands",
     "slashHelpDesc": "View available commands and Skills",
     "viewExecLog": "View execution log",
+    "execLogTitle": "Execution Log",
+    "execLogLines": "lines",
+    "execLogTruncated": "Showing last {{shown}} of {{total}} lines",
+    "execLogAutoRefresh": "Auto refresh",
+    "execLogEmpty": "No execution logs yet",
+    "loadMore": "Load more",
     "skillConfirmTitle": "Third-party Skill requires confirmation",
     "skillConfirmDesc": "About to execute unconfirmed Skill:",
     "skillConfirmAllow": "Allow",
     "skillConfirmDeny": "Deny",
-    "shellDomainWhitelist": "Shell Domain Whitelist",
-    "shellDomainWhitelistHint": "One domain per line, e.g. pypi.org, github.com. In smart mode, network commands matching whitelisted domains are auto-approved",
     "externalDeps": "External Dependencies",
     "externalDepsDesc": "Detect installed external tools on your system",
     "depDetected": "Detected",
@@ -430,6 +443,10 @@
       "git_ops": "Git",
       "lsp_client": "Code Analysis"
     }
+  },
+  "chat": {
+    "copy": "Copy",
+    "copied": "Copied"
   },
   "home": {
     "statusTitle": "Service Status",
@@ -897,7 +914,32 @@
       "searchPlaceholder": "Search Wiki pages...",
       "searchHint": "Enter keywords to search Wiki pages",
       "noResults": "No matching pages found",
-      "graphRelated": "Graph related"
+      "graphRelated": "Graph related",
+      "lintView": "Lint Check",
+      "lintFull": "Full check",
+      "lintStructural": "Structural",
+      "lintSemantic": "Semantic",
+      "lintClean": "No issues found",
+      "oneClickFix": "Fix all",
+      "rescan": "Re-scan",
+      "allTypes": "All types",
+      "allSeverities": "All severities",
+      "archiveToWiki": "Save to Wiki",
+      "archiveConfirm": "Save",
+      "archiveTitlePlaceholder": "Page title",
+      "archiveFailed": "Save failed",
+      "archived": "Saved to Wiki",
+      "reviewBadge": "Pending review",
+      "reviewWaitingNav": "Wiki awaiting review",
+      "waitingReview": "Compile awaiting review",
+      "compileResumed": "Last compile was interrupted, resumed from file {{fileNum}}",
+      "compileDoneWithErrors": "Compile finished: {{success}} succeeded, {{errors}} failed",
+      "viewDetails": "View details",
+      "supervisedCompletedWithErrors": "Compile finished: {{success}} succeeded, {{errors}} failed",
+      "supervisedErrors": "failed",
+      "supervisedProcessing": "Processing the first file...",
+      "supervisedProgressCalculating": "Calculating task size...",
+      "supervisedSkippedCount": "skipped"
     },
     "forms": {
       "newForm": "New Form",
@@ -914,6 +956,7 @@
       "confirmExport": "Confirm & Export",
       "exportSuccess": "{{name}} exported"
     },
+    "advanceStage": "Advance to next stage",
     "stageUpdateFailed": "Failed to update stage",
     "typeUpdateFailed": "Failed to update type",
     "chat": {

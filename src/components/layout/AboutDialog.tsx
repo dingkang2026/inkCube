@@ -42,7 +42,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
         <div className={s.content}>
           <div className={s.logoArea}>
             <span className={s.inkChar}>墨</span>
-            <span className={s.appName}>{t('sidebar.logo')}</span>
+            <span className={s.appName}>{t('app.title')}</span>
           </div>
 
           <div className={s.version}>InkCube v{version}</div>

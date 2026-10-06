@@ -35,8 +35,6 @@ export function ProjectList({
   const [newCompanyName, setNewCompanyName] = useState('')
   const [newCreditCode, setNewCreditCode] = useState('')
   const [creating, setCreating] = useState(false)
-  const [confirmingProjectId, setConfirmingProjectId] = useState<string | null>(null)
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
@@ -53,22 +51,10 @@ export function ProjectList({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [menuOpenId])
 
-  const handleDeleteClick = (projectId: string) => {
-    if (confirmingProjectId === projectId) {
-      // Second click — confirmed
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
-      setConfirmingProjectId(null)
-      onDelete(projectId)
-    } else {
-      // First click — show confirmation
-      setConfirmingProjectId(projectId)
-      confirmTimerRef.current = setTimeout(() => setConfirmingProjectId(null), 3000)
-    }
-  }
-
-  const cancelDelete = () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
-    setConfirmingProjectId(null)
+  // 删除确认弹框由 App.handleDeleteProject 统一弹出（全局唯一确认层）
+  const handleDelete = (projectId: string) => {
+    setMenuOpenId(null)
+    onDelete(projectId)
   }
 
   const startRename = (project: Project) => {
@@ -182,29 +168,17 @@ export function ProjectList({
                   </>
                 )}
               </div>
-              {confirmingProjectId === project.id ? (
-                <div className={s.inlineConfirm} onClick={(e) => e.stopPropagation()}>
-                  <span>{t('knowledge.confirmDeleteProject')}</span>
-                  <button className={s.confirmCancelBtn} onClick={(e) => { e.stopPropagation(); cancelDelete() }}>
-                    {t('knowledge.cancel')}
+              <div className={s.menuBtnWrap} onClick={(e) => e.stopPropagation()} ref={menuRef}>
+                <button className={s.menuBtn} onClick={() => setMenuOpenId(menuOpenId === project.id ? null : project.id)}><MoreVertical size={15} /></button>
+                <div className={`${s.dropdownMenu} ${menuOpenId === project.id ? s.dropdownMenuOpen : ''}`}>
+                  <button className={s.menuItem} onClick={() => startRename(project)}>
+                    {t('task.renameBtn')}
                   </button>
-                  <button className={s.confirmDeleteBtn} onClick={(e) => { e.stopPropagation(); handleDeleteClick(project.id) }}>
-                    {t('knowledge.deleteProject')}
+                  <button className={`${s.menuItem} ${s.menuItemDanger}`} onClick={() => handleDelete(project.id)}>
+                    {t('task.deleteBtn')}
                   </button>
                 </div>
-              ) : (
-                <div className={s.menuBtnWrap} onClick={(e) => e.stopPropagation()} ref={menuRef}>
-                  <button className={s.menuBtn} onClick={() => setMenuOpenId(menuOpenId === project.id ? null : project.id)}><MoreVertical size={15} /></button>
-                  <div className={`${s.dropdownMenu} ${menuOpenId === project.id ? s.dropdownMenuOpen : ''}`}>
-                    <button className={s.menuItem} onClick={() => startRename(project)}>
-                      {t('task.renameBtn')}
-                    </button>
-                    <button className={`${s.menuItem} ${s.menuItemDanger}`} onClick={() => handleDeleteClick(project.id)}>
-                      {t('task.deleteBtn')}
-                    </button>
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
             )
           })}

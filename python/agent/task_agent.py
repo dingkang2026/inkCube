@@ -1293,6 +1293,7 @@ class TaskAgent:
         reasoning_parts: list[str] = []
         reasoning_flushed = False  # Track if reasoning has been persisted to DB
         _reasoning_chunks_sent = False  # Track if reasoning_chunk events were yielded (retry needs reset)
+        _content_chunks_sent = False  # Track if answer_chunk events were yielded (retry/error needs reset)
         tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
         finish_reason = "unknown"
 
@@ -1321,6 +1322,11 @@ class TaskAgent:
                 if _reasoning_chunks_sent:
                     yield {"type": "reasoning_reset", "data": {}}
                     _reasoning_chunks_sent = False
+                if _content_chunks_sent:
+                    # Frontend already rendered partial content chunks — reset it
+                    # so the retried stream does not append onto stale text
+                    yield {"type": "answer_reset", "data": {}}
+                    _content_chunks_sent = False
 
             try:
                 async for chunk in task_llm.chat_stream(messages, settings, tools=tool_defs):
@@ -1349,6 +1355,7 @@ class TaskAgent:
                         content_parts.append(delta)
                         # Stream text content to frontend
                         yield {"type": "answer_chunk", "data": {"content": delta}}
+                        _content_chunks_sent = True
                     elif chunk["type"] == "tool_calls":
                         # Streaming complete — tool_calls accumulated
                         for i, tc in enumerate(chunk["tool_calls"]):
@@ -1392,6 +1399,11 @@ class TaskAgent:
             detail = getattr(e, 'detail', '') or str(e)
             error_msg = _llm_error_msg(e)
             logger.error("TaskAgent FC LLM call failed for task %s: %s", task_id, detail)
+            # Drop any partially streamed content so the error renders as a
+            # clean message instead of appending onto stale partial text
+            if _content_chunks_sent:
+                yield {"type": "answer_reset", "data": {}}
+                _content_chunks_sent = False
             self.db.save_task_message(task_id, "assistant", error_msg)
             yield {"type": "answer_chunk", "data": {"content": error_msg}}
             yield {"type": "_fc_done", "data": {"status": "error"}}

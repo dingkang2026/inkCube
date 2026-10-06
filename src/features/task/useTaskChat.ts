@@ -18,16 +18,15 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
   const [streamSteps, setStreamSteps] = useState<StreamStep[]>([])
   const [streamReasoning, setStreamReasoning] = useState('')
   const [streamIteration, setStreamIteration] = useState(0)
+  // 注意：streamXxxRef 是写侧真相（事件处理器同步维护），streamXxx state 仅是渲染投影；
+  // 禁止用 state→ref 回写 effect 同步——高频流式下 effect 闭包里的 state 已过期，
+  // 会把 ref 回滚到旧值，导致中间增量永久丢失（丢字 bug 根因，勿恢复）
   const streamIterationRef = useRef(0)
-  useEffect(() => { streamIterationRef.current = streamIteration }, [streamIteration])
   const streamContentRef = useRef('')
-  useEffect(() => { streamContentRef.current = streamContent }, [streamContent])
   const streamReasoningRef = useRef('')
-  useEffect(() => { streamReasoningRef.current = streamReasoning }, [streamReasoning])
   const streamIterationReasoning = useRef<Map<number, string>>(new Map())
   const streamIterationThoughts = useRef<Map<number, string>>(new Map())
   const streamStepsRef = useRef<StreamStep[]>([])
-  useEffect(() => { streamStepsRef.current = streamSteps }, [streamSteps])
   const handleStreamEventRef = useRef<(type: string, payload: string) => void>(() => {})
   const handleBgStreamEventRef = useRef<(taskId: string, type: string, payload: string) => void>(() => {})
   const [planData, setPlanData] = useState<PlanData | null>(null)
@@ -197,6 +196,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           streamStepsRef.current = steps
           return steps
         })
+      } else if (type === 'answer_reset') {
+        // LLM 瞬时错误重试/失败兜底：清空已渲染的部分内容，后续从头累积（与 reasoning_reset 对称）
+        streamContentRef.current = ''
+        setStreamContent('')
       } else if (type === 'answer_chunk') {
         // 分析/最终回答流式累积；快照职责在 thought / iteration / done 事件
         streamContentRef.current += parsed.content || ''
@@ -275,7 +278,7 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         onDoneRef.current?.()
       }
     } catch {
-      // partial data
+      // partial data — malformed/incomplete payload, skip
     }
   }
   handleStreamEventRef.current = handleStreamEvent
@@ -301,6 +304,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       } else if (type === 'reasoning_reset') {
         if (!bg) return
         bg.reasoning = ''
+      } else if (type === 'answer_reset') {
+        // LLM 瞬时错误重试/失败兜底：清空已累积的部分内容（与 reasoning_reset 对称）
+        if (!bg) return
+        bg.content = ''
       } else if (type === 'thought') {
         if (!bg) return
         if (bg.reasoning.trim()) {
@@ -348,7 +355,7 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         bgStates.current.delete(taskId)
       }
     } catch {
-      // partial data
+      // partial data — malformed/incomplete payload, skip
     }
   }
   handleBgStreamEventRef.current = handleBgStreamEvent
@@ -506,5 +513,6 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     handleResumeTask,
     canResume,
     resetGeneratingState,
+    loadMessages,
   }
 }
