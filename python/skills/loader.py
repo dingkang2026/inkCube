@@ -16,6 +16,21 @@ from skills.context import SkillContext
 from skills.protocol import BaseSkill
 from tools.base import BaseTool
 
+# L2 guide budget (progressive disclosure): SKILL.md body chars attached to
+# the first execution result / slash hint. 8000 chars covers the full body
+# of large workflow skills (e.g. ppt-master ≈ 4.8K chars) without cutting
+# tail sections (Windows python3→python notes, sponsor rules).
+SKILL_GUIDE_MAX_CHARS = 8000
+
+# Conventional CLI entry points. A skill is auto-executed only when it has
+# a discoverable entry: one of these names in scripts/, or exactly one
+# runnable script. Multi-script workflow skills (e.g. ppt-master: 70+
+# utility scripts orchestrated via SKILL.md + workflows/*.md) have no
+# single entry point — alphabetically-first selection would run an
+# arbitrary utility (analyze_images.py), so they fall back to
+# instructions mode and the LLM drives the scripts itself via shell.
+_ENTRY_SCRIPT_NAMES = ("main.py", "cli.py")
+
 
 class BuiltinToolAdapter(BaseSkill):
     """Wraps a ``BaseTool`` instance so it conforms to the ``BaseSkill`` interface.
@@ -67,6 +82,15 @@ class AgentSkillAdapter(BaseSkill):
     surfaced to the LLM, which installs any real dependencies itself via
     shell/pip when the skill's instructions call for them.
 
+    Two execution modes, chosen by the entry-script contract:
+      - CLI mode: scripts/ has a conventional entry (main.py / cli.py) or
+        exactly one runnable script → it is executed with the LLM-translated
+        ``command`` CLI arguments.
+      - Instructions mode: otherwise (no scripts, no venv, or multi-script
+        workflow skill) → the SKILL.md guide is returned and the LLM drives
+        the workflow itself via file_ops/shell (install_path is registered
+        as a file_ops read-only root by TaskAgent).
+
     The function calling definition is generated from the skill's name and
     description.  Since Agent Skills don't have structured parameter schemas,
     the LLM sees a simple tool with a 'command' string parameter containing
@@ -97,20 +121,39 @@ class AgentSkillAdapter(BaseSkill):
         # each run, and tool results don't persist into rebuilt LLM history.
         self._guide_sent = False
 
-        # Agent Skills don't have structured parameter schemas.
-        # We expose a single 'command' parameter holding the CLI arguments
-        # for the skill's script — the description must demand CLI form:
-        # saying "natural language" here misleads the LLM into passing the
-        # raw user text, which argparse then rejects.
+        # Entry-script contract (detect once per adapter; adapters are
+        # re-created per task run / per skill_runner call, so a stale
+        # snapshot is not a concern).
+        scripts_dir = os.path.join(skill_dir, "scripts")
+        self._entry_script = (
+            self._find_primary_script(scripts_dir)
+            if os.path.isdir(scripts_dir)
+            else None
+        )
+
+        # Schema description matches the execution mode: CLI-mode skills get
+        # the strict CLI contract (saying "natural language" there misled the
+        # LLM into passing raw user text, which argparse rejects); workflow
+        # skills have no CLI to translate — natural language is the input.
+        if self._entry_script:
+            command_desc = (
+                f"CLI arguments for the {self.name} skill's entry script, "
+                f"e.g. 'greet --name Alice'. Translate the user's request "
+                f"into the subcommand and flags documented in the skill's "
+                f"instructions; never pass natural language directly."
+            )
+        else:
+            command_desc = (
+                f"The user's request for the {self.name} skill (free-form). "
+                f"This is a workflow skill driven by its SKILL.md instructions: "
+                f"the first execution result returns the full guide to follow."
+            )
         self.input_schema = {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": f"CLI arguments for the {self.name} skill's script, "
-                                   f"e.g. 'greet --name Alice'. Translate the user's request "
-                                   f"into the subcommand and flags documented in the skill's "
-                                   f"instructions; never pass natural language directly.",
+                    "description": command_desc,
                 },
             },
             "required": ["command"],
@@ -130,7 +173,7 @@ class AgentSkillAdapter(BaseSkill):
         """Record that the guide was already delivered out-of-band (slash hint).
 
         Suppresses the copy that would otherwise attach to the first
-        execution result — avoids sending the same 4000 chars twice.
+        execution result — avoids sending the same guide twice.
         """
         self._guide_sent = True
 
@@ -154,25 +197,49 @@ class AgentSkillAdapter(BaseSkill):
             f"需要时可用 file_ops 的 read/list 读取，无需提前全部加载。"
         )
 
+    def _dependencies_note(self) -> str:
+        """Note pointing the LLM at requirements.txt when the skill ships one.
+
+        The Agent Skills standard has no dependency-manifest mechanism (the
+        'compatibility' frontmatter is a free-text env note); large workflow
+        skills (e.g. ppt-master) ship requirements.txt as a community
+        convention instead. We never parse or auto-install it (that mistake
+        is settled — see parser.py NOTE) — only tell the LLM the file exists
+        so it can install what it needs via package_manager/shell.
+        """
+        if not os.path.isfile(os.path.join(self._skill_dir, "requirements.txt")):
+            return ""
+        return (
+            "该 Skill 目录附带 requirements.txt（可选依赖清单）。"
+            "脚本执行报 ModuleNotFoundError 时，读取该文件并经 "
+            "package_manager/shell 在任务 venv 中安装所需依赖；无需预装全部。"
+        )
+
     def _attach_guide(self, result_obj: dict) -> None:
-        """Attach SKILL.md guide + references note on first execution only."""
+        """Attach SKILL.md guide + references/deps notes on first execution only."""
         if self._guide_sent:
             return
         if self._body:
-            result_obj["instructions"] = self._body[:4000]
+            result_obj["instructions"] = self._body[:SKILL_GUIDE_MAX_CHARS]
         note = self.reference_note()
         if note:
             result_obj["references"] = note
+        deps_note = self._dependencies_note()
+        if deps_note:
+            result_obj["dependencies"] = deps_note
         self._guide_sent = True
 
     async def execute(self, params: dict, context: SkillContext) -> str:
         """Execute the Agent Skill.
 
         For Agent Skills, execution means:
-        1. If the skill has scripts, run them in the task's venv
-        2. Otherwise, return the skill's instructions for the agent to follow
-        3. On the first execution, attach the SKILL.md guide + references
-           note to the result (progressive disclosure, loaded once)
+        1. If the skill has a discoverable entry script (entry contract),
+           run it in the task's venv with the LLM-translated CLI args
+        2. Otherwise (instructions mode: no entry, no venv, or multi-script
+           workflow skill), return the skill's instructions for the agent
+           to follow via file_ops/shell
+        3. On the first execution, attach the SKILL.md guide + references /
+           dependencies notes to the result (progressive disclosure, once)
 
         Args:
             params: Dict with 'command' key containing the user's instruction.
@@ -183,18 +250,9 @@ class AgentSkillAdapter(BaseSkill):
         """
         command = params.get("command", "")
 
-        # Check for scripts in the skill directory
-        scripts_dir = os.path.join(self._skill_dir, "scripts")
-        has_scripts = os.path.isdir(scripts_dir) and any(
-            f.endswith((".py", ".sh", ".bash"))
-            for f in os.listdir(scripts_dir)
-        )
-
-        if has_scripts and context.venv_python:
-            # Find the primary script (first .py or .sh file)
-            script_path = self._find_primary_script(scripts_dir)
-            if script_path:
-                return await self._run_script(script_path, command, context)
+        # Entry-script contract: only CLI-mode skills are auto-executed.
+        if self._entry_script and context.venv_python:
+            return await self._run_script(self._entry_script, command, context)
 
         # No scripts or no venv — return instructions for the agent
         result_obj = {
@@ -208,14 +266,28 @@ class AgentSkillAdapter(BaseSkill):
         return json.dumps(result_obj, ensure_ascii=False)
 
     def _find_primary_script(self, scripts_dir: str) -> str | None:
-        """Find the primary script to execute.
+        """Find the primary script to execute (explicit CLI contract only).
 
-        Prefers .py files, then .sh files.  Returns the first one found.
+        Returns a script path only when the skill has a discoverable entry:
+        a conventional entry point (main.py / cli.py), or exactly one
+        runnable script in scripts/ (``_``-prefixed helpers never count).
+        Multi-script workflow skills return None so execute() falls back to
+        instructions mode — running an arbitrary alphabetically-first script
+        is always wrong for them.
         """
-        for ext in (".py", ".sh", ".bash"):
-            for fname in sorted(os.listdir(scripts_dir)):
-                if fname.endswith(ext) and not fname.startswith("_"):
-                    return os.path.join(scripts_dir, fname)
+        try:
+            entries = sorted(os.listdir(scripts_dir))
+        except OSError:
+            return None
+        runnable = [
+            f for f in entries
+            if f.endswith((".py", ".sh", ".bash")) and not f.startswith("_")
+        ]
+        for name in _ENTRY_SCRIPT_NAMES:
+            if name in runnable:
+                return os.path.join(scripts_dir, name)
+        if len(runnable) == 1:
+            return os.path.join(scripts_dir, runnable[0])
         return None
 
     async def _run_script(self, script_path: str, command: str, context: SkillContext) -> str:
@@ -304,8 +376,16 @@ class AgentSkillAdapter(BaseSkill):
             self.description,
             "",
             "参数:",
-            "  command (string, required): 完整的 CLI 命令参数，例如: greet --name Alice",
         ]
+        if self._entry_script:
+            lines.append(
+                "  command (string, required): 完整的 CLI 命令参数，例如: greet --name Alice"
+            )
+        else:
+            lines.append(
+                "  command (string, required): 用户需求描述（工作流型 Skill，无 CLI 入口；"
+                "首次调用结果将返回 SKILL.md 指南，按指南经 shell/file_ops 执行）"
+            )
         if self._compatibility:
             lines.append(f"\n环境要求: {self._compatibility}")
         return "\n".join(lines)

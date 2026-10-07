@@ -29,7 +29,7 @@ from tools.lsp_client import LSPClientTool
 from tools.venv_manager import get_venv_python
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
-from skills.loader import AgentSkillAdapter
+from skills.loader import AgentSkillAdapter, SKILL_GUIDE_MAX_CHARS
 from agent.context_manager import ContextManager, build_git_context, detect_project_context
 from errors import LLMNetworkError, InkCubeError, actionable
 
@@ -791,7 +791,7 @@ class TaskAgent:
         if guide:
             hint += (
                 f"\n`{cmd}` 使用指南（首次调用即应据此构造正确的 CLI 参数）：\n"
-                f"<guide>\n{guide[:4000]}\n</guide>\n"
+                f"<guide>\n{guide[:SKILL_GUIDE_MAX_CHARS]}\n</guide>\n"
             )
         if refs_note:
             hint += f"\n{refs_note}\n"

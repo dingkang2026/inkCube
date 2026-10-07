@@ -14,11 +14,11 @@ import { EMPTY_SUMMARY } from './types'
 interface ActivityContextValue {
   /** 最近一次聚合结果（null = 尚未拉取成功） */
   status: ActivityStatus | null
-  /** 六字段 summary（未拉取时全 0） */
+  /** 五字段 summary（未拉取时全 0） */
   summary: ActivitySummary
   /** 按项目聚合的活动计数（活跃点 / Tab 角标 / 项目徽章取数） */
   byProject: Map<string, ProjectActivity>
-  /** 有进行中活动（不含 waiting_review）的项目 id 集 */
+  /** 有进行中活动的项目 id 集 */
   activeProjectIds: Set<string>
   /** 最近动态流（unread + recent 按 id 去重降序，首页展示用；未读态看条目自身 read_at） */
   feed: NotificationItem[]
@@ -70,7 +70,6 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
           files: 0,
           imageDescribing: 0,
           compiles: 0,
-          waitingReviews: 0,
           reports: 0,
         }
         map.set(a.project_id, p)
@@ -79,8 +78,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
         p.files += a.count || 0
         p.imageDescribing += a.image_describing || 0
       } else if (a.entity_type === 'wiki_compile') {
-        if (a.status === 'waiting_review') p.waitingReviews += 1
-        else p.compiles += 1
+        p.compiles += 1
       } else if (a.entity_type === 'report') {
         p.reports += 1
       }

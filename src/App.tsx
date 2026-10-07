@@ -449,7 +449,7 @@ export default function App() {
             />
           </>
         )}
-  
+
         {settingsOpen ? (
           <SettingsPage
             settings={settings}
@@ -459,7 +459,7 @@ export default function App() {
         ) : showTemplateManagement ? (
           <TemplateManagement />
         ) : selectedBaseLibId ? (
-          {/* Base library is parallel to projects — accessible from any nav */}
+          /* Base library is parallel to projects — accessible from any nav */
           <BaseLibDetailPage baseLibId={selectedBaseLibId} />
         ) : activeNav === 'home' ? (
           <HomePage

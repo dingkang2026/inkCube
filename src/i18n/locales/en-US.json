@@ -136,12 +136,6 @@
       "compile": "Wiki compile concurrency",
       "compileHint": "Number of compile tasks running simultaneously, default 1"
     },
-    "compile": {
-      "maxRetries": "Max compile retries",
-      "maxRetriesHint": "Number of retries after compile failure, default 3",
-      "backoffBase": "Retry backoff base (seconds)",
-      "backoffBaseHint": "Exponential backoff base, actual interval = base × 2^retry, default 30s"
-    },
     "llm": {
       "connectTimeout": "LLM connect timeout (seconds)",
       "connectTimeoutHint": "Timeout for establishing connection, default 30s",
@@ -157,6 +151,8 @@
       "plannerModelHint": "When set, enables dual-model architecture: planner analyzes first, then task model executes. Leave empty for single-model mode",
       "timeout": "Code Execution Timeout (seconds)",
       "timeoutHint": "Maximum wait time for a single code/command execution, default 30s",
+      "maxIterations": "Max Iterations",
+      "maxIterationsHint": "Maximum tool-call iterations per run, default 25; raise it for long workflows (e.g. workflow-skill driven tasks)",
       "autoConfirmShell": "Auto-confirm Shell Commands",
       "autoConfirmShellHint": "Skip confirmation before running shell commands (advanced users)",
       "shellConfirmMode": "Shell Command Confirm Mode",
@@ -240,6 +236,8 @@
     "creating": "Creating...",
     "newProject": "New Project",
     "createProjectFailed": "Failed to create project",
+    "deleteProjectFailed": "Failed to delete project",
+    "renameProjectFailed": "Failed to rename project",
     "filterAll": "All",
     "filterProcessing": "Processing",
     "filterDone": "Done",
@@ -472,8 +470,7 @@
     },
     "wiki_compile": {
       "completed": "\"{{title}}\" wiki compiled",
-      "failed": "\"{{title}}\" wiki compile failed",
-      "waiting_review": "\"{{title}}\" wiki waiting for review"
+      "failed": "\"{{title}}\" wiki compile failed"
     },
     "report": {
       "completed": "Report \"{{title}}\" generated",
@@ -507,8 +504,7 @@
     },
     "tipFiles": "{{count}} files parsing",
     "tipCompiles": "Wiki compiling",
-    "tipReports": "{{count}} reports generating",
-    "tipWaiting": "{{count}} awaiting review"
+    "tipReports": "{{count}} reports generating"
   },
   "readiness": {
     "dialogTitle": "Feature Not Ready",
@@ -699,6 +695,7 @@
       "exportFailed": "Export failed: {{error}}",
       "delete": "Delete",
       "confirmDelete": "Delete this report?",
+      "deleteFailed": "Delete failed",
       "retry": "Retry Generation",
       "retryFailed": "Retry failed: {{error}}",
       "wizard": {
@@ -838,9 +835,8 @@
       "statusStoring": "Storing...",
       "pages": "pages",
       "compileDone": "Compile complete ({{count}} files)",
-      "compilePartial": "Compile partial: {{completed}}/{{total}} pages, {{failed}} failed",
       "retry": "Retry",
-      "continueCompile": "Continue",
+      "resumeCompile": "Continue",
       "compileStopped": "Compile stopped: {{completed}}/{{total}} files",
       "compileStoppedSimple": "Compile stopped",
       "recompile": "Recompile",
@@ -888,21 +884,20 @@
         "ingested": "Ingested",
         "overview_updated": "Overview updated"
       },
-      "supervisedMode": "Supervised Ingest",
-      "supervisedWaiting": "Waiting for review...",
-      "supervisedFiles": "files",
-      "supervisedProgress": "{{done}}/{{total}} files processed",
-      "supervisedContinue": "Continue to next",
-      "supervisedStop": "Stop ingest",
-      "supervisedClose": "Close",
-      "supervisedSkipped": "Skipped",
-      "supervisedError": "Failed",
-      "supervisedDone": "Done",
-      "supervisedCreated": "created",
-      "supervisedUpdated": "updated",
-      "supervisedReviews": "findings",
-      "supervisedAllDone": "All files ingested successfully",
-      "supervisedStopped": "Ingest stopped",
+      "compileTitle": "Wiki Compile",
+      "compileProgress": "{{done}}/{{total}} files processed",
+      "compileStop": "Stop ingest",
+      "compileClose": "Close",
+      "compileMinimize": "Minimize",
+      "compileMinimizeTip": "Minimize (compile keeps running in the background)",
+      "compileSkipped": "Skipped",
+      "compileError": "Failed",
+      "compileFileDone": "Done",
+      "compileCreated": "created",
+      "compileUpdated": "updated",
+      "compileReviews": "findings",
+      "compileAllDone": "All files ingested successfully",
+      "compileIngestStopped": "Ingest stopped",
       "selectAll": "Select all",
       "batchDismiss": "Dismiss all ({{count}})",
       "batchResolved": "Resolve all ({{count}})",
@@ -929,17 +924,13 @@
       "archiveTitlePlaceholder": "Page title",
       "archiveFailed": "Save failed",
       "archived": "Saved to Wiki",
-      "reviewBadge": "Pending review",
-      "reviewWaitingNav": "Wiki awaiting review",
-      "waitingReview": "Compile awaiting review",
       "compileResumed": "Last compile was interrupted, resumed from file {{fileNum}}",
       "compileDoneWithErrors": "Compile finished: {{success}} succeeded, {{errors}} failed",
       "viewDetails": "View details",
-      "supervisedCompletedWithErrors": "Compile finished: {{success}} succeeded, {{errors}} failed",
-      "supervisedErrors": "failed",
-      "supervisedProcessing": "Processing the first file...",
-      "supervisedProgressCalculating": "Calculating task size...",
-      "supervisedSkippedCount": "skipped"
+      "compileErrors": "failed",
+      "compileProcessing": "Processing the first file...",
+      "compileProgressCalculating": "Calculating task size...",
+      "compileSkippedCount": "skipped"
     },
     "forms": {
       "newForm": "New Form",

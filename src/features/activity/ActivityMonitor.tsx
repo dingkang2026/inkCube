@@ -88,7 +88,7 @@ export function ActivityMonitor() {
         return
       }
       for (const n of items) {
-        const type = n.kind === 'failed' ? 'error' : n.kind === 'waiting_review' ? 'warning' : 'success'
+        const type = n.kind === 'failed' ? 'error' : 'success'
         showToast(
           t(`activity.${n.entity_type}.${n.kind}`, { title: n.entity_title || '' }),
           type,

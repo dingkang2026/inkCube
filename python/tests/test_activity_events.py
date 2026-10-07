@@ -154,15 +154,6 @@ class TestCompileTerminalEvents:
         assert n["entity_title"] == "Event Test"  # project_name
         assert n["detail"] is None
 
-    def test_partial_compile_detail(self, db, project_id):
-        """partial 按 completed 发，detail 注明部分完成（与旧钩子语义等价）。"""
-        _insert_compile_task(db, project_id, "wc2")
-        activity_events.complete_compile(db, "wc2", partial=True)
-
-        n = db.list_unread_notifications()[0]
-        assert n["kind"] == "completed"
-        assert n["detail"] == "部分完成"
-
     def test_fail_compile_truncates_detail(self, db, project_id):
         _insert_compile_task(db, project_id, "wc3")
         activity_events.fail_compile(db, "wc3", "y" * 300)
@@ -170,16 +161,6 @@ class TestCompileTerminalEvents:
         n = db.list_unread_notifications()[0]
         assert n["kind"] == "failed"
         assert len(n["detail"]) == 200
-
-    def test_await_review_deduped(self, db, project_id):
-        """监督模式多次进入 waiting_review 不重复弹（§3.2 未读查重）。"""
-        _insert_compile_task(db, project_id, "wc4", status="waiting_review")
-        activity_events.await_review_compile(db, "wc4")
-        activity_events.await_review_compile(db, "wc4")
-
-        notifications = db.list_unread_notifications()
-        assert len(notifications) == 1
-        assert notifications[0]["kind"] == "waiting_review"
 
     def test_deleted_project_cascade_silent(self, db, project_id):
         """项目删除：wiki_compile_tasks 级联删除（PRAGMA foreign_keys=ON）→
@@ -202,7 +183,6 @@ class TestCompileTerminalEvents:
     def test_missing_task_silent(self, db):
         activity_events.complete_compile(db, "no-such-task")
         activity_events.fail_compile(db, "no-such-task", "boom")
-        activity_events.await_review_compile(db, "no-such-task")
         assert db.list_unread_notifications() == []
 
 
@@ -219,9 +199,9 @@ class TestDbHooksRemoved:
     def test_update_compile_task_status_no_notification(self, db, project_id):
         _insert_compile_task(db, project_id, "wc_hook")
         db.update_compile_task_status("wc_hook", "completed", pages_total=5, pages_completed=5)
-        db.update_compile_task_status("wc_hook", "waiting_review")
+        db.update_compile_task_status("wc_hook", "ingesting")
         task = db.get_wiki_compile_task("wc_hook")
-        assert task["status"] == "waiting_review"
+        assert task["status"] == "ingesting"
         assert db.list_unread_notifications() == []
 
 

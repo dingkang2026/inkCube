@@ -1,5 +1,5 @@
 /** tests/BaseLibFooter.test.tsx — 基础库侧栏区活跃点用例（0.4 §5.7 / §8.3，顺序 3 补测）
- *  覆盖：baselib 容器活跃 → 呼吸点 + tooltip；仅待审阅 → 静态警示点；
+ *  覆盖：baselib 容器活跃 → 呼吸点 + tooltip；
  *  project 容器桶防御性过滤（不渲染点）；无活动 → 无点。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -8,7 +8,7 @@ import type { ProjectActivity } from '../src/features/activity/types'
 
 // CSS module 显式 mock（vitest 默认空对象，className 无法断言）
 vi.mock('../src/features/project/BaseLibFooter.module.css', () => ({
-  default: { activityDot: 'activity-dot', reviewDot: 'review-dot' },
+  default: { activityDot: 'activity-dot' },
 }))
 
 vi.mock('react-i18next', () => ({
@@ -21,6 +21,10 @@ vi.mock('../src/features/knowledge/Toast', () => ({
 
 vi.mock('../src/components/ConfirmDialog', () => ({
   useConfirm: () => vi.fn().mockResolvedValue(true),
+}))
+
+vi.mock('../src/components/PromptDialog', () => ({
+  usePrompt: () => vi.fn().mockResolvedValue(null),
 }))
 
 // useActivity 可控 byProject（hoisted：vi.mock 工厂先于顶层 const 执行）
@@ -61,7 +65,6 @@ function makePA(projectId: string, over: Partial<ProjectActivity> = {}): Project
     files: 0,
     imageDescribing: 0,
     compiles: 0,
-    waitingReviews: 0,
     reports: 0,
     ...over,
   }
@@ -83,18 +86,6 @@ describe('BaseLibFooter 活跃点', () => {
     expect(dots).toHaveLength(1)
     // tooltip 与项目行对齐（i18n mock 直出 key，拼接段顺序：文件→编译）
     expect(dots[0].getAttribute('title')).toBe('activity.tipFiles / activity.tipCompiles')
-    expect(container.querySelectorAll('.review-dot')).toHaveLength(0)
-  })
-
-  it('仅待审阅（无进行中）→ 静态警示点，不渲染呼吸点', async () => {
-    byProjectMock.set('lib2', makePA('lib2', { waitingReviews: 1 }))
-    const { container } = renderFooter()
-
-    await screen.findByText('自定义库')
-    const dots = container.querySelectorAll('.review-dot')
-    expect(dots).toHaveLength(1)
-    expect(dots[0].getAttribute('title')).toBe('activity.tipWaiting')
-    expect(container.querySelectorAll('.activity-dot')).toHaveLength(0)
   })
 
   it('project 容器桶防御性过滤：同名 id 桶不带 baselib 标记时不渲染点', async () => {
@@ -104,13 +95,12 @@ describe('BaseLibFooter 活跃点', () => {
 
     await screen.findByText('共享资料库')
     expect(container.querySelectorAll('.activity-dot')).toHaveLength(0)
-    expect(container.querySelectorAll('.review-dot')).toHaveLength(0)
   })
 
   it('无活动 → 所有行无点', async () => {
     const { container } = renderFooter()
 
     await screen.findByText('共享资料库')
-    expect(container.querySelectorAll('.activity-dot, .review-dot')).toHaveLength(0)
+    expect(container.querySelectorAll('.activity-dot')).toHaveLength(0)
   })
 })

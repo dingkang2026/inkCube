@@ -3,6 +3,7 @@ import logging
 import os
 import hashlib
 import threading
+import time
 from pathlib import Path
 from typing import Optional, List
 from dataclasses import dataclass, field
@@ -10,6 +11,14 @@ import tempfile
 import subprocess
 
 logger = logging.getLogger(__name__)
+
+# COM hresults meaning "callee busy, retry shortly". Office automation under
+# heavy CPU load (e.g. concurrent embedding inference) transiently rejects
+# calls with these even though the app is healthy; the COM-prescribed remedy
+# is backoff-and-retry. Incident 2026-10-07: a docx conversion failed with
+# "Open.Close" while embedding saturated the CPU; a manual rerun succeeded.
+_COM_RETRY_HRESULTS = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER
+_COM_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -38,19 +47,30 @@ def _get_docling_converter(models_dir: Path):
                 PdfPipelineOptions, TableStructureV2Options,
             )
 
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.artifacts_path = str(models_dir)
-            pipeline_options.do_ocr = True
-            pipeline_options.do_table_structure = True
-            if pipeline_options.do_table_structure:
-                pipeline_options.table_structure_options = TableStructureV2Options()
-            pipeline_options.generate_picture_images = True
-            pipeline_options.generate_page_images = False
+            def _build_pipeline_options(generate_picture_images: bool):
+                opts = PdfPipelineOptions()
+                opts.artifacts_path = str(models_dir)
+                opts.do_ocr = True
+                opts.do_table_structure = True
+                if opts.do_table_structure:
+                    opts.table_structure_options = TableStructureV2Options()
+                opts.generate_picture_images = generate_picture_images
+                opts.generate_page_images = False
+                return opts
 
             _docling_converter = DocumentConverter(
                 format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
-                    InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_options),
+                    # 文档输入：提取内嵌图区域（图片保留是文档理解的核心，2.2 §4.4）
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=_build_pipeline_options(True)
+                    ),
+                    # 独立图片输入：禁用 picture 区域裁剪——版面模型会把照片内的
+                    # 图形元素（如证书上的国徽/公章）框成「图中图」碎片，图片库
+                    # 出现碎片而非用户上传的整图；整图由 pipeline 阶段③登记
+                    # （_source_image_context，2.2 §4.4）
+                    InputFormat.IMAGE: ImageFormatOption(
+                        pipeline_options=_build_pipeline_options(False)
+                    ),
                 }
             )
             logger.info("Docling converter loaded (artifacts: %s)", models_dir)
@@ -226,48 +246,105 @@ class DocumentParser:
         
         return None, "Office→PDF 转换器不可用，已由内置解析器直接解析原文件"
     
+    @staticmethod
+    def _com_call(fn, *args, **kwargs):
+        """Invoke a COM method, retrying transient "callee busy" rejections.
+
+        Office automation under heavy CPU load can reject calls with
+        RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER; retry with short
+        backoff instead of failing the whole conversion. Non-retryable
+        com_error and any other exception propagate immediately.
+        """
+        import pywintypes
+
+        last = None
+        for attempt, delay in enumerate((0.0,) + _COM_RETRY_DELAYS):
+            if attempt:
+                time.sleep(delay)
+            try:
+                return fn(*args, **kwargs)
+            except pywintypes.com_error as e:
+                hresult = e.args[0] if e.args else None
+                if hresult not in _COM_RETRY_HRESULTS:
+                    raise
+                last = e
+        raise last
+
     def _convert_with_ms_office(self, input_path: Path, output_path: Path) -> tuple[Optional[Path], str]:
-        """Convert using Microsoft Office COM automation"""
+        """Convert using Microsoft Office COM automation.
+
+        DispatchEx creates a dedicated Office instance so a document the user
+        has open is never attached to (and quit by) the batch conversion;
+        the finally-block guarantees document/app cleanup even on failure
+        (no leaked WINWORD/POWERPNT/EXCEL processes).
+        """
         try:
             import win32com.client
-            
-            ext = input_path.suffix.lower()
-            
+        except ImportError:
+            return None, "pywin32 不可用，已由内置解析器直接解析原文件"
+
+        ext = input_path.suffix.lower()
+        # Only .docx/.pptx reach this method (parse_file converts those to PDF
+        # for layout-faithful parsing; xlsx is parsed directly by Docling)
+        prog_id = {
+            '.docx': 'Word.Application',
+            '.pptx': 'PowerPoint.Application',
+        }.get(ext)
+        if prog_id is None:
+            return None, f"暂不支持 {ext} 格式的 MS Office 转换，已由内置解析器直接解析原文件"
+
+        app = None
+        doc = None  # Document / Presentation
+        try:
+            app = win32com.client.DispatchEx(prog_id)
+            # Suppress modal dialogs (password/repair prompts, font substitution,
+            # macro warnings...) that would block COM calls forever in a
+            # headless batch run. Alert-level values differ per app:
+            # Word=0 (wdAlertsNone), PowerPoint=1 (ppAlertsNone).
+            try:
+                if ext == '.pptx':
+                    app.DisplayAlerts = 1
+                else:
+                    app.DisplayAlerts = 0
+                    app.Visible = False
+            except Exception:
+                pass  # cosmetic only — conversion must not depend on it
+
             if ext == '.docx':
-                # Word: FileFormat=17 (wdFormatPDF)
-                app = win32com.client.Dispatch('Word.Application')
-                app.Visible = False
-                doc = app.Documents.Open(str(input_path.absolute()))
-                doc.SaveAs(str(output_path.absolute()), FileFormat=17)
-                doc.Close()
-                app.Quit()
-                
-            elif ext == '.pptx':
-                # PowerPoint: FileFormat=32 (ppSaveAsPDF)
-                app = win32com.client.Dispatch('PowerPoint.Application')
-                # PowerPoint doesn't allow hiding the window
-                pres = app.Presentations.Open(str(input_path.absolute()))
-                pres.SaveAs(str(output_path.absolute()), FileFormat=32)
-                pres.Close()
-                app.Quit()
-                
-            elif ext == '.xlsx':
-                # Excel: use ExportAsFixedFormat
-                app = win32com.client.Dispatch('Excel.Application')
-                app.Visible = False
-                wb = app.Workbooks.Open(str(input_path.absolute()))
-                wb.ExportAsFixedFormat(0, str(output_path.absolute()))  # 0 = xlTypePDF
-                wb.Close()
-                app.Quit()
-            else:
-                return None, f"暂不支持 {ext} 格式的 MS Office 转换，已由内置解析器直接解析原文件"
-            
+                # Word: FileFormat=17 (wdFormatPDF); AddToRecentFiles keeps the
+                # user's recent-files list clean during batch conversion
+                doc = self._com_call(
+                    app.Documents.Open,
+                    str(input_path.absolute()),
+                    ReadOnly=False, AddToRecentFiles=False,
+                )
+                self._com_call(doc.SaveAs, str(output_path.absolute()), FileFormat=17)
+            else:  # '.pptx'
+                # PowerPoint: FileFormat=32 (ppSaveAsPDF); WithWindow=False
+                # avoids a visible editor window flash (cannot hide the app)
+                doc = self._com_call(
+                    app.Presentations.Open,
+                    str(input_path.absolute()), WithWindow=False,
+                )
+                self._com_call(doc.SaveAs, str(output_path.absolute()), FileFormat=32)
+
             if output_path.exists():
                 return output_path, ""
             return None, "MS Office 转换未生成 PDF，已由内置解析器直接解析原文件"
         except Exception as e:
             logger.warning("MS Office conversion failed for %s: %s", input_path.name, e)
             return None, "MS Office 转换失败，已由内置解析器直接解析原文件"
+        finally:
+            if doc is not None:
+                try:
+                    doc.Close(SaveChanges=0)
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
     
     def _convert_with_libreoffice(self, input_path: Path, output_path: Path, soffice_path: str) -> tuple[Optional[Path], str]:
         """Convert using LibreOffice command-line"""

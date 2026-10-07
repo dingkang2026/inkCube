@@ -192,20 +192,6 @@ class TestWikiSourcePages:
         assert sp["entities_found"] == ["华为", "腾讯"]
         assert sp["concepts_found"] == ["对赌协议"]
 
-    def test_get_source_page_by_hash(self, db, project_id, file_id):
-        db.create_or_update_source_page(
-            project_id=project_id,
-            file_id=file_id,
-            content_hash="sha256_unique",
-            status="ingested",
-        )
-        found = db.get_source_page_by_hash(project_id, "sha256_unique")
-        assert found is not None
-        assert found["file_id"] == file_id
-
-    def test_hash_miss_returns_none(self, db, project_id):
-        assert db.get_source_page_by_hash(project_id, "nonexistent") is None
-
     def test_upsert_on_conflict(self, db, project_id, file_id):
         """Same project+file should update, not duplicate."""
         db.create_or_update_source_page(
@@ -231,12 +217,6 @@ class TestWikiSourcePages:
         db.create_or_update_source_page(project_id, f2["id"], content_hash="h2")
         pages = db.list_source_pages(project_id)
         assert len(pages) == 2
-
-    def test_update_status(self, db, project_id, file_id):
-        db.create_or_update_source_page(project_id, file_id, content_hash="h")
-        db.update_source_page_status(project_id, file_id, "stale")
-        sp = db.get_source_page(project_id, file_id)
-        assert sp["status"] == "stale"
 
     def test_delete_source_page(self, db, project_id, file_id):
         db.create_or_update_source_page(project_id, file_id)

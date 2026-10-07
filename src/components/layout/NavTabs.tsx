@@ -38,11 +38,6 @@ export function NavTabs({ activeNav, onNavChange }: NavTabsProps) {
           {tab.key === 'projects' && activeProjectIds.size > 0 && (
             <Loader2 className={styles.ingestSpinner} size={12} />
           )}
-          {tab.key === 'projects' && summary.waiting_reviews > 0 && (
-            <span className={styles.reviewBadge} title={t('project.wiki.reviewWaitingNav', { defaultValue: '知识库等待审阅' })}>
-              {summary.waiting_reviews}
-            </span>
-          )}
         </button>
       ))}
     </nav>

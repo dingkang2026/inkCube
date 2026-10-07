@@ -102,23 +102,14 @@ def _emit_report(db, report_id: str, kind: str, detail: str | None) -> None:
 
 # ── wiki_compile（顺序 4）──────────────────────────────────────
 
-def complete_compile(db, task_id: str, partial: bool = False) -> None:
-    """Wiki 编译成功终态：写 completed 通知；partial=True 时 detail 注明部分完成。"""
-    _emit_compile(db, task_id, "completed", "部分完成" if partial else None)
+def complete_compile(db, task_id: str) -> None:
+    """Wiki 编译成功终态：写 completed 通知。"""
+    _emit_compile(db, task_id, "completed", None)
 
 
 def fail_compile(db, task_id: str, error_message: str | None = None) -> None:
     """Wiki 编译失败终态：写 failed 通知（detail 截 200 字符）。"""
     _emit_compile(db, task_id, "failed", (error_message or "")[:200] or None)
-
-
-def await_review_compile(db, task_id: str) -> None:
-    """监督模式进入 waiting_review：写 waiting_review 通知。
-
-    未读查重保证幂等（§3.2）：监督模式逐文件暂停多次进入 waiting_review
-    不重复弹；用户处理完（已读）后才允许下一条。
-    """
-    _emit_compile(db, task_id, "waiting_review", None)
 
 
 def _emit_compile(db, task_id: str, kind: str, detail: str | None) -> None:

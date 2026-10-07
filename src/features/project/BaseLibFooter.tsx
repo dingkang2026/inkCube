@@ -8,6 +8,7 @@ import { useActivity } from '../activity/ActivityContext'
 import type { ProjectActivity } from '../activity/types'
 import s from './BaseLibFooter.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { usePrompt } from '../../components/PromptDialog'
 
 interface BaseLibRecord {
   id: string
@@ -42,6 +43,7 @@ interface BaseLibFooterProps {
 export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplateManagement, templateManagementActive }: BaseLibFooterProps) {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
+  const promptDialog = usePrompt()
   const showToast = useToast()
   const { byProject } = useActivity()
   const [baseLibs, setBaseLibs] = useState<BaseLibRecord[]>([])
@@ -53,7 +55,6 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
     if (pa.files > 0) parts.push(t('activity.tipFiles', { count: pa.files }))
     if (pa.compiles > 0) parts.push(t('activity.tipCompiles'))
     if (pa.reports > 0) parts.push(t('activity.tipReports', { count: pa.reports }))
-    if (pa.waitingReviews > 0) parts.push(t('activity.tipWaiting', { count: pa.waitingReviews }))
     return parts.join(' / ')
   }
 
@@ -71,7 +72,11 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
   useEffect(() => { loadBaseLibs() }, [])
 
   const handleCreate = async () => {
-    const name = window.prompt(t('baseLib.createPrompt'))
+    // Electron 不支持 window.prompt（调用即抛异常），改用全局 PromptDialog
+    const name = await promptDialog({
+      title: t('baseLib.addCustom'),
+      message: t('baseLib.createPrompt'),
+    })
     if (!name?.trim()) return
     try {
       await window.electronAPI.invoke('baseLib:create', { name: name.trim(), description: '' })
@@ -108,7 +113,6 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
           // 活跃点与项目行对齐（0.4 §5.7）：全局心跳 byProject 派生，仅基础库容器行先小动作
           const pa = byProject.get(lib.id)
           const hasOngoing = !!pa && pa.container === 'baselib' && pa.files + pa.compiles + pa.reports > 0
-          const needsReview = !!pa && pa.container === 'baselib' && pa.waitingReviews > 0
           return (
             <div
               key={lib.id}
@@ -117,9 +121,9 @@ export function BaseLibFooter({ selectedBaseLib, onSelectBaseLib, onOpenTemplate
             >
               <Icon size={15} className={s.icon} />
               <span className={s.name}>{lib.name}</span>
-              {(hasOngoing || needsReview) && pa && (
+              {hasOngoing && pa && (
                 <span
-                  className={hasOngoing ? s.activityDot : s.reviewDot}
+                  className={s.activityDot}
                   title={activityTooltip(pa)}
                 />
               )}

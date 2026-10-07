@@ -66,10 +66,10 @@ class TestNotifications:
 
     def test_unread_dedup_same_entity_kind(self, db):
         """未读查重：同 (entity_type, entity_id, kind) 未读存在时跳过。"""
-        assert db.add_notification("wiki_compile", "wc1", "p1", "waiting_review", "Wiki") is not None
-        assert db.add_notification("wiki_compile", "wc1", "p1", "waiting_review", "Wiki") is None
-        # 不同 kind 不查重
         assert db.add_notification("wiki_compile", "wc1", "p1", "completed", "Wiki") is not None
+        assert db.add_notification("wiki_compile", "wc1", "p1", "completed", "Wiki") is None
+        # 不同 kind 不查重
+        assert db.add_notification("wiki_compile", "wc1", "p1", "failed", "Wiki") is not None
         assert len(db.list_unread_notifications()) == 2
 
     def test_dedup_released_after_read(self, db):
@@ -183,15 +183,12 @@ class TestActivitiesStatus:
 
     def test_active_compiles_only_active_statuses(self, db, project_id):
         _insert_compile_task(db, project_id, "wc_active", "ingesting", pages_total=5, pages_completed=2)
-        # batch 编译器中间态（analyzing/generating）同样算活跃——否则 #4 谓词心跳化后
-        # batch 编译期轮询停摆、角标不亮（顺序 4 同类问题修复）
-        _insert_compile_task(db, project_id, "wc_stage1", "analyzing")
-        _insert_compile_task(db, project_id, "wc_stage2", "generating")
-        _insert_compile_task(db, project_id, "wc_review", "waiting_review", pages_total=4, pages_completed=4)
+        _insert_compile_task(db, project_id, "wc_storing", "storing")
         _insert_compile_task(db, project_id, "wc_done", "completed")
+        _insert_compile_task(db, project_id, "wc_failed", "failed")
 
         rows = activities_router._active_compiles(db)
-        assert {r["entity_id"] for r in rows} == {"wc_active", "wc_stage1", "wc_stage2", "wc_review"}
+        assert {r["entity_id"] for r in rows} == {"wc_active", "wc_storing"}
         active = next(r for r in rows if r["entity_id"] == "wc_active")
         assert active["progress_text"] == "2/5"
 
@@ -212,15 +209,14 @@ class TestActivitiesStatus:
     def test_status_summary_and_notifications(self, db, project_id):
         db.create_file(project_id, "a.pdf", ".pdf", 100, "h1")
         _insert_compile_task(db, project_id, "wc1", "ingesting", pages_total=3, pages_completed=1)
-        _insert_compile_task(db, project_id, "wc2", "waiting_review", pages_total=2, pages_completed=2)
+        _insert_compile_task(db, project_id, "wc2", "completed", pages_total=2, pages_completed=2)
         _insert_report(db, project_id, "r1", "generating")
         db.add_notification("file", "fx", project_id, "completed", "a.pdf")
 
         result = asyncio.run(activities_router.activities_status())
 
         assert result["summary"]["active_files"] == 1
-        assert result["summary"]["active_compiles"] == 1  # waiting_review 不计
-        assert result["summary"]["waiting_reviews"] == 1
+        assert result["summary"]["active_compiles"] == 1  # 终态不计
         assert result["summary"]["generating_reports"] == 1
         assert result["summary"]["running_tasks"] == 0
         assert result["summary"]["downloading_models"] == 0

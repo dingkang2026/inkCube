@@ -58,11 +58,7 @@ def _active_files(db) -> list[dict]:
 
 
 def _active_compiles(db) -> list[dict]:
-    """跨项目活跃 Wiki 编译（queued/analyzing/generating/ingesting/storing/waiting_review）。
-
-    analyzing/generating 为 batch 编译器 stage1/stage2 中间态（顺序 4 补齐——
-    缺失时 #4 谓词心跳化后 batch 编译期轮询停摆、角标不亮）。
-    """
+    """跨项目活跃 Wiki 编译（queued/ingesting/storing）。"""
     cursor = db.conn.execute(
         """
         SELECT wct.id, wct.project_id, wct.status,
@@ -71,7 +67,7 @@ def _active_compiles(db) -> list[dict]:
                CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container
         FROM wiki_compile_tasks wct
         JOIN projects p ON p.id = wct.project_id
-        WHERE wct.status IN ('queued', 'analyzing', 'generating', 'ingesting', 'storing', 'waiting_review')
+        WHERE wct.status IN ('queued', 'ingesting', 'storing')
         ORDER BY wct.created_at DESC
         """
     )
@@ -180,14 +176,7 @@ async def activities_status():
         "active_files": sum(
             a["count"] for a in active if a["entity_type"] == "file"
         ),
-        "active_compiles": sum(
-            1 for a in active
-            if a["entity_type"] == "wiki_compile" and a["status"] != "waiting_review"
-        ),
-        "waiting_reviews": sum(
-            1 for a in active
-            if a["entity_type"] == "wiki_compile" and a["status"] == "waiting_review"
-        ),
+        "active_compiles": _count("wiki_compile"),
         "generating_reports": _count("report"),
         "running_tasks": _count("task"),
         "downloading_models": _count("model_download"),

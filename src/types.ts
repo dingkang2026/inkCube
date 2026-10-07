@@ -17,8 +17,6 @@ export interface LLMSettings {
   max_concurrent_image_description: number
   // Wiki compile settings
   max_compile_concurrency: number
-  compile_max_retries: number
-  compile_backoff_base: number
   // LLM timeout settings
   llm_connect_timeout: number
   llm_read_timeout: number
@@ -26,6 +24,7 @@ export interface LLMSettings {
   task_model: string
   task_planner_model: string
   task_timeout: number
+  task_max_iterations: number
   task_auto_confirm_shell: boolean
   task_shell_confirm_mode: string  // strict | smart | auto
   task_shell_domain_whitelist: string

@@ -67,6 +67,39 @@ def preload_bge_m3(model_path: str):
     _get_bge_m3_model(model_path)
 
 
+# ---------------------------------------------------------------------------
+# Process-wide ChromaDB client singleton (one per resolved path).
+#
+# chromadb keys its in-process backend cache by (path, settings) and raises
+# "An instance of Chroma already exists ... with different settings" when the
+# same directory is opened twice with different Settings. Routing EVERY
+# caller (VectorStore indexing + startup cleanup in task_queue) through this
+# helper guarantees a single Settings per directory, so the collision is
+# structurally impossible. Incident 2026-10-07: a bare PersistentClient()
+# in the startup-reset path poisoned the cache and failed 181 files.
+# ---------------------------------------------------------------------------
+_chroma_clients: dict = {}
+_chroma_clients_lock = threading.Lock()
+
+
+def get_chroma_client(persist_dir: str):
+    """Return the shared PersistentClient for *persist_dir*.
+
+    Created once per process with the canonical project settings
+    (telemetry off) and reused by every later caller.
+    """
+    key = str(Path(persist_dir).resolve())
+    with _chroma_clients_lock:
+        client = _chroma_clients.get(key)
+        if client is None:
+            client = chromadb.PersistentClient(
+                path=key,
+                settings=ChromaSettings(anonymized_telemetry=False),
+            )
+            _chroma_clients[key] = client
+        return client
+
+
 class BgeM3EmbeddingFunction(embedding_functions.EmbeddingFunction):
     """Custom embedding function for bge-m3 model using FlagEmbedding.
 
@@ -105,10 +138,10 @@ class VectorStore:
             persist_dir: ChromaDB persistence directory
             bge_m3_path: Path to local bge-m3 model (optional, auto-detected if None)
         """
-        self.client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=ChromaSettings(anonymized_telemetry=False)
-        )
+        # Shared client — one Settings per directory, process-wide
+        # (a second PersistentClient with different settings would raise;
+        # see get_chroma_client docstring)
+        self.client = get_chroma_client(persist_dir)
         
         # Auto-detect bge-m3 path if not provided
         if bge_m3_path is None:

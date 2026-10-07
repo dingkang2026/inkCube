@@ -8,8 +8,6 @@
   C3. knowledge 上传 filename 路径遍历防护（_safe_filename +
       _base_lib_upload_core 落盘路径）
   H2. pause_task 标记 _paused_tasks（error 退出时保留 state 的依据）
-  H5. signal_compile_continue：worker 等待中 → set event 不重复入队；
-      worker 不在等待 → 重新入队；状态非 waiting_review → False
 """
 import asyncio
 import base64
@@ -170,49 +168,3 @@ class TestPauseStateSurvival:
         assert agent._saved["t1"]["auto_saved"] is True
 
 
-# ── H5. signal_compile_continue 重新入队 ───────────────────
-
-
-class TestSignalCompileContinue:
-    def _make_worker(self, task_status="waiting_review"):
-        from knowledge.task_queue import KnowledgeWorker
-
-        worker = KnowledgeWorker.__new__(KnowledgeWorker)
-        worker._compile_continuation_events = {}
-        worker._compile_enqueued = set()
-        worker._compile_queue = asyncio.Queue()
-        status_updates = []
-
-        class StubDB:
-            def get_wiki_compile_task(self, tid):
-                return {"id": tid, "status": task_status} if task_status else None
-
-            def update_compile_task_status(self, tid, status, **kw):
-                status_updates.append((tid, status))
-
-        worker.db = StubDB()
-        worker._status_updates = status_updates
-        return worker
-
-    def test_worker_waiting_sets_event_without_reenqueue(self):
-        w = self._make_worker()
-        w._compile_continuation_events["t1"] = asyncio.Event()
-
-        assert asyncio.run(w.signal_compile_continue("t1")) is True
-        assert w._compile_continuation_events["t1"].is_set()
-        assert w._compile_queue.qsize() == 0  # no duplicate enqueue
-
-    def test_worker_not_waiting_reenqueues(self):
-        # e.g. task waiting_review after app restart — no worker is parked
-        # on the continuation event, so the task must be re-enqueued.
-        w = self._make_worker()
-
-        assert asyncio.run(w.signal_compile_continue("t1")) is True
-        assert w._compile_queue.qsize() == 1
-        assert asyncio.run(w._compile_queue.get()) == "t1"
-        assert "t1" in w._compile_enqueued
-        assert w._status_updates == [("t1", "ingesting")]
-
-    def test_wrong_status_returns_false(self):
-        w = self._make_worker(task_status="completed")
-        assert asyncio.run(w.signal_compile_continue("t1")) is False

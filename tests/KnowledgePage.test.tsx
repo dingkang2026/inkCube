@@ -116,3 +116,43 @@ describe('KnowledgePage terminal refetch', () => {
     expect(onProjectDataChanged).not.toHaveBeenCalled()
   })
 })
+
+describe('KnowledgePage server-side status filter', () => {
+  /** 回归背景：状态筛选原为纯客户端过滤只作用当前页，跨页失效；
+   *  下沉服务端后切换筛选必须以 status 参数回第 1 页拉取。 */
+  const lastGetFilesPayload = () => {
+    const calls = invokeMock.mock.calls.filter((c) => c[0] === 'knowledge:getFiles')
+    return calls[calls.length - 1][1] as Record<string, unknown>
+  }
+
+  it('passes status + offset=0 when switching filter, drops status on all', async () => {
+    const user = (
+      <KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />
+    )
+    render(user)
+    await flush()
+    // 初始加载：默认 all → 不传 status
+    expect(lastGetFilesPayload().status).toBeUndefined()
+
+    // 切「处理中」→ 立即以 status=processing 回第 1 页
+    await act(async () => {
+      screen.getByText('knowledge.filterProcessing').click()
+    })
+    await flush()
+    expect(lastGetFilesPayload()).toMatchObject({ status: 'processing', offset: 0 })
+
+    // 切「失败」→ 字面状态
+    await act(async () => {
+      screen.getByText('knowledge.filterError').click()
+    })
+    await flush()
+    expect(lastGetFilesPayload()).toMatchObject({ status: 'error', offset: 0 })
+
+    // 切回「全部」→ 不传 status
+    await act(async () => {
+      screen.getByText('knowledge.filterAll').click()
+    })
+    await flush()
+    expect(lastGetFilesPayload().status).toBeUndefined()
+  })
+})

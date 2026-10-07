@@ -12,6 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import App from '../src/App'
 import { ConfirmProvider } from '../src/components/ConfirmDialog'
+import { PromptProvider } from '../src/components/PromptDialog'
+import { ToastProvider } from '../src/features/knowledge/Toast'
 
 // i18n：t 透传 key（断言用 i18n key 文本），i18n.language 供 TaskItem 时间格式化
 vi.mock('react-i18next', () => ({
@@ -143,7 +145,11 @@ describe('App 同级页面侧边栏清空', () => {
   it('项目列表：打开设置清空，切回 projects 复原', async () => {
     render(
       <ConfirmProvider>
-        <App />
+        <PromptProvider>
+          <ToastProvider>
+            <App />
+          </ToastProvider>
+        </PromptProvider>
       </ConfirmProvider>,
     )
     await flush()
@@ -169,7 +175,11 @@ describe('App 同级页面侧边栏清空', () => {
   it('任务列表：打开模板管理清空，切回 tasks 复原', async () => {
     render(
       <ConfirmProvider>
-        <App />
+        <PromptProvider>
+          <ToastProvider>
+            <App />
+          </ToastProvider>
+        </PromptProvider>
       </ConfirmProvider>,
     )
     await flush()
@@ -193,7 +203,11 @@ describe('App 同级页面侧边栏清空', () => {
   it('项目列表：打开基础库详情清空，切回 projects 复原', async () => {
     render(
       <ConfirmProvider>
-        <App />
+        <PromptProvider>
+          <ToastProvider>
+            <App />
+          </ToastProvider>
+        </PromptProvider>
       </ConfirmProvider>,
     )
     await flush()

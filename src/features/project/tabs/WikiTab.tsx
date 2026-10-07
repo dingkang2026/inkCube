@@ -14,7 +14,7 @@ import { WikiChangeLog } from './WikiChangeLog'
 import { WikiSearchView } from './WikiSearchView'
 import { WikiGraphView } from './WikiGraphView'
 import { WikiLintView } from './WikiLintView'
-import { SupervisedCompileDialog } from './SupervisedCompileDialog'
+import { CompileDialog } from './CompileDialog'
 import { useFeatureGuard } from '../../readiness/useReadiness'
 import s from './WikiTab.module.css'
 
@@ -187,23 +187,19 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setIsResumed(compileData.is_resumed)
     // Auto-show dialog if compile is active（含 crash-resume 场景，沿用原 initial load 逻辑）
     const task = compileData.task
-    if (task && ['queued', 'ingesting', 'storing', 'waiting_review'].includes(task.status)) {
+    if (task && ['queued', 'ingesting', 'storing'].includes(task.status)) {
       setShowCompileDialog(true)
     }
   }, [compileData])
 
-  // 编译状态变化副作用：waiting_review 刷 pages/reviews（监督式每段完成后）；终态收尾
+  // 编译状态变化副作用：终态收尾（刷 pages/reviews）
   const prevCompileStatusRef = useRef<string | null>(null)
   useEffect(() => {
     const status = compileTask?.status ?? null
     if (status === prevCompileStatusRef.current) return
     prevCompileStatusRef.current = status
-    if (status && ['completed', 'failed', 'partial', 'stopped'].includes(status)) {
+    if (status && ['completed', 'failed', 'stopped'].includes(status)) {
       setCompiling(false)
-      void loadPages()
-      void loadReviews()
-    } else if (status === 'waiting_review') {
-      // Supervised mode: refresh page list after each file so user sees new pages
       void loadPages()
       void loadReviews()
     }
@@ -310,7 +306,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setViewMode('lint')
   }, [])
 
-  // Trigger compile (supervised mode by default); entry guard per 0.4 §7.3
+  // Trigger compile (V2 per-file ingest, continuous run); entry guard per 0.4 §7.3
   const handleCompile = (force = false) => {
     // Force recompile deletes ALL wiki data — show custom confirmation dialog
     if (force) {
@@ -329,7 +325,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setShowCompileDialog(true)
     // 状态刷新依赖父组件 #4 轮询（对话框打开时 2s，0.4 §8.1）
     try {
-      await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', supervised: true, force: false })
+      await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', force: false })
     } catch (err) {
       console.error('Failed to trigger compile:', err)
       setCompiling(false)
@@ -352,7 +348,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setViewMode('home')
     // 状态刷新依赖父组件 #4 轮询（对话框打开时 2s，0.4 §8.1）
     try {
-      await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', supervised: true, force: true })
+      await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', force: true })
       await loadPages()
     } catch (err) {
       console.error('Failed to trigger recompile:', err)
@@ -361,17 +357,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     }
   }
 
-  // Continue supervised compile
-  const handleContinueCompile = async () => {
-    try {
-      // 状态刷新依赖父组件 #4 轮询（0.4 §8.1）
-      await window.electronAPI.invoke('wiki:continueCompile', { projectId })
-    } catch (err) {
-      console.error('Failed to continue compile:', err)
-    }
-  }
-
-  // Stop supervised compile
+  // Stop compile (cooperative: effective after the current file)
   const handleStopCompile = async () => {
     try {
       // 状态刷新依赖父组件 #4 轮询（0.4 §8.1）
@@ -384,9 +370,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   // Derived compile states
   // isCompiling: true only for active statuses, never for terminal states
   const isCompiling = compileTask
-    ? ['queued', 'ingesting', 'storing', 'waiting_review'].includes(compileTask.status)
+    ? ['queued', 'ingesting', 'storing'].includes(compileTask.status)
     : compiling
-  const isSupervisedWaiting = compileTask?.status === 'waiting_review'
 
   // ── Render ──
 
@@ -428,7 +413,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           </div>
         )}
 
-        {isCompiling && !isSupervisedWaiting && (
+        {isCompiling && (
           <div className={s.compileStatus}>
             <Loader2 size={14} className={s.spin} />
             <span>
@@ -441,16 +426,6 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 {compileTask.pages_completed ?? 0}/{compileTask.pages_total} {t('project.wiki.pages', { defaultValue: '页面' })}
               </span>
             )}
-          </div>
-        )}
-
-        {isSupervisedWaiting && compileTask && (
-          <div className={s.compileStatus}>
-            <AlertTriangle size={14} className={s.waitingIcon} />
-            <span>{t('project.wiki.supervisedWaiting', { defaultValue: '等待审阅...' })}</span>
-            <span className={s.compileProgress}>
-              {compileTask.pages_completed}/{compileTask.pages_total} {t('project.wiki.supervisedFiles', { defaultValue: '文件' })}
-            </span>
           </div>
         )}
 
@@ -483,15 +458,6 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           </div>
         )}
 
-        {compileTask && compileTask.status === 'partial' && (
-          <div className={s.compileError}>
-            <AlertCircle size={14} />
-            <span>{t('project.wiki.compilePartial', { completed: compileTask.pages_completed ?? 0, total: compileTask.pages_total, failed: compileTask.pages_failed ?? 0, defaultValue: `编译部分完成: ${compileTask.pages_completed ?? 0}/${compileTask.pages_total} 页面, ${compileTask.pages_failed ?? 0} 失败` })}</span>
-            <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.retry', { defaultValue: '重试' })}</button>
-            <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新编译' })}</button>
-          </div>
-        )}
-
         {compileTask && compileTask.status === 'failed' && (
           <div className={s.compileError}>
             <AlertCircle size={14} />
@@ -514,7 +480,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 : t('project.wiki.compileStoppedSimple', { defaultValue: '编译已停止' })
               }
             </span>
-            <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.continueCompile', { defaultValue: '继续编译' })}</button>
+            <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.resumeCompile', { defaultValue: '继续编译' })}</button>
             <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新编译' })}</button>
           </div>
         )}
@@ -664,12 +630,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
         </div>
       )}
 
-      {/* Supervised compile dialog */}
+      {/* Compile progress dialog */}
       {showCompileDialog && compileTask && (
-        <SupervisedCompileDialog
+        <CompileDialog
           task={compileTask}
           ingestSummaries={ingestSummaries}
-          onContinue={handleContinueCompile}
           onStop={handleStopCompile}
           onClose={() => setShowCompileDialog(false)}
         />

@@ -49,6 +49,18 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
       />
       <p className={styles.hint}>{t('settings.task.timeoutHint')}</p>
 
+      {/* Max Iterations (FC loop limit) */}
+      <label className={styles.label}>{t('settings.task.maxIterations')}</label>
+      <input
+        type="number"
+        min={1}
+        max={200}
+        className={styles.input}
+        value={settings?.task_max_iterations ?? 25}
+        onChange={(e) => onUpdate?.('task_max_iterations', parseInt(e.target.value) || 25)}
+      />
+      <p className={styles.hint}>{t('settings.task.maxIterationsHint')}</p>
+
       {/* Shell Confirm Mode (3-mode) */}
       <label className={styles.label}>{t('settings.task.shellConfirmMode')}</label>
       <select

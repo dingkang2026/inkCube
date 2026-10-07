@@ -264,23 +264,37 @@ async def create_project(project: ProjectCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _file_status_clause(status: Optional[str]) -> tuple[str, list]:
+    """文件状态筛选子句（状态筛选服务端下沉，项目/基础库两端点共用）。
+    processing = 排队+解析中（pending/parsing），其余为字面状态；空值/all 不过滤。"""
+    if not status or status == "all":
+        return "", []
+    if status == "processing":
+        return "f.status IN ('pending', 'parsing')", []
+    return "f.status = ?", [status]
+
+
 @router.get("/projects/{project_id}/files")
 async def get_project_files(
     project_id: str,
     limit: int = 20,
     offset: int = 0,
-    before_created_at: Optional[str] = None,
-    before_id: Optional[str] = None,
+    status: Optional[str] = None,
     file_type: Optional[str] = None,
     filename_search: Optional[str] = None,
 ):
-    """Get files in a project with offset/cursor pagination, type filter, and filename search."""
+    """Get files in a project with offset pagination, status/type filters, and filename search."""
     try:
         db = get_db()
 
         # Build query with optional filters
         where_clauses = ["f.project_id = ?"]
         params: list = [project_id]
+
+        status_clause, status_params = _file_status_clause(status)
+        if status_clause:
+            where_clauses.append(status_clause)
+            params.extend(status_params)
 
         if file_type and file_type != "all":
             # Map UI categories to extensions
@@ -303,11 +317,7 @@ async def get_project_files(
 
         where_sql = " AND ".join(where_clauses)
 
-        # Offset-based pagination
-        if offset > 0:
-            params.append(offset)
-        params.append(limit + 1)  # fetch one extra to detect has_more
-
+        # Offset-based pagination（占位符顺序 LIMIT ? OFFSET ? → 先 append limit+1 再 append offset）
         sql = (
             f"""SELECT f.id, f.filename, f.file_type, f.status, f.progress,
                        f.chunk_count, f.image_count, f.image_status,
@@ -317,8 +327,10 @@ async def get_project_files(
                 ORDER BY f.created_at DESC, f.id DESC
                 LIMIT ?"""
         )
+        params.append(limit + 1)  # fetch one extra to detect has_more
         if offset > 0:
             sql += " OFFSET ?"
+            params.append(offset)
 
         cursor = db.conn.execute(sql, params)
         rows = [dict(r) for r in cursor.fetchall()]
@@ -328,6 +340,8 @@ async def get_project_files(
 
         # Get total count (re-derive params without limit/offset)
         count_params: list = [project_id]
+        if status_clause:
+            count_params.extend(status_params)
         if file_type and file_type != "all":
             type_map = {
                 "pdf": [".pdf"], "docx": [".docx", ".doc"],
@@ -1216,18 +1230,22 @@ async def delete_base_lib(lib_id: str):
 async def get_base_lib_files(
     lib_id: str,
     limit: int = 20,
-    before_created_at: Optional[str] = None,
-    before_id: Optional[str] = None,
+    offset: int = 0,
+    status: Optional[str] = None,
     file_type: Optional[str] = None,
     filename_search: Optional[str] = None,
 ):
-    """Get files in a base library."""
+    """Get files in a base library with offset pagination, status/type filters, and filename search."""
     try:
         db = get_db()
         await _validate_base_lib_exists(db, lib_id)
 
         where_clauses = ["f.project_id = ?"]
         params: list = [lib_id]
+        status_clause, status_params = _file_status_clause(status)
+        if status_clause:
+            where_clauses.append(status_clause)
+            params.extend(status_params)
         if file_type and file_type != "all":
             type_map = {
                 "pdf": [".pdf"], "docx": [".docx", ".doc"],
@@ -1243,23 +1261,43 @@ async def get_base_lib_files(
             where_clauses.append("f.filename LIKE ?")
             params.append(f"%{filename_search}%")
         where_sql = " AND ".join(where_clauses)
-        if before_created_at and before_id:
-            where_sql += " AND (f.created_at < ? OR (f.created_at = ? AND f.id < ?))"
-            params.extend([before_created_at, before_created_at, before_id])
-        params.append(limit + 1)
 
-        cursor = db.conn.execute(
-            f"""SELECT f.id, f.filename, f.file_type, f.status, f.progress,
+        # Offset-based pagination（占位符顺序 LIMIT ? OFFSET ? → 先 append limit+1 再 append offset）
+        sql = f"""SELECT f.id, f.filename, f.file_type, f.status, f.progress,
                        f.chunk_count, f.image_count, f.image_status,
                        f.image_described_count, f.error_message, f.created_at
                 FROM files f WHERE {where_sql}
-                ORDER BY f.created_at DESC, f.id DESC LIMIT ?""",
-            params,
-        )
+                ORDER BY f.created_at DESC, f.id DESC LIMIT ?"""
+        params.append(limit + 1)  # fetch one extra to detect has_more
+        if offset > 0:
+            sql += " OFFSET ?"
+            params.append(offset)
+
+        cursor = db.conn.execute(sql, params)
         rows = [dict(r) for r in cursor.fetchall()]
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]
+
+        # Total count（筛选同口径，供分页器计算总页数）
+        count_params: list = [lib_id]
+        if status_clause:
+            count_params.extend(status_params)
+        if file_type and file_type != "all":
+            type_map = {
+                "pdf": [".pdf"], "docx": [".docx", ".doc"],
+                "pptx": [".pptx", ".ppt"], "xlsx": [".xlsx", ".xls"],
+                "image": [".png", ".jpg", ".jpeg"],
+            }
+            extensions = type_map.get(file_type, [])
+            if extensions:
+                count_params.extend(extensions)
+        if filename_search:
+            count_params.append(f"%{filename_search}%")
+        total = db.conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM files f WHERE {where_sql}", count_params
+        ).fetchone()["cnt"]
+
         return {
             "files": [{
                 "id": r["id"], "filename": r["filename"], "file_type": r["file_type"],
@@ -1270,6 +1308,7 @@ async def get_base_lib_files(
                 "error_message": r.get("error_message"), "created_at": r["created_at"],
             } for r in rows],
             "has_more": has_more,
+            "total": total,
         }
     except HTTPException:
         raise
@@ -1280,6 +1319,8 @@ async def get_base_lib_files(
 @router.post("/base-libs/{lib_id}/upload")
 async def upload_base_lib_file(lib_id: str, upload: FileUpload):
     """Upload a file to a base library."""
+    # 准入前置校验（0.4 §7.3）：与项目侧 upload 同等拦截，缺解析模型时结构化报错
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()
@@ -1336,6 +1377,8 @@ async def delete_base_lib_file(lib_id: str, file_id: str):
 @router.post("/base-libs/{lib_id}/files/{file_id}/retry")
 async def retry_base_lib_file(lib_id: str, file_id: str):
     """Retry a failed file in a base library."""
+    # 事前准入（§7.3 第三层 v3.7）：与 upload 同等拦截，try 块外调用
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()
@@ -1388,6 +1431,8 @@ async def get_base_lib_recent_chunks(lib_id: str, limit: int = 20, file_id: Opti
 @router.post("/base-libs/{lib_id}/files/retry-failed")
 async def retry_base_lib_failed_files(lib_id: str):
     """Retry all failed files in a base library."""
+    # 事前准入（§7.3 第三层 v3.7）：try 块外调用
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()
@@ -1439,6 +1484,8 @@ async def batch_delete_base_lib_files(lib_id: str, req: BatchFileRequest):
 @router.post("/base-libs/{lib_id}/files/batch-reprocess")
 async def batch_reprocess_base_lib_files(lib_id: str, req: BatchFileRequest):
     """Batch reprocess multiple files in a base library."""
+    # 事前准入（§7.3 第三层 v3.7）：try 块外调用
+    ensure_ready("file_parsing")
     try:
         import deps
         db = get_db()
@@ -1470,6 +1517,8 @@ async def batch_reprocess_base_lib_files(lib_id: str, req: BatchFileRequest):
 @router.post("/base-libs/{lib_id}/search")
 async def search_base_lib(lib_id: str, request: SearchRequest):
     """Search within a base library."""
+    # 准入前置校验（0.4 §7.3）：与项目侧 /search 同等拦截，缺嵌入模型时结构化报错
+    ensure_ready("knowledge_search")
     try:
         db = get_db()
         await _validate_base_lib_exists(db, lib_id)
@@ -1494,6 +1543,9 @@ async def search_base_lib(lib_id: str, request: SearchRequest):
 @router.post("/base-libs/{lib_id}/chat")
 async def chat_base_lib(lib_id: str, request: ChatRequest):
     """RAG chat within a base library."""
+    # 事前准入（§7.3 第三层 v3.7）：组合入口，embedding + LLM 双依赖；try 块外调用
+    ensure_ready("knowledge_search")
+    ensure_ready("task")
     try:
         db = get_db()
         await _validate_base_lib_exists(db, lib_id)

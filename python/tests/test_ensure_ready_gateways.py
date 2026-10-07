@@ -93,10 +93,6 @@ class TestKnowledgeGateways:
 
 
 class TestWikiGateways:
-    def test_continue_compile(self, no_llm):
-        with pytest.raises(LLMNotConfigured):
-            _run(wiki.continue_compile("p1"))
-
     def test_retry_page(self, no_llm):
         with pytest.raises(LLMNotConfigured):
             _run(wiki.retry_page("p1", "overview"))

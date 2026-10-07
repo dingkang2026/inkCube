@@ -10,6 +10,23 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _resolve_source_file_path(db, data_dir: str, project_id: str, file_id: str) -> str | None:
+    """解析源文件绝对路径（files/{project_id}/{file_id}/{filename}）；记录不存在时 None。
+
+    独立图片文件的图片记录 local_path 即源文件本身（pipeline 登记源图，2.2 §4.4），
+    图片文件清理必须跳过它——retry 依赖源文件重跑。
+    """
+    try:
+        row = db.conn.execute(
+            "SELECT filename FROM files WHERE id = ?", (file_id,)
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return str(Path(data_dir) / "files" / project_id / file_id / row["filename"])
+
+
 async def cleanup_file_data(
     db,
     vector_store,
@@ -46,9 +63,14 @@ async def cleanup_file_data(
         logger.warning("FTS cleanup failed for %s: %s", file_id, e)
 
     # 3. Delete image records and clean up extracted image files
+    #    独立图片文件的 local_path 即源文件本身（pipeline 登记源图，2.2 §4.4），
+    #    不得删除——retry 依赖源文件重跑；完整删除由第 5 步按目录清理兜底
     try:
+        source_path = _resolve_source_file_path(db, data_dir, project_id, file_id)
         image_paths = db.delete_images_by_file(file_id)
         for img_path in image_paths:
+            if source_path and Path(img_path) == Path(source_path):
+                continue
             p = Path(img_path)
             if p.exists():
                 try:

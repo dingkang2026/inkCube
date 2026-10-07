@@ -18,10 +18,7 @@ from typing import Optional
 from knowledge.pipeline import ProcessingPipeline
 from knowledge.vlm_client import VLMClient
 from knowledge.vector_store import VectorStore
-from errors import (
-    InkCubeError, FileNotFound, actionable,
-    LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
-)
+from errors import InkCubeError, FileNotFound, actionable
 import activity_events
 
 logger = logging.getLogger(__name__)
@@ -55,7 +52,6 @@ class KnowledgeWorker:
         self._image_queue: asyncio.Queue[tuple] = asyncio.Queue()
         self._compile_queue: asyncio.Queue[str] = asyncio.Queue()
         self._compile_enqueued: set[str] = set()  # track task_ids already in queue to prevent duplicates
-        self._compile_continuation_events: dict[str, asyncio.Event] = {}  # supervised mode continue signals
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._max_file_concurrency = max_file_concurrency
@@ -452,12 +448,6 @@ class KnowledgeWorker:
                     logger.error("[%s] Error processing compile %s: %s", name, task_id, e, exc_info=True)
                 finally:
                     self._compile_queue.task_done()
-                    # Drop continuation-event bookkeeping once the task is no
-                    # longer mid-flight — otherwise the dict grows unboundedly
-                    # across tasks (L1).
-                    task = self.db.get_wiki_compile_task(task_id)
-                    if not task or task["status"] not in ("waiting_review", "ingesting"):
-                        self._compile_continuation_events.pop(task_id, None)
 
     async def _process_compile(self, task_id: str):
         """Process a single Wiki compile task through the two-stage pipeline."""
@@ -465,7 +455,7 @@ class KnowledgeWorker:
         if not task:
             logger.warning("Compile task %s not found in DB, skipping", task_id)
             return
-        if task["status"] not in ("queued", "failed", "waiting_review"):
+        if task["status"] not in ("queued", "failed"):
             logger.info("Compile task %s status is '%s', skipping", task_id, task["status"])
             return
 
@@ -479,9 +469,8 @@ class KnowledgeWorker:
             activity_events.fail_compile(self.db, task_id, "Project deleted")
             return
 
-        # Mark task as started (only on first run, not on continue)
-        if task["status"] != "waiting_review":
-            self.db.start_compile_task(task_id)
+        # Mark task as started
+        self.db.start_compile_task(task_id)
 
         # Get LLM settings
         settings = self.db.get_settings()
@@ -489,78 +478,20 @@ class KnowledgeWorker:
         from llm import LLMClient
         llm_client = LLMClient(settings)
 
-        # Check if this is a V2 per-file ingest (supervised or not)
-        supervised = self.db.is_compile_supervised(task_id)
+        # V2 per-file ingest, continuous run (failure-isolated per file,
+        # no pauses — 2.6 §4.7)
+        await self._run_per_file_ingest(task_id, project_id, llm_client, settings)
 
-        if supervised:
-            # V2 supervised: per-file ingest with pause after each file
-            await self._process_supervised_ingest(task_id, project_id, llm_client, settings)
-        else:
-            # Legacy: batch compile via WikiCompiler
-            from wiki.compiler import WikiCompiler
-            compiler = WikiCompiler(
-                db=self.db,
-                data_dir=self.data_dir,
-                llm_client=llm_client,
-                llm_settings=settings,
-            )
-
-            max_retries = settings.get("compile_max_retries", task.get("max_retries", 3))
-            backoff_base = settings.get("compile_backoff_base", 30)
-            retry_count = task.get("retry_count", 0)
-
-            try:
-                summary = await compiler.compile(
-                    project_id=project_id,
-                    task_id=task_id,
-                    mode="incremental",
-                )
-                logger.info("Compile task %s completed: %s", task_id, summary)
-            except Exception as e:
-                logger.error("Compile task %s failed: %s", task_id, e, exc_info=True)
-
-                # 配置/凭据类错误重试无意义（Key 失效/限流额度/欠费/模型名错需用户修正），
-                # 直接终态 + 可行动文案（0.4 §7.3 v3.6）；其余异常保持退避重试
-                if isinstance(e, (LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound)):
-                    self.db.update_compile_task_status(
-                        task_id, "failed",
-                        error_message=actionable(e),
-                    )
-                    activity_events.fail_compile(self.db, task_id, actionable(e))
-                    return
-
-                # Retry with exponential backoff
-                if retry_count < max_retries:
-                    new_count = self.db.increment_compile_task_retry(task_id)
-                    backoff = backoff_base * (2 ** new_count)
-                    logger.info("Compile task %s retry %d/%d, backoff %ds",
-                                task_id, new_count, max_retries, backoff)
-                    self.db.update_compile_task_status(
-                        task_id, "queued",
-                        error_message=f"Retry {new_count}/{max_retries}: {actionable(e)}",
-                    )
-                    # Schedule the delayed re-enqueue in the background so this
-                    # worker returns immediately and releases the compile
-                    # semaphore — sleeping 30-120s while holding it (M1) would
-                    # starve every other compile task on the only slot.
-                    async def _requeue_after_backoff():
-                        await asyncio.sleep(backoff)
-                        try:
-                            await self.enqueue_compile(task_id)
-                        except Exception:
-                            logger.error("Compile re-enqueue failed for %s", task_id, exc_info=True)
-                    asyncio.create_task(_requeue_after_backoff())
-                else:
-                    self.db.update_compile_task_status(
-                        task_id, "failed",
-                        error_message=actionable(e),
-                    )
-                    activity_events.fail_compile(self.db, task_id, actionable(e))
-
-    async def _process_supervised_ingest(
+    async def _run_per_file_ingest(
         self, task_id: str, project_id: str, llm_client, llm_settings: dict,
     ):
-        """V2 supervised per-file ingest: loop through files, pausing after each."""
+        """V2 per-file ingest: run all pending files back-to-back (no pauses).
+
+        连续编译（2.6 §4.7）：逐文件串行保证摄入上下文滚动更新（index_summary /
+        overview 随之更新）；单文件失败隔离（记入 summaries 不中断队列，含凭据类
+        错误——每文件失败各记一条可行动文案，修好 Key 后重试增量即重跑失败文件）；
+        停止为协作式（当前文件完成后生效）。
+        """
         from wiki.ingest import WikiIngestor
 
         ingestor = WikiIngestor(self.db, self.data_dir, llm_client, llm_settings)
@@ -568,9 +499,9 @@ class KnowledgeWorker:
         files_processed = len(already_done)
 
         while self._running:
-            # Check stop request
+            # Check stop request（协作式：当前文件完成后才检查到）
             if self.db.is_compile_stop_requested(task_id):
-                logger.info("Supervised compile [%s]: stop requested after %d files", task_id, files_processed)
+                logger.info("Compile [%s]: stop requested after %d files", task_id, files_processed)
                 self.db.update_compile_task_status(task_id, "stopped")
                 return
 
@@ -579,7 +510,7 @@ class KnowledgeWorker:
                 project_id, exclude_file_ids=already_done,
             )
             if not pending_files:
-                logger.info("Supervised compile [%s]: all files completed (%d total)", task_id, files_processed)
+                logger.info("Compile [%s]: all files completed (%d total)", task_id, files_processed)
                 self.db.update_compile_task_status(
                     task_id, "completed",
                     pages_total=files_processed, pages_completed=files_processed,
@@ -591,19 +522,17 @@ class KnowledgeWorker:
             next_file = pending_files[0]
             file_id = next_file["id"]
             filename = next_file["filename"]
-            logger.info("Supervised compile [%s]: ingesting file '%s' (%d remaining)",
+            logger.info("Compile [%s]: ingesting file '%s' (%d remaining)",
                          task_id, filename, len(pending_files))
 
             try:
-                result = await ingestor.ingest_file(
-                    project_id, file_id, task_id, skip_task_update=True,
-                )
+                result = await ingestor.ingest_file(project_id, file_id, task_id)
                 self.db.append_ingest_summary(task_id, {
                     "file_id": file_id, "filename": filename, **result,
                 })
-                logger.info("Supervised compile [%s]: file '%s' done: %s", task_id, filename, result)
+                logger.info("Compile [%s]: file '%s' done: %s", task_id, filename, result)
             except Exception as e:
-                logger.error("Supervised compile [%s]: file '%s' failed: %s", task_id, filename, e, exc_info=True)
+                logger.error("Compile [%s]: file '%s' failed: %s", task_id, filename, e, exc_info=True)
                 self.db.append_ingest_summary(task_id, {
                     "file_id": file_id, "filename": filename,
                     "error": actionable(e), "skipped": False,
@@ -612,65 +541,19 @@ class KnowledgeWorker:
             already_done.append(file_id)
             files_processed += 1
 
-            # Check if more files remain
-            remaining = self.db.get_pending_wiki_files(
-                project_id, exclude_file_ids=already_done,
-            )
-            if not remaining:
-                logger.info("Supervised compile [%s]: all files completed", task_id)
-                self.db.update_compile_task_status(
-                    task_id, "completed",
-                    pages_total=files_processed, pages_completed=files_processed,
-                )
-                activity_events.complete_compile(self.db, task_id)
-                return
-
-            # Pause for user review（waiting_review 事件靠未读查重幂等，多次暂停不重复弹）
+            # 连续编译：逐文件刷新进度（前端进度条数据源；总数含未处理余量）
             self.db.update_compile_task_status(
-                task_id, "waiting_review",
-                pages_total=files_processed + len(remaining),
+                task_id, "ingesting",
+                pages_total=files_processed + len(pending_files) - 1,
                 pages_completed=files_processed,
             )
-            activity_events.await_review_compile(self.db, task_id)
-            logger.info("Supervised compile [%s]: waiting_review, %d files remaining",
-                         task_id, len(remaining))
-
-            # Ensure continuation event exists
-            if task_id not in self._compile_continuation_events:
-                self._compile_continuation_events[task_id] = asyncio.Event()
-
-            # Wait for user to click Continue (or Stop)
-            await self._compile_continuation_events[task_id].wait()
-            self._compile_continuation_events[task_id].clear()
-
-    async def signal_compile_continue(self, task_id: str) -> bool:
-        """Signal a supervised compile task to continue to the next file."""
-        task = self.db.get_wiki_compile_task(task_id)
-        if not task or task["status"] != "waiting_review":
-            return False
-        # Reset status to ingesting so the worker picks it up
-        self.db.update_compile_task_status(task_id, "ingesting")
-        # Set the continuation event if the worker is waiting
-        if task_id in self._compile_continuation_events:
-            self._compile_continuation_events[task_id].set()
-        else:
-            # Worker is not waiting (e.g. task resumed after app restart) —
-            # re-enqueue so a compile worker picks the task up from the DB.
-            self._compile_continuation_events[task_id] = asyncio.Event()
-            # Remove from enqueued set so it can be re-enqueued
-            self._compile_enqueued.discard(task_id)
-            await self.enqueue_compile(task_id)
-        return True
 
     def signal_compile_stop(self, task_id: str) -> bool:
-        """Request a supervised compile task to stop."""
+        """Request a compile task to stop (takes effect after the current file)."""
         task = self.db.get_wiki_compile_task(task_id)
         if not task:
             return False
         self.db.request_compile_stop(task_id)
-        # If waiting for user input, wake up the worker so it can check the stop flag
-        if task_id in self._compile_continuation_events:
-            self._compile_continuation_events[task_id].set()
         return True
 
     # ── Queue Scanner ──
@@ -738,12 +621,15 @@ class KnowledgeWorker:
         interrupted_files = [dict(r) for r in cursor.fetchall()]
 
         if interrupted_files:
-            # Open raw ChromaDB client (no embedding model needed for delete)
+            # Shared ChromaDB client (no embedding model needed for delete).
+            # MUST go through get_chroma_client: a bare PersistentClient() with
+            # default settings would register a second (path, settings) entry in
+            # chromadb's in-process cache and make every later VectorStore(...)
+            # fail with "different settings" — incident 2026-10-07: after a
+            # restart with an interrupted file, 181 files failed in a row.
             try:
-                import chromadb
-                chroma_client = chromadb.PersistentClient(
-                    path=str(Path(self.data_dir) / "chroma")
-                )
+                from knowledge.vector_store import get_chroma_client
+                chroma_client = get_chroma_client(str(Path(self.data_dir) / "chroma"))
             except Exception as e:
                 logger.warning("[Startup] Failed to open ChromaDB for cleanup: %s", e)
                 chroma_client = None

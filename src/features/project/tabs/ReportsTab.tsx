@@ -91,6 +91,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
       await loadReports()
     } catch (err) {
       console.error('Failed to delete report:', err)
+      showToast(t('project.report.deleteFailed'), 'error')
     }
   }
 

@@ -123,9 +123,11 @@ class TestSlashHint:
         hint = TaskAgent._build_slash_hint("demo", "", "guide")
         assert "未提供具体参数" in hint
 
-    def test_hint_guide_truncated_to_4000(self):
-        hint = TaskAgent._build_slash_hint("demo", "x", "A" * 9000)
-        assert hint.count("A") == 4000  # 与 Level 2 结果注入同一上限
+    def test_hint_guide_truncated_to_budget(self):
+        from skills.loader import SKILL_GUIDE_MAX_CHARS
+
+        hint = TaskAgent._build_slash_hint("demo", "x", "A" * (SKILL_GUIDE_MAX_CHARS + 1000))
+        assert hint.count("A") == SKILL_GUIDE_MAX_CHARS  # 与 Level 2 结果注入同一上限
 
     def test_hint_with_refs_note_points_to_references(self):
         """L3：hint 携带 references/ 指引（按需读取，不预加载）。"""
@@ -139,25 +141,41 @@ class TestSlashHint:
 
 
 class TestAgentSkillSchema:
-    """command 参数描述必须是 CLI 语义。
+    """command 参数描述随执行模式分叉。
 
     回归：曾写 "Describe what you want to do in natural language" 误导 LLM
-    直传自然语言 → argparse 报错；修正后明确 CLI 形态并附示例。
+    直传自然语言 → argparse 报错；修正后 CLI 模式（有可发现入口）明确 CLI
+    形态并附示例；工作流模式（无可发现入口，2026-10 入口契约）接受自由文本。
     """
 
-    def _make_adapter(self):
+    def _make_adapter(self, tmp_path, scripts: list[str] | None):
         from skills.loader import AgentSkillAdapter
-        parsed = {"frontmatter": {"name": "demo-skill", "description": "d"}, "body": "body text"}
-        return AgentSkillAdapter("X", parsed, None)
 
-    def test_command_param_demands_cli_form(self):
-        desc = self._make_adapter().input_schema["properties"]["command"]["description"]
+        skill_dir = tmp_path / "demo-skill"
+        if scripts is not None:
+            (skill_dir / "scripts").mkdir(parents=True)
+            for name in scripts:
+                (skill_dir / "scripts" / name).write_text("print('ok')\n", encoding="utf-8")
+        else:
+            skill_dir.mkdir(parents=True)
+        parsed = {"frontmatter": {"name": "demo-skill", "description": "d"}, "body": "body text"}
+        return AgentSkillAdapter(str(skill_dir), parsed, None)
+
+    def test_command_param_demands_cli_form(self, tmp_path):
+        """CLI 模式（约定入口 main.py）：必须 CLI 形态。"""
+        desc = self._make_adapter(tmp_path, ["main.py"]).input_schema["properties"]["command"]["description"]
         assert "CLI arguments" in desc
         assert "greet --name" in desc  # 带示例
         assert "Describe what you want to do in natural language" not in desc  # 旧误导文案已删
 
-    def test_usage_instructions_returns_body(self):
-        assert self._make_adapter().usage_instructions == "body text"
+    def test_command_param_free_form_for_workflow_skill(self, tmp_path):
+        """工作流模式（无可发现入口）：接受自由文本需求。"""
+        desc = self._make_adapter(tmp_path, None).input_schema["properties"]["command"]["description"]
+        assert "free-form" in desc
+        assert "CLI arguments" not in desc
+
+    def test_usage_instructions_returns_body(self, tmp_path):
+        assert self._make_adapter(tmp_path, None).usage_instructions == "body text"
 
 
 class TestExecuteSlashCommand:

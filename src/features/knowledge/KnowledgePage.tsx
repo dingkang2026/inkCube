@@ -71,6 +71,9 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const [dragOver, setDragOver] = useState(false)
   const filenameSearchRef = useRef(filenameSearch)
   filenameSearchRef.current = filenameSearch
+  // 状态筛选服务端下沉：ref 供轮询/边沿补拉等回调读到最新筛选（切换时由按钮显式传新值）
+  const statusFilterRef = useRef<FileStatusFilter>(statusFilter)
+  statusFilterRef.current = statusFilter
 
   const ACCEPT = ['.pdf', '.docx', '.pptx', '.xlsx', '.html', '.png', '.jpg', '.jpeg'].join(',')
 
@@ -89,13 +92,16 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
   const FILE_LIMIT = 20
 
-  const loadFiles = useCallback(async (projectId: string, page = 1, search?: string) => {
+  const loadFiles = useCallback(async (projectId: string, page = 1, search?: string, status?: FileStatusFilter) => {
     try {
+      // status 缺省读 ref（轮询/翻页/补拉沿用当前筛选），切换筛选时由按钮显式传新值
+      const effectiveStatus = status ?? statusFilterRef.current
       const result: any = await window.electronAPI.invoke(ipc.getFiles, {
         projectId,
         limit: FILE_LIMIT,
         offset: (page - 1) * FILE_LIMIT,
         filenameSearch: search || undefined,
+        status: effectiveStatus === 'all' ? undefined : effectiveStatus,
       })
       setFiles(result.files || [])
       setFileTotal(result.total || 0)
@@ -162,18 +168,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     [files]
   )
 
-  // Filter files by status (client-side)
-  const filteredFiles = useMemo(() => {
-    if (statusFilter === 'all') return files
-    return files.filter(f => {
-      switch (statusFilter) {
-        case 'processing': return f.status === 'parsing' || f.status === 'pending'
-        case 'done': return f.status === 'done'
-        case 'error': return f.status === 'error'
-        default: return true
-      }
-    })
-  }, [files, statusFilter])
+  // 状态筛选已下沉服务端（跨页有效），files 即当前筛选下的当前页快照
 
   // Reset UI state when project changes
   useEffect(() => {
@@ -406,7 +401,10 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
                 <button
                   key={f.key}
                   className={`${s.statusFilterBtn} ${statusFilter === f.key ? s.statusFilterBtnActive : ''}`}
-                  onClick={() => setStatusFilter(f.key)}
+                  onClick={() => {
+                    setStatusFilter(f.key)
+                    loadFiles(selectedProject.id, 1, filenameSearch, f.key)
+                  }}
                 >
                   {t(f.labelKey)}
                 </button>
@@ -444,7 +442,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
             ) : (
               <FileUploader
                 projectId={selectedProject.id}
-                files={filteredFiles}
+                files={files}
                 onRefresh={() => loadFiles(selectedProject.id, filePage, filenameSearch)}
                 filePage={filePage}
                 fileTotal={fileTotal}

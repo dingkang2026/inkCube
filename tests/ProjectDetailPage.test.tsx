@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const compileItems: Array<{ project_id?: string }> = []
 const byProject = new Map<
   string,
-  { files: number; imageDescribing: number; compiles: number; waitingReviews: number; reports: number }
+  { files: number; imageDescribing: number; compiles: number; reports: number }
 >()
 
 vi.mock('../src/features/activity/ActivityContext', () => ({
@@ -46,7 +46,7 @@ vi.mock('../src/features/project/tabs/ReportsTab', () => ({ ReportsTab: () => nu
 vi.mock('../src/features/project/tabs/FormsTab', () => ({ FormsTab: () => null }))
 vi.mock('../src/features/project/ProjectChatPanel', () => ({ ProjectChatPanel: () => null }))
 
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, cleanup, act } from '@testing-library/react'
 import { ProjectDetailPage } from '../src/features/project/ProjectDetailPage'
 import type { Project } from '../src/features/knowledge/types'
 
@@ -98,7 +98,7 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     await flush()
     expect(compileStatusCount()).toBe(1)
 
-    // 心跳出现本项目活跃编译（含 waiting_review）→ 轮询 enabled 翻真立即首跑
+    // 心跳出现本项目活跃编译 → 轮询 enabled 翻真立即首跑
     compileItems.push({ project_id: 'p1' })
     rerender(<ProjectDetailPage project={project} />)
     await flush()
@@ -134,18 +134,16 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     expect(compileStatusCount()).toBe(3)
   })
 
-  it('derives tab badges from heartbeat byProject (waiting review / compiling)', async () => {
-    byProject.set('p1', { files: 0, imageDescribing: 0, compiles: 0, waitingReviews: 1, reports: 0 })
+  it('derives tab pulse from heartbeat byProject compiles', async () => {
+    byProject.set('p1', { files: 0, imageDescribing: 0, compiles: 1, reports: 0 })
     const { rerender, container } = render(<ProjectDetailPage project={project} />)
     await flush()
-    // 待审阅角标（t mock 返回 key 本身）；compiles=0 → 无 pulse
-    expect(screen.getByText('project.wiki.reviewBadge')).toBeTruthy()
-    expect(container.querySelector('.tabPulse')).toBeNull()
-
-    // 切到编译中：pulse 出现、待审阅角标消失
-    byProject.set('p1', { files: 0, imageDescribing: 0, compiles: 1, waitingReviews: 0, reports: 0 })
-    rerender(<ProjectDetailPage project={project} />)
-    expect(screen.queryByText('project.wiki.reviewBadge')).toBeNull()
+    // 编译中：pulse 出现
     expect(container.querySelector('.tabPulse')).toBeTruthy()
+
+    // 无活跃编译：pulse 消失
+    byProject.set('p1', { files: 0, imageDescribing: 0, compiles: 0, reports: 0 })
+    rerender(<ProjectDetailPage project={project} />)
+    expect(container.querySelector('.tabPulse')).toBeNull()
   })
 })

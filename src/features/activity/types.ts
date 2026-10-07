@@ -10,7 +10,7 @@ export type ActiveEntityType = 'file' | 'wiki_compile' | 'report' | 'task' | 'mo
 /** 通知条目类型（notifications 表 entity_type 取值，同上） */
 export type NotificationEntityType = ActiveEntityType
 
-export type NotificationKind = 'completed' | 'failed' | 'waiting_review'
+export type NotificationKind = 'completed' | 'failed'
 
 /** 活动挂载容器（0.4 §3.6）：活动所属 projects 行的 kind，基础库活动导航分流用 */
 export type ActivityContainer = 'project' | 'baselib'
@@ -27,7 +27,7 @@ export interface ActiveItem {
   count?: number
   /** file: 其中处于图片描述阶段的数量 */
   image_describing?: number
-  /** wiki_compile: queued / ingesting / storing / waiting_review */
+  /** wiki_compile: queued / ingesting / storing */
   status?: string
   /** wiki_compile: 页面进度文本，如 "3/8" */
   progress_text?: string
@@ -51,7 +51,6 @@ export interface NotificationItem {
 export interface ActivitySummary {
   active_files: number
   active_compiles: number
-  waiting_reviews: number
   generating_reports: number
   running_tasks: number
   downloading_models: number
@@ -76,10 +75,8 @@ export interface ProjectActivity {
   files: number
   /** 图片描述中数量（files 的子集） */
   imageDescribing: number
-  /** Wiki 编译中（不含 waiting_review） */
+  /** Wiki 编译中 */
   compiles: number
-  /** Wiki 待审阅数 */
-  waitingReviews: number
   /** 生成中报告数 */
   reports: number
 }
@@ -87,7 +84,6 @@ export interface ProjectActivity {
 export const EMPTY_SUMMARY: ActivitySummary = {
   active_files: 0,
   active_compiles: 0,
-  waiting_reviews: 0,
   generating_reports: 0,
   running_tasks: 0,
   downloading_models: 0,

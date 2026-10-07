@@ -100,7 +100,6 @@ export function ProjectList({
     if (pa.files > 0) parts.push(t('activity.tipFiles', { count: pa.files }))
     if (pa.compiles > 0) parts.push(t('activity.tipCompiles'))
     if (pa.reports > 0) parts.push(t('activity.tipReports', { count: pa.reports }))
-    if (pa.waitingReviews > 0) parts.push(t('activity.tipWaiting', { count: pa.waitingReviews }))
     return parts.join(' / ')
   }
 
@@ -125,7 +124,6 @@ export function ProjectList({
           {projects.map((project) => {
             const pa = byProject.get(project.id)
             const hasOngoing = !!pa && pa.files + pa.compiles + pa.reports > 0
-            const needsReview = !!pa && pa.waitingReviews > 0
             return (
             <div
               key={project.id}
@@ -150,9 +148,9 @@ export function ProjectList({
                   <>
                     <h4 className={s.name}>
                       {project.name}
-                      {(hasOngoing || needsReview) && pa && (
+                      {hasOngoing && pa && (
                         <span
-                          className={hasOngoing ? s.activityDot : s.reviewDot}
+                          className={s.activityDot}
                           title={activityTooltip(pa)}
                         />
                       )}

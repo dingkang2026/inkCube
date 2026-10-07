@@ -61,28 +61,6 @@ export function GeneralSettings({ settings, onUpdate }: GeneralSettingsProps) {
       />
       <p className={styles.hint}>{t('settings.concurrency.compileHint')}</p>
 
-      <label className={styles.label}>{t('settings.compile.maxRetries')}</label>
-      <input
-        type="number"
-        min={0}
-        max={10}
-        className={styles.input}
-        value={settings?.compile_max_retries ?? 3}
-        onChange={(e) => onUpdate?.('compile_max_retries', parseInt(e.target.value) || 3)}
-      />
-      <p className={styles.hint}>{t('settings.compile.maxRetriesHint')}</p>
-
-      <label className={styles.label}>{t('settings.compile.backoffBase')}</label>
-      <input
-        type="number"
-        min={5}
-        max={300}
-        className={styles.input}
-        value={settings?.compile_backoff_base ?? 30}
-        onChange={(e) => onUpdate?.('compile_backoff_base', parseInt(e.target.value) || 30)}
-      />
-      <p className={styles.hint}>{t('settings.compile.backoffBaseHint')}</p>
-
       <label className={styles.label}>{t('settings.llm.connectTimeout')}</label>
       <input
         type="number"

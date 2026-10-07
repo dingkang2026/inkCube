@@ -313,10 +313,10 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('knowledge:getFiles', async (_event, { projectId, limit, beforeCreatedAt, beforeId, fileType, filenameSearch }) => {
+  ipcMain.handle('knowledge:getFiles', async (_event, { projectId, limit, offset, status, fileType, filenameSearch }) => {
     const params = new URLSearchParams({ limit: String(limit || 20) })
-    if (beforeCreatedAt) params.set('before_created_at', beforeCreatedAt)
-    if (beforeId) params.set('before_id', beforeId)
+    if (offset) params.set('offset', String(offset))
+    if (status && status !== 'all') params.set('status', status)
     if (fileType) params.set('file_type', fileType)
     if (filenameSearch) params.set('filename_search', filenameSearch)
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files?${params}`)
@@ -520,11 +520,11 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('baseLib:getFiles', async (_event, { libId, projectId, limit, beforeCreatedAt, beforeId, fileType, filenameSearch }) => {
+  ipcMain.handle('baseLib:getFiles', async (_event, { libId, projectId, limit, offset, status, fileType, filenameSearch }) => {
     const id = libId || projectId
     const params = new URLSearchParams({ limit: String(limit || 20) })
-    if (beforeCreatedAt) params.set('before_created_at', beforeCreatedAt)
-    if (beforeId) params.set('before_id', beforeId)
+    if (offset) params.set('offset', String(offset))
+    if (status && status !== 'all') params.set('status', status)
     if (fileType) params.set('file_type', fileType)
     if (filenameSearch) params.set('filename_search', filenameSearch)
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/files?${params}`)
@@ -1159,22 +1159,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('wiki:compile', async (_event, { projectId, mode, supervised, force }) => {
+  ipcMain.handle('wiki:compile', async (_event, { projectId, mode, force }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: mode || 'incremental', trigger_type: 'manual', supervised: !!supervised, force: !!force }),
+      body: JSON.stringify({ mode: mode || 'incremental', trigger_type: 'manual', force: !!force }),
     })
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:compileStatus', async (_event, { projectId }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile-status`)
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('wiki:globalReviewStatus', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/review-status`)
     return handlePythonResponse(res)
   })
 
@@ -1202,13 +1197,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('wiki:stopCompile', async (_event, { projectId }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/stop`, {
-      method: 'POST',
-    })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('wiki:continueCompile', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/compile/continue`, {
       method: 'POST',
     })
     return handlePythonResponse(res)

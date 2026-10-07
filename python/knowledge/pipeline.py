@@ -14,6 +14,9 @@ import activity_events
 
 logger = logging.getLogger(__name__)
 
+# 独立图片文件的扩展名（与上传白名单一致，2.2 §4.4）
+_IMAGE_FILE_EXTS = {".png", ".jpg", ".jpeg"}
+
 
 class ProcessingPipeline:
     """
@@ -105,15 +108,24 @@ class ProcessingPipeline:
             self._set_progress(file_id, 75)
             
             # Stage 3: Store image records in DB (75% → 90%)
-            if parse_result.images:
+            # 独立图片文件（IMAGE 输入）：Docling 只 OCR 其文字、doc.pictures 为空
+            # （原图是输入而非文档元素），不产生提取记录——将源文件本身登记为唯一
+            # 图片，补齐「图片文件 → 图片库 → VLM 描述 → figure chunk 检索」链路
+            # （2.2 §4.4）
+            images = list(parse_result.images)
+            if not images:
+                source_image = self._source_image_context(file_path, file_id, filename)
+                if source_image:
+                    images.append(source_image)
+            if images:
                 self._set_progress(file_id, 80)
-                self._store_image_records(parse_result.images, file_id)
+                self._store_image_records(images, file_id)
             self._set_progress(file_id, 90)
             
             # Stage 4: Finalize (90% → 100%)
             self._update_file_status(file_id, "done", {
                 "chunks_count": len(parse_result.text_chunks),
-                "images_count": len(parse_result.images),
+                "images_count": len(images),
                 "completed_at": datetime.now().isoformat()
             })
             # 终态事件显式声明（E2，0.4 §6.4）：完成通知由框架写入；
@@ -125,7 +137,7 @@ class ProcessingPipeline:
             return {
                 "success": True,
                 "chunks_count": len(parse_result.text_chunks),
-                "images_count": len(parse_result.images),
+                "images_count": len(images),
                 "error": None
             }
         
@@ -144,6 +156,38 @@ class ProcessingPipeline:
                 "error": error_msg
             }
     
+    @staticmethod
+    def _source_image_context(
+        file_path: str, file_id: str, filename: str,
+    ) -> Optional[ImageContext]:
+        """独立图片文件 → 源文件本身作为唯一图片记录；非图片扩展名返回 None。
+
+        IMAGE 输入经 Docling OCR 提取文字后 doc.pictures 为空（原图是输入而非
+        文档元素），不登记则图片文件在图片库不可见、VLM 语义描述链路缺失。
+        page=1：figure chunk id（img_{file_id}_{page_no}）命名空间避开内嵌图
+        idx 序列（2.2 §12.1-1）。尺寸读取失败不阻断登记（列为可空）。
+        """
+        if Path(filename).suffix.lower() not in _IMAGE_FILE_EXTS:
+            return None
+        width_px = height_px = None
+        try:
+            from PIL import Image
+            with Image.open(file_path) as im:
+                width_px, height_px = im.size
+        except Exception:
+            pass  # 尺寸可选，读取失败不阻断登记
+        return ImageContext(
+            image_id=f"img_{file_id}_0",
+            file_id=file_id,
+            page=1,
+            image_path=file_path,
+            caption=filename,
+            before_text="",
+            after_text="",
+            width_px=width_px,
+            height_px=height_px,
+        )
+
     def _store_chunks(
         self,
         parse_result: ParseResult,

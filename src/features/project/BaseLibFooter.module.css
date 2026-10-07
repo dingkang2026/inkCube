@@ -140,17 +140,6 @@
   animation: lib-pulse 1.5s ease-in-out infinite;
 }
 
-.reviewDot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-left: 6px;
-  border-radius: 50%;
-  background: var(--warning, #d97706);
-  vertical-align: middle;
-  flex-shrink: 0;
-}
-
 @keyframes lib-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.8); }

@@ -47,7 +47,6 @@ function makeStatus(partial: {
     summary: {
       active_files: 2,
       active_compiles: 1,
-      waiting_reviews: 0,
       generating_reports: 1,
       running_tasks: 0,
       downloading_models: 0,
@@ -91,7 +90,6 @@ describe('ActivityContext', () => {
           active: [
             { entity_type: 'file', project_id: 'p1', project_name: 'P1', count: 3, image_describing: 1 },
             { entity_type: 'wiki_compile', project_id: 'p1', status: 'ingesting' },
-            { entity_type: 'wiki_compile', project_id: 'p1', status: 'waiting_review' },
             { entity_type: 'report', project_id: 'p2', project_name: 'P2' },
             { entity_type: 'file', project_id: 'lib1', project_name: 'L1', container: 'baselib', count: 2 },
           ],
@@ -104,7 +102,6 @@ describe('ActivityContext', () => {
       files: 3,
       imageDescribing: 1,
       compiles: 1,
-      waitingReviews: 1,
     })
     expect(result.current.byProject.get('p2')?.reports).toBe(1)
     // container 分流（0.4 §3.6）：基础库活动进桶时标记 baselib，供 BaseLibFooter 活跃点取数
@@ -113,7 +110,6 @@ describe('ActivityContext', () => {
     expect(lib?.files).toBe(2)
     // 未标 container 的活跃项默认 project
     expect(result.current.byProject.get('p1')?.container).toBe('project')
-    // waiting_review 不计入 activeProjectIds（不触发「进行中」视觉）
     expect(result.current.activeProjectIds.has('p1')).toBe(true)
     expect(result.current.activeProjectIds.has('p2')).toBe(true)
   })

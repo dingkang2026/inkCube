@@ -23,7 +23,6 @@ function makeStatus(): ActivityStatus {
     summary: {
       active_files: 2,
       active_compiles: 0,
-      waiting_reviews: 0,
       generating_reports: 0,
       running_tasks: 0,
       downloading_models: 2,
@@ -78,7 +77,6 @@ describe('useActivity(kind) overload', () => {
       summary: {
         active_files: 1,
         active_compiles: 0,
-        waiting_reviews: 0,
         generating_reports: 0,
         running_tasks: 0,
         downloading_models: 0,

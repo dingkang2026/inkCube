@@ -212,18 +212,6 @@
   border-bottom-color: var(--accent);
 }
 
-/* Wiki compile status badge on tab */
-.wikiBadge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 8px;
-  color: var(--warning, #d97706);
-  background: color-mix(in srgb, var(--warning, #d97706) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 25%, transparent);
-  animation: pulse-badge 2s ease-in-out infinite;
-}
-
 /* Tab 角标呼吸点（Activity Hub L3，0.4 §3.5）：wiki 编译中 / 素材解析中 / 报告生成中 */
 .tabPulse {
   width: 7px;
@@ -231,11 +219,6 @@
   border-radius: 50%;
   background: var(--accent);
   animation: pulse-dot 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse-badge {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
 }
 
 @keyframes pulse-dot {

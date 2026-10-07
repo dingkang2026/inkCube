@@ -58,7 +58,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   // Wiki compile status polling #4（v1.7 迁移至 usePolling，0.4 §8.1；谓词收编全局心跳
   // useActivity('wiki_compile')，顺序 4）：保存完整快照（task + ingest_summaries +
   // is_resumed）下发 WikiTab（编译对话框明细）；Tab 角标改从心跳 byProject 派生。
-  // 谓词 = 项目存在活跃编译（含 waiting_review）或对话框打开（用户盯明细，填触发
+  // 谓词 = 项目存在活跃编译或对话框打开（用户盯明细，填触发
   // 动作后心跳未发现的前几秒，§6.3 启动间隙）——空闲且对话框关时停轮，消灭旧 30s 空转。
   const [wikiCompileData, setWikiCompileData] = useState<WikiCompileData | null>(null)
   const [compileDialogOpen, setCompileDialogOpen] = useState(false)
@@ -85,13 +85,10 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     name: 'wiki-compile-status',
     enabled: wikiCompileActive || compileDialogOpen,
     task: checkWikiCompileStatus,
-    // Adaptive: dialog open=2s, compiling=5s, waiting_review=10s；
+    // Adaptive: dialog open=2s, compiling=5s；
     // 兕底 5s（enabled 翻真但快照尚陈旧的窄窗口，理论不可达的防御分支）
     interval: () => {
       if (compileDialogOpen) return 2000
-      const status = wikiCompileData?.task?.status
-      if (status && ['queued', 'analyzing', 'generating', 'ingesting', 'storing'].includes(status)) return 5000
-      if (status === 'waiting_review') return 10000
       return 5000
     },
   })
@@ -114,12 +111,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
 
   // Tab 角标从心跳 byProject 派生（顺序 4：不再依赖 #4 自建快照，与心跳同源无重复查表）
   const wikiActivity = byProject.get(project.id)
-  const wikiCompileState: 'idle' | 'compiling' | 'waiting_review' =
-    wikiActivity && wikiActivity.waitingReviews > 0
-      ? 'waiting_review'
-      : wikiActivity && wikiActivity.compiles > 0
-        ? 'compiling'
-        : 'idle'
+  const wikiCompiling = (wikiActivity?.compiles ?? 0) > 0
 
   // Read type/stage from project (persisted in backend)
   const [projectType, setProjectType] = useState<ProjectType>(project.type || 'general')
@@ -250,12 +242,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
           >
             <Icon size={15} />
             <span>{t(labelKey)}</span>
-            {key === 'wiki' && wikiCompileState === 'waiting_review' && (
-              <span className={s.wikiBadge} title={t('project.wiki.waitingReview', { defaultValue: '编译等待审阅' })}>
-                {t('project.wiki.reviewBadge', { defaultValue: '待审阅' })}
-              </span>
-            )}
-            {key === 'wiki' && wikiCompileState === 'compiling' && (
+            {key === 'wiki' && wikiCompiling && (
               <span className={s.tabPulse} />
             )}
             {key === 'materials' && (byProject.get(project.id)?.files ?? 0) > 0 && (

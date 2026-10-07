@@ -211,7 +211,7 @@ class Database:
         self.conn.commit()
 
         # ── Activity Hub tables (0.4lifecycle-design.md §3.2 / §3.3) ──
-        # notifications: 终态事件持久化（完成/失败/待审阅），弹出即已读
+        # notifications: 终态事件持久化（完成/失败），弹出即已读
         # model_downloads: 模型下载状态持久化（崩溃检测用，进度不落库）
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS notifications (
@@ -220,7 +220,7 @@ class Database:
                 entity_id TEXT NOT NULL,
                 project_id TEXT,             -- 所属项目（任务/模型下载无项目时为 NULL）
                 container TEXT DEFAULT 'project', -- 挂载容器 project / baselib（0.4 §3.6，前端导航分流）
-                kind TEXT NOT NULL,          -- completed / failed / waiting_review
+                kind TEXT NOT NULL,          -- completed / failed
                 entity_title TEXT NOT NULL,  -- 展示名（用户数据，不翻译）
                 detail TEXT,
                 read_at TEXT,
@@ -400,8 +400,6 @@ class Database:
                 pages_completed INTEGER DEFAULT 0,
                 pages_failed INTEGER DEFAULT 0,
                 error_message TEXT,
-                retry_count INTEGER DEFAULT 0,
-                max_retries INTEGER DEFAULT 3,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT
@@ -431,10 +429,9 @@ class Database:
         self._migrate_add_column("projects", "wiki_purpose", "TEXT DEFAULT ''")
         self._migrate_add_column("projects", "wiki_overview", "TEXT DEFAULT ''")
 
-        # Wiki compile tasks — supervised ingest columns (§Step 1.4)
+        # Wiki compile tasks — V2 per-file ingest columns
         self._migrate_add_column("wiki_compile_tasks", "ingest_file_summaries", "TEXT")
         self._migrate_add_column("wiki_compile_tasks", "stop_requested", "INTEGER DEFAULT 0")
-        self._migrate_add_column("wiki_compile_tasks", "supervised", "INTEGER DEFAULT 0")
 
         # Wiki source pages table (§3.7) — tracks ingested files
         self.conn.executescript("""
@@ -514,8 +511,6 @@ class Database:
             "max_concurrent_image_description": 2,
             # Wiki compile settings
             "max_compile_concurrency": 1,
-            "compile_max_retries": 3,
-            "compile_backoff_base": 30,  # seconds, exponential backoff: base * 2^retry
             # LLM timeout settings
             "llm_connect_timeout": 30,
             "llm_read_timeout": 300,
@@ -523,6 +518,7 @@ class Database:
             "task_model": "",
             "task_planner_model": "",
             "task_timeout": 30,
+            "task_max_iterations": 25,  # FC loop max iterations (TaskSettings UI)
             "task_shell_confirm_mode": "smart",  # strict | smart | auto
             "task_auto_confirm_shell": False,  # legacy, kept for backward compat
             "task_shell_domain_whitelist": "",  # newline-separated domains auto-approved in smart mode
@@ -1141,30 +1137,6 @@ class Database:
         )
         self.conn.commit()
         return cursor.rowcount
-
-    def list_files_paginated(
-        self, project_id: str, limit: int = 20,
-        before_created_at: str | None = None,
-        before_id: str | None = None,
-    ) -> tuple[list[dict], bool]:
-        """Cursor-based pagination. Returns (files, has_more)."""
-        conditions = ["project_id = ?"]
-        params: list = [project_id]
-        if before_created_at and before_id:
-            conditions.append(
-                "(created_at < ? OR (created_at = ? AND id < ?))"
-            )
-            params.extend([before_created_at, before_created_at, before_id])
-        where = " AND ".join(conditions)
-        cursor = self.conn.execute(
-            f"SELECT * FROM files WHERE {where} "
-            f"ORDER BY created_at DESC, id DESC LIMIT ?",
-            params + [limit + 1]
-        )
-        rows = cursor.fetchall()
-        has_more = len(rows) > limit
-        files = [dict(row) for row in rows[:limit]]
-        return files, has_more
 
     # ── Skills ──
 
@@ -2475,7 +2447,7 @@ class Database:
         if error_message is not None:
             updates.append("error_message = ?")
             params.append(error_message)
-        if status in ("completed", "failed", "partial"):
+        if status in ("completed", "failed"):
             updates.append("completed_at = ?")
             params.append(self._now())
         params.append(task_id)
@@ -2484,7 +2456,7 @@ class Database:
             params,
         )
         self.conn.commit()
-        # 纯状态更新：终态/待审阅通知由调用方经 activity_events 显式声明（0.4 §6.4 E2，
+        # 纯状态更新：终态通知由调用方经 activity_events 显式声明（0.4 §6.4 E2，
         # 顺序 4）；stopped / queued / ingesting 等中间态静默（用户主动停止不算事件）。
 
     def start_compile_task(self, task_id: str):
@@ -2495,50 +2467,18 @@ class Database:
         )
         self.conn.commit()
 
-    def increment_compile_task_retry(self, task_id: str) -> int:
-        self.conn.execute(
-            "UPDATE wiki_compile_tasks SET retry_count = retry_count + 1 WHERE id = ?",
-            (task_id,),
-        )
-        self.conn.commit()
-        task = self.get_wiki_compile_task(task_id)
-        return task["retry_count"] if task else 0
-
-    def get_waiting_review_compile_tasks(self) -> list[dict]:
-        """Get the latest compile task per project that is in 'waiting_review' status."""
-        cursor = self.conn.execute(
-            "SELECT wct.* FROM wiki_compile_tasks wct "
-            "INNER JOIN ("
-            "  SELECT project_id, MAX(created_at) AS max_created "
-            "  FROM wiki_compile_tasks GROUP BY project_id"
-            ") latest ON wct.project_id = latest.project_id AND wct.created_at = latest.max_created "
-            "WHERE wct.status = 'waiting_review'"
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
     def reset_interrupted_compile_tasks(self) -> int:
         """Reset interrupted compile tasks to queued for crash recovery. Returns count.
 
-        Resets in-flight statuses when crashed: 'analyzing' / 'generating' (batch compiler
-        stage1/stage2) and 'ingesting' / 'storing' (supervised per-file ingest).
-        'waiting_review' is NOT reset — supervised mode should wait for user to return.
+        Resets in-flight statuses when crashed: 'ingesting' / 'storing' (V2
+        per-file ingest) → queued；QueueScanner 拾起后按 ingest_summaries 断点续跑。
         """
         cursor = self.conn.execute(
             "UPDATE wiki_compile_tasks SET status = 'queued' "
-            "WHERE status IN ('analyzing', 'generating', 'ingesting', 'storing')"
+            "WHERE status IN ('ingesting', 'storing')"
         )
         self.conn.commit()
         return cursor.rowcount
-
-    # ── Wiki: Supervised Ingest (Step 1.4) ──
-
-    def set_compile_supervised(self, task_id: str, supervised: bool = True):
-        """Mark a compile task as supervised (pause after each file)."""
-        self.conn.execute(
-            "UPDATE wiki_compile_tasks SET supervised = ? WHERE id = ?",
-            (1 if supervised else 0, task_id),
-        )
-        self.conn.commit()
 
     def request_compile_stop(self, task_id: str):
         """Request a running compile task to stop after the current file."""
@@ -2590,15 +2530,6 @@ class Database:
             return json.loads(raw) if isinstance(raw, str) else raw
         except (json.JSONDecodeError, TypeError):
             return []
-
-    def is_compile_supervised(self, task_id: str) -> bool:
-        """Check if a compile task is in supervised mode."""
-        cursor = self.conn.execute(
-            "SELECT supervised FROM wiki_compile_tasks WHERE id = ?",
-            (task_id,),
-        )
-        row = cursor.fetchone()
-        return bool(row and row["supervised"])
 
     def get_pending_wiki_files(self, project_id: str, exclude_file_ids: list[str] | None = None) -> list[dict]:
         """Get files that need Wiki ingestion for a project.
@@ -2710,30 +2641,12 @@ class Database:
             return self._parse_source_page_json(dict(row))
         return None
 
-    def get_source_page_by_hash(self, project_id: str, content_hash: str) -> dict | None:
-        """Check if a file with this content_hash has already been ingested."""
-        cursor = self.conn.execute(
-            "SELECT * FROM wiki_source_pages WHERE project_id = ? AND content_hash = ? AND status = 'ingested'",
-            (project_id, content_hash),
-        )
-        row = cursor.fetchone()
-        if row:
-            return self._parse_source_page_json(dict(row))
-        return None
-
     def list_source_pages(self, project_id: str) -> list[dict]:
         cursor = self.conn.execute(
             "SELECT * FROM wiki_source_pages WHERE project_id = ? ORDER BY ingested_at DESC",
             (project_id,),
         )
         return [self._parse_source_page_json(dict(row)) for row in cursor.fetchall()]
-
-    def update_source_page_status(self, project_id: str, file_id: str, status: str):
-        self.conn.execute(
-            "UPDATE wiki_source_pages SET status = ?, updated_at = ? WHERE project_id = ? AND file_id = ?",
-            (status, self._now(), project_id, file_id),
-        )
-        self.conn.commit()
 
     def delete_source_page(self, project_id: str, file_id: str) -> bool:
         cursor = self.conn.execute(

@@ -2,7 +2,6 @@
 
 Implements all Wiki REST APIs per §4/§5/§7 of 2.6wiki-design.md.
 """
-import hashlib
 import logging
 from typing import Optional
 
@@ -42,8 +41,6 @@ def get_data_dir() -> str:
 class CompileRequest(BaseModel):
     mode: str = "incremental"  # "full" or "incremental"
     trigger_type: str = "manual"
-    file_ids: list[str] = []  # empty = all pending files (legacy batch compile)
-    supervised: bool = False  # Step 1.4: pause after each file for user review
     force: bool = False  # force re-ingest all files (clear source_page tracking)
 
 
@@ -240,11 +237,7 @@ async def delete_wiki_page(project_id: str, page_key: str):
 
 @router.post("/projects/{project_id}/compile")
 async def trigger_compile(project_id: str, req: CompileRequest):
-    """Trigger Wiki compilation for a project.
-
-    If file_ids is provided, uses the new per-file ingest engine (V2).
-    Otherwise, falls back to the legacy batch compile (V1).
-    """
+    """Trigger Wiki compilation for a project (V2 per-file ingest, continuous)."""
     # 准入前置校验（0.4 §7.3）：缺 LLM/嵌入模型时结构化报错
     ensure_ready("wiki_compile")
     try:
@@ -255,7 +248,7 @@ async def trigger_compile(project_id: str, req: CompileRequest):
 
         # Check if there's already a running compile task
         latest = db.get_latest_compile_task(project_id)
-        if latest and latest["status"] in ("queued", "ingesting", "storing", "waiting_review"):
+        if latest and latest["status"] in ("queued", "ingesting", "storing"):
             raise HTTPException(
                 status_code=409,
                 detail=f"已有编译任务进行中: {latest['status']}",
@@ -303,10 +296,6 @@ async def trigger_compile(project_id: str, req: CompileRequest):
         # Reset pending count
         db.reset_pending_compile_count(project_id)
 
-        # Set supervised flag if supervised mode requested
-        if req.supervised:
-            db.set_compile_supervised(task["id"], True)
-
         # Enqueue to compile worker
         try:
             import deps
@@ -333,9 +322,9 @@ async def stop_compile(project_id: str):
         task = db.get_latest_compile_task(project_id)
         if not task:
             raise HTTPException(status_code=404, detail="No compile task found")
-        if task["status"] not in ("queued", "ingesting", "storing", "waiting_review"):
+        if task["status"] not in ("queued", "ingesting", "storing"):
             raise HTTPException(status_code=409, detail=f"Compile task not active (status={task['status']})")
-        # Use the worker's signal to also wake the event if waiting
+        # Cooperative stop: worker checks the stop flag after the current file
         try:
             import deps
             if hasattr(deps, "worker") and deps.worker:
@@ -349,35 +338,6 @@ async def stop_compile(project_id: str):
         raise
     except Exception as e:
         logger.error("Failed to stop compile: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/projects/{project_id}/compile/continue")
-async def continue_compile(project_id: str):
-    """Continue a compile task that is paused in supervised mode (waiting_review)."""
-    # 事前准入（§7.3 第三层 v3.7）：try 块外调用，InkCubeError 直接冒泡转结构化响应
-    ensure_ready("wiki_compile")
-    try:
-        db = get_db()
-        task = db.get_latest_compile_task(project_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="No compile task found")
-        if task["status"] != "waiting_review":
-            raise HTTPException(status_code=409, detail=f"Compile task not waiting for review (status={task['status']})")
-        # Use the worker's signal to wake the event and continue
-        try:
-            import deps
-            if hasattr(deps, "worker") and deps.worker:
-                await deps.worker.signal_compile_continue(task["id"])
-            else:
-                db.update_compile_task_status(task["id"], "queued")
-        except Exception:
-            db.update_compile_task_status(task["id"], "queued")
-        return {"task": db.get_wiki_compile_task(task["id"])}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to continue compile: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -399,37 +359,6 @@ async def get_compile_status(project_id: str):
         return result
     except Exception as e:
         logger.error("Failed to get compile status: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/review-status")
-async def get_global_review_status():
-    """Global endpoint: returns all projects with compile tasks waiting for review,
-    plus projects with active compile tasks (ingesting/queued/storing).
-    Used by the frontend to show notifications and activity indicators.
-    """
-    try:
-        db = get_db()
-        tasks = db.get_waiting_review_compile_tasks()
-        result = []
-        for task in tasks:
-            project = db.get_project(task["project_id"])
-            result.append({
-                "project_id": task["project_id"],
-                "project_name": project["name"] if project else "Unknown",
-                "task_id": task["id"],
-                "status": task["status"],
-            })
-        # Also check for active compile tasks (ingesting/queued/storing)
-        active_cursor = db.conn.execute(
-            "SELECT id, project_id, status FROM wiki_compile_tasks "
-            "WHERE status IN ('ingesting', 'queued', 'storing') "
-            "ORDER BY created_at DESC"
-        )
-        active_compiles = [dict(r) for r in active_cursor.fetchall()]
-        return {"waiting_reviews": result, "active_compiles": active_compiles}
-    except Exception as e:
-        logger.error("Failed to get global review status: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -1,14 +1,15 @@
 """python/wiki/ingest.py — Per-file Wiki ingest engine.
 
 Implements the per-file incremental ingestion pipeline per §4.2 of 2.6wiki-design.md:
-  Step 0: SHA-256 cache check (skip unchanged files)
   Step 1: Prepare ingest context (full text + purpose + schemas + index + overview)
   Step 2: LLM Analysis (first call — plan pages, identify entities/concepts)
   Step 3: LLM Generation (second call — produce PAGE blocks with YAML frontmatter)
   Step 4: Store & trace (write pages, source_pages, change_log, reviews, update overview)
+
+Skip-if-unchanged lives at queue level (get_pending_wiki_files excludes files
+with an ingested source_page), not in this module.
 """
 import asyncio
-import hashlib
 import json
 import logging
 from collections import defaultdict
@@ -40,17 +41,11 @@ class WikiIngestor:
         self.llm = llm_client
         self.settings = llm_settings
 
-    async def ingest_file(
-        self,
-        project_id: str,
-        file_id: str,
-        task_id: str,
-        skip_task_update: bool = False,
-    ) -> dict:
+    async def ingest_file(self, project_id: str, file_id: str, task_id: str) -> dict:
         """Ingest a single file into the Wiki.
 
         Returns summary dict with pages_created, pages_updated, reviews_count, etc.
-        If skip_task_update=True, the caller (compile worker) manages task status.
+        Task status is managed by the caller (compile worker, task_queue).
         """
         project = self.db.get_project(project_id)
         if not project:
@@ -63,14 +58,10 @@ class WikiIngestor:
         project_type = project.get("type", "general")
         filename = file_rec.get("filename", "unknown")
 
-        # ── Step 0: SHA-256 cache check ──
+        # File SHA-256, recorded in wiki_source_pages for ingestion tracking (§3.7).
+        # Skip-if-unchanged lives at queue level: get_pending_wiki_files excludes
+        # files with an ingested source_page, so every file reaching here is new work.
         content_hash = file_rec.get("file_hash", "")
-        existing_sp = self.db.get_source_page(project_id, file_id)
-        if existing_sp and existing_sp.get("content_hash") == content_hash and existing_sp.get("status") == "ingested":
-            logger.info("Ingest [%s]: file '%s' unchanged (hash=%s), skipping", task_id, filename, content_hash[:12])
-            if not skip_task_update:
-                self.db.update_compile_task_status(task_id, "completed", pages_total=0, pages_completed=0)
-            return {"skipped": True, "reason": "unchanged"}
 
         self.db.update_compile_task_status(task_id, "ingesting", stage="read_source")
 
@@ -78,8 +69,6 @@ class WikiIngestor:
         full_text = self._read_full_text(file_id, project_id)
         if not full_text.strip():
             logger.warning("Ingest [%s]: no text content for file '%s'", task_id, filename)
-            if not skip_task_update:
-                self.db.update_compile_task_status(task_id, "failed", error_message="文件无可提取文本")
             return {"skipped": False, "error": "no_text"}
 
         purpose = self.db.get_wiki_purpose(project_id)
@@ -132,8 +121,6 @@ class WikiIngestor:
         if not analysis_report or len(analysis_report.strip()) < _MIN_ANALYSIS_LEN:
             err_msg = f"Stage 1 分析结果为空或过短（len={len(analysis_report) if analysis_report else 0}），LLM 可能未正常响应"
             logger.error("Ingest [%s]: %s", task_id, err_msg)
-            if not skip_task_update:
-                self.db.update_compile_task_status(task_id, "failed", error_message=err_msg)
             raise LLMNetworkError(detail=err_msg)
 
         # ── Step 3: LLM Generation ──
@@ -298,25 +285,7 @@ class WikiIngestor:
             # Auto-generate a brief overview from current pages
             self._auto_update_overview(project_id)
 
-        # Update compile task (unless caller manages task status)
-        compile_status = "completed"
-        if not skip_task_update:
-            total_pages = len(pages)
-            if pages_failed > 0 and pages_created + pages_updated == 0:
-                compile_status = "failed"
-            elif pages_failed > 0:
-                compile_status = "partial"
-            else:
-                compile_status = "completed"
-
-            self.db.update_compile_task_status(
-                task_id, compile_status,
-                pages_total=total_pages,
-                pages_completed=pages_created + pages_updated,
-                pages_failed=pages_failed,
-            )
-
-        result = {
+        return {
             "skipped": False,
             "pages_created": pages_created,
             "pages_updated": pages_updated,
@@ -326,101 +295,6 @@ class WikiIngestor:
             "source_page_key": source_page_key,
             "filename": filename,
             "file_id": file_id,
-        }
-        logger.info("Ingest [%s] %s: %s", task_id, compile_status, result)
-
-        # Append per-file summary to compile task (for supervised mode visibility)
-        self.db.append_ingest_summary(task_id, {
-            "file_id": file_id,
-            "filename": filename,
-            "pages_created": pages_created,
-            "pages_updated": pages_updated,
-            "pages_failed": pages_failed,
-            "reviews_count": reviews_count,
-            "pages_touched": all_touched_keys,
-            "status": compile_status,
-        })
-
-        return result
-
-    async def ingest_batch(
-        self,
-        project_id: str,
-        file_ids: list[str],
-        task_id: str,
-    ) -> dict:
-        """Ingest multiple files serially. Each file's result affects the next.
-
-        In supervised mode (compile task has supervised=1), pauses after each
-        file by setting status to 'awaiting_review'. Checks stop_requested
-        flag between files.
-        """
-        results = []
-        total_created = 0
-        total_updated = 0
-        total_reviews = 0
-        total_skipped = 0
-        supervised = self.db.is_compile_supervised(task_id)
-
-        for i, file_id in enumerate(file_ids):
-            # Check stop request between files
-            if self.db.is_compile_stop_requested(task_id):
-                logger.info("Ingest batch [%s]: stop requested after %d/%d files", task_id, i, len(file_ids))
-                break
-
-            file_rec = self.db.get_file(file_id)
-            filename = file_rec.get("filename", "?") if file_rec else "?"
-            logger.info("Ingest batch [%s]: file %d/%d '%s'", task_id, i + 1, len(file_ids), filename)
-
-            result = await self.ingest_file(project_id, file_id, task_id)
-            results.append({"file_id": file_id, "filename": filename, **result})
-
-            if result.get("skipped"):
-                total_skipped += 1
-            else:
-                total_created += result.get("pages_created", 0)
-                total_updated += result.get("pages_updated", 0)
-                total_reviews += result.get("reviews_count", 0)
-
-            # In supervised mode, pause after each file for user review
-            if supervised and i < len(file_ids) - 1:
-                self.db.update_compile_task_status(
-                    task_id, "waiting_review",
-                    pages_total=len(file_ids),
-                    pages_completed=i + 1,
-                )
-                logger.info("Ingest batch [%s]: supervised pause after file %d/%d", task_id, i + 1, len(file_ids))
-                # The worker will pick up again when status is changed back
-                # For now, we break and let the frontend resume
-                break
-
-        # Final status
-        remaining = len(file_ids) - len(results)
-        if self.db.is_compile_stop_requested(task_id) and remaining > 0:
-            final_status = "stopped"
-        elif remaining > 0 and supervised:
-            final_status = "waiting_review"
-        elif total_created + total_updated == 0 and total_skipped == len(file_ids):
-            final_status = "completed"
-        else:
-            final_status = "completed"
-
-        self.db.update_compile_task_status(
-            task_id, final_status,
-            pages_total=len(file_ids),
-            pages_completed=len(results),
-        )
-
-        return {
-            "files_processed": len(results),
-            "files_remaining": remaining,
-            "files_skipped": total_skipped,
-            "pages_created": total_created,
-            "pages_updated": total_updated,
-            "reviews_count": total_reviews,
-            "supervised": supervised,
-            "stopped": self.db.is_compile_stop_requested(task_id),
-            "details": results,
         }
 
     # ── Private helpers ──

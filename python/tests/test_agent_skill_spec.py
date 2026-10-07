@@ -9,7 +9,13 @@ dev/demo-skills/color-conv（严格遵循 agentskills.io 规范：name 与目录
    "uses only the standard library" 解析成包名并 pip install，已删除；
 2. SKILL.md 指南只在首次执行结果附带（激活时加载一次），不再每次注入；
 3. references/ 通过 file_ops 只读根按需读取（L3 渐进式披露）；
-4. 标准格式（license 等额外 frontmatter 字段）解析零报错。
+4. 标准格式（license 等额外 frontmatter 字段）解析零报错；
+5. 入口脚本契约（2026-10）：仅约定入口（main.py/cli.py）或唯一脚本才
+   自动执行；多脚本工作流型 Skill（如 ppt-master：70+ 工具脚本由
+   workflows/*.md 编排，无统一 CLI 入口）走 instructions 模式，否则会
+   按字母序误跑无关脚本（analyze_images.py）；
+6. requirements.txt 存在性注记（2026-10）：仅提示 LLM 按需自助安装，
+   不解析、不自动安装。
 """
 import asyncio
 import json
@@ -224,3 +230,145 @@ class TestFileOpsReadonlyRoot:
         )
         names = [e["name"] for e in result.get("entries", [])]
         assert "SKILL.md" in names and "references" in names
+
+
+class TestEntryScriptContract:
+    """入口脚本契约（回归 #5）：CLI 模式 vs instructions 模式。"""
+
+    @staticmethod
+    def _skill(tmp_path: Path, scripts: list[str]) -> Path:
+        skill_dir = tmp_path / "wf-skill"
+        (skill_dir / "scripts").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(MINI_SKILL_MD, encoding="utf-8")
+        for name in scripts:
+            (skill_dir / "scripts" / name).write_text(
+                "print('ok')\n", encoding="utf-8"
+            )
+        return skill_dir
+
+    def test_multi_script_without_convention_uses_instructions(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """多脚本无约定入口（ppt-master 形态）绝不自动执行任意脚本。"""
+        import skills.loader as loader_mod
+
+        calls: list[list[str]] = []
+
+        async def spy_exec(*cmd, **kwargs):
+            calls.append(list(cmd))
+            raise AssertionError("workflow skill must not be auto-executed")
+
+        monkeypatch.setattr(loader_mod.asyncio, "create_subprocess_exec", spy_exec)
+        adapter = _adapter(self._skill(tmp_path, ["analyze_images.py", "svg_to_pptx.py"]))
+        result = json.loads(
+            _run(adapter.execute({"command": "生成一份 PPT"}, _context()))
+        )
+
+        assert calls == []
+        assert "instructions" in result  # 指南随首执结果附带
+        assert "workflow" in result["note"].lower() or "instructions" in result["note"].lower()
+
+    def test_conventional_entry_main_py_is_chosen(self, tmp_path: Path, monkeypatch):
+        """存在 main.py 约定入口时执行它，而非字母序首个脚本。"""
+        import skills.loader as loader_mod
+
+        picked: list[str] = []
+        orig_exec = loader_mod.asyncio.create_subprocess_exec
+
+        async def spy_exec(*cmd, **kwargs):
+            picked.append(str(cmd[1]))
+            return await orig_exec(*cmd, **kwargs)
+
+        monkeypatch.setattr(loader_mod.asyncio, "create_subprocess_exec", spy_exec)
+        adapter = _adapter(
+            self._skill(tmp_path, ["analyze_images.py", "main.py", "util.py"])
+        )
+        result = json.loads(_run(adapter.execute({"command": ""}, _context())))
+
+        assert len(picked) == 1 and picked[0].endswith("main.py")
+        assert result["output"] == "ok"
+
+    def test_single_script_still_executes(self, tmp_path: Path):
+        """唯一脚本 = 可发现入口，CLI 模式保持不变（向后兼容）。"""
+        adapter = _adapter(self._skill(tmp_path, ["tool.py"]))
+        result = json.loads(_run(adapter.execute({"command": ""}, _context())))
+        assert result["output"] == "ok"
+
+    def test_underscore_helpers_do_not_qualify_as_entry(self, tmp_path: Path):
+        """仅有 _ 前缀辅助脚本时不算可发现入口 → instructions 模式。"""
+        adapter = _adapter(self._skill(tmp_path, ["_helper.py"]))
+        result = json.loads(_run(adapter.execute({"command": "hi"}, _context())))
+        assert "instructions" in result
+
+    def test_command_schema_follows_mode(self, tmp_path: Path):
+        """command 参数描述随模式分叉：CLI 模式要求 CLI 形态，工作流型接受自由文本。"""
+        cli_adapter = _adapter(self._skill(tmp_path / "a", ["main.py"]))
+        wf_adapter = _adapter(self._skill(tmp_path / "b", ["s1.py", "s2.py"]))
+
+        assert "CLI arguments" in cli_adapter.input_schema["properties"]["command"]["description"]
+        assert "free-form" in wf_adapter.input_schema["properties"]["command"]["description"]
+
+
+class TestRequirementsNote:
+    """requirements.txt 存在性注记（回归 #6）：只提示，不解析不安装。"""
+
+    @staticmethod
+    def _skill(tmp_path: Path, with_requirements: bool) -> Path:
+        skill_dir = tmp_path / "dep-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(MINI_SKILL_MD, encoding="utf-8")
+        if with_requirements:
+            (skill_dir / "requirements.txt").write_text(
+                "python-pptx>=0.6.21\n", encoding="utf-8"
+            )
+        return skill_dir
+
+    def test_note_attached_on_first_result_only(self, tmp_path: Path):
+        adapter = _adapter(self._skill(tmp_path, with_requirements=True))
+        ctx = _context()
+
+        first = json.loads(_run(adapter.execute({"command": "hi"}, ctx)))
+        second = json.loads(_run(adapter.execute({"command": "hi"}, ctx)))
+
+        assert "dependencies" in first
+        assert "requirements.txt" in first["dependencies"]
+        assert "dependencies" not in second  # 与指南同批，仅首次
+
+    def test_note_absent_without_file(self, tmp_path: Path):
+        adapter = _adapter(self._skill(tmp_path, with_requirements=False))
+        result = json.loads(_run(adapter.execute({"command": "hi"}, _context())))
+        assert "dependencies" not in result
+
+
+class TestGuideBudget:
+    """L2 指南预算：SKILL_GUIDE_MAX_CHARS（4000 → 8000，2026-10）。"""
+
+    def test_long_body_truncated_to_budget(self, tmp_path: Path):
+        """超长正文截断到预算内——大工作流 Skill（如 ppt-master ≈ 4.8K 字符）完整保留。"""
+        from skills.loader import SKILL_GUIDE_MAX_CHARS
+
+        skill_dir = tmp_path / "long-skill"
+        skill_dir.mkdir()
+        long_body = "# Long\n\n" + "x" * (SKILL_GUIDE_MAX_CHARS + 1000)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: long-skill\ndescription: t\n---\n\n{long_body}",
+            encoding="utf-8",
+        )
+        adapter = _adapter(skill_dir)
+        result = json.loads(_run(adapter.execute({"command": "hi"}, _context())))
+
+        assert len(result["instructions"]) == SKILL_GUIDE_MAX_CHARS
+
+    def test_ppt_master_sized_body_not_truncated(self, tmp_path: Path):
+        """4800 字符级正文（旧 4000 预算会截尾）现在完整保留。"""
+        skill_dir = tmp_path / "mid-skill"
+        skill_dir.mkdir()
+        body = "# Mid\n\n" + "y" * 4800
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: mid-skill\ndescription: t\n---\n\n{body}",
+            encoding="utf-8",
+        )
+        adapter = _adapter(skill_dir)
+        result = json.loads(_run(adapter.execute({"command": "hi"}, _context())))
+
+        assert result["instructions"] == body

@@ -21,8 +21,6 @@ class SettingsModel(BaseModel):
     max_concurrent_image_description: int = 2
     # Wiki compile settings
     max_compile_concurrency: int = 1
-    compile_max_retries: int = 3
-    compile_backoff_base: int = 30  # seconds
     # LLM timeout settings
     llm_connect_timeout: int = 30
     llm_read_timeout: int = 300
@@ -30,6 +28,7 @@ class SettingsModel(BaseModel):
     task_model: str = ""  # empty = use global model
     task_planner_model: str = ""  # empty = use task_model or global model
     task_timeout: int = 30  # seconds
+    task_max_iterations: int = 25  # FC loop max iterations (TaskSettings UI)
     task_auto_confirm_shell: bool = False  # legacy, kept for backward compat
     task_shell_confirm_mode: str = "smart"  # strict | smart | auto
     task_shell_domain_whitelist: str = ""  # newline-separated domains auto-approved in smart mode

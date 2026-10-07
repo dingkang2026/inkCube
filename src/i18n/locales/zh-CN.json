@@ -136,12 +136,6 @@
       "compile": "Wiki 编译并发数",
       "compileHint": "同时进行的编译任务数，默认 1"
     },
-    "compile": {
-      "maxRetries": "编译最大重试次数",
-      "maxRetriesHint": "编译失败后的重试次数，默认 3",
-      "backoffBase": "重试退避基数（秒）",
-      "backoffBaseHint": "指数退避基数，实际间隔 = 基数 × 2^重试次数，默认 30s"
-    },
     "llm": {
       "connectTimeout": "LLM 连接超时（秒）",
       "connectTimeoutHint": "建立连接的超时时间，默认 30 秒",
@@ -157,6 +151,8 @@
       "plannerModelHint": "设置后启用双模型架构：先用规划模型分析需求制定计划，再用任务模型执行。留空则使用单模型模式",
       "timeout": "代码执行超时（秒）",
       "timeoutHint": "单次代码/命令执行的最大等待时间，默认 30 秒",
+      "maxIterations": "最大迭代轮数",
+      "maxIterationsHint": "任务单次执行的最大工具调用轮数，默认 25；长流程任务（如工作流型 Skill 生成 PPT）建议调高",
       "autoConfirmShell": "自动确认 Shell 命令",
       "autoConfirmShellHint": "开启后执行 shell 命令前无需手动确认（高级用户）",
       "shellConfirmMode": "Shell 命令确认模式",
@@ -240,6 +236,8 @@
     "creating": "创建中...",
     "newProject": "新建项目",
     "createProjectFailed": "创建项目失败",
+    "deleteProjectFailed": "删除项目失败",
+    "renameProjectFailed": "重命名项目失败",
     "filterAll": "全部",
     "filterProcessing": "处理中",
     "filterDone": "已完成",
@@ -472,8 +470,7 @@
     },
     "wiki_compile": {
       "completed": "「{{title}}」Wiki 编译完成",
-      "failed": "「{{title}}」Wiki 编译失败",
-      "waiting_review": "「{{title}}」Wiki 编译等待审阅"
+      "failed": "「{{title}}」Wiki 编译失败"
     },
     "report": {
       "completed": "报告《{{title}}》生成完成",
@@ -507,8 +504,7 @@
     },
     "tipFiles": "{{count}} 个文件解析中",
     "tipCompiles": "Wiki 编译中",
-    "tipReports": "{{count}} 份报告生成中",
-    "tipWaiting": "{{count}} 项待审阅"
+    "tipReports": "{{count}} 份报告生成中"
   },
   "readiness": {
     "dialogTitle": "功能未就绪",
@@ -699,6 +695,7 @@
       "exportFailed": "导出失败：{{error}}",
       "delete": "删除",
       "confirmDelete": "确认删除此报告？",
+      "deleteFailed": "删除失败",
       "retry": "重试生成",
       "retryFailed": "重试失败：{{error}}",
       "wizard": {
@@ -838,9 +835,8 @@
       "statusStoring": "保存知识库...",
       "pages": "页面",
       "compileDone": "编译完成 ({{count}} 个文件)",
-      "compilePartial": "编译部分完成: {{completed}}/{{total}} 页面, {{failed}} 失败",
       "retry": "重试",
-      "continueCompile": "继续编译",
+      "resumeCompile": "继续编译",
       "compileStopped": "编译已停止: {{completed}}/{{total}} 文件",
       "compileStoppedSimple": "编译已停止",
       "recompile": "重新编译",
@@ -888,21 +884,20 @@
         "ingested": "摄入",
         "overview_updated": "概览更新"
       },
-      "supervisedMode": "监督摄入模式",
-      "supervisedWaiting": "等待审阅...",
-      "supervisedFiles": "文件",
-      "supervisedProgress": "已处理 {{done}}/{{total}} 个文件",
-      "supervisedContinue": "继续下一篇",
-      "supervisedStop": "停止摄入",
-      "supervisedClose": "关闭",
-      "supervisedSkipped": "已跳过",
-      "supervisedError": "处理失败",
-      "supervisedDone": "处理完成",
-      "supervisedCreated": "新建",
-      "supervisedUpdated": "更新",
-      "supervisedReviews": "发现项",
-      "supervisedAllDone": "所有文件摄入完成",
-      "supervisedStopped": "摄入已停止",
+      "compileTitle": "Wiki 编译",
+      "compileProgress": "已处理 {{done}}/{{total}} 个文件",
+      "compileStop": "停止摄入",
+      "compileClose": "关闭",
+      "compileMinimize": "最小化",
+      "compileMinimizeTip": "最小化（编译继续在后台运行）",
+      "compileSkipped": "已跳过",
+      "compileError": "处理失败",
+      "compileFileDone": "处理完成",
+      "compileCreated": "新建",
+      "compileUpdated": "更新",
+      "compileReviews": "发现项",
+      "compileAllDone": "所有文件摄入完成",
+      "compileIngestStopped": "摄入已停止",
       "selectAll": "全选",
       "batchDismiss": "批量忽略 ({{count}})",
       "batchResolved": "批量已解决 ({{count}})",
@@ -929,17 +924,13 @@
       "archiveTitlePlaceholder": "页面标题",
       "archiveFailed": "保存失败",
       "archived": "已保存到 Wiki",
-      "reviewBadge": "待审阅",
-      "reviewWaitingNav": "知识库等待审阅",
-      "waitingReview": "编译等待审阅",
       "compileResumed": "上次编译被中断，已从第 {{fileNum}} 个文件恢复继续",
       "compileDoneWithErrors": "编译完成: {{success}} 成功, {{errors}} 失败",
       "viewDetails": "查看详情",
-      "supervisedCompletedWithErrors": "编译完成: {{success}} 成功, {{errors}} 失败",
-      "supervisedErrors": "个失败",
-      "supervisedProcessing": "正在处理第一个文件...",
-      "supervisedProgressCalculating": "正在计算任务规模...",
-      "supervisedSkippedCount": "个跳过"
+      "compileErrors": "个失败",
+      "compileProcessing": "正在处理第一个文件...",
+      "compileProgressCalculating": "正在计算任务规模...",
+      "compileSkippedCount": "个跳过"
     },
     "forms": {
       "newForm": "新建表格",
