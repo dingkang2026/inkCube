@@ -130,11 +130,11 @@
     },
     "concurrency": {
       "fileParsing": "File parsing concurrency",
-      "fileParsingHint": "Number of files processed simultaneously, default 1",
+      "fileParsingHint": "Number of files parsed simultaneously. Files are independent — multiple files of the same project are parsed in parallel. Default 2; increasing it requires an app restart",
       "imageDescription": "Image description concurrency",
-      "imageDescriptionHint": "Number of images processed simultaneously, default 2",
+      "imageDescriptionHint": "Number of images described simultaneously. Each image is an independent VLM call. Default 2; increasing it requires an app restart",
       "compile": "Wiki compile concurrency",
-      "compileHint": "Number of compile tasks running simultaneously, default 1"
+      "compileHint": "Number of Wiki compile tasks running simultaneously. Each task compiles one project, ingesting its files sequentially — this equals the number of projects compiled in parallel. Default 2; increasing it requires an app restart"
     },
     "llm": {
       "connectTimeout": "LLM connect timeout (seconds)",
@@ -195,6 +195,10 @@
     "uploadFailed": "Upload failed",
     "uploadedFiles": "Uploaded Files",
     "refresh": "Refresh",
+    "pauseParsing": "Pause file parsing",
+    "resumeParsing": "Resume file parsing",
+    "pauseDescribe": "Pause image describing",
+    "resumeDescribe": "Resume image describing",
     "dropZone": "Click or drag files here to upload",
     "supportedFormats": "Supports PDF, DOCX, PPTX, XLSX, HTML, PNG, JPG",
     "search": "Search",
@@ -475,7 +479,8 @@
     },
     "report": {
       "completed": "Report \"{{title}}\" generated",
-      "failed": "Report \"{{title}}\" failed to generate"
+      "failed": "Report \"{{title}}\" failed to generate",
+      "paused": "Report \"{{title}}\" paused, resumable from checkpoint"
     },
     "task": {
       "completed": "Task \"{{title}}\" completed",
@@ -699,6 +704,15 @@
       "deleteFailed": "Delete failed",
       "retry": "Retry Generation",
       "retryFailed": "Retry failed: {{error}}",
+      "pauseReport": "Pause",
+      "pauseTip": "Pauses after the current section completes; resumable from checkpoint",
+      "pauseRequested": "Pause requested; takes effect after the current section",
+      "pauseFailed": "Failed to pause: {{error}}",
+      "pausedStatus": "Paused",
+      "resumeReport": "Resume",
+      "resumeTip": "Continue from the last checkpoint",
+      "restartReport": "Regenerate",
+      "restartConfirm": "Regenerating discards all progress and starts from scratch (consumes more tokens). Continue?",
       "wizard": {
         "back": "Back",
         "newReport": "New Report",
@@ -719,6 +733,7 @@
         "sectionInternet": "Internet Retrieval",
         "internetDisabledHint": "Tavily Key not configured. Add it in Settings to enable internet retrieval.",
         "noSections": "No generatable sections in this template",
+        "postBody": "Full-text Summary",
         "supplementary": "Supplementary Notes",
         "supplementaryPlaceholder": "Enter additional requirements, e.g. focus on specific aspects...",
         "startGenerate": "Start Generating",
@@ -888,9 +903,7 @@
       "compileTitle": "Wiki Compile",
       "compileProgress": "{{done}}/{{total}} files processed",
       "compileStop": "Stop ingest",
-      "compileClose": "Close",
-      "compileMinimize": "Minimize",
-      "compileMinimizeTip": "Minimize (compile keeps running in the background)",
+      "compileCollapse": "Collapse compile details",
       "compileSkipped": "Skipped",
       "compileError": "Failed",
       "compileFileDone": "Done",

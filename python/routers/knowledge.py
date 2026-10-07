@@ -191,26 +191,26 @@ async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, w
 
 
 class QueuePauseRequest(BaseModel):
-    kind: str  # parsing | describe | compile | report
+    kind: str  # parsing | describe（wiki 编译/报告生成无队列暂停，0.4 §6.7 与 2.5 §3.1 修订）
     paused: bool
 
 
 _QUEUE_PAUSE_KEYS = {
     "parsing": "parsing_paused",
     "describe": "describe_paused",
-    "compile": "compile_paused",
-    "report": "report_paused",
 }
 
 
 @router.post("/queue/pause")
 async def set_queue_pause(req: QueuePauseRequest):
-    """暂停/恢复后台队列（文件解析/图片描述/Wiki 编译/报告生成）。
+    """暂停/恢复后台队列（文件解析/图片描述）。
 
     语义：暂停 = 不再开始新任务——worker 在闸门挂起（pending/queued 排队
-    等恢复）、报告生成入口拒绝新请求；在跑的任务自然跑完。状态持久化
-    settings（重启保持，main.py lifespan 恢复）。基础库与项目共用同一
-    队列，天然同暂停。
+    等恢复）、在跑的任务自然跑完。状态持久化 settings（重启保持，
+    main.py lifespan 恢复）。基础库与项目共用同一队列，天然同暂停。
+    wiki 编译不设队列暂停：其任务级「停止」+ 断点续传已覆盖暂停的全部
+    价值（0.4 §6.7 修订）；报告生成同（报告级「暂停」+「重新生成」双出口，
+    2.5 §3.1 修订）。
     """
     key = _QUEUE_PAUSE_KEYS.get(req.kind)
     if not key:
@@ -223,8 +223,6 @@ async def set_queue_pause(req: QueuePauseRequest):
             deps.worker.set_file_paused(req.paused)
         elif req.kind == "describe":
             deps.worker.set_image_paused(req.paused)
-        elif req.kind == "compile":
-            deps.worker.set_compile_paused(req.paused)
     logger.info("Queue %s %s", req.kind, "paused" if req.paused else "resumed")
     return {"kind": req.kind, "paused": req.paused}
 

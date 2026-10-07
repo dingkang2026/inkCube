@@ -54,6 +54,22 @@
   color: var(--text-primary);
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 暂停态：warning 色区分于普通刷新按钮 */
+.pauseBtnActive {
+  color: var(--warning, #d97706);
+}
+
+.pauseBtnActive:hover {
+  color: var(--warning, #d97706);
+  background: color-mix(in srgb, var(--warning, #d97706) 10%, transparent);
+}
+
 .fileItem {
   display: flex;
   align-items: center;

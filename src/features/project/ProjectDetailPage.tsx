@@ -57,11 +57,11 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
 
   // Wiki compile status polling #4（v1.7 迁移至 usePolling，0.4 §8.1；谓词收编全局心跳
   // useActivity('wiki_compile')，顺序 4）：保存完整快照（task + ingest_summaries +
-  // is_resumed）下发 WikiTab（编译对话框明细）；Tab 角标改从心跳 byProject 派生。
-  // 谓词 = 项目存在活跃编译或对话框打开（用户盯明细，填触发
-  // 动作后心跳未发现的前几秒，§6.3 启动间隙）——空闲且对话框关时停轮，消灭旧 30s 空转。
+  // is_resumed）下发 WikiTab（编译明细面板）；Tab 角标改从心跳 byProject 派生。
+  // 谓词 = 项目存在活跃编译或明细面板展开（用户盯明细，填触发
+  // 动作后心跳未发现的前几秒，§6.3 启动间隙）——空闲且面板收起时停轮，消灭旧 30s 空转。
   const [wikiCompileData, setWikiCompileData] = useState<WikiCompileData | null>(null)
-  const [compileDialogOpen, setCompileDialogOpen] = useState(false)
+  const [compileDetailOpen, setCompileDetailOpen] = useState(false)
   const wikiCompileActive = compileItems.some(a => a.project_id === project.id)
 
   // Activity Hub 通知导航信号：切到目标 Tab（materials/wiki/reports）
@@ -83,12 +83,12 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
 
   usePolling({
     name: 'wiki-compile-status',
-    enabled: wikiCompileActive || compileDialogOpen,
+    enabled: wikiCompileActive || compileDetailOpen,
     task: checkWikiCompileStatus,
-    // Adaptive: dialog open=2s, compiling=5s；
+    // Adaptive: detail panel open=2s, compiling=5s；
     // 兕底 5s（enabled 翻真但快照尚陈旧的窄窗口，理论不可达的防御分支）
     interval: () => {
-      if (compileDialogOpen) return 2000
+      if (compileDetailOpen) return 2000
       return 5000
     },
   })
@@ -283,7 +283,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
               onPreviewOpenChange={handlePreviewOpenChange}
               closePreviewSignal={closePreviewSignal}
               compileData={wikiCompileData}
-              onCompileDialogChange={setCompileDialogOpen}
+              onCompileDetailChange={setCompileDetailOpen}
             />
           )}
           {activeTab === 'reports' && (

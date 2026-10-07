@@ -2,6 +2,8 @@
  *  轮询启停由 useActivity('report') 项目级心跳派生（本地列表是挂载快照，存在
  *  陈旧漏判——如停轮期间其他页面触发的生成）；hasGenerating true→false 边沿
  *  补拉 loadReports，终态（done/error）立即上屏。
+ *  另覆盖报告级暂停回归（2.5 §3.1 修订）：卡片暂停 → reports:pauseReport；
+ *  paused 双出口（恢复 = retry(resume) 断点续跑 / 重新生成 = 确认后 retry(restart)）。
  *  子视图打桩隔离：仅验证列表态接线；机制本身由 useEdgeRefetch.test 覆盖。
  *  时序约定（同 tests/usePolling.test.ts）：fake timers + flush 排空 microtask。
  */
@@ -36,7 +38,7 @@ vi.mock('../src/features/project/tabs/ReportPreview', () => ({
   ReportPreview: () => null,
 }))
 
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { ReportsTab } from '../src/features/project/tabs/ReportsTab'
 
 const invokeMock = vi.fn()
@@ -138,5 +140,57 @@ describe('ReportsTab heartbeat-driven polling', () => {
     // 轮询已停，无额外拉取
     await flush()
     expect(listInvokeCount()).toBe(3)
+  })
+})
+
+describe('ReportsTab report-level pause (2.5 §3.1 修订)', () => {
+  const genCard = {
+    id: 'r1',
+    title: 'R1',
+    template_id: 'tpl',
+    template_name: 'TPL',
+    output_format: 'docx',
+    status: 'generating',
+    progress: 10,
+    stage: 'none',
+    created_at: '2026-01-01T00:00:00Z',
+  }
+
+  it('clicks pause on a generating card to invoke reports:pauseReport then refetches', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'reports:listReports') return { reports: [genCard] }
+      return {}
+    })
+    render(<ReportsTab projectId="p1" projectType="general" />)
+    await flush()
+    fireEvent.click(screen.getByTitle('project.report.pauseTip'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:pauseReport', { reportId: 'r1' })
+    // 受理后重拉列表（状态推进上屏）
+    expect(listInvokeCount()).toBe(2)
+  })
+
+  it('renders paused badge with resume (retry resume) and restart (retry restart) exits', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'reports:listReports') {
+        return { reports: [{ ...genCard, status: 'paused', progress: 45 }] }
+      }
+      return {}
+    })
+    render(<ReportsTab projectId="p1" projectType="general" />)
+    await flush()
+    // paused 徽标 + 双出口按钮；头部队列暂停按钮已删（0.4 §6.7 同类修订）
+    expect(screen.getByText(/project\.report\.pausedStatus/)).toBeTruthy()
+    expect(screen.queryByTitle('project.report.pauseGenerationTip')).toBeNull()
+
+    // 恢复 = retry(resume) 断点续跑
+    fireEvent.click(screen.getByTitle('project.report.resumeReport'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'resume' })
+
+    // 重新生成 = 确认后 retry(restart) 全量重跑
+    fireEvent.click(screen.getByTitle('project.report.restartReport'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'restart' })
   })
 })

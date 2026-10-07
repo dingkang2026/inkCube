@@ -44,7 +44,7 @@ vi.mock('../src/features/knowledge/SkeletonLoader', () => ({
   SkeletonSearchResults: () => null,
 }))
 
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { KnowledgePage } from '../src/features/knowledge/KnowledgePage'
 import type { Project } from '../src/features/knowledge/types'
 
@@ -321,5 +321,41 @@ describe('KnowledgePage status filter counts', () => {
     expect(countBy('knowledge:getFiles')).toBe(2)
     expect(lastGetFilesPayload().offset).toBe(0) // 保持当前页
     expect(screen.getByText('knowledge.filterProcessing (1)')).toBeTruthy()
+  })
+})
+
+describe('KnowledgePage file panel drag resize', () => {
+  /** 文件列表面板右缘拖拽调宽：默认 320px，向右拖增宽，夹在 260~960px；
+   *  与 chat/preview 面板同一拖拽交互模式。 */
+
+  it('starts at 320px and resizes via the right-edge handle with clamping', async () => {
+    const { container } = render(
+      <KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />,
+    )
+    await flush()
+    const panel = container.querySelector('[class*="inputPanel"]') as HTMLElement
+    expect(panel).toBeTruthy()
+    expect(panel.style.width).toBe('320px')
+
+    const handle = container.querySelector('[class*="panelDragHandle"]') as HTMLElement
+    expect(handle).toBeTruthy()
+
+    // 向右拖 100px → 420px
+    fireEvent.mouseDown(handle, { clientX: 100 })
+    fireEvent.mouseMove(document, { clientX: 200 })
+    expect(panel.style.width).toBe('420px')
+    fireEvent.mouseUp(document)
+
+    // 左拖超下限 → 夹在 260px
+    fireEvent.mouseDown(handle, { clientX: 500 })
+    fireEvent.mouseMove(document, { clientX: -1000 })
+    expect(panel.style.width).toBe('260px')
+    fireEvent.mouseUp(document)
+
+    // 右拖超上限 → 夹在 960px
+    fireEvent.mouseDown(handle, { clientX: 0 })
+    fireEvent.mouseMove(document, { clientX: 5000 })
+    expect(panel.style.width).toBe('960px')
+    fireEvent.mouseUp(document)
   })
 })

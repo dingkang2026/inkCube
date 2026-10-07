@@ -6,6 +6,7 @@
   3. 断点恢复
   4. 精准 Token 统计追踪
   5. 智能重试分类
+  6. 报告级暂停（章节边界协作生效，2.5 §3.1 修订）
 
 设计参考：docs/2.5report-design.md §3.8 ~ §3.9
 """
@@ -13,7 +14,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from report_generator.normalizer import (
     instantiate, normalize_outline,
@@ -97,7 +98,7 @@ class ProgressEvent:
     """进度事件（用于进度轮询）。"""
 
     def __init__(self, event_type: str, data: dict):
-        self.event_type = event_type  # "section_start" | "section_done" | "progress" | "warning" | "complete" | "error"
+        self.event_type = event_type  # "section_start" | "section_done" | "progress" | "warning" | "paused" | "complete" | "error"
         self.data = data
 
 
@@ -132,6 +133,7 @@ class ReportRunner:
         db=None,
         section_internet: Optional[dict] = None,
         internet_enabled: bool = False,
+        pause_check: Optional[Callable[[], bool]] = None,
     ):
         self.template = template
         self.variables = variables
@@ -149,6 +151,9 @@ class ReportRunner:
         self.report_depth = template.get("report_depth", "full")
         # Wiki 通道可用性（_prepare 中按项目已完成 Wiki 页面检测；无则仅知识库/互联网）
         self.wiki_available = False
+        # 报告级暂停探针（2.5 §3.1 修订）：pause 端点写 DB 标志，路由层注入本
+        # callable；run() 在章节边界轮询（当前章节完成→checkpoint 已落盘→安全停）
+        self.pause_check = pause_check
 
         # 状态
         self.outputs: dict[str, str] = {}
@@ -196,6 +201,12 @@ class ReportRunner:
                 sid = sec["section_id"]
                 if sid in self.outputs:
                     continue  # 已恢复
+
+                # 报告级暂停检查点（2.5 §3.1 修订）：请求到达后当前章节完成后生效，
+                # 上节 checkpoint 已落盘；恢复走 retry(resume) 断点续跑
+                if self._pause_requested():
+                    yield ProgressEvent("paused", {"completed": len(self.outputs), "total": total})
+                    return
 
                 yield ProgressEvent("section_start", {
                     "section_id": sid,
@@ -245,6 +256,7 @@ class ReportRunner:
                         "section_id": sid,
                         "title": sec.get("title", ""),
                         "skipped": True,
+                        "completed": len(self.outputs),
                         "total": total,
                     })
                     self._save_checkpoint()
@@ -269,11 +281,17 @@ class ReportRunner:
                 )
 
                 # 生成 + 重试
-                output = await self._generate_with_retry(
+                output, finish_reason = await self._generate_with_retry(
                     section=sec,
                     user_prompt=user_prompt,
                     given_refs=set(ref_numbers),
                 )
+
+                # 输出截断用户可见（§3.9：finish_reason=length 不抛错）
+                if finish_reason == "length":
+                    yield ProgressEvent("warning", {
+                        "message": f"章节「{sec.get('title', sid)}」输出因模型长度限制被截断，内容可能不完整",
+                    })
 
                 self.outputs[sid] = output
                 self.order.append(sid)
@@ -286,6 +304,7 @@ class ReportRunner:
                     "section_id": sid,
                     "title": sec.get("title", ""),
                     "degraded": retrieval.is_degraded,
+                    "completed": len(self.outputs),
                     "total": total,
                 })
 
@@ -300,6 +319,11 @@ class ReportRunner:
                 sid = sec["section_id"]
                 if sid in self.outputs:
                     continue
+
+                # 报告级暂停检查点（同第一遍，2.5 §3.1 修订）
+                if self._pause_requested():
+                    yield ProgressEvent("paused", {"completed": len(self.outputs), "total": total})
+                    return
 
                 yield ProgressEvent("section_start", {
                     "section_id": sid,
@@ -320,11 +344,16 @@ class ReportRunner:
                     global_requirements=self.template.get("global_requirements"),
                 )
 
-                output = await self._generate_with_retry(
+                output, finish_reason = await self._generate_with_retry(
                     section=sec,
                     user_prompt=user_prompt,
                     given_refs=set(self.registry.all_ref_numbers()),
                 )
+
+                if finish_reason == "length":
+                    yield ProgressEvent("warning", {
+                        "message": f"章节「{sec.get('title', sid)}」输出因模型长度限制被截断，内容可能不完整",
+                    })
 
                 self.outputs[sid] = output
                 self.order.append(sid)
@@ -332,6 +361,7 @@ class ReportRunner:
                 yield ProgressEvent("section_done", {
                     "section_id": sid,
                     "title": sec.get("title", ""),
+                    "completed": len(self.outputs),
                     "total": total,
                 })
 
@@ -360,6 +390,16 @@ class ReportRunner:
             logger.exception("Report generation failed: %s", e)
             yield ProgressEvent("error", {"message": actionable(e)})
             raise
+
+    def _pause_requested(self) -> bool:
+        """报告级暂停请求是否待消费（无探针/探针异常均视为不暂停，不阻断生成）。"""
+        if self.pause_check is None:
+            return False
+        try:
+            return bool(self.pause_check())
+        except Exception:
+            logger.warning("pause_check probe failed", exc_info=True)
+            return False
 
     async def _prepare(self):
         """准备阶段（§3.9 管线）：解析变量 → 实例化 → 归一化 → 校验。"""
@@ -492,8 +532,14 @@ class ReportRunner:
         section: dict,
         user_prompt: str,
         given_refs: set[int],
-    ) -> str:
-        """生成单节内容，智能重试 + 精准 token 追踪。"""
+    ) -> tuple[str, str]:
+        """生成单节内容，智能重试 + 精准 token 追踪。
+
+        Returns:
+            (output, finish_reason)：finish_reason 为最后一次成功调用的
+            结束原因；"length" 表示输出被 max_tokens 截断（reasoning 模型
+            思考 token 亦计入输出预算，§3.9），由调用方告警可见。
+        """
         sid = section.get("section_id", "unknown")
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -505,12 +551,20 @@ class ReportRunner:
                 result = await self.llm_client.chat_full(messages, self.llm_settings)
                 output = result["content"]
                 usage = result["usage"]
+                finish_reason = result.get("finish_reason", "stop")
                 self.token_tracker.record(sid, "generation", usage)
+
+                # 输出截断可观测（chat_full 不抛错，仅 finish_reason=length）
+                if finish_reason == "length":
+                    logger.warning(
+                        "Section '%s' attempt %d: output truncated (finish_reason=length), "
+                        "completion_tokens=%s", sid, attempt + 1, usage.get("completion_tokens"),
+                    )
 
                 # 校验
                 violations = validate_section(output, given_refs, section, report_depth=self.report_depth)
                 if not violations:
-                    return output
+                    return output, finish_reason
 
                 # 有违规，构建重试反馈
                 if attempt < MAX_RETRIES - 1:
@@ -526,7 +580,7 @@ class ReportRunner:
                 else:
                     logger.warning("Section '%s': %d violations after %d retries, accepting",
                                    sid, len(violations), MAX_RETRIES)
-                    return output
+                    return output, finish_reason
 
             except Exception as e:
                 # 结构化错误类优先（llm/client 分类产物，0.4 §7.3 v3.6）：
@@ -542,15 +596,21 @@ class ReportRunner:
                 if not retryable:
                     logger.error("Section '%s' non-retryable error (%s): %s", sid, action, e)
                     if action == "degrade":
-                        return ""  # 降级：返回空内容
+                        return "", "error"  # 降级：返回空内容
                     raise ReportGenerationError(f"Section '{sid}' fatal error: {e}") from e
 
-                # 上下文溢出：截断 prompt 后重试（一次机会）
+                # 上下文溢出：保尾截断后重试（一次机会）。写作任务与参考资料
+                # 位于 prompt 尾部必须保住；digests 段在头部被优先裁剪，
+                # 从段落边界切割避免断行
                 if action == "truncate":
-                    logger.warning("Section '%s' context overflow, truncating prompt and retrying", sid)
-                    # 截断 user_prompt 到 4000 字（保留核心要求，削减 digests/cards）
+                    logger.warning("Section '%s' context overflow, truncating prompt head and retrying", sid)
                     if len(user_prompt) > 4000:
-                        user_prompt = user_prompt[:4000] + "\n\n（注：前文摘要已截断，请基于以上材料继续写作）"
+                        tail = user_prompt[-4000:]
+                        nl = tail.find("\n")
+                        user_prompt = (
+                            "（注：前文摘要因上下文长度限制已截断）\n"
+                            + (tail[nl + 1:] if nl != -1 else tail)
+                        )
                     # 重置 messages 以使用截断后的 prompt
                     messages = [
                         {"role": "system", "content": self.system_prompt},
@@ -569,12 +629,13 @@ class ReportRunner:
                         f"Section '{sid}' generation failed after {MAX_RETRIES} attempts: {e}"
                     ) from e
 
-        return ""  # unreachable
+        return "", "error"  # unreachable
 
     async def _summarize(self, text: str, max_words: Optional[int] = None) -> str:
-        """为生成的文本生成摘要（长度按 report_depth：full 200 / brief 100 字，§3.9）。"""
+        """为生成的文本生成主题纲要（纲要式 digest，长度按 report_depth：
+        full 120 / brief 60 字，§3.5；不搬运具体数值与引用编号）。"""
         if max_words is None:
-            max_words = 200 if self.report_depth == "full" else 100
+            max_words = 120 if self.report_depth == "full" else 60
         try:
             messages = build_digest_prompt(text, max_words)
             result = await self.llm_client.chat_full(messages, self.llm_settings)

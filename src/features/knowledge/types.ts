@@ -106,6 +106,7 @@ export interface KnowledgeIpcChannels {
   updateImageCategory: string
   archiveImage: string
   retryFailedImages: string
+  queuePause: string
 }
 
 export const DEFAULT_KNOWLEDGE_IPC_CHANNELS: KnowledgeIpcChannels = {
@@ -125,4 +126,5 @@ export const DEFAULT_KNOWLEDGE_IPC_CHANNELS: KnowledgeIpcChannels = {
   updateImageCategory: 'knowledge:updateImageCategory',
   archiveImage: 'knowledge:archiveImage',
   retryFailedImages: 'knowledge:retryFailedImages',
+  queuePause: 'knowledge:queuePause',
 }

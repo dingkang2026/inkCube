@@ -1,7 +1,7 @@
 /** src/features/knowledge/ImageGallery.tsx */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
 import type { ImageRecord, KnowledgeIpcChannels } from './types'
 import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'
@@ -16,6 +16,9 @@ import { useConfirm } from '../../components/ConfirmDialog'
 interface ImageGalleryProps {
   projectId: string
   fileId?: string
+  /** 图片描述队列暂停态（0.4 §队列暂停）：暂停 = 不再开始新描述，pending 排队等恢复 */
+  describePaused?: boolean
+  onToggleDescribePause?: () => void
   ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
@@ -31,7 +34,7 @@ function localFileUrl(filePath: string): string {
   return `inkcube://app?file=${encodeURIComponent(normalized)}`
 }
 
-export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryProps) {
+export function ImageGallery({ projectId, fileId, describePaused, onToggleDescribePause, ipcChannels }: ImageGalleryProps) {
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
@@ -273,7 +276,19 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
     <div className={s.container}>
       {/* Filter bar: status tabs + search */}
       <div className={s.searchBar}>
-        <span className={s.total}>{t('knowledge.imageTotal', { count: total })}</span>
+        <div className={s.totalWrap}>
+          <span className={s.total}>{t('knowledge.imageTotal', { count: total })}</span>
+          {/* 描述队列暂停开关（0.4 §队列暂停）：仅当父组件接入 useQueuePause 时显示 */}
+          {onToggleDescribePause && (
+            <button
+              className={`${s.pauseBtn} ${describePaused ? s.pauseBtnActive : ''}`}
+              onClick={onToggleDescribePause}
+              title={describePaused ? t('knowledge.resumeDescribe') : t('knowledge.pauseDescribe')}
+            >
+              {describePaused ? <Play size={13} /> : <Pause size={13} />}
+            </button>
+          )}
+        </div>
         {/* Status filter tabs — each status独立 */}
         <div className={s.statusTabs}>
           {[

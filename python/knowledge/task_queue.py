@@ -39,9 +39,9 @@ class KnowledgeWorker:
         self,
         db,
         data_dir: str,
-        max_file_concurrency: int = 1,
+        max_file_concurrency: int = 2,
         max_image_concurrency: int = 2,
-        max_compile_concurrency: int = 1,
+        max_compile_concurrency: int = 2,
     ):
         self.db = db
         self.data_dir = data_dir
@@ -59,8 +59,6 @@ class KnowledgeWorker:
         self._file_run.set()
         self._image_run = asyncio.Event()
         self._image_run.set()
-        self._compile_run = asyncio.Event()
-        self._compile_run.set()
         self._compile_enqueued: set[str] = set()  # track task_ids already in queue to prevent duplicates
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -104,12 +102,9 @@ class KnowledgeWorker:
             self._image_run.set()
         logger.info("[KnowledgeWorker] Image description %s", "paused" if paused else "resumed")
 
-    def set_compile_paused(self, paused: bool):
-        if paused:
-            self._compile_run.clear()
-        else:
-            self._compile_run.set()
-        logger.info("[KnowledgeWorker] Wiki compile %s", "paused" if paused else "resumed")
+    # Wiki 编译不设队列暂停（0.4 §6.7 修订）：其任务级「停止」（协作式，stopped
+    # 终态）+ ingest_summaries 断点续传已覆盖暂停的全部用户价值（效果等价、恢复
+    # 成本相同），双出口只会增加语义混淆。
 
     async def start(self):
         """Start all workers. Call from FastAPI lifespan."""
@@ -476,9 +471,6 @@ class KnowledgeWorker:
                 logger.info("[%s] Cancelled", name)
                 return
 
-            # 暂停闸门（同 _file_worker）
-            await self._compile_run.wait()
-
             async with self._compile_sem:
                 try:
                     self._compile_enqueued.discard(task_id)  # remove from tracking set
@@ -637,14 +629,12 @@ class KnowledgeWorker:
                 for img in pending_images:
                     await self.enqueue_image(img["id"])
 
-                # Pick up queued compile tasks
-                queued_compiles: list[str] = []
-                if self._compile_run.is_set():
-                    cursor = self.db.conn.execute(
-                        "SELECT id FROM wiki_compile_tasks WHERE status = 'queued' "
-                        "ORDER BY created_at ASC LIMIT 5"
-                    )
-                    queued_compiles = [row["id"] for row in cursor.fetchall()]
+                # Pick up queued compile tasks（无队列暂停，见 __init__ 注释）
+                cursor = self.db.conn.execute(
+                    "SELECT id FROM wiki_compile_tasks WHERE status = 'queued' "
+                    "ORDER BY created_at ASC LIMIT 5"
+                )
+                queued_compiles = [row["id"] for row in cursor.fetchall()]
                 if queued_compiles:
                     logger.info("[QueueScanner] Found %d queued compile tasks", len(queued_compiles))
                 for tid in queued_compiles:

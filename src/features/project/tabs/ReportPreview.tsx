@@ -3,9 +3,10 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2 } from 'lucide-react'
+import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2, Pause, PauseCircle, Play, RefreshCw } from 'lucide-react'
 import type { Report, ReportLog } from '../types'
 import { useToast } from '../../knowledge/Toast'
+import { useConfirm } from '../../../components/ConfirmDialog'
 import { usePolling } from '../../../hooks/usePolling'
 import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
 import { useActivity } from '../../activity/ActivityContext'
@@ -35,12 +36,19 @@ interface ReportPreviewProps {
 export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
+  const confirmDialog = useConfirm()
   const [showSources, setShowSources] = useState(true)
   const [showLogs, setShowLogs] = useState(false)
   const [content, setContent] = useState<ReportContent | null>(null)
   const [logs, setLogs] = useState<ReportLog[]>([])
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
+  // 乐观本地态（复审建议，2.5 §3.1 修订）：resume/restart 成功后后端已翻 generating，
+  // 但快照要等心跳(≤5s)+轮询(3s)同步——窗口期内 paused 按钮仍可点、二次点击会被
+  // 后端 400 拒绝弹出误导错误。本地立即置 generating：按钮即刻消失、spinner 即刻
+  // 出现，快照同步后自然回落真值；切报告时重置，避免跨报告泄漏。
+  const [statusOverride, setStatusOverride] = useState<Report['status'] | null>(null)
+  useEffect(() => { setStatusOverride(null) }, [report.id])
 
   // Load report content from backend
   const loadContent = useCallback(async () => {
@@ -76,6 +84,8 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   // 心跳翻假可早于快照同步，轮询与边沿都以心跳为准驱动
   const { items: activeReportItems } = useActivity('report')
   const generating = activeReportItems.some(a => a.entity_id === report.id)
+  // 渲染态 = 本地乐观覆盖优先，快照同步后回落后端真值（轮询/边沿仍用心跳 generating）
+  const status = statusOverride ?? report.status
 
   // 挂载 / 报告切换即拉日志（§6.3 启动间隙）：心跳 5s 粒度可能尚未发现新生成，
   // 轮询未开时也先有日志基线；与轮询首 tick 重复一次幂等读可接受
@@ -95,6 +105,43 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   // 翻 false 的边沿重拉 content 渲染正文 + logs 刷终态日志（原 status effect 改为
   // 挂载即拉后，终态日志刷新统一由本边沿负责）
   useEdgeRefetch(generating, () => { void loadContent(); void loadLogs() })
+
+  // ── 报告级暂停（2.5 §3.1 修订）：生成中可请求暂停（章节边界生效），paused 可恢复/重新生成
+  const handlePause = async () => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:pauseReport', { reportId: report.id })
+      if (result.error) {
+        showToast(t('project.report.pauseFailed', { error: result.error }), 'error')
+      } else {
+        showToast(t('project.report.pauseRequested'), 'info')
+      }
+    } catch (err) {
+      showToast(t('project.report.pauseFailed', { error: String(err) }), 'error')
+    }
+  }
+
+  // resume/restart 失败必须可见（对齐 handlePause 的错误处理）：后端 429/404/500
+  // 若被静默吞掉，用户只会看到「点了没反应」而反复重试
+  const handleResume = async () => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:retryReport', { reportId: report.id, mode: 'resume' })
+      if (result.error) showToast(t('project.report.retryFailed', { error: result.error }), 'error')
+      else setStatusOverride('generating')  // 乐观翻转：不等快照同步，立即切生成中视图
+    } catch (err) {
+      showToast(t('project.report.retryFailed', { error: String(err) }), 'error')
+    }
+  }
+
+  const handleRestart = async () => {
+    if (!(await confirmDialog({ title: t('project.report.restartReport'), message: t('project.report.restartConfirm') }))) return
+    try {
+      const result: any = await window.electronAPI.invoke('reports:retryReport', { reportId: report.id, mode: 'restart' })
+      if (result.error) showToast(t('project.report.retryFailed', { error: result.error }), 'error')
+      else setStatusOverride('generating')  // 乐观翻转：不等快照同步，立即切生成中视图
+    } catch (err) {
+      showToast(t('project.report.retryFailed', { error: String(err) }), 'error')
+    }
+  }
 
   const handleExport = async () => {
     setExporting(true)
@@ -159,12 +206,28 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
 
       {/* Report content */}
       <div className={s.contentArea}>
-        {report.status === 'generating' ? (
+        {status === 'generating' ? (
           <div className={s.generatingState}>
             <Loader2 size={24} className={s.spinIcon} />
             <span>{t('project.report.wizard.generating')} {report.progress ? `${report.progress}%` : ''}</span>
+            <button className={s.pauseActionBtn} onClick={() => void handlePause()} title={t('project.report.pauseTip')}>
+              <Pause size={14} /> {t('project.report.pauseReport')}
+            </button>
           </div>
-        ) : report.status === 'error' ? (
+        ) : status === 'paused' ? (
+          <div className={s.pausedState}>
+            <PauseCircle size={24} />
+            <span>{t('project.report.pausedStatus')} {report.progress ? `${report.progress}%` : ''}</span>
+            <div className={s.pausedActions}>
+              <button className={s.pauseActionBtn} onClick={() => void handleResume()} title={t('project.report.resumeTip')}>
+                <Play size={14} /> {t('project.report.resumeReport')}
+              </button>
+              <button className={s.pauseActionBtn} onClick={() => void handleRestart()}>
+                <RefreshCw size={14} /> {t('project.report.restartReport')}
+              </button>
+            </div>
+          </div>
+        ) : status === 'error' ? (
           <div className={s.errorState}>
             <AlertCircle size={24} />
             <span>{report.error_message || t('project.report.failed')}</span>

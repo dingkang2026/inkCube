@@ -133,9 +133,15 @@ async def lifespan(app: FastAPI):
     deps.worker = KnowledgeWorker(
         db=deps.db,
         data_dir=data_dir,
-        max_file_concurrency=int(settings.get("max_concurrent_file_parsing", 1)),
+        max_file_concurrency=int(settings.get("max_concurrent_file_parsing", 2)),
         max_image_concurrency=int(settings.get("max_concurrent_image_description", 2)),
+        max_compile_concurrency=int(settings.get("max_compile_concurrency", 2)),
     )
+    # 恢复暂停状态（重启保持暂停）：暂停持久化于 settings，经 /knowledge/queue/pause 写入
+    if settings.get("parsing_paused"):
+        deps.worker.set_file_paused(True)
+    if settings.get("describe_paused"):
+        deps.worker.set_image_paused(True)
     await deps.worker.start()
     logging.getLogger(__name__).info("Knowledge worker initialized")
 

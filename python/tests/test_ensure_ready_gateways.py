@@ -59,8 +59,13 @@ def _run(coro):
 
 
 class TestReportRetry:
-    def test_retry_requires_llm(self, no_llm):
+    def test_retry_requires_llm(self, no_llm, monkeypatch):
         """报告重试与 generate 同等拦截（v3.7 前无校验，配置失效后起跑才失败）。"""
+        # 队列暂停闸门（0.4 §6.7）位于 ensure_ready 之前，是函数首个 get_db 触点；
+        # 补一个未暂停的 db 使测试聚焦在就绪度拦截本身
+        db = MagicMock()
+        db.get_flag.return_value = False
+        monkeypatch.setattr(reports, "get_db", lambda: db)
         with pytest.raises(LLMNotConfigured):
             _run(reports.retry_report("r1", BackgroundTasks()))
 

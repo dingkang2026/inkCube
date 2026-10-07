@@ -204,6 +204,35 @@
   gap: 4px;
 }
 
+/* 有 children 的章：组头 + 缩进节行（层次与模板管理一致） */
+.chapterGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chapterTitle {
+  padding: 6px 2px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.chapterGroup .sectionItem {
+  margin-left: 14px;
+}
+
+/* post_body 节：不检索无开关，标签标识（2.5 §前端交互） */
+.postBodyTag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .sectionItem {
   display: flex;
   align-items: center;

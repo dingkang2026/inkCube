@@ -458,6 +458,16 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 队列暂停/恢复（0.4 §队列暂停）：kind = parsing | describe | compile | report
+  ipcMain.handle('knowledge:queuePause', async (_event, { kind, paused }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/queue/pause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, paused }),
+    })
+    return handlePythonResponse(res)
+  })
+
   // Batch operations
   ipcMain.handle('knowledge:batchDeleteFiles', async (_event, { projectId, fileIds }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/files/batch-delete`, {
@@ -1135,6 +1145,14 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: mode || 'resume' }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // Request report-level pause (takes effect at section boundary, 2.5 §3.1)
+  ipcMain.handle('reports:pauseReport', async (_event, { reportId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}/pause`, {
+      method: 'POST',
     })
     return handlePythonResponse(res)
   })

@@ -115,11 +115,12 @@ def build_standard_prompt(
     Returns:
         User Prompt 文本
     """
-    # 前文摘要（最近 3 节 + 全局一页纸摘要）
+    # 前文摘要（全量已完成节，供衔接与防重复；每节 digest 仅 200/100 字，
+    # 总量可控，无需窗口截断）
     digest_lines = []
-    recent = [sid for sid in section_order if sid in completed_digests][-3:]
-    for sid in recent:
-        digest_lines.append(f"- {sid}: {completed_digests[sid]}")
+    for sid in section_order:
+        if sid in completed_digests:
+            digest_lines.append(f"- {sid}: {completed_digests[sid]}")
     digest_text = "\n".join(digest_lines) if digest_lines else "（无前文）"
 
     # 写作要求（§3.5：prompt_hint + effective_requirements）
@@ -251,8 +252,13 @@ def build_post_body_prompt(
 # ── 辅助：摘要生成 Prompt ───────────────────────────────────
 
 
-def build_digest_prompt(text: str, max_words: int = 200) -> list[dict]:
+def build_digest_prompt(text: str, max_words: int = 120) -> list[dict]:
     """构建用于生成节摘要的 messages。
+
+    digest 定位为「本节写了哪些方面」的纲要（主题/论点覆盖清单），而非正文
+    内容简写：不搬运具体数值与引用编号（数据统一由 extract_numbers 关键数据
+    表供 post_body 使用），注入后续章节 prompt 时以主题粒度防跨节重复，且
+    长度稳定可控（§3.5 全量注入的前提）。
 
     Args:
         text: 章节全文
@@ -262,8 +268,12 @@ def build_digest_prompt(text: str, max_words: int = 200) -> list[dict]:
         OpenAI messages 列表
     """
     return [
-        {"role": "system", "content": "你是一位专业的文本摘要助手。请为以下报告章节生成简洁的摘要。"},
-        {"role": "user", "content": f"请用不超过 {max_words} 字概括以下内容的核心要点和关键数据：\n\n{text}"},
+        {"role": "system", "content": "你是一位专业的文本纲要助手。请为报告章节生成主题纲要。"},
+        {"role": "user", "content": (
+            f"请用不超过 {max_words} 字列出以下章节写了哪些方面的内容："
+            "逐条给出覆盖的主题与核心论点（每行一条）。"
+            f"不要压缩复述正文事实，不要搬运具体数值和引用编号：\n\n{text}"
+        )},
     ]
 
 

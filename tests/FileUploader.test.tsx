@@ -17,7 +17,7 @@ vi.mock('../src/features/knowledge/FileUploader.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { FileUploader } from '../src/features/knowledge/FileUploader'
 import type { FileRecord } from '../src/features/knowledge/types'
 
@@ -52,6 +52,40 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   delete (window as unknown as { electronAPI?: unknown }).electronAPI
+})
+
+describe('FileUploader parsing pause toggle', () => {
+  it('renders the pause button only when wired via onToggleParsingPause', () => {
+    mount(190)
+    expect(screen.queryByTitle('knowledge.pauseParsing')).toBeNull()
+    render(
+      <FileUploader
+        projectId="p1"
+        files={makeFiles(1)}
+        onRefresh={() => {}}
+        fileTotal={1}
+        parsingPaused={false}
+        onToggleParsingPause={() => {}}
+      />,
+    )
+    expect(screen.getByTitle('knowledge.pauseParsing')).toBeTruthy()
+  })
+
+  it('shows resume title while paused and invokes the callback on click', () => {
+    const onToggle = vi.fn()
+    render(
+      <FileUploader
+        projectId="p1"
+        files={makeFiles(1)}
+        onRefresh={() => {}}
+        fileTotal={1}
+        parsingPaused
+        onToggleParsingPause={onToggle}
+      />,
+    )
+    fireEvent.click(screen.getByTitle('knowledge.resumeParsing'))
+    expect(onToggle).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('FileUploader header count', () => {

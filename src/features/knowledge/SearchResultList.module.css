@@ -127,31 +127,13 @@
   overflow-x: auto;
 }
 
-.markdownRendered p {
-  margin: 0 0 4px;
-}
-
-.markdownRendered table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  margin: 6px 0;
-}
-
-.markdownRendered th,
-.markdownRendered td {
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  text-align: left;
-}
-
-.markdownRendered th {
-  background: var(--bg-muted);
-  font-weight: 600;
-}
-
-.markdownRendered tr:nth-child(even) td {
-  background: var(--bg-secondary);
+.markdownRendered {
+  /* Block the parent .content pre-wrap inheritance: rendered markdown
+     emits its own block elements, source newlines must not double-space.
+     Element-level styling relies on the global `.markdown` class carried
+     by the Markdown component root (global.css loads after module css,
+     so local overrides would never win). */
+  white-space: normal;
 }
 
 .expandBtn {

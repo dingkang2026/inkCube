@@ -95,6 +95,34 @@ def _get_docling_converter(models_dir: Path):
     return _docling_converter
 
 
+# ---------------------------------------------------------------------------
+# First-convert serialization: Docling loads its pipeline models lazily
+# inside the FIRST convert() call (unlocked internal caches + model init on
+# that path), so two workers converting concurrently at startup can crash
+# each other. Steady-state convert() is PyTorch/ONNX inference and is
+# thread-safe, so after the first call completes the lock is never taken
+# again (zero steady-state cost).
+# ---------------------------------------------------------------------------
+_docling_first_convert_lock = threading.Lock()
+_docling_warmed = False
+
+
+def _convert_threadsafe(converter, file_path: str):
+    """Run converter.convert, serializing only the first (lazy-init) call."""
+    global _docling_warmed
+    if _docling_warmed:
+        return converter.convert(file_path)
+    with _docling_first_convert_lock:
+        if not _docling_warmed:
+            try:
+                return converter.convert(file_path)
+            finally:
+                # Mark warmed even on failure: init state is already mutated;
+                # retrying the racy init path would only re-open the race
+                _docling_warmed = True
+    return converter.convert(file_path)
+
+
 class RowMarkdownTableSerializer(BaseTableSerializer):
     """Table serializer emitting row-level Markdown (2.2 §4.3).
 
@@ -341,8 +369,8 @@ class DocumentParser:
             if self.converter is None:
                 raise RuntimeError("Docling converter not initialized")
             
-            # Parse with Docling
-            conv_result = self.converter.convert(str(file_path))
+            # Parse with Docling (first call serialized — see helper docstring)
+            conv_result = _convert_threadsafe(self.converter, str(file_path))
             doc = conv_result.document
             
             # Extract text chunks with HybridChunker

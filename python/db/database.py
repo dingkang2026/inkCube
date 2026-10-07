@@ -312,6 +312,9 @@ class Database:
         self._migrate_add_column("skills", "needs_confirm", "INTEGER DEFAULT 1")
         self._migrate_add_column("reports", "token_usage", "TEXT")
         self._migrate_add_column("reports", "error_message", "TEXT")
+        # 报告级暂停请求标志（2.5 §3.1 修订）：pause 端点写入，Runner 在章节边界
+        # 消费（当前章节完成→落 checkpoint→status=paused），恢复走 retry 断点续跑
+        self._migrate_add_column("reports", "pause_requested", "INTEGER DEFAULT 0")
         self._migrate_add_column("reports", "variables", "TEXT")
         self._migrate_add_column("reports", "base_project_ids", "TEXT")
         self._migrate_add_column("reports", "section_internet", "TEXT")
@@ -507,10 +510,11 @@ class Database:
             "vlm_api_url": "https://open.bigmodel.cn/api/paas/v4/",
             "vlm_api_key": "",
             "vlm_model": "glm-4v",
-            "max_concurrent_file_parsing": 1,
+            "max_concurrent_file_parsing": 2,
             "max_concurrent_image_description": 2,
-            # Wiki compile settings
-            "max_compile_concurrency": 1,
+            # Wiki compile settings（默认 2：并发单位是项目，项目内文件本就串行，
+            # 2 = 两个项目并行编译；同项目由 API 层 409 防重保证单一编译任务）
+            "max_compile_concurrency": 2,
             # LLM timeout settings
             "llm_connect_timeout": 30,
             "llm_read_timeout": 300,
@@ -534,11 +538,12 @@ class Database:
             "wiki_lint_model": "",
             "wiki_dedup_model": "",
             # 队列暂停开关（0.4 §队列暂停）：持久化于 settings，重启保持；
-            # 经 POST /knowledge/queue/pause 写入（set_flag），运行时由 worker 闸门消费
+            # 经 POST /knowledge/queue/pause 写入（set_flag），运行时由 worker 闸门消费。
+            # wiki 编译无队列暂停（0.4 §6.7 修订）：任务级「停止」+ 断点续传已覆盖；
+            # 报告生成亦无队列暂停（2.5 §3.1 修订）：报告级「暂停」（章节边界协作生效
+            # + checkpoint 续跑）与「重新生成」双出口已覆盖全部价值
             "parsing_paused": False,
             "describe_paused": False,
-            "compile_paused": False,
-            "report_paused": False,
         }
         cursor = self.conn.execute("SELECT key, value FROM settings")
         for row in cursor.fetchall():
@@ -1338,6 +1343,22 @@ class Database:
             (error_message, self._now(), report_id),
         )
         self.conn.commit()
+
+    def set_report_pause_requested(self, report_id: str, requested: bool):
+        """报告级暂停请求标志（2.5 §3.1 修订）：pause 端点写入，Runner 在章节边界
+        消费；消费 / 恢复 / 完成 / 失败后由调用方清除，防遗留标志影响后续生成。"""
+        self.conn.execute(
+            "UPDATE reports SET pause_requested = ?, updated_at = ? WHERE id = ?",
+            (1 if requested else 0, self._now(), report_id),
+        )
+        self.conn.commit()
+
+    def get_report_pause_requested(self, report_id: str) -> bool:
+        """读取报告级暂停请求标志（Runner 章节边界检查用）。"""
+        row = self.conn.execute(
+            "SELECT pause_requested FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+        return bool(row and row["pause_requested"])
 
     def count_active_reports(self) -> int:
         """统计正在生成的报告数量（用于并发限制）。"""

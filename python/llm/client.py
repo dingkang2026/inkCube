@@ -237,13 +237,15 @@ class LLMClient:
                 return content
 
     async def chat_full(self, messages: list[dict], settings: dict) -> dict:
-        """Chat completion that returns both content and precise token usage.
+        """Chat completion that returns content, finish_reason and precise token usage.
 
         Unlike chat() which returns str for backward compatibility, this method
         always returns a dict with content and usage information from the API.
 
         Returns:
-            {"content": str, "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}}
+            {"content": str, "finish_reason": str,
+             "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}}
+            finish_reason 为 "length" 时表示输出被 max_tokens 截断，调用方应自检
         """
         logger.info("LLM chat_full request: model=%s, messages=%d", self.model, len(messages))
         request_body: dict[str, Any] = {
@@ -300,10 +302,12 @@ class LLMClient:
                 data = response.json()
                 choice = data["choices"][0]
                 content = choice["message"].get("content") or ""
+                finish_reason = choice.get("finish_reason", "unknown")
                 usage = data.get("usage", {})
 
                 return {
                     "content": content,
+                    "finish_reason": finish_reason,
                     "usage": {
                         "prompt_tokens": usage.get("prompt_tokens", 0),
                         "completion_tokens": usage.get("completion_tokens", 0),

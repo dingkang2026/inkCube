@@ -1,7 +1,7 @@
 /** src/features/knowledge/FileUploader.tsx */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { FileRecord, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
@@ -20,6 +20,9 @@ interface FileUploaderProps {
   selectedFileId?: string | null
   onSelectFile?: (fileId: string | null) => void
   onDeleteFile?: (fileIds: string[]) => void
+  /** 文件解析队列暂停态（0.4 §队列暂停）：暂停 = 不再开始新解析，pending 排队等恢复 */
+  parsingPaused?: boolean
+  onToggleParsingPause?: () => void
   ipcChannels?: Partial<KnowledgeIpcChannels>
 }
 
@@ -37,7 +40,7 @@ const FILE_ICONS: Record<string, LucideIcon> = {
   '.jpeg': Image,
 }
 
-export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTotal = 0, fileLimit = 20, onPageChange, selectedFileId, onSelectFile, onDeleteFile, ipcChannels }: FileUploaderProps) {
+export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTotal = 0, fileLimit = 20, onPageChange, selectedFileId, onSelectFile, onDeleteFile, parsingPaused, onToggleParsingPause, ipcChannels }: FileUploaderProps) {
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
@@ -153,9 +156,21 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
                   files.length 是当前页行数（满页时恰好等于每页上限，会被误读成总数） */}
               <span>{t('knowledge.uploadedFiles')} ({fileTotal})</span>
             </label>
-            <button className={s.refreshBtn} onClick={onRefresh} title={t('knowledge.refresh')}>
-              <RefreshCw size={14} />
-            </button>
+            <div className={s.headerActions}>
+              {/* 解析队列暂停开关（0.4 §队列暂停）：仅当父组件接入 useQueuePause 时显示 */}
+              {onToggleParsingPause && (
+                <button
+                  className={`${s.refreshBtn} ${parsingPaused ? s.pauseBtnActive : ''}`}
+                  onClick={onToggleParsingPause}
+                  title={parsingPaused ? t('knowledge.resumeParsing') : t('knowledge.pauseParsing')}
+                >
+                  {parsingPaused ? <Play size={14} /> : <Pause size={14} />}
+                </button>
+              )}
+              <button className={s.refreshBtn} onClick={onRefresh} title={t('knowledge.refresh')}>
+                <RefreshCw size={14} />
+              </button>
+            </div>
           </div>
           {files.map((file) => {
             const statusClass = getStatusDotClass(file.status)

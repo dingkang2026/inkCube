@@ -4,6 +4,8 @@
  *  「生成中」占位。修复链：父级 applyReports 同步快照 + ReportPreview 在
  *  generating（useActivity('report') entity 级心跳派生）true→false 边沿重拉
  *  content + logs；挂载即拉 logs（启动间隙：心跳 5s 粒度未发现时也先有日志基线）。
+ *  另覆盖报告级暂停回归（2.5 §3.1 修订）：生成中暂停 → reports:pauseReport；
+ *  paused 态双出口（恢复 = retry(resume) / 重新生成 = 确认后 retry(restart)）。
  *  时序约定（同 tests/usePolling.test.ts）：fake timers + flush 排空 microtask。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -22,11 +24,15 @@ vi.mock('../src/features/knowledge/Toast', () => ({
   useToast: () => vi.fn(),
 }))
 
+vi.mock('../src/components/ConfirmDialog', () => ({
+  useConfirm: () => async () => true,
+}))
+
 vi.mock('../src/features/project/tabs/ReportPreview.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { ReportPreview } from '../src/features/project/tabs/ReportPreview'
 import type { Report } from '../src/features/project/types'
 
@@ -128,5 +134,54 @@ describe('ReportPreview terminal refetch', () => {
     render(<ReportPreview report={genReport} onBack={() => {}} />)
     await flush()
     expect(logsInvokeCount()).toBe(1)
+  })
+})
+
+describe('ReportPreview report-level pause (2.5 §3.1 修订)', () => {
+  it('shows pause button while generating and invokes reports:pauseReport on click', async () => {
+    render(<ReportPreview report={genReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.getByText('project.report.pauseReport')).toBeTruthy()
+    fireEvent.click(screen.getByTitle('project.report.pauseTip'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:pauseReport', { reportId: 'r1' })
+  })
+
+  it('renders paused state with resume (retry resume) and restart (retry restart) exits', async () => {
+    const pausedReport: Report = { ...baseReport, status: 'paused', progress: 45 }
+    render(<ReportPreview report={pausedReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.getByText(/project\.report\.pausedStatus/)).toBeTruthy()
+    // paused 分支短路，正文不渲染 markdown
+    expect(screen.queryByText('Done body')).toBeNull()
+
+    fireEvent.click(screen.getByTitle('project.report.resumeTip'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'resume' })
+    // resume 成功即乐观翻转，paused 面板已消失（详见下条用例）→ restart 全新挂载验证
+    cleanup()
+    render(<ReportPreview report={{ ...pausedReport }} onBack={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByText('project.report.restartReport'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'restart' })
+  })
+
+  it('optimistically flips to generating on successful resume and resets on report switch', async () => {
+    // 乐观本地态（复审建议）：retry 成功后不等心跳/快照同步，立即切生成中视图，
+    // 消除窗口期内二次点击被后端 400 拒绝的误导错误
+    const pausedReport: Report = { ...baseReport, status: 'paused', progress: 45 }
+    const { rerender } = render(<ReportPreview report={pausedReport} onBack={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByTitle('project.report.resumeTip'))
+    await flush()
+    expect(screen.queryByText(/project\.report\.pausedStatus/)).toBeNull()
+    expect(screen.getByText(/project\.report\.wizard\.generating/)).toBeTruthy()
+
+    // 切换报告：override 重置，不跨报告泄漏
+    const pausedB: Report = { ...baseReport, id: 'r2', title: 'B', status: 'paused', progress: 10 }
+    rerender(<ReportPreview report={pausedB} onBack={() => {}} />)
+    await flush()
+    expect(screen.getByText(/project\.report\.pausedStatus/)).toBeTruthy()
   })
 })

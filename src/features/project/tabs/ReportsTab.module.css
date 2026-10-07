@@ -175,6 +175,16 @@
   color: var(--error, #ef4444);
 }
 
+/* paused 稳态徽章（2.5 §3.1 修订）：报告级暂停，从断点可恢复 */
+.statusPaused {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--warning, #d97706);
+  font-weight: 500;
+}
+
 .reportCardFooter {
   display: flex;
   align-items: center;

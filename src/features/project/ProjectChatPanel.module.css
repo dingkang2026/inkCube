@@ -55,6 +55,20 @@
   writing-mode: horizontal-tb;
 }
 
+/* ── Backdrop — 点击任意处收起（模板管理 drawer 同款，z 介于页面内容与面板之间） ── */
+.backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  z-index: 199; /* Below panel (200), above preview (100) & toggleTab (150) */
+  animation: backdropFade 0.16s ease-out;
+}
+
+@keyframes backdropFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* ── Panel — overlay from right, positioned relative to .page (full page height) ── */
 .panel {
   position: absolute;
@@ -243,66 +257,18 @@
   word-break: break-word;
 }
 
-/* ── Markdown rendered content (assistant messages) ── */
+/* ── Markdown rendered content (assistant messages) ──
+   The Markdown component root already carries the global `.markdown` class
+   which loads after module css (main.tsx imports App before global.css),
+   so element-level overrides here would never win — block/table/code
+   styling relies solely on the global rules (same as TaskMessageList). */
 .markdownBody {
   line-height: 1.6;
   word-break: break-word;
-}
-
-.markdownBody p {
-  margin: 0 0 6px;
-}
-
-.markdownBody p:last-child {
-  margin-bottom: 0;
-}
-
-.markdownBody table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  margin: 6px 0;
-}
-
-.markdownBody th,
-.markdownBody td {
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  text-align: left;
-}
-
-.markdownBody th {
-  background: var(--bg-muted);
-  font-weight: 600;
-}
-
-.markdownBody ul {
-  margin: 4px 0;
-  padding-left: 20px;
-}
-
-.markdownBody li {
-  margin: 2px 0;
-}
-
-.markdownBody code {
-  background: var(--bg-muted);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 12px;
-}
-
-.markdownBody pre {
-  background: var(--bg-muted);
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  overflow-x: auto;
-  margin: 6px 0;
-}
-
-.markdownBody pre code {
-  background: none;
-  padding: 0;
+  /* Block the parent .messageContent pre-wrap inheritance: the markdown
+     renderer emits its own block elements, raw newlines in the source must
+     not double-space paragraphs. */
+  white-space: normal;
 }
 
 /* ── Source citations ── */

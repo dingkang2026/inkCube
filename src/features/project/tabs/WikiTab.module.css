@@ -100,6 +100,27 @@
   margin-left: 4px;
 }
 
+/* 停止编译（2.6 §4.3，状态条内）：任务级协作式停止，红色调警示 */
+.stopBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--text-danger, #dc2626);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.stopBtn:hover {
+  background: color-mix(in srgb, var(--text-danger, #dc2626) 10%, transparent);
+}
+
 .compileDone {
   display: flex;
   align-items: center;
@@ -1668,53 +1689,44 @@
 .lintFixBtn:hover { background: color-mix(in srgb, var(--text-success, #16a34a) 10%, transparent); }
 .lintFixBtn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* ── Compile Dialog ── */
+/* ── Compile detail panel（内嵌可折叠，2.6 §10）────────── */
 
-.compileDialogOverlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  animation: fadeIn 0.15s ease-out;
-}
-
-.compileDialogBox {
+.compilePanel {
   background: var(--bg-primary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md, 10px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-  width: 480px;
-  max-width: 90vw;
-  max-height: 80vh;
+  border-top: none;
+  border-radius: 0 0 var(--radius-md, 10px) var(--radius-md, 10px);
+  max-height: 50vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  margin: 0 12px 8px;
+  flex-shrink: 0;
 }
 
-.compileDialogHeader {
+.compilePanelHeader {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
 }
 
-.compileDialogCompleteIcon {
+.compilePanelCompleteIcon {
   color: var(--text-success, #16a34a);
 }
 
-.compileDialogStoppedIcon {
+.compilePanelStoppedIcon {
   color: var(--text-danger, #dc2626);
 }
 
-.compileDialogCloseIcon {
+.compilePanelCollapseIcon {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -1728,27 +1740,27 @@
   cursor: pointer;
 }
 
-.compileDialogCloseIcon:hover {
+.compilePanelCollapseIcon:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 
 /* Progress bar */
 
-.compileDialogProgress {
+.compilePanelProgress {
   height: 4px;
   background: var(--bg-secondary);
   flex-shrink: 0;
 }
 
-.compileDialogProgressBar {
+.compilePanelProgressBar {
   height: 100%;
   background: var(--accent);
   border-radius: 0 2px 2px 0;
   transition: width 0.3s ease;
 }
 
-.compileDialogProgressBarIndeterminate {
+.compilePanelProgressBarIndeterminate {
   width: 30% !important;
   animation: indeterminate 1.5s ease-in-out infinite;
 }
@@ -1758,7 +1770,7 @@
   100% { transform: translateX(400%); }
 }
 
-.compileDialogStats {
+.compilePanelStats {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1769,14 +1781,14 @@
   flex-shrink: 0;
 }
 
-.compileDialogErrorCount {
+.compilePanelErrorCount {
   color: var(--text-danger, #dc2626);
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
 
-.compileDialogSkippedCount {
+.compilePanelSkippedCount {
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -1785,29 +1797,29 @@
 
 /* File list */
 
-.compileDialogFileList {
+.compilePanelFileList {
   flex: 1;
   overflow-y: auto;
   padding: 8px 0;
 }
 
-.compileDialogFileItem {
+.compilePanelFileItem {
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
 }
 
-.compileDialogFileItem:last-child {
+.compilePanelFileItem:last-child {
   border-bottom: none;
 }
 
-.compileDialogFileHeader {
+.compilePanelFileHeader {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
 }
 
-.compileDialogFileName {
+.compilePanelFileName {
   flex: 1;
   font-weight: 500;
   color: var(--text-primary);
@@ -1816,7 +1828,7 @@
   white-space: nowrap;
 }
 
-.compileDialogSkipped {
+.compilePanelSkipped {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1827,7 +1839,7 @@
   border-radius: 3px;
 }
 
-.compileDialogError {
+.compilePanelError {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1838,7 +1850,7 @@
   border-radius: 3px;
 }
 
-.compileDialogDone {
+.compilePanelDone {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -1849,7 +1861,7 @@
   border-radius: 3px;
 }
 
-.compileDialogErrorDetail {
+.compilePanelErrorDetail {
   margin-top: 4px;
   padding: 6px 8px;
   font-size: 11px;
@@ -1859,7 +1871,7 @@
   word-break: break-word;
 }
 
-.compileDialogFileStats {
+.compilePanelFileStats {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1881,7 +1893,7 @@
   color: var(--text-muted);
 }
 
-.compileDialogPages {
+.compilePanelPages {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -1905,7 +1917,7 @@
 
 /* Processing hint */
 
-.compileDialogProcessingHint {
+.compilePanelProcessingHint {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1916,7 +1928,7 @@
 
 /* Complete / Stopped state */
 
-.compileDialogComplete {
+.compilePanelComplete {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1927,7 +1939,7 @@
 
 /* Task-level error */
 
-.compileDialogTaskError {
+.compilePanelTaskError {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1937,60 +1949,6 @@
   background: color-mix(in srgb, var(--text-danger, #dc2626) 4%, var(--bg-secondary));
   border-top: 1px solid var(--border);
 }
-
-/* Action buttons */
-
-.compileDialogActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.compileDialogCloseBtn {
-  flex: 1;
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius-sm, 6px);
-  cursor: pointer;
-  transition: opacity 0.15s;
-}
-
-.compileDialogCloseBtn:hover { opacity: 0.9; }
-
-.compileDialogStopBtn {
-  padding: 8px 16px;
-  font-size: 13px;
-  color: var(--text-danger, #dc2626);
-  background: transparent;
-  border: 1px solid var(--text-danger, #dc2626);
-  border-radius: var(--radius-sm, 6px);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.compileDialogStopBtn:hover {
-  background: color-mix(in srgb, var(--text-danger, #dc2626) 8%, transparent);
-}
-
-.compileDialogMinimizeBtn {
-  padding: 8px 16px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 6px);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.compileDialogMinimizeBtn:hover { background: var(--bg-tertiary); }
 
 /* ── Recompile Confirm Dialog ── */
 

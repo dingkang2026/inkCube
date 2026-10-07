@@ -95,16 +95,35 @@
   min-height: 0;
 }
 
-/* ── Input panel (left: files) ── */
+/* ── Input panel (left: files, drag-resizable 260~960px, width via inline style) ── */
 .inputPanel {
-  width: 320px;
   min-width: 260px;
-  max-width: 400px;
   flex-shrink: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
   overflow: hidden;
+}
+
+/* ── Drag handle — right edge of file panel ── */
+.panelDragHandle {
+  position: absolute;
+  right: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 10;
+  transition: background 0.15s;
+  border-radius: 4px;
+}
+
+.panelDragHandle:hover,
+.panelDragHandleActive {
+  background: var(--accent);
+  opacity: 0.6;
 }
 
 .inputHeader {

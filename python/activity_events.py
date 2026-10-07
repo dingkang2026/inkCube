@@ -74,6 +74,14 @@ def fail_report(db, report_id: str, error_message: str | None = None) -> None:
     _emit_report(db, report_id, "failed", (error_message or "")[:200] or None)
 
 
+def pause_report(db, report_id: str, detail: str | None = None) -> None:
+    """报告生成暂停（2.5 §3.1 修订）：章节边界协作生效后的稳定态通知。
+
+    用户切走后也能被感知；未读查重保证重复声明只产生一条。
+    """
+    _emit_report(db, report_id, "paused", (detail or "")[:200] or None)
+
+
 def _emit_report(db, report_id: str, kind: str, detail: str | None) -> None:
     """写 report 终态通知。事件写入失败不影响业务主流程（状态已落库，通知是增益）。"""
     try:

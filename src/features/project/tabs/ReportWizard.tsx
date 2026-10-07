@@ -44,6 +44,15 @@ interface FullTemplate extends BackendTemplate {
   [key: string]: unknown
 }
 
+/** 按章分组的大纲（与后端 get_execution_sections 镜像：有 children 的章 →
+ *  children 为执行节；无 children 的章自身即节）。post_body 节不走检索
+ *  （2.5 §前端交互：不检索、无开关），仍展示以与模板管理结构保持一致。 */
+interface OutlineGroup {
+  /** 有 children 的章显示组头；无 children 的章为 null（章自身即单节行） */
+  chapterTitle: string | null
+  sections: { section_id: string; title: string; postBody: boolean }[]
+}
+
 interface OutlineNode {
   section_id: string
   title: string
@@ -206,21 +215,19 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     [selectedTemplate],
   )
 
-  // Flatten outline → executable standard sections (mirrors backend get_execution_sections:
-  // a chapter's children are its sections; a childless chapter is itself a section).
-  // post_body sections don't retrieve, so the internet toggle only applies to standard ones.
-  const standardSections = useMemo<{ section_id: string; title: string }[]>(() => {
-    const out: { section_id: string; title: string }[] = []
-    for (const ch of selectedTemplate?.outline || []) {
+  // 按章分组的大纲数据（渲染用；sectionInternet 开关状态按 section_id 存取）
+  const outlineGroups = useMemo<OutlineGroup[]>(() => {
+    const toSec = (n: OutlineNode) => ({
+      section_id: n.section_id,
+      title: n.title,
+      postBody: (n.compose_mode || 'standard') === 'post_body',
+    })
+    return (selectedTemplate?.outline || []).map((ch) => {
       const children = ch.children || []
-      const nodes = children.length > 0 ? children : [ch]
-      for (const n of nodes) {
-        if ((n.compose_mode || 'standard') === 'standard') {
-          out.push({ section_id: n.section_id, title: n.title })
-        }
-      }
-    }
-    return out
+      return children.length > 0
+        ? { chapterTitle: ch.title, sections: children.map(toSec) }
+        : { chapterTitle: null, sections: [toSec(ch)] }
+    })
   }, [selectedTemplate])
 
   const handleSelectTemplate = useCallback(async (tpl: BackendTemplate) => {
@@ -305,6 +312,36 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
   const toggleSectionInternet = (sectionId: string) => {
     setSectionInternet(prev => ({ ...prev, [sectionId]: !prev[sectionId] }))
   }
+
+  // 逐节互联网开关（仅 standard 节；post_body 不检索无开关，2.5 §前端交互）
+  const renderInternetToggle = (sectionId: string) => (
+    <label
+      className={`${s.internetToggle} ${(!internetConfigured || !internetEnabled) ? s.internetToggleDisabled : ''}`}
+      title={t('project.report.wizard.sectionInternet')}
+    >
+      <input
+        type="checkbox"
+        checked={!!sectionInternet[sectionId]}
+        onChange={() => toggleSectionInternet(sectionId)}
+        disabled={!internetConfigured || !internetEnabled}
+      />
+      <Globe size={13} />
+      <span>{t('project.report.wizard.sectionInternet')}</span>
+    </label>
+  )
+
+  // 单个节行（post_body 显示标签替代开关）
+  const renderSectionRow = (sec: OutlineGroup['sections'][number], num: string, key: string) => (
+    <div key={key} className={s.sectionItem}>
+      <span className={s.sectionNum}>{num}</span>
+      <span className={s.sectionName}>{sec.title}</span>
+      {sec.postBody ? (
+        <span className={s.postBodyTag}>{t('project.report.wizard.postBody')}</span>
+      ) : (
+        renderInternetToggle(sec.section_id)
+      )}
+    </div>
+  )
 
   // 报告级总开关：关闭时清空章节开关（避免 OFF 状态下残留逐节配置误导）
   const toggleMasterInternet = () => {
@@ -506,30 +543,25 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
                   <p className={s.sectionHint}>{t('project.report.wizard.internetDisabledHint')}</p>
                 )}
                 <div className={s.sectionList}>
-                  {standardSections.length === 0 ? (
+                  {outlineGroups.length === 0 ? (
                     <div className={s.emptyState}>
                       <span>{t('project.report.wizard.noSections')}</span>
                     </div>
                   ) : (
-                    standardSections.map((sec, idx) => (
-                      <div key={sec.section_id} className={s.sectionItem}>
-                        <span className={s.sectionNum}>{idx + 1}.</span>
-                        <span className={s.sectionName}>{sec.title}</span>
-                        <label
-                          className={`${s.internetToggle} ${(!internetConfigured || !internetEnabled) ? s.internetToggleDisabled : ''}`}
-                          title={t('project.report.wizard.sectionInternet')}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!!sectionInternet[sec.section_id]}
-                            onChange={() => toggleSectionInternet(sec.section_id)}
-                            disabled={!internetConfigured || !internetEnabled}
-                          />
-                          <Globe size={13} />
-                          <span>{t('project.report.wizard.sectionInternet')}</span>
-                        </label>
-                      </div>
-                    ))
+                    outlineGroups.map((group, gi) =>
+                      group.chapterTitle === null ? (
+                        // 无 children 的章：章自身即节（与模板管理同层，非缩进节）
+                        renderSectionRow(group.sections[0], `${gi + 1}.`, group.sections[0].section_id)
+                      ) : (
+                        // 有 children 的章：组头 + 缩进节行（章内编号，层次与模板管理一致）
+                        <div key={`ch-${gi}`} className={s.chapterGroup}>
+                          <div className={s.chapterTitle}>{group.chapterTitle}</div>
+                          {group.sections.map((sec, si) =>
+                            renderSectionRow(sec, `${gi + 1}.${si + 1}`, sec.section_id),
+                          )}
+                        </div>
+                      ),
+                    )
                   )}
                 </div>
               </div>

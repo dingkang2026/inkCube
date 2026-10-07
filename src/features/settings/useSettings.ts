@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS: LLMSettings = {
   vlm_api_url: 'https://open.bigmodel.cn/api/paas/v4/',
   vlm_api_key: '',
   vlm_model: 'glm-4v',
-  max_concurrent_file_parsing: 1,
+  max_concurrent_file_parsing: 2,
   max_concurrent_image_description: 2,
   // Wiki compile settings
   max_compile_concurrency: 2,

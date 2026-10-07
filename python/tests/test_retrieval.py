@@ -138,6 +138,31 @@ class TestWikiChannel:
         assert result.skip is False
         assert m["cards"].call_count == 1
 
+    def test_wiki_channel_all_draft_pages_returns_triple(self):
+        """回归（§7.1-1 修复）：项目页面全部为 draft（未完成编译）→
+        三元组（空结果 / zero_usage / 空警告），不得返回二元组致上层解包 ValueError。"""
+        from report_generator.retrieval import _search_wiki_channel
+        db = MagicMock()
+        db.list_wiki_pages.return_value = [{"page_key": "a", "status": "draft"}]
+        results, usage, warnings = asyncio.run(
+            _search_wiki_channel(["q"], db=db, project_id="p1", top_k=5)
+        )
+        assert results == []
+        assert usage == dict(_ZERO)
+        assert warnings == []
+
+    def test_wiki_channel_list_pages_error_returns_triple(self):
+        """list_wiki_pages 异常分支同样锁定三元组契约。"""
+        from report_generator.retrieval import _search_wiki_channel
+        db = MagicMock()
+        db.list_wiki_pages.side_effect = RuntimeError("db down")
+        results, usage, warnings = asyncio.run(
+            _search_wiki_channel(["q"], db=db, project_id="p1", top_k=5)
+        )
+        assert results == []
+        assert usage == dict(_ZERO)
+        assert warnings == []
+
 
 # ── report_depth → top_k ────────────────────────────────────
 

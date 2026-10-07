@@ -34,8 +34,8 @@ export function GeneralSettings({ settings, onUpdate }: GeneralSettingsProps) {
         min={1}
         max={10}
         className={styles.input}
-        value={settings?.max_concurrent_file_parsing ?? 1}
-        onChange={(e) => onUpdate?.('max_concurrent_file_parsing', parseInt(e.target.value) || 1)}
+        value={settings?.max_concurrent_file_parsing ?? 2}
+        onChange={(e) => onUpdate?.('max_concurrent_file_parsing', parseInt(e.target.value) || 2)}
       />
       <p className={styles.hint}>{t('settings.concurrency.fileParsingHint')}</p>
 
@@ -56,8 +56,8 @@ export function GeneralSettings({ settings, onUpdate }: GeneralSettingsProps) {
         min={1}
         max={5}
         className={styles.input}
-        value={settings?.max_compile_concurrency ?? 1}
-        onChange={(e) => onUpdate?.('max_compile_concurrency', parseInt(e.target.value) || 1)}
+        value={settings?.max_compile_concurrency ?? 2}
+        onChange={(e) => onUpdate?.('max_compile_concurrency', parseInt(e.target.value) || 2)}
       />
       <p className={styles.hint}>{t('settings.concurrency.compileHint')}</p>
 

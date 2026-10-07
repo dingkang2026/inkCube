@@ -10,7 +10,8 @@ export type ActiveEntityType = 'file' | 'wiki_compile' | 'report' | 'task' | 'mo
 /** 通知条目类型（notifications 表 entity_type 取值，同上） */
 export type NotificationEntityType = ActiveEntityType
 
-export type NotificationKind = 'completed' | 'failed'
+/** 终态通知 kind：completed / failed / paused（报告级暂停，2.5 §3.1 修订） */
+export type NotificationKind = 'completed' | 'failed' | 'paused'
 
 /** 活动挂载容器（0.4 §3.6）：活动所属 projects 行的 kind，基础库活动导航分流用 */
 export type ActivityContainer = 'project' | 'baselib'

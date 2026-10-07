@@ -119,6 +119,14 @@ def drop_chroma_client(persist_dir: str) -> None:
         _chroma_clients.pop(key, None)
 
 
+# Serializes bge-m3 encode batches across threads. FlagEmbedding 1.3 moves
+# weights to CUDA lazily on the first encode; two concurrent first-calls can
+# race the transfer and crash one caller with a device-mismatch error. On GPU
+# a batch takes ~0.2s, so serializing costs nothing — file-parsing parallelism
+# wins by overlapping the CPU-bound Docling stage with these short GPU batches.
+_bge_encode_lock = threading.Lock()
+
+
 class BgeM3EmbeddingFunction(embedding_functions.EmbeddingFunction):
     """Custom embedding function for bge-m3 model using FlagEmbedding.
 
@@ -134,7 +142,8 @@ class BgeM3EmbeddingFunction(embedding_functions.EmbeddingFunction):
 
     def __call__(self, texts: List[str]) -> List[List[float]]:
         model = self._get_model()
-        result = model.encode(texts, return_dense=True)
+        with _bge_encode_lock:
+            result = model.encode(texts, return_dense=True)
         return result['dense_vecs'].tolist()
 
 

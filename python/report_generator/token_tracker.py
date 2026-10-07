@@ -35,7 +35,8 @@ class TokenTracker:
 
         Args:
             section_id: 所属章节 ID
-            call_type: 调用类型（search_queries / card_build / generation / digest / finalizer）
+            call_type: 调用类型（variable_resolution / search_queries /
+                       card_build / generation / digest / extract_numbers）
             usage: API 返回的 usage 字段
                    {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
         """

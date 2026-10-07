@@ -1,5 +1,5 @@
 /** tests/ProjectDetailPage.test.tsx — #4 谓词心跳化 + 角标派生 + 边沿补拉回归（0.4 §6.3，顺序 4）
- *  轮询启停由 useActivity('wiki_compile') 项目级心跳派生（compileDialogOpen 兜住
+ *  轮询启停由 useActivity('wiki_compile') 项目级心跳派生（compileDetailOpen 兜住
  *  启动间隙）；挂载 / 项目切换 / 切到 wiki Tab 各拉一次快照；wikiCompileActive
  *  true→false 边沿补拉终态快照；Tab 角标从心跳 byProject 派生（不再依赖本地快照）。
  *  Tab 内容组件全部打桩：仅验证页面主体接线；机制本身由 useEdgeRefetch.test 覆盖。

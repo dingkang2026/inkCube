@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { SearchResult } from './types'
-import { renderMarkdown } from './markdown'
+import { Markdown } from '../../components/Markdown'
 import s from './SearchResultList.module.css'
 
 interface SearchResultListProps {
@@ -92,10 +92,7 @@ export function SearchResultList({ results, isRecent }: SearchResultListProps) {
                 )}
                 <div className={`${s.content} ${isTable ? s.tableContent : ''}`}>
                   {renderMarkdownBody ? (
-                    <div
-                      className={s.markdownRendered}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(fullBody) }}
-                    />
+                    <Markdown content={fullBody} className={s.markdownRendered} />
                   ) : isExpanded ? (
                     <>{fullBody}</>
                   ) : (

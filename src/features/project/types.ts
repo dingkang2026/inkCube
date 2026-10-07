@@ -23,7 +23,7 @@ export interface Report {
   template_name: string
   output_format: string
   created_at: string
-  status: 'done' | 'generating' | 'error'
+  status: 'done' | 'generating' | 'error' | 'paused'
   progress?: number
   stage?: ProjectStage
   error_message?: string

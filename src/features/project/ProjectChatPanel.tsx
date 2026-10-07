@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MessageCircle, X, Send, FileText, Search, ArrowLeft, Trash2, BookPlus, Check } from 'lucide-react'
-import { renderMarkdown } from '../knowledge/markdown'
+import { Markdown } from '../../components/Markdown'
 import s from './ProjectChatPanel.module.css'
 
 interface ChatSource {
@@ -247,6 +247,9 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
         </div>
       )}
 
+      {/* Backdrop — 模板管理 drawer 同款：展开时点击面板外任意处收起（遮罩不透传点击） */}
+      {isOpen && <div className={s.backdrop} onClick={() => setIsOpen(false)} />}
+
       {/* Panel — absolute, positioned relative to .page (full page height) */}
       {isOpen && (
         <div className={s.panel} style={{ width: panelWidth }}>
@@ -297,10 +300,7 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
               <div key={msg.id} className={`${s.message} ${msg.role === 'user' ? s.messageUser : s.messageAssistant}`}>
                 <div className={s.messageContent}>
                   {msg.role === 'assistant' ? (
-                    <div
-                      className={s.markdownBody}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                    />
+                    <Markdown content={msg.content} className={s.markdownBody} />
                   ) : (
                     msg.content
                   )}

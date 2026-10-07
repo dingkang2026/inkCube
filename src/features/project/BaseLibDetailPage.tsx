@@ -26,6 +26,8 @@ const BASE_LIB_IPC_CHANNELS: KnowledgeIpcChannels = {
   updateImageCategory: 'knowledge:updateImageCategory',
   archiveImage: 'knowledge:archiveImage',
   retryFailedImages: 'knowledge:retryFailedImages',
+  // 基础库与项目共用同一解析/描述队列，暂停端点全局同一个（0.4 §队列暂停）
+  queuePause: 'knowledge:queuePause',
 }
 
 /** Icon mapping for known preset base lib IDs */

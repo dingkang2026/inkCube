@@ -1,7 +1,7 @@
 /** src/features/project/tabs/ReportsTab.tsx — Reports tab with kanban layout (4 columns by stage) */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw } from 'lucide-react'
+import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw, Pause, PauseCircle, Play } from 'lucide-react'
 import type { ProjectType, ProjectStage, Report } from '../types'
 import { STAGE_COLUMNS } from '../types'
 import { ReportWizard } from './ReportWizard'
@@ -128,6 +128,27 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     }
   }
 
+  // ── 报告级暂停（2.5 §3.1 修订）：写 pause_requested，当前章节完成后生效 → paused；
+  // 恢复走 retry(resume) 断点续跑，重新生成走 retry(restart) 全量重跑（需确认）
+  const handlePauseReport = async (report: Report) => {
+    try {
+      const result: any = await window.electronAPI.invoke('reports:pauseReport', { reportId: report.id })
+      if (result.error) {
+        showToast(t('project.report.pauseFailed', { error: result.error }), 'error')
+      } else {
+        showToast(t('project.report.pauseRequested'), 'info')
+        await loadReports()
+      }
+    } catch (err) {
+      showToast(t('project.report.pauseFailed', { error: String(err) }), 'error')
+    }
+  }
+
+  const handleRestartReport = async (report: Report) => {
+    if (!(await confirmDialog({ title: t('project.report.restartReport'), message: t('project.report.restartConfirm') }))) return
+    handleRetryReport(report, 'restart')
+  }
+
   // ── Wizard view ──
   if (viewMode === 'wizard') {
     return (
@@ -214,6 +235,11 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
                             <Clock size={12} /> {report.progress || 0}%
                           </span>
                         )}
+                        {report.status === 'paused' && (
+                          <span className={s.statusPaused}>
+                            <PauseCircle size={12} /> {t('project.report.pausedStatus')} {report.progress || 0}%
+                          </span>
+                        )}
                         {report.status === 'error' && (
                           <span
                             className={s.statusFailed}
@@ -221,6 +247,33 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
                           >
                             <AlertCircle size={12} /> {t('project.report.failed')}
                           </span>
+                        )}
+                        {report.status === 'generating' && (
+                          <button
+                            className={s.retryBtn}
+                            onClick={(e) => { e.stopPropagation(); void handlePauseReport(report) }}
+                            title={t('project.report.pauseTip')}
+                          >
+                            <Pause size={12} />
+                          </button>
+                        )}
+                        {report.status === 'paused' && (
+                          <>
+                            <button
+                              className={s.retryBtn}
+                              onClick={(e) => { e.stopPropagation(); handleRetryReport(report, 'resume') }}
+                              title={t('project.report.resumeReport')}
+                            >
+                              <Play size={12} />
+                            </button>
+                            <button
+                              className={s.retryBtn}
+                              onClick={(e) => { e.stopPropagation(); void handleRestartReport(report) }}
+                              title={t('project.report.restartReport')}
+                            >
+                              <RefreshCw size={12} />
+                            </button>
+                          </>
                         )}
                         {report.status === 'error' && (
                           <button

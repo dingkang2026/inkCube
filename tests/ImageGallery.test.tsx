@@ -36,7 +36,7 @@ vi.mock('../src/features/knowledge/SkeletonLoader', () => ({
   SkeletonImageGrid: () => null,
 }))
 
-import { render, cleanup, act, screen } from '@testing-library/react'
+import { render, cleanup, act, screen, fireEvent } from '@testing-library/react'
 import { ImageGallery } from '../src/features/knowledge/ImageGallery'
 
 const invokeMock = vi.fn()
@@ -99,6 +99,25 @@ describe('ImageGallery terminal refetch', () => {
     rerender(<ImageGallery projectId="p1" />)
     await flush()
     expect(imagesInvokeCount()).toBe(1)
+  })
+})
+
+describe('ImageGallery describe pause toggle', () => {
+  it('renders the pause button only when wired via onToggleDescribePause', async () => {
+    render(<ImageGallery projectId="p1" />)
+    await flush()
+    expect(screen.queryByTitle('knowledge.pauseDescribe')).toBeNull()
+    render(<ImageGallery projectId="p1" describePaused={false} onToggleDescribePause={() => {}} />)
+    await flush()
+    expect(screen.getByTitle('knowledge.pauseDescribe')).toBeTruthy()
+  })
+
+  it('shows resume title while paused and invokes the callback on click', async () => {
+    const onToggle = vi.fn()
+    render(<ImageGallery projectId="p1" describePaused onToggleDescribePause={onToggle} />)
+    await flush()
+    fireEvent.click(screen.getByTitle('knowledge.resumeDescribe'))
+    expect(onToggle).toHaveBeenCalledTimes(1)
   })
 })
 

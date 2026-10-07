@@ -120,7 +120,7 @@ class TestReportTerminalEvents:
 
     def test_fail_report_carries_error_message(self, db, project_id):
         """error_message 显式传参（顺序 4 修复）：旧钩子在 update_report_error 写入前
-        读列恆为 NULL，失败通知 detail 从未带出过错误信息。"""
+        读列恒为 NULL，失败通知 detail 从未带出过错误信息。"""
         _insert_report(db, project_id, "r2")
         activity_events.fail_report(db, "r2", "x" * 300)
 

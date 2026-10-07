@@ -373,11 +373,18 @@ async def list_reports(project_id: str):
     try:
         db = get_db()
         reports = db.list_reports(project_id)
-        # Enrich with template info
+        # Enrich with template info. stage 存于 template_json 内部（DB 行顶层无此列），
+        # 解析后回填；模板缺失/无 stage/JSON 损坏时归入前端 other（none）列。
         for r in reports:
             tmpl = db.get_template(r.get("template_id", ""))
             r["template_name"] = tmpl["name"] if tmpl else "Unknown"
-            r["stage"] = tmpl.get("stage", "report") if tmpl else "report"
+            stage = None
+            if tmpl:
+                try:
+                    stage = json.loads(tmpl["template_json"]).get("stage")
+                except (json.JSONDecodeError, TypeError):
+                    stage = None
+            r["stage"] = stage if stage in ("before", "during", "after") else "none"
         return {"reports": reports}
     except Exception as e:
         logger.error("Failed to list reports: %s", e)
@@ -606,6 +613,38 @@ async def get_report_content(report_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Pause (报告级，2.5 §3.1 修订) ──
+
+
+@router.post("/{report_id}/pause")
+async def pause_report(report_id: str):
+    """请求暂停报告生成（报告级协作暂停，章节边界生效）。
+
+    写 pause_requested 标志即返回 accepted；Runner 在章节边界消费（当前章节
+    完成 → 落 checkpoint → status=paused）。不中断进行中的章节。
+    非 generating 状态（done / error / paused）409 拒绝：暂停只对在跑的报告有意义。
+    恢复走 retry(resume) 断点续跑，重新生成走 retry(restart)。
+    """
+    try:
+        db = get_db()
+        report = db.get_report(report_id)
+        if not report:
+            raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
+        if report["status"] != "generating":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Report is not generating (current: {report['status']})"
+            )
+        db.set_report_pause_requested(report_id, True)
+        logger.info("Report %s pause requested (takes effect at section boundary)", report_id)
+        return {"report_id": report_id, "status": "generating", "pause_requested": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to request pause for report %s: %s", report_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Retry & Logs ──
 
 
@@ -616,7 +655,7 @@ class RetryReportRequest(BaseModel):
 
 @router.post("/{report_id}/retry")
 async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: Optional[RetryReportRequest] = None):
-    """Retry a failed report generation.
+    """Retry a paused or failed report generation.
 
     mode=resume: Continue from checkpoint (default)
     mode=restart: Delete checkpoint and start fresh
@@ -630,10 +669,10 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
         if not report:
             raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
 
-        if report["status"] != "error":
+        if report["status"] not in ("error", "paused"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Report is not in error state (current: {report['status']})"
+                detail=f"Report is not in error/paused state (current: {report['status']})"
             )
 
         # 并发限制检查
@@ -647,20 +686,11 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
             )
 
         mode = req.mode if req else "resume"
-        report_dir = report.get("content_path", "")
+        if mode not in ("resume", "restart"):
+            raise HTTPException(status_code=400, detail=f"Invalid retry mode: {mode}")
 
-        if mode == "restart":
-            # 删除 checkpoint 文件
-            ckpt_path = Path(report_dir) / "checkpoint.json"
-            if ckpt_path.exists():
-                ckpt_path.unlink()
-            logger.info("Report %s restart: checkpoint deleted", report_id)
-
-        # 重置状态
-        db.update_report_status(report_id, "generating", 0)
-        db.update_report_error(report_id, "")  # 清空错误信息
-
-        # 获取模板
+        # 模板与配置解析（排在状态变更前）：解析失败（模板 404 / JSON 损坏）时
+        # 报告保持原稳态，不留「generating 假态」（无后台任务接管会永久卡死）
         loader = get_loader()
         template = loader.get_template(report["template_id"])
         if not template:
@@ -688,6 +718,28 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
             except (json.JSONDecodeError, TypeError):
                 pass
         internet_enabled = bool(report.get("internet_enabled"))
+
+        report_dir = report.get("content_path", "")
+
+        if mode == "restart":
+            # 删除 checkpoint 文件
+            ckpt_path = Path(report_dir) / "checkpoint.json"
+            if ckpt_path.exists():
+                ckpt_path.unlink()
+            logger.info("Report %s restart: checkpoint deleted", report_id)
+
+        # 重置状态（前置解析全部成功后才落）。paused + resume 保留原进度（checkpoint
+        # 已完成章节将跳过，进度随 section_done 携带的绝对完成数推进）；
+        # restart / error 重生成从 0 计（全量重跑，原语义不变）。
+        resume_progress = (
+            int(report.get("progress") or 0)
+            if (mode == "resume" and report["status"] == "paused")
+            else 0
+        )
+        db.update_report_status(report_id, "generating", resume_progress)
+        db.update_report_error(report_id, "")  # 清空错误信息
+        # 清除遗留暂停请求标志（终态统一清标志不变量；防恢复后立即再暂停）
+        db.set_report_pause_requested(report_id, False)
 
         # 启动后台任务
         data_dir = get_data_dir()
@@ -787,6 +839,11 @@ async def _run_report_generation(
 
     # Copy settings — reasoning effort comes from user settings (settings page 思考深度)
     report_llm_settings = dict(llm_settings)
+    # 输出预算抬升（同 wiki/ingest 先例）：节正文目标 1200 字 + 引用标注，
+    # reasoning 模型的思考 token 亦计入 max_tokens，全局默认（8192）有截断风险
+    report_llm_settings["max_tokens"] = max(
+        int(llm_settings.get("max_tokens") or 4096), 32000,
+    )
     logger.info(
         "Report [%s]: reasoning_effort=%s, max_tokens=%s",
         report_id, report_llm_settings.get("reasoning_effort"), report_llm_settings.get("max_tokens"),
@@ -809,9 +866,10 @@ async def _run_report_generation(
         db=db,
         section_internet=section_internet,
         internet_enabled=internet_enabled,
+        # 报告级暂停探针（2.5 §3.1 修订）：章节边界轮询 DB 标志
+        pause_check=lambda: db.get_report_pause_requested(report_id),
     )
 
-    section_count = 0
     try:
         async for event in runner.run():
             if event.event_type == "section_start":
@@ -824,10 +882,12 @@ async def _run_report_generation(
                 )
 
             elif event.event_type == "section_done":
-                section_count += 1
+                # completed 为 runner 维护的绝对完成数（含恢复续跑的既有进度）：
+                # 直接采用保证 resume 后进度自断点单调推进，不因本地重新计数而回退
+                completed = event.data.get("completed", 0)
                 total = event.data.get("total", 1)
                 # 章节阶段进度封顶 90%，收尾(finalizing)推进到 95%，完成 100%，保证单调递增
-                progress = int(section_count / total * 90)
+                progress = int(completed / max(total, 1) * 90)
                 db.update_report_status(report_id, "generating", progress)
 
                 # 保存章节到 DB
@@ -860,8 +920,24 @@ async def _run_report_generation(
                 )
                 db.update_report_status(report_id, "generating", 95)
 
+            elif event.event_type == "paused":
+                # 报告级暂停生效（2.5 §3.1 修订）：章节边界消费请求 → paused 稳态；
+                # 恢复走 retry(resume) 断点续跑、重新生成走 retry(restart)
+                completed = event.data.get("completed", 0)
+                total = event.data.get("total", 1)
+                db.update_report_status(report_id, "paused", int(completed / max(total, 1) * 90))
+                db.set_report_pause_requested(report_id, False)  # 消费即清
+                db.create_report_log(
+                    report_id,
+                    f"报告已暂停（已完成 {completed}/{total} 章节），可从断点恢复或重新生成",
+                    level="warning",
+                )
+                activity_events.pause_report(db, report_id)  # 暂停通知（E2）
+
             elif event.event_type == "complete":
                 db.update_report_status(report_id, "done", 100)
+                # 收尾期到达的暂停请求随完成清除（终态统一清标志不变量）
+                db.set_report_pause_requested(report_id, False)
                 activity_events.complete_report(db, report_id)  # 终态事件显式声明（E2，顺序 4）
                 # 保存 token 统计
                 token_usage = event.data.get("token_usage")
@@ -888,7 +964,8 @@ async def _run_report_generation(
         error_msg = actionable(e)
         db.update_report_status(report_id, "error")
         db.update_report_error(report_id, error_msg)
+        db.set_report_pause_requested(report_id, False)  # 终态统一清暂停标志
         db.create_report_log(report_id, f"报告生成异常: {error_msg}", level="error")
         # 终态事件显式声明（E2，顺序 4）：error_msg 直接传参——旧 DB 钩子在
-        # update_report_error 写入前读列恆为 NULL，失败通知 detail 从未带出过错误信息
+        # update_report_error 写入前读列恒为 NULL，失败通知 detail 从未带出过错误信息
         activity_events.fail_report(db, report_id, error_msg)

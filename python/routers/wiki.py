@@ -373,6 +373,16 @@ async def retry_page(project_id: str, page_key: str):
         if not page:
             raise HTTPException(status_code=404, detail="Wiki page not found")
 
+        # 同项目防重（同 trigger_compile）：已有活跃编译任务时 409 拒绝。
+        # 否则并发 2 下两个 worker 会同时 ingest 同一项目的同一 pending 文件，
+        # 双写页面 + overview/change_log 交错滚动。
+        latest = db.get_latest_compile_task(project_id)
+        if latest and latest["status"] in ("queued", "ingesting", "storing"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"已有编译任务进行中: {latest['status']}",
+            )
+
         # Create a new compile task for single page
         task = db.create_wiki_compile_task(
             project_id=project_id,

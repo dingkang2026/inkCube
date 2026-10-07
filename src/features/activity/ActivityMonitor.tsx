@@ -88,7 +88,8 @@ export function ActivityMonitor() {
         return
       }
       for (const n of items) {
-        const type = n.kind === 'failed' ? 'error' : 'success'
+        // paused（报告级暂停，2.5 §3.1 修订）用 info（蓝），与完成（绿）/失败（红）区分
+        const type = n.kind === 'failed' ? 'error' : n.kind === 'paused' ? 'info' : 'success'
         showToast(
           t(`activity.${n.entity_type}.${n.kind}`, { title: n.entity_title || '' }),
           type,

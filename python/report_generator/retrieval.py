@@ -448,7 +448,7 @@ async def _search_wiki_channel(
         if p.get("status") in ("compiled", "user_edited")
     ]
     if not finished_pages:
-        return [], empty_usage
+        return [], empty_usage, []
 
     all_results: dict[str, dict] = {}  # page_key -> result dict
 

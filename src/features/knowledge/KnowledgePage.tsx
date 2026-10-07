@@ -12,6 +12,7 @@ import { useFeatureGuard } from '../readiness/useReadiness'
 import { useActivity } from '../activity/ActivityContext'
 import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
+import { useQueuePause } from '../../hooks/useQueuePause'
 import type { Project, FileRecord, SearchResult, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './KnowledgePage.module.css'
@@ -31,6 +32,11 @@ interface KnowledgePageProps {
 type OutputTab = 'search' | 'images'
 type FileStatusFilter = 'all' | 'processing' | 'done' | 'error'
 
+// File panel drag resize bounds（右缘拖拽，与 chat/preview 面板同一交互模式）
+const PANEL_MIN_WIDTH = 260
+const PANEL_MAX_WIDTH = 960
+const PANEL_DEFAULT_WIDTH = 320
+
 const STATUS_FILTERS: { key: FileStatusFilter; labelKey: string }[] = [
   { key: 'all', labelKey: 'knowledge.filterAll' },
   { key: 'processing', labelKey: 'knowledge.filterProcessing' },
@@ -49,6 +55,10 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const { t } = useTranslation()
   const showToast = useToast()
   const guard = useFeatureGuard()
+  // 队列暂停开关（0.4 §队列暂停）：解析/描述各自独立；基础库共用同一队列，
+  // 经 ipcChannels 覆写的页面同样受同一开关控制
+  const parsingPause = useQueuePause('parsing')
+  const describePause = useQueuePause('describe')
   const [files, setFiles] = useState<FileRecord[]>([])
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [recentChunks, setRecentChunks] = useState<SearchResult[]>([])
@@ -65,6 +75,12 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const [searchInput, setSearchInput] = useState('')
   const [initialLoading, setInitialLoading] = useState(true)
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null)
+  // File panel width (drag-resizable, default 320px)
+  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_WIDTH)
+  const [isPanelDragging, setIsPanelDragging] = useState(false)
+  const panelDragging = useRef(false)
+  const panelDragStartX = useRef(0)
+  const panelDragStartWidth = useRef(PANEL_DEFAULT_WIDTH)
 
   // Upload state
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -185,6 +201,41 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     setDragOver(false)
     if (e.dataTransfer.files.length) processFiles(e.dataTransfer.files)
   }
+
+  // ── File panel drag resize ──
+  const handlePanelDragMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    panelDragging.current = true
+    setIsPanelDragging(true)
+    panelDragStartX.current = e.clientX
+    panelDragStartWidth.current = panelWidth
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [panelWidth])
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!panelDragging.current) return
+      // 面板在左侧：向右拖增宽
+      const delta = e.clientX - panelDragStartX.current
+      const newWidth = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, panelDragStartWidth.current + delta))
+      setPanelWidth(newWidth)
+    }
+    const handleMouseUp = () => {
+      if (panelDragging.current) {
+        panelDragging.current = false
+        setIsPanelDragging(false)
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+    }
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [])
 
   // Compute processing status for header
   const processingCount = useMemo(
@@ -418,8 +469,13 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
       {/* Main area: Input | Output */}
       <div className={s.mainArea}>
-        {/* ── Input panel (left) ── */}
-        <div className={s.inputPanel}>
+        {/* ── Input panel (left, drag-resizable) ── */}
+        <div className={s.inputPanel} style={{ width: panelWidth }}>
+          {/* Drag handle — right edge, drag to resize (260~960px) */}
+          <div
+            className={`${s.panelDragHandle} ${isPanelDragging ? s.panelDragHandleActive : ''}`}
+            onMouseDown={handlePanelDragMouseDown}
+          />
           <div className={s.inputHeader}>
             <form className={s.inputSearchForm} onSubmit={handleFileSearchSubmit}>
               <div className={s.inputSearchWrap}>
@@ -494,6 +550,8 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
                 selectedFileId={selectedFileId}
                 onSelectFile={setSelectedFileId}
                 onDeleteFile={handleDeleteFile}
+                parsingPaused={parsingPause.paused}
+                onToggleParsingPause={() => void parsingPause.toggle()}
                 ipcChannels={ipc}
               />
             )}
@@ -554,7 +612,13 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
               </div>
             ) : (
               <div className={s.imagePanel}>
-                <ImageGallery projectId={selectedProject.id} fileId={selectedFileId || undefined} ipcChannels={ipc} />
+                <ImageGallery
+                  projectId={selectedProject.id}
+                  fileId={selectedFileId || undefined}
+                  describePaused={describePause.paused}
+                  onToggleDescribePause={() => void describePause.toggle()}
+                  ipcChannels={ipc}
+                />
               </div>
             )}
           </div>

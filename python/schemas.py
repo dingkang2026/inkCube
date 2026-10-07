@@ -17,10 +17,10 @@ class SettingsModel(BaseModel):
     vlm_api_url: str = "https://open.bigmodel.cn/api/paas/v4/"
     vlm_api_key: str = ""
     vlm_model: str = "glm-4v"
-    max_concurrent_file_parsing: int = 1
+    max_concurrent_file_parsing: int = 2
     max_concurrent_image_description: int = 2
-    # Wiki compile settings
-    max_compile_concurrency: int = 1
+    # Wiki compile settings（默认 2 = 两个项目并行编译，项目内文件串行）
+    max_compile_concurrency: int = 2
     # LLM timeout settings
     llm_connect_timeout: int = 30
     llm_read_timeout: int = 300

@@ -130,11 +130,11 @@
     },
     "concurrency": {
       "fileParsing": "文件解析并发数",
-      "fileParsingHint": "同时处理的文件数量，默认 1",
+      "fileParsingHint": "同时解析的文件数。各文件相互独立，同一项目的多个文件也会并行解析；默认 2，调大需重启应用生效",
       "imageDescription": "图片描述并发数",
-      "imageDescriptionHint": "同时处理的图片数量，默认 2",
+      "imageDescriptionHint": "同时描述的图片数。每张图片独立调用视觉模型，互不影响；默认 2，调大需重启应用生效",
       "compile": "Wiki 编译并发数",
-      "compileHint": "同时进行的编译任务数，默认 1"
+      "compileHint": "同时进行的 Wiki 编译任务数。每个任务对应一个项目，项目内文件按顺序逐个摄入，此值即同时编译的项目数；默认 2，调大需重启应用生效"
     },
     "llm": {
       "connectTimeout": "LLM 连接超时（秒）",
@@ -195,6 +195,10 @@
     "uploadFailed": "上传失败",
     "uploadedFiles": "已上传文件",
     "refresh": "刷新",
+    "pauseParsing": "暂停文件解析",
+    "resumeParsing": "恢复文件解析",
+    "pauseDescribe": "暂停图片描述",
+    "resumeDescribe": "恢复图片描述",
     "dropZone": "点击或拖拽文件到此处上传",
     "supportedFormats": "支持 PDF、DOCX、PPTX、XLSX、HTML、PNG、JPG",
     "search": "搜索",
@@ -475,7 +479,8 @@
     },
     "report": {
       "completed": "报告《{{title}}》生成完成",
-      "failed": "报告《{{title}}》生成失败"
+      "failed": "报告《{{title}}》生成失败",
+      "paused": "报告《{{title}}》已暂停，可从断点恢复"
     },
     "task": {
       "completed": "任务《{{title}}》已完成",
@@ -699,6 +704,15 @@
       "deleteFailed": "删除失败",
       "retry": "重试生成",
       "retryFailed": "重试失败：{{error}}",
+      "pauseReport": "暂停",
+      "pauseTip": "当前章节完成后暂停，可从断点恢复",
+      "pauseRequested": "暂停请求已提交，当前章节完成后生效",
+      "pauseFailed": "暂停失败：{{error}}",
+      "pausedStatus": "已暂停",
+      "resumeReport": "恢复生成",
+      "resumeTip": "从上次断点继续生成",
+      "restartReport": "重新生成",
+      "restartConfirm": "重新生成将丢弃已有进度从零开始（消耗较多 token），确定继续？",
       "wizard": {
         "back": "返回",
         "newReport": "新建报告",
@@ -719,6 +733,7 @@
         "sectionInternet": "互联网检索",
         "internetDisabledHint": "未配置 Tavily Key，请先到设置中填写后再启用互联网检索",
         "noSections": "此模板暂无可生成章节",
+        "postBody": "全文综述",
         "supplementary": "补充说明",
         "supplementaryPlaceholder": "输入补充要求，如重点突出某方面内容...",
         "startGenerate": "开始生成",
@@ -888,9 +903,7 @@
       "compileTitle": "Wiki 编译",
       "compileProgress": "已处理 {{done}}/{{total}} 个文件",
       "compileStop": "停止摄入",
-      "compileClose": "关闭",
-      "compileMinimize": "最小化",
-      "compileMinimizeTip": "最小化（编译继续在后台运行）",
+      "compileCollapse": "收起编译明细",
       "compileSkipped": "已跳过",
       "compileError": "处理失败",
       "compileFileDone": "处理完成",

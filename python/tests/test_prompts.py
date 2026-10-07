@@ -5,6 +5,7 @@
     role_hint / audience；不含 v1 残留（terminology/subhead）、无未格式化占位符
   - build_extract_value_prompt：scalar/list 抽值契约、deps 渲染、derive_hint/证据注入
   - build_standard_prompt / build_post_body_prompt：writing_requirements 进入写作要求
+  - build_digest_prompt：纲要式定位（主题/论点覆盖，不搬运数值与引用编号）
 """
 import os
 import sys
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from report_generator.prompts import (  # noqa: E402
+    build_digest_prompt,
     build_extract_value_prompt,
     build_post_body_prompt,
     build_standard_prompt,
@@ -160,6 +162,45 @@ class TestBuildStandardPrompt:
             ref_text="[1] x", ref_numbers=[1],
         )
         assert "前文摘要内容" in out
+
+    def test_completed_digests_full_injection(self):
+        """全量注入：超过 3 节的前文摘要全部进入 prompt（无窗口截断）。"""
+        digests = {f"s{i}": f"摘要{i}" for i in range(5)}
+        out = build_standard_prompt(
+            section=self._base_section(), chapter_title="市场", report_title="R",
+            completed_digests=digests, section_order=[f"s{i}" for i in range(5)],
+            ref_text="[1] x", ref_numbers=[1],
+        )
+        for i in range(5):
+            assert f"摘要{i}" in out
+
+
+# ── build_digest_prompt: 纲要式定位 ─────────────────────────
+
+
+class TestBuildDigestPrompt:
+    def test_outline_positioning_not_compression(self):
+        """digest 定位为「写了哪些方面」的纲要，非内容简写（§3.5 全量注入前提）。"""
+        msgs = build_digest_prompt("章节正文...")
+        user = msgs[1]["content"]
+        assert "写了哪些方面的内容" in user
+        assert "每行一条" in user
+        # 明确禁止内容简写与数值搬运
+        assert "不要压缩复述正文事实" in user
+        assert "不要搬运具体数值和引用编号" in user
+
+    def test_default_word_limit_120(self):
+        """默认字数 120（纲要式，原 200 字内容简写已废弃）。"""
+        msgs = build_digest_prompt("章节正文...")
+        assert "不超过 120 字" in msgs[1]["content"]
+
+    def test_custom_word_limit_rendered(self):
+        msgs = build_digest_prompt("章节正文...", max_words=60)
+        assert "不超过 60 字" in msgs[1]["content"]
+
+    def test_text_injected(self):
+        msgs = build_digest_prompt("某节全文内容")
+        assert "某节全文内容" in msgs[1]["content"]
 
 
 # ── build_post_body_prompt: writing_requirements ────────────
