@@ -48,14 +48,20 @@ export function SearchResultList({ results, isRecent }: SearchResultListProps) {
       <div className={s.list}>
         {results.map((result, index) => {
           const isExpanded = expanded === index
-          // Prefer markdown_content over plain content for display
-          const displayContent = result.metadata?.markdown_content || result.content
-          const contentPreview = displayContent.length > 300
-            ? displayContent.slice(0, 300) + '…'
-            : displayContent
+          // Display strategy (2.2 §4.3): structured markdown renders as HTML
+          // (tables); recent chunks stay plain text while collapsed and only
+          // render the full markdown on expand.
+          const mdContent = result.metadata?.markdown_content
           const isTable = result.metadata?.content_type === 'table'
-          const hasMarkdown = !!result.metadata?.markdown_content
+          const fullBody = mdContent || result.content
+          const previewBody = isRecent ? result.content : fullBody
+          const contentPreview = previewBody.length > 300
+            ? previewBody.slice(0, 300) + '…'
+            : previewBody
           const typeIcon = CONTENT_TYPE_ICONS[result.metadata?.content_type] || ''
+          // Markdown rendering: expanded shows the full body; collapsed search
+          // tables show a markdown preview; recent chunks stay plain text.
+          const renderMarkdownBody = !!mdContent && (isExpanded || (!isRecent && isTable))
           // Normalize score to 0-100% for bar width
           const scorePercent = Math.round((result._score || 0) * 100)
 
@@ -85,22 +91,19 @@ export function SearchResultList({ results, isRecent }: SearchResultListProps) {
                   <div className={s.sectionPath}>{result.metadata.section_path}</div>
                 )}
                 <div className={`${s.content} ${isTable ? s.tableContent : ''}`}>
-                  {isExpanded && hasMarkdown ? (
+                  {renderMarkdownBody ? (
                     <div
                       className={s.markdownRendered}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(displayContent) }}
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(fullBody) }}
                     />
-                  ) : isTable && hasMarkdown ? (
-                    <div
-                      className={s.markdownRendered}
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(contentPreview) }}
-                    />
+                  ) : isExpanded ? (
+                    <>{fullBody}</>
                   ) : (
                     <>{contentPreview}</>
                   )}
                 </div>
                 <div className={s.cardFooter}>
-                  {displayContent.length > 300 && (
+                  {fullBody.length > 300 && (
                     <button className={s.expandBtn} onClick={() => setExpanded(isExpanded ? null : index)}>
                       {isExpanded ? t('knowledge.collapse') : t('knowledge.expand')}
                     </button>

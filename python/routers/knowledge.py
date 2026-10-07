@@ -476,6 +476,26 @@ async def upload_file(project_id: str, upload: FileUpload):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _backfill_markdown_content(chunks: list, project_id: str) -> None:
+    """Fill in metadata.markdown_content for recent-chunk lists (2.2 §4.3).
+
+    Recent-chunk rows come from FTS which stores plain text only; the display
+    markdown (table structure) lives in ChromaDB metadata. Failure degrades to
+    plain-text display — the list itself must still render.
+    """
+    try:
+        if not chunks:
+            return
+        vs = VectorStore(str(Path(get_data_dir()) / "chroma"))
+        meta_map = vs.get_metadata_by_ids(project_id, [c["id"] for c in chunks])
+        for c in chunks:
+            md = (meta_map.get(c["id"]) or {}).get("markdown_content")
+            if md:
+                c["metadata"]["markdown_content"] = md
+    except Exception as e:
+        logger.warning("recent-chunks markdown backfill failed: %s", e)
+
+
 @router.get("/projects/{project_id}/recent-chunks")
 async def get_recent_chunks(project_id: str, limit: int = 20, file_id: Optional[str] = None):
     """Get the most recent chunks for a project (by insertion order). Optionally filter by file_id."""
@@ -485,7 +505,7 @@ async def get_recent_chunks(project_id: str, limit: int = 20, file_id: Optional[
         params = [project_id]
         if file_id:
             where_clauses.append("(chunk_id LIKE ? OR chunk_id LIKE ?)")
-            params.extend([f"chunk_{file_id}_%", f"img_{file_id}_%"])
+            params.extend([f"chunk_{file_id}_%", f"img_{file_id}%"])
         where_sql = " AND ".join(where_clauses)
         cursor = db.conn.execute(
             f"""SELECT chunk_id, content, filename, content_type
@@ -506,6 +526,7 @@ async def get_recent_chunks(project_id: str, limit: int = 20, file_id: Optional[
                     "content_type": row["content_type"],
                 },
             })
+        _backfill_markdown_content(chunks, project_id)
         return {"results": chunks}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1421,6 +1442,7 @@ async def get_base_lib_recent_chunks(lib_id: str, limit: int = 20, file_id: Opti
         chunks = [{"id": r["chunk_id"], "content": r["content"], "_score": 0,
                     "metadata": {"filename": r["filename"], "content_type": r["content_type"]}}
                    for r in cursor.fetchall()]
+        _backfill_markdown_content(chunks, lib_id)
         return {"results": chunks}
     except HTTPException:
         raise

@@ -4,11 +4,26 @@ import os
 import hashlib
 import threading
 import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional, List
 from dataclasses import dataclass, field
 import tempfile
 import subprocess
+
+# docling-core is a hard dependency of docling (same failure surface), but the
+# serializer classes below need their base classes at module import time.
+from docling_core.transforms.chunker.hierarchical_chunker import ChunkingDocSerializer
+from docling_core.transforms.serializer.base import (
+    BaseDocSerializer,
+    BaseSerializerProvider,
+    BaseTableSerializer,
+)
+from docling_core.transforms.serializer.common import (
+    SerializationResult,
+    create_ser_result,
+)
+from docling_core.types.doc import DoclingDocument, TableItem
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +95,150 @@ def _get_docling_converter(models_dir: Path):
     return _docling_converter
 
 
+class RowMarkdownTableSerializer(BaseTableSerializer):
+    """Table serializer emitting row-level Markdown (2.2 §4.3).
+
+    Replaces docling_core's default TripletTableSerializer whose
+    "row, col = value." triplets lose column-header semantics on xlsx
+    (merged title/unit rows become empty headers, label rows repeat per
+    column). All formats serialize tables uniformly as Markdown rows so
+    HybridChunker can split on line boundaries and repeat the header per
+    chunk (repeat_table_header).
+
+    Header detection: first row within the top MAX_HEADER_SCAN having
+    >= MIN_HEADER_NON_EMPTY non-empty cells and >= MIN_HEADER_FILL_RATIO
+    fill ratio. xlsx merged cells do not share objects in the grid
+    (col_span is always 1), so sparse title/unit rows can only be told
+    apart by sparsity (measured: title 1/16, unit row 2/16, header 15/16).
+    Rows above the header are emitted once as preamble text.
+    """
+
+    MAX_HEADER_SCAN = 5
+    MIN_HEADER_NON_EMPTY = 2
+    MIN_HEADER_FILL_RATIO = 0.5
+    # Excel serial dates for 2000-01-01 .. 2099-12-31 (epoch 1899-12-30)
+    _SERIAL_MIN = 36526
+    _SERIAL_MAX = 73050
+
+    def serialize(
+        self,
+        *,
+        item: TableItem,
+        doc_serializer: BaseDocSerializer,
+        doc: DoclingDocument,
+        **kwargs,
+    ) -> SerializationResult:
+        parts = []
+        cap_res = doc_serializer.serialize_captions(item=item, **kwargs)
+        if cap_res.text:
+            parts.append(cap_res.text)
+
+        grid = item.data.grid
+        if not grid or not grid[0]:
+            return create_ser_result(text="\n".join(parts) if parts else "", span_source=item)
+
+        num_rows, num_cols = len(grid), len(grid[0])
+
+        def cell_text(r, c):
+            cell = grid[r][c]
+            return (cell.text or "").strip() if cell is not None else ""
+
+        # 垂直合并的重复格：span 覆盖位置与锚点是同一对象（仅 PDF 等真合并
+        # 后端存在；xlsx 后端不共享对象，此分支不会触发）
+        def is_span_repeat(r, c):
+            return r > 0 and grid[r][c] is not None and grid[r][c] is grid[r - 1][c]
+
+        # 水平 span 按 id 去重后的唯一格列表 [(col, cell), ...]
+        def row_unique_cells(r):
+            seen = {}
+            for c in range(num_cols):
+                cell = grid[r][c]
+                if cell is not None and id(cell) not in seen:
+                    seen[id(cell)] = (c, cell)
+            return list(seen.values())
+
+        # 表头检测：非空格 >= 2 且非空占比 >= 50%（标题/说明行稀疏，真表头满格）
+        header_idx = None
+        for r in range(min(self.MAX_HEADER_SCAN, num_rows)):
+            unique = row_unique_cells(r)
+            non_empty = sum(1 for _, cell in unique if (cell.text or "").strip())
+            if (
+                non_empty >= self.MIN_HEADER_NON_EMPTY
+                and non_empty / len(unique) >= self.MIN_HEADER_FILL_RATIO
+            ):
+                header_idx = r
+                break
+
+        preamble_lines = []
+        if header_idx is None:
+            # 无合理表头：整表按纯行输出（退化但可读）
+            header_idx = 0
+            body_start = num_rows
+        else:
+            body_start = header_idx + 1
+            for r in range(header_idx):
+                vals = [cell_text(r, c) for c, _ in row_unique_cells(r) if cell_text(r, c)]
+                if vals:
+                    preamble_lines.append("，".join(dict.fromkeys(vals)))
+
+        # 表头行 Excel 日期序列号 → YYYY-MM-DD：xlsx 日期单元格被序列化为
+        # 天数整数；仅当行内 >= 3 个纯数字格（多列日期表头）才整行转换
+        def to_iso_date(v):
+            try:
+                n = float(v)
+            except (TypeError, ValueError):
+                return v
+            if self._SERIAL_MIN <= n <= self._SERIAL_MAX and n == int(n):
+                return (date(1899, 12, 30) + timedelta(days=int(n))).isoformat()
+            return v
+
+        lines = list(preamble_lines)
+        if header_idx < num_rows:
+            header_cells = [cell_text(header_idx, c) or " " for c in range(num_cols)]
+            if sum(1 for v in header_cells if v.strip().isdigit()) >= 3:
+                header_cells = [to_iso_date(v) for v in header_cells]
+            lines.append("| " + " | ".join(header_cells) + " |")
+            lines.append("|" + "|".join([" - " for _ in range(num_cols)]) + "|")
+
+        for r in range(body_start, num_rows):
+            cells = [cell_text(r, c) for c in range(num_cols)]
+            if not any(cells):
+                continue
+            row_cells = []
+            for c, t in enumerate(cells):
+                if is_span_repeat(r, c):
+                    row_cells.append(" ")
+                else:
+                    row_cells.append(t.replace("\n", " ").replace("|", "&#124;") or " ")
+            lines.append("| " + " | ".join(row_cells) + " |")
+
+        parts.append("\n".join(lines))
+        return create_ser_result(text="\n\n".join(p for p in parts if p), span_source=item)
+
+    def get_header_and_body_lines(self, *, table_text: str, **kwargs):
+        """Split the serialized table into (header lines, body lines) for the
+        chunker's table path: header = column row + separator row, so split
+        chunks stay on line boundaries and repeat the header."""
+        all_lines = table_text.splitlines(True)
+        sep_idx = next(
+            (i for i, l in enumerate(all_lines)
+             if l.rstrip("\n").startswith("|") and set(l) <= set("|-: \n")),
+            None,
+        )
+        if sep_idx is None or sep_idx == 0:
+            return [], all_lines
+        return all_lines[sep_idx - 1: sep_idx + 1], all_lines[sep_idx + 1:]
+
+
+class RowMarkdownSerializerProvider(BaseSerializerProvider):
+    """ChunkingDocSerializer with the row-markdown table serializer."""
+
+    def get_serializer(self, doc: DoclingDocument):
+        serializer = ChunkingDocSerializer(doc=doc)
+        serializer.table_serializer = RowMarkdownTableSerializer()
+        return serializer
+
+
 @dataclass
 class ImageContext:
     """Image metadata with context windows for VLM description"""
@@ -109,7 +268,6 @@ class ChunkInfo:
 class ParseResult:
     """Document parsing result"""
     text_chunks: List[ChunkInfo]
-    markdown_content: str
     images: List[ImageContext]
     metadata: dict  # filename, file_type, page_count, etc.
 
@@ -190,9 +348,6 @@ class DocumentParser:
             # Extract images with context
             images = self._extract_images(doc, file_id, file_path.parent)
             
-            # Generate markdown
-            markdown_content = doc.export_to_markdown()
-            
             # Build metadata
             metadata = {
                 "filename": original_path.name,
@@ -205,7 +360,6 @@ class DocumentParser:
             
             return ParseResult(
                 text_chunks=text_chunks,
-                markdown_content=markdown_content,
                 images=images,
                 metadata=metadata
             )
@@ -397,12 +551,13 @@ class DocumentParser:
             
             self._tokenizer = HuggingFaceTokenizer.from_pretrained(
                 model_name=tokenizer_path,
-                max_tokens=512,
+                max_tokens=1024,
             )
             self._chunker = HybridChunker(
                 tokenizer=self._tokenizer,
                 merge_peers=True,
                 repeat_table_header=True,   # Repeat table headers in split chunks
+                serializer_provider=RowMarkdownSerializerProvider(),
             )
         
         chunker = self._chunker
