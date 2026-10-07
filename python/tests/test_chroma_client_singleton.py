@@ -82,6 +82,26 @@ class TestGetChromaClientSingleton:
         b = get_chroma_client(str(tmp_path / "b"))
         assert a is not b
 
+    def test_drop_evicts_and_next_get_recreates(self, monkeypatch, tmp_path):
+        """drop 后再取 → 重新创建（目录被 wipe 后不得拿到失效 client）。"""
+        created = []
+
+        def _fake(path, settings=None):
+            obj = object()
+            created.append(obj)
+            return obj
+
+        monkeypatch.setattr(vs.chromadb, "PersistentClient", _fake)
+
+        d = str(tmp_path / "chroma")
+        c1 = get_chroma_client(d)
+        assert get_chroma_client(d) is c1  # 缓存生效
+
+        vs.drop_chroma_client(d)
+        c2 = get_chroma_client(d)
+        assert c2 is not c1  # 重建
+        assert len(created) == 2
+
 
 # ── task_queue 启动清理集成回归 ──
 

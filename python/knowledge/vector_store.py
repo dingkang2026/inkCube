@@ -100,6 +100,17 @@ def get_chroma_client(persist_dir: str):
         return client
 
 
+def drop_chroma_client(persist_dir: str) -> None:
+    """Evict the shared client for *persist_dir* from the process cache.
+
+    Call before deleting the directory itself (e.g. knowledge-base wipe) so
+    the cache never hands out a client whose backing files are gone.
+    """
+    key = str(Path(persist_dir).resolve())
+    with _chroma_clients_lock:
+        _chroma_clients.pop(key, None)
+
+
 class BgeM3EmbeddingFunction(embedding_functions.EmbeddingFunction):
     """Custom embedding function for bge-m3 model using FlagEmbedding.
 

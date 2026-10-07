@@ -169,8 +169,14 @@ async def _clean_knowledge() -> dict:
         # 1. Delete ChromaDB collections
         chroma_dir = os.path.join(data_dir, "chroma")
         try:
-            import chromadb
-            client = chromadb.PersistentClient(path=chroma_dir)
+            from knowledge.vector_store import get_chroma_client, drop_chroma_client
+            # Evict from the process-wide cache FIRST: the directory is about
+            # to be removed, and opening it with a bare PersistentClient()
+            # (default settings) would poison chromadb's (path, settings)
+            # registry and break every later VectorStore(...) — incident
+            # 2026-10-07, 181 files failed after a restart
+            drop_chroma_client(chroma_dir)
+            client = get_chroma_client(chroma_dir)
             for coll in client.list_collections():
                 client.delete_collection(coll.name)
                 logger.info("Deleted ChromaDB collection: %s", coll.name)
