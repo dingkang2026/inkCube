@@ -7,6 +7,7 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 
 import threading
 import chromadb
+import torch
 from chromadb.config import Settings as ChromaSettings
 from chromadb.utils import embedding_functions
 from pathlib import Path
@@ -53,8 +54,15 @@ def _get_bge_m3_model(model_path: str):
             actual = resolved  # fallback
 
         logger.info("BgeM3 loading model from: %s", actual)
-        _bge_m3_model = BGEM3FlagModel(str(actual), use_fp16=False)
-        logger.info("BgeM3 model loaded successfully")
+        if torch.cuda.is_available():
+            # GPU acceleration (RTX 5050 spike 2026-10-07: 3x3636-char encode
+            # 5.99s CPU fp32 → 0.73s CUDA fp16, ~8x); fp16 needs ~2-3GB VRAM
+            _bge_m3_model = BGEM3FlagModel(str(actual), use_fp16=True, devices=["cuda"])
+            logger.info("BgeM3 model loaded on CUDA (fp16)")
+        else:
+            # No NVIDIA GPU / CPU-only torch build → fp32 fallback
+            _bge_m3_model = BGEM3FlagModel(str(actual), use_fp16=False)
+            logger.info("BgeM3 model loaded on CPU (fp32)")
     return _bge_m3_model
 
 

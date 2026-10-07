@@ -13,6 +13,10 @@ jsonschema>=4.0.0
 chromadb>=0.5.0
 FlagEmbedding>=1.2.0
 numpy>=1.26.0
+# torch 经 FlagEmbedding/docling 传递引入（不在本文件钉版本）。
+# GPU 加速需手动安装 CUDA 构建（RTX 5050/Blackwell 需 cu128，通道最高 2.11.0）：
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# 无 NVIDIA GPU 的环境装默认 CPU 版即可，vector_store 自动回退 fp32/CPU。
 
 # ── Document Parsing ──
 docling>=2.127.0
