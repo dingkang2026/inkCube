@@ -533,6 +533,12 @@ class Database:
             "wiki_ingest_model": "",  # empty = use global model
             "wiki_lint_model": "",
             "wiki_dedup_model": "",
+            # 队列暂停开关（0.4 §队列暂停）：持久化于 settings，重启保持；
+            # 经 POST /knowledge/queue/pause 写入（set_flag），运行时由 worker 闸门消费
+            "parsing_paused": False,
+            "describe_paused": False,
+            "compile_paused": False,
+            "report_paused": False,
         }
         cursor = self.conn.execute("SELECT key, value FROM settings")
         for row in cursor.fetchall():

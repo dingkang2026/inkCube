@@ -211,6 +211,12 @@ class ProcessingPipeline:
             file_id: File ID
             filename: Original filename
         """
+        # 0 chunks（空文件/无可提取文本）是成功结果而非错误：ChromaDB add 拒绝
+        # 空列表（"Non-empty lists are required"），短路跳过双写，文件正常落
+        # done；空内容说明已由 doc_parser 随 warnings 流入完成通知
+        if not parse_result.text_chunks:
+            return
+        
         fts_chunks = []
         chunk_ids = []
         documents = []

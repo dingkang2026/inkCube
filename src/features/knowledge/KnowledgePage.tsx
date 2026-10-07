@@ -56,6 +56,8 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const [hasSearched, setHasSearched] = useState(false)
   const [outputTab, setOutputTab] = useState<OutputTab>('search')
   const [fileTotal, setFileTotal] = useState(0)
+  // 状态分布（搜索口径、不含状态筛选）——筛选 Tab 计数源；随每次 loadFiles 刷新
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
   const [filePage, setFilePage] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
   const [statusFilter, setStatusFilter] = useState<FileStatusFilter>('all')
@@ -74,6 +76,10 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   // 状态筛选服务端下沉：ref 供轮询/边沿补拉等回调读到最新筛选（切换时由按钮显式传新值）
   const statusFilterRef = useRef<FileStatusFilter>(statusFilter)
   statusFilterRef.current = statusFilter
+  // 轮询/边沿补拉刷新保持用户当前页：硬编码 page=1 会在后台解析完成时把正在
+  // 浏览第 N 页的用户强行拉回首页
+  const filePageRef = useRef(filePage)
+  filePageRef.current = filePage
 
   const ACCEPT = ['.pdf', '.docx', '.pptx', '.xlsx', '.html', '.png', '.jpg', '.jpeg'].join(',')
 
@@ -93,18 +99,36 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const FILE_LIMIT = 20
 
   const loadFiles = useCallback(async (projectId: string, page = 1, search?: string, status?: FileStatusFilter) => {
-    try {
+    const fetchPage = async (p: number) => {
       // status 缺省读 ref（轮询/翻页/补拉沿用当前筛选），切换筛选时由按钮显式传新值
       const effectiveStatus = status ?? statusFilterRef.current
-      const result: any = await window.electronAPI.invoke(ipc.getFiles, {
+      return window.electronAPI.invoke(ipc.getFiles, {
         projectId,
         limit: FILE_LIMIT,
-        offset: (page - 1) * FILE_LIMIT,
+        offset: (p - 1) * FILE_LIMIT,
         filenameSearch: search || undefined,
         status: effectiveStatus === 'all' ? undefined : effectiveStatus,
       })
-      setFiles(result.files || [])
-      setFileTotal(result.total || 0)
+    }
+    try {
+      const result: any = await fetchPage(page)
+      setStatusCounts(result.status_counts || {})
+      const rows = result.files || []
+      const total = result.total || 0
+      // 越界自愈：总数缩小（解析完成/删除）后保持中的当前页可能越界变空页 → 回退末页
+      if (!rows.length && page > 1 && total > 0) {
+        const lastPage = Math.max(1, Math.ceil(total / FILE_LIMIT))
+        if (lastPage < page) {
+          const retry: any = await fetchPage(lastPage)
+          setStatusCounts(retry.status_counts || {})
+          setFiles(retry.files || [])
+          setFileTotal(retry.total || 0)
+          setFilePage(lastPage)
+          return
+        }
+      }
+      setFiles(rows)
+      setFileTotal(total)
       setFilePage(page)
     } catch (err) {
       console.error('Failed to load files:', err)
@@ -168,6 +192,13 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     [files]
   )
 
+  // 筛选 Tab 计数：全部=各状态求和；处理中=排队+解析中（pending+parsing，与后端筛选同口径）
+  const filterCount = (key: FileStatusFilter) => {
+    if (key === 'all') return Object.values(statusCounts).reduce((a, b) => a + b, 0)
+    if (key === 'processing') return (statusCounts.pending || 0) + (statusCounts.parsing || 0)
+    return statusCounts[key] || 0
+  }
+
   // 状态筛选已下沉服务端（跨页有效），files 即当前筛选下的当前页快照
 
   // Reset UI state when project changes
@@ -189,15 +220,23 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     }
   }, [selectedFileId, files])
 
-  // Reload files and recent chunks when project, search, or file selection changes
+  // 文件列表重置：仅换项目/改文件名搜索时回第 1 页（并重置输出面板）。
+  // 选中文件（selectedFileId）不在此列——它只影响最近片段的作用域，
+  // 不能把列表拉回第 1 页（bug：点击行选中 → 列表跳回首页）
   useEffect(() => {
     if (selectedProject) {
       loadFiles(selectedProject.id, 1, filenameSearch)
-      loadRecentChunks(selectedProject.id, selectedFileId)
       setHasSearched(false)
       setSearchResults([])
     }
-  }, [selectedProject?.id, filenameSearch, selectedFileId, loadFiles, loadRecentChunks])
+  }, [selectedProject?.id, filenameSearch, loadFiles])
+
+  // 最近片段跟随项目与文件选中变化（后者只切作用域，不动分页）
+  useEffect(() => {
+    if (selectedProject) {
+      loadRecentChunks(selectedProject.id, selectedFileId)
+    }
+  }, [selectedProject?.id, selectedFileId, loadRecentChunks])
 
   const handleFilePageChange = async (page: number) => {
     if (!selectedProject || loadingMore || page < 1) return
@@ -238,7 +277,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
       if (curCount === 0) {
         // All processing done — full refresh including related data
-        loadFiles(selectedProject.id, 1, filenameSearch)
+        loadFiles(selectedProject.id, filePageRef.current, filenameSearchRef.current)
         loadRecentChunks(selectedProject.id, selectedFileId)
         onProjectDataChanged?.()
         return
@@ -246,6 +285,9 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
 
       if (prevCount > 0 && curCount < prevCount) {
         // Some files just finished — refresh related data
+        // 部分完成也要重拉列表：置顶排序的行位置与筛选 Tab 计数都来自
+        // 服务端（本地 setFiles 合并只更新行内状态，不重排也不刷计数）
+        loadFiles(selectedProject.id, filePageRef.current, filenameSearchRef.current)
         loadRecentChunks(selectedProject.id, selectedFileId)
         onProjectDataChanged?.()
       }
@@ -260,7 +302,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   // curCount===0 的全量刷新分支 → 边沿补拉明细与关联数据
   useEdgeRefetch(hasActiveFiles, () => {
     if (!selectedProject) return
-    void loadFiles(selectedProject.id, 1, filenameSearch)
+    void loadFiles(selectedProject.id, filePageRef.current, filenameSearchRef.current)
     void loadRecentChunks(selectedProject.id, selectedFileId)
     onProjectDataChanged?.()
   })
@@ -406,7 +448,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
                     loadFiles(selectedProject.id, 1, filenameSearch, f.key)
                   }}
                 >
-                  {t(f.labelKey)}
+                  {t(f.labelKey)}{filterCount(f.key) > 0 ? ` (${filterCount(f.key)})` : ''}
                 </button>
               ))}
             </div>

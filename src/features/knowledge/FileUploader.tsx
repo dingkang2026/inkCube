@@ -149,7 +149,9 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
                 checked={files.length > 0 && selectedIds.size === files.length}
                 onChange={toggleSelectAll}
               />
-              <span>{t('knowledge.uploadedFiles')} ({files.length})</span>
+              {/* 标题计数用 fileTotal（当前筛选/搜索下总数，与分页一致）；
+                  files.length 是当前页行数（满页时恰好等于每页上限，会被误读成总数） */}
+              <span>{t('knowledge.uploadedFiles')} ({fileTotal})</span>
             </label>
             <button className={s.refreshBtn} onClick={onRefresh} title={t('knowledge.refresh')}>
               <RefreshCw size={14} />

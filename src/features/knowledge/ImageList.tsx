@@ -8,6 +8,9 @@ import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './ImageList.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useActivity } from '../activity/ActivityContext'
+import { usePolling } from '../../hooks/usePolling'
+import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 
 interface ImageListProps {
   projectId: string
@@ -38,7 +41,33 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
     }
   }
 
+  // 静默刷新（轮询用）：不触发 loading 转圈，仅换数据
+  const refreshImages = async () => {
+    try {
+      const result: any = await window.electronAPI.invoke(ipc.getImages, { projectId, fileId })
+      setImages(result.images || [])
+    } catch (err) {
+      console.error('Failed to refresh images:', err)
+    }
+  }
+
   useEffect(() => { loadImages() }, [fileId])
+
+  // 描述进行中每 4s 静默重拉（0.4 §6.2：谓词从全局心跳 image_describing 派生，
+  // 本列表此前仅打开时拉一次——描述中打开会永久冻结在旧状态）
+  const { items: activeFileItems } = useActivity('file')
+  const hasActiveImages = activeFileItems.some(
+    a => a.project_id === projectId && (a.image_describing ?? 0) > 0
+  )
+  usePolling({
+    name: 'image-list',
+    enabled: hasActiveImages,
+    interval: 4000,
+    task: () => refreshImages(),
+  })
+  // 终态边沿补拉（0.4 §6.3）：轮询随 image_describing 归零自停，最后一批
+  // 完成图可能落在末次刷新之后 → 边沿补拉
+  useEdgeRefetch(hasActiveImages, () => { void loadImages() })
 
   const handleRetry = async (imageId: string, force = false) => {
     try {

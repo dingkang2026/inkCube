@@ -106,16 +106,18 @@ class RowMarkdownTableSerializer(BaseTableSerializer):
     chunk (repeat_table_header).
 
     Header detection: first row within the top MAX_HEADER_SCAN having
-    >= MIN_HEADER_NON_EMPTY non-empty cells and >= MIN_HEADER_FILL_RATIO
-    fill ratio. xlsx merged cells do not share objects in the grid
+    >= MIN_HEADER_NON_EMPTY non-empty cells covering >= MIN_HEADER_FILL_RATIO
+    of all columns. xlsx merged cells do not share objects in the grid
     (col_span is always 1), so sparse title/unit rows can only be told
-    apart by sparsity (measured: title 1/16, unit row 2/16, header 15/16).
+    apart by sparsity (measured: title 1/16, unit row 2/16, header 15/16);
+    the fill ratio is computed against num_cols so unit rows with a few
+    non-None cells cannot reach it.
     Rows above the header are emitted once as preamble text.
     """
 
     MAX_HEADER_SCAN = 5
     MIN_HEADER_NON_EMPTY = 2
-    MIN_HEADER_FILL_RATIO = 0.5
+    MIN_HEADER_FILL_RATIO = 0.6   # of num_cols: a real header covers most columns
     # Excel serial dates for 2000-01-01 .. 2099-12-31 (epoch 1899-12-30)
     _SERIAL_MIN = 36526
     _SERIAL_MAX = 73050
@@ -157,23 +159,24 @@ class RowMarkdownTableSerializer(BaseTableSerializer):
                     seen[id(cell)] = (c, cell)
             return list(seen.values())
 
-        # 表头检测：非空格 >= 2 且非空占比 >= 50%（标题/说明行稀疏，真表头满格）
+        # 表头检测：非空格 >= 2 且占列数 >= 60%（标题/说明行稀疏，真表头满格）。
+        # 分母必须是总列数：说明行若只有少数非 None 格（如「编制单位」+
+        # 「金额单位」），按非 None 格算占比会是 100% 而被误判为表头
         header_idx = None
         for r in range(min(self.MAX_HEADER_SCAN, num_rows)):
             unique = row_unique_cells(r)
             non_empty = sum(1 for _, cell in unique if (cell.text or "").strip())
             if (
                 non_empty >= self.MIN_HEADER_NON_EMPTY
-                and non_empty / len(unique) >= self.MIN_HEADER_FILL_RATIO
+                and non_empty / num_cols >= self.MIN_HEADER_FILL_RATIO
             ):
                 header_idx = r
                 break
 
         preamble_lines = []
         if header_idx is None:
-            # 无合理表头：整表按纯行输出（退化但可读）
-            header_idx = 0
-            body_start = num_rows
+            # 无可检测表头：全部行按纯行输出（退化但可读），不造表头/分隔行
+            body_start = 0
         else:
             body_start = header_idx + 1
             for r in range(header_idx):
@@ -193,7 +196,7 @@ class RowMarkdownTableSerializer(BaseTableSerializer):
             return v
 
         lines = list(preamble_lines)
-        if header_idx < num_rows:
+        if header_idx is not None and header_idx < num_rows:
             header_cells = [cell_text(header_idx, c) or " " for c in range(num_cols)]
             if sum(1 for v in header_cells if v.strip().isdigit()) >= 3:
                 header_cells = [to_iso_date(v) for v in header_cells]
@@ -357,6 +360,10 @@ class DocumentParser:
             if conversion_warnings:
                 # 降级显式声明（0.4 §7.3 v3.6）：随成功结果上抛，pipeline 写入完成通知 detail
                 metadata["warnings"] = conversion_warnings
+            if not text_chunks:
+                # 空内容显式声明（0.4 §7.3 v3.6）：空文件等场景 0 chunks 是
+                # 成功结果，用户需被告知「没有提取到文本」而非只看到 0 chunks
+                metadata.setdefault("warnings", []).append("未从文件中提取到文本内容")
             
             return ParseResult(
                 text_chunks=text_chunks,

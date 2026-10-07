@@ -55,6 +55,8 @@ def test_sparse_title_and_unit_rows_become_preamble():
     cells = [
         make_cell(0, 0, "合并资产负债表", col_span=4),
         make_cell(1, 0, "编制单位：X 公司"),
+        make_cell(1, 1, ""),
+        make_cell(1, 2, ""),
         make_cell(1, 3, "金额单位：人民币元"),
         make_cell(2, 0, "项目"),
         make_cell(2, 1, "45657"),
@@ -85,21 +87,21 @@ def test_dense_first_row_is_header_without_preamble():
     ]
     lines = serialize(make_table(cells, 2, 2)).splitlines()
     assert lines[0] == "| 项目 | 金额 |"
-    assert len(lines) == 4
+    assert len(lines) == 3
 
 
 def test_no_dense_row_within_scan_window_degrades_to_plain_rows():
-    """All rows sparse (no detectable header) → plain row output, no
-    separator line, no preamble."""
+    """All rows sparse (no detectable header) → every row emitted as plain
+    output, no separator line, no preamble, no rows lost."""
     cells = [
         make_cell(0, 0, "备注一"),
         make_cell(1, 3, "备注二"),
     ]
     text = serialize(make_table(cells, 2, 4))
     lines = text.splitlines()
-    # header row is rendered plain, no separator follows
     assert lines[0].startswith("| 备注一")
-    assert "|" in lines[0]
+    assert "备注二" in lines[1]
+    # no fabricated header/separator
     assert not any(set(l) <= set("|-: \n") for l in lines)
 
 
@@ -168,7 +170,7 @@ def test_pipe_and_newline_in_text_escaped():
         make_cell(1, 1, "line1\nline2"),
     ]
     lines = serialize(make_table(cells, 2, 2)).splitlines()
-    assert lines[1] == "| a&#124;b | line1 line2 |"
+    assert lines[2] == "| a&#124;b | line1 line2 |"
 
 
 def test_vertical_span_repeat_blank():
@@ -182,8 +184,8 @@ def test_vertical_span_repeat_blank():
         make_cell(2, 1, "20"),
     ]
     lines = serialize(make_table(cells, 3, 2)).splitlines()
-    assert lines[1] == "| 流动资产 | 10 |"
-    assert lines[2] == "|   | 20 |"
+    assert lines[2] == "| 流动资产 | 10 |"
+    assert lines[3] == "|   | 20 |"
 
 
 # ---------------------------------------------------------------------------

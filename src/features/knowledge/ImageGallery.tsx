@@ -182,6 +182,10 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
 
   // Derive counts from backend status_counts
   const totalPages = Math.max(1, Math.ceil(total / LIMIT))
+  // 「全部」标签计数 = 各状态/各类别计数之和（status_counts/category_counts 不含对应维度
+  // 过滤，求和即该维度下全部；total 随当前筛选变化，误作「全部」会显示成当前筛选项的数）
+  const allStatusCount = Object.values(statusCounts).reduce((a, b) => a + b, 0)
+  const allCategoryCount = Object.values(categoryCounts).reduce((a, b) => a + b, 0)
 
   const handleImageClick = (img: ImageItem) => {
     const idx = filteredImages.findIndex(fi => fi.id === img.id)
@@ -278,7 +282,7 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
             { value: 'done', label: t('knowledge.imgStatus_done'), count: statusCounts['done'] || 0 },
             { value: 'error', label: t('knowledge.imgStatus_error'), count: statusCounts['error'] || 0 },
             { value: 'archived', label: t('knowledge.imgStatus_archived'), count: statusCounts['archived'] || 0 },
-            { value: 'all', label: t('knowledge.statusFilter_all'), count: total },
+            { value: 'all', label: t('knowledge.statusFilter_all'), count: allStatusCount },
           ].map(opt => (
             <button
               key={opt.value}
@@ -311,7 +315,7 @@ export function ImageGallery({ projectId, fileId, ipcChannels }: ImageGalleryPro
             className={`${s.categoryTab} ${categoryFilter === 'all' ? s.categoryTabActive : ''}`}
             onClick={() => setCategoryFilter('all')}
           >
-            {t('knowledge.category_all', '全部')} ({total})
+            {t('knowledge.category_all', '全部')} ({allCategoryCount})
           </button>
           {IMAGE_CATEGORIES.map(cat => {
             const cnt = categoryCounts[cat] || 0

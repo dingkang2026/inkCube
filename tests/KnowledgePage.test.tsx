@@ -29,7 +29,13 @@ vi.mock('../src/features/knowledge/KnowledgePage.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
-vi.mock('../src/features/knowledge/FileUploader', () => ({ FileUploader: () => null }))
+let fileUploaderProps: any = null
+vi.mock('../src/features/knowledge/FileUploader', () => ({
+  FileUploader: (props: unknown) => {
+    fileUploaderProps = props
+    return null
+  },
+}))
 vi.mock('../src/features/knowledge/ImageGallery', () => ({ ImageGallery: () => null }))
 vi.mock('../src/features/knowledge/SearchBar', () => ({ SearchBar: () => null }))
 vi.mock('../src/features/knowledge/SearchResultList', () => ({ SearchResultList: () => null }))
@@ -49,6 +55,11 @@ const onProjectDataChanged = vi.fn()
 
 const countBy = (channel: string) => invokeMock.mock.calls.filter((c) => c[0] === channel).length
 
+const lastGetFilesPayload = () => {
+  const calls = invokeMock.mock.calls.filter((c) => c[0] === 'knowledge:getFiles')
+  return calls[calls.length - 1][1] as Record<string, unknown>
+}
+
 /** 排空 microtask（loadFiles/轮询 tick 均为 async，fake timers 不自动推进） */
 const flush = async () => {
   for (let i = 0; i < 6; i++) {
@@ -61,6 +72,7 @@ const flush = async () => {
 beforeEach(() => {
   vi.useFakeTimers()
   activityState.items = []
+  fileUploaderProps = null
   invokeMock.mockReset()
   onProjectDataChanged.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
@@ -120,10 +132,6 @@ describe('KnowledgePage terminal refetch', () => {
 describe('KnowledgePage server-side status filter', () => {
   /** 回归背景：状态筛选原为纯客户端过滤只作用当前页，跨页失效；
    *  下沉服务端后切换筛选必须以 status 参数回第 1 页拉取。 */
-  const lastGetFilesPayload = () => {
-    const calls = invokeMock.mock.calls.filter((c) => c[0] === 'knowledge:getFiles')
-    return calls[calls.length - 1][1] as Record<string, unknown>
-  }
 
   it('passes status + offset=0 when switching filter, drops status on all', async () => {
     const user = (
@@ -154,5 +162,164 @@ describe('KnowledgePage server-side status filter', () => {
     })
     await flush()
     expect(lastGetFilesPayload().status).toBeUndefined()
+  })
+})
+
+describe('KnowledgePage pagination preservation', () => {
+  /** 回归背景：选中文件的 effect 把 loadFiles 硬编码第 1 页，点击行选中后
+   *  列表跳回首页；终态刷新（轮询/边沿补拉）同样硬编码第 1 页。 */
+
+  const withPagedData = () => {
+    invokeMock.mockImplementation(async (channel: string, payload?: Record<string, unknown>) => {
+      if (channel === 'knowledge:getFiles') {
+        return { files: [{ id: 'fx', filename: 'x.pdf' }], total: 100 }
+      }
+      if (channel === 'knowledge:recentChunks') return { results: [] }
+      if (channel === 'knowledge:getActiveFiles') return { files: [{ id: 'f1' }] }
+      return {}
+    })
+  }
+
+  it('keeps the current page when selecting a file', async () => {
+    withPagedData()
+    render(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+    expect(lastGetFilesPayload().offset).toBe(0)
+
+    // 翻到第 2 页
+    await act(async () => {
+      fileUploaderProps.onPageChange?.(2)
+    })
+    await flush()
+    expect(lastGetFilesPayload().offset).toBe(20)
+
+    // 点击行选中文件：列表不得跳回第 1 页，仅 recent-chunks 跟随作用域
+    await act(async () => {
+      fileUploaderProps.onSelectFile?.('fx')
+    })
+    await flush()
+    expect(lastGetFilesPayload().offset).toBe(20)
+    const recentCalls = invokeMock.mock.calls.filter((c) => c[0] === 'knowledge:recentChunks')
+    expect((recentCalls[recentCalls.length - 1][1] as Record<string, unknown>).fileId).toBe('fx')
+  })
+
+  it('refetches the CURRENT page on the terminal edge, not page 1', async () => {
+    withPagedData()
+    const { rerender } = render(
+      <KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />,
+    )
+    await flush()
+
+    // 翻到第 2 页后进入解析 → 心跳翻 false 触发边沿补拉
+    await act(async () => {
+      fileUploaderProps.onPageChange?.(2)
+    })
+    await flush()
+    activityState.items = [{ project_id: 'p1', count: 1 }]
+    rerender(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+    activityState.items = []
+    rerender(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+
+    // 边沿补拉应保持第 2 页（offset 20），而非跳回首页
+    expect(lastGetFilesPayload().offset).toBe(20)
+  })
+
+  it('falls back to the last page when the kept page overflows', async () => {
+    // 第 1 页 total=100（5 页）；翻到第 5 页时总数已缩到 60（3 页）→ offset 80 越界空页
+    // → 自愈回退末页 3（offset 40）
+    invokeMock.mockImplementation(async (channel: string, payload?: Record<string, unknown>) => {
+      if (channel === 'knowledge:getFiles') {
+        const offset = payload?.offset ?? 0
+        if (offset === 0) return { files: [{ id: 'a' }], total: 100 }
+        if (offset === 80) return { files: [], total: 60 }
+        return { files: [{ id: 'b' }], total: 60 }
+      }
+      if (channel === 'knowledge:recentChunks') return { results: [] }
+      if (channel === 'knowledge:getActiveFiles') return { files: [{ id: 'f1' }] }
+      return {}
+    })
+    render(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+
+    await act(async () => {
+      fileUploaderProps.onPageChange?.(5)
+    })
+    await flush()
+
+    expect(lastGetFilesPayload().offset).toBe(40) // ceil(60/20)=3 → offset 40
+  })
+})
+
+describe('KnowledgePage status filter counts', () => {
+  /** 回归背景：筛选 Tab 无计数，活动文件散布列表时无法一眼看到分布；
+   *  status_counts 由后端返回（搜索口径、不含状态筛选），「全部」=求和，
+   *  「处理中」=pending+parsing（与后端筛选同口径）。 */
+
+  it('renders per-tab counts from status_counts', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:getFiles') {
+        return {
+          files: [],
+          total: 7,
+          status_counts: { done: 2, pending: 1, parsing: 1, error: 3 },
+        }
+      }
+      if (channel === 'knowledge:recentChunks') return { results: [] }
+      return {}
+    })
+    render(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+    expect(screen.getByText('knowledge.filterAll (7)')).toBeTruthy()
+    expect(screen.getByText('knowledge.filterProcessing (2)')).toBeTruthy()
+    expect(screen.getByText('knowledge.filterDone (2)')).toBeTruthy()
+    expect(screen.getByText('knowledge.filterError (3)')).toBeTruthy()
+  })
+
+  it('omits the count suffix when a status has no files', async () => {
+    render(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+    // 默认 mock 无 status_counts → 全 0 → 无后缀（既有测试依赖精确匹配）
+    expect(screen.getByText('knowledge.filterError')).toBeTruthy()
+  })
+
+  it('refreshes counts and list when a file finishes mid-batch (partial completion)', async () => {
+    /** 回归背景：轮询部分完成分支（活动 2→1）原先只刷 recentChunks，
+     *  Tab 计数与置顶重排要等全部完成才刷新。 */
+    let activeIds = ['f1', 'f2']
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:getFiles') {
+        return {
+          files: [{ id: 'fx', filename: 'x.pdf' }],
+          total: 100,
+          status_counts: { pending: activeIds.length },
+        }
+      }
+      if (channel === 'knowledge:recentChunks') return { results: [] }
+      if (channel === 'knowledge:getActiveFiles') return { files: activeIds.map((id) => ({ id })) }
+      return {}
+    })
+    const { rerender } = render(
+      <KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />,
+    )
+    await flush()
+    expect(screen.getByText('knowledge.filterProcessing (2)')).toBeTruthy()
+
+    // 解析开始：轮询启动首跑（活动 2 个，prev=-1 → 不刷列表）
+    activityState.items = [{ project_id: 'p1', count: 2 }]
+    rerender(<KnowledgePage selectedProject={project} onProjectDataChanged={onProjectDataChanged} />)
+    await flush()
+    expect(countBy('knowledge:getFiles')).toBe(1)
+
+    // 第二 tick：f1 完成（活动 2→1，部分完成分支）→ 立即重拉列表刷新计数
+    activeIds = ['f2']
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    await flush()
+    expect(countBy('knowledge:getFiles')).toBe(2)
+    expect(lastGetFilesPayload().offset).toBe(0) // 保持当前页
+    expect(screen.getByText('knowledge.filterProcessing (1)')).toBeTruthy()
   })
 })

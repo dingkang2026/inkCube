@@ -51,6 +51,16 @@ class KnowledgeWorker:
         self._file_queue: asyncio.Queue[str] = asyncio.Queue()
         self._image_queue: asyncio.Queue[tuple] = asyncio.Queue()
         self._compile_queue: asyncio.Queue[str] = asyncio.Queue()
+        # 暂停闸门：set=运行，clear=暂停。暂停 = 不再开始新任务（worker 在闸门处
+        # 挂起，任务留在内存队列等恢复）；在飞任务（已过闸门的）自然跑完。
+        # 持久化在 settings（parsing_paused 等键，经 /knowledge/queue/pause 写入），
+        # 重启后由 main.py lifespan 恢复。基础库与项目共用同一队列，天然同暂停。
+        self._file_run = asyncio.Event()
+        self._file_run.set()
+        self._image_run = asyncio.Event()
+        self._image_run.set()
+        self._compile_run = asyncio.Event()
+        self._compile_run.set()
         self._compile_enqueued: set[str] = set()  # track task_ids already in queue to prevent duplicates
         self._running = False
         self._tasks: list[asyncio.Task] = []
@@ -79,6 +89,27 @@ class KnowledgeWorker:
         self._image_sem = asyncio.Semaphore(image_concurrency)
         if compile_concurrency is not None:
             self._compile_sem = asyncio.Semaphore(compile_concurrency)
+
+    def set_file_paused(self, paused: bool):
+        if paused:
+            self._file_run.clear()
+        else:
+            self._file_run.set()
+        logger.info("[KnowledgeWorker] File parsing %s", "paused" if paused else "resumed")
+
+    def set_image_paused(self, paused: bool):
+        if paused:
+            self._image_run.clear()
+        else:
+            self._image_run.set()
+        logger.info("[KnowledgeWorker] Image description %s", "paused" if paused else "resumed")
+
+    def set_compile_paused(self, paused: bool):
+        if paused:
+            self._compile_run.clear()
+        else:
+            self._compile_run.set()
+        logger.info("[KnowledgeWorker] Wiki compile %s", "paused" if paused else "resumed")
 
     async def start(self):
         """Start all workers. Call from FastAPI lifespan."""
@@ -150,6 +181,9 @@ class KnowledgeWorker:
             except asyncio.CancelledError:
                 logger.info("[%s] Cancelled", name)
                 return
+
+            # 暂停闸门：sem 外等待，不占并发额度；wait 可被 stop() 的 cancel 打断
+            await self._file_run.wait()
 
             async with self._file_sem:
                 try:
@@ -272,6 +306,9 @@ class KnowledgeWorker:
                 image_id, force = item
             else:
                 image_id, force = item, False
+
+            # 暂停闸门（同 _file_worker）
+            await self._image_run.wait()
 
             async with self._image_sem:
                 try:
@@ -439,6 +476,9 @@ class KnowledgeWorker:
                 logger.info("[%s] Cancelled", name)
                 return
 
+            # 暂停闸门（同 _file_worker）
+            await self._compile_run.wait()
+
             async with self._compile_sem:
                 try:
                     self._compile_enqueued.discard(task_id)  # remove from tracking set
@@ -573,29 +613,38 @@ class KnowledgeWorker:
                 await asyncio.sleep(5.0)
 
                 # Pick up pending files (only those still in 'pending' status)
-                cursor = self.db.conn.execute(
-                    "SELECT id FROM files WHERE status = 'pending' "
-                    "ORDER BY created_at ASC"
-                )
-                pending_files = [row["id"] for row in cursor.fetchall()]
+                # 暂停时跳过拾取（闸门在 worker 侧也能拦住，这里省去无谓入队）
+                pending_files: list[str] = []
+                if self._file_run.is_set():
+                    cursor = self.db.conn.execute(
+                        "SELECT id FROM files WHERE status = 'pending' "
+                        "ORDER BY created_at ASC"
+                    )
+                    pending_files = [row["id"] for row in cursor.fetchall()]
                 if pending_files:
                     logger.info("[QueueScanner] Found %d pending files", len(pending_files))
                 for fid in pending_files:
                     await self.enqueue_file(fid)
 
                 # Pick up pending images
-                pending_images = self.db.get_pending_images(limit=50)
+                pending_images = (
+                    self.db.get_pending_images(limit=50)
+                    if self._image_run.is_set()
+                    else []
+                )
                 if pending_images:
                     logger.info("[QueueScanner] Found %d pending images", len(pending_images))
                 for img in pending_images:
                     await self.enqueue_image(img["id"])
 
                 # Pick up queued compile tasks
-                cursor = self.db.conn.execute(
-                    "SELECT id FROM wiki_compile_tasks WHERE status = 'queued' "
-                    "ORDER BY created_at ASC LIMIT 5"
-                )
-                queued_compiles = [row["id"] for row in cursor.fetchall()]
+                queued_compiles: list[str] = []
+                if self._compile_run.is_set():
+                    cursor = self.db.conn.execute(
+                        "SELECT id FROM wiki_compile_tasks WHERE status = 'queued' "
+                        "ORDER BY created_at ASC LIMIT 5"
+                    )
+                    queued_compiles = [row["id"] for row in cursor.fetchall()]
                 if queued_compiles:
                     logger.info("[QueueScanner] Found %d queued compile tasks", len(queued_compiles))
                 for tid in queued_compiles:

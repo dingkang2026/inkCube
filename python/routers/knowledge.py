@@ -187,6 +187,48 @@ async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, w
     }
 
 
+# ── Queue Pause（0.4 §队列暂停）──
+
+
+class QueuePauseRequest(BaseModel):
+    kind: str  # parsing | describe | compile | report
+    paused: bool
+
+
+_QUEUE_PAUSE_KEYS = {
+    "parsing": "parsing_paused",
+    "describe": "describe_paused",
+    "compile": "compile_paused",
+    "report": "report_paused",
+}
+
+
+@router.post("/queue/pause")
+async def set_queue_pause(req: QueuePauseRequest):
+    """暂停/恢复后台队列（文件解析/图片描述/Wiki 编译/报告生成）。
+
+    语义：暂停 = 不再开始新任务——worker 在闸门挂起（pending/queued 排队
+    等恢复）、报告生成入口拒绝新请求；在跑的任务自然跑完。状态持久化
+    settings（重启保持，main.py lifespan 恢复）。基础库与项目共用同一
+    队列，天然同暂停。
+    """
+    key = _QUEUE_PAUSE_KEYS.get(req.kind)
+    if not key:
+        raise HTTPException(status_code=422, detail=f"Unknown pause kind: {req.kind}")
+    db = get_db()
+    db.set_flag(key, req.paused)
+    import deps
+    if deps.worker:
+        if req.kind == "parsing":
+            deps.worker.set_file_paused(req.paused)
+        elif req.kind == "describe":
+            deps.worker.set_image_paused(req.paused)
+        elif req.kind == "compile":
+            deps.worker.set_compile_paused(req.paused)
+    logger.info("Queue %s %s", req.kind, "paused" if req.paused else "resumed")
+    return {"kind": req.kind, "paused": req.paused}
+
+
 @router.get("/projects")
 async def list_projects():
     """List all projects with file and chunk counts"""
@@ -274,6 +316,27 @@ def _file_status_clause(status: Optional[str]) -> tuple[str, list]:
     return "f.status = ?", [status]
 
 
+# UI 文件类型类别 → 扩展名（项目/基础库两端点共用）
+_FILE_TYPE_MAP = {
+    "pdf": [".pdf"],
+    "docx": [".docx", ".doc"],
+    "pptx": [".pptx", ".ppt"],
+    "xlsx": [".xlsx", ".xls"],
+    "image": [".png", ".jpg", ".jpeg"],
+}
+
+
+def _file_type_clause(file_type: Optional[str]) -> tuple[str, list]:
+    """文件类型筛选子句（UI 类别映射扩展名；空值/all/未知类别不过滤）。"""
+    if not file_type or file_type == "all":
+        return "", []
+    extensions = _FILE_TYPE_MAP.get(file_type, [])
+    if not extensions:
+        return "", []
+    placeholders = ",".join("?" for _ in extensions)
+    return f"f.file_type IN ({placeholders})", list(extensions)
+
+
 @router.get("/projects/{project_id}/files")
 async def get_project_files(
     project_id: str,
@@ -287,35 +350,33 @@ async def get_project_files(
     try:
         db = get_db()
 
-        # Build query with optional filters
+        # Build query with optional filters（status_counts 走不含状态筛选的同口径子集）
         where_clauses = ["f.project_id = ?"]
         params: list = [project_id]
+        counts_clauses = ["f.project_id = ?"]
+        counts_params: list = [project_id]
 
         status_clause, status_params = _file_status_clause(status)
         if status_clause:
             where_clauses.append(status_clause)
             params.extend(status_params)
 
-        if file_type and file_type != "all":
-            # Map UI categories to extensions
-            type_map = {
-                "pdf": [".pdf"],
-                "docx": [".docx", ".doc"],
-                "pptx": [".pptx", ".ppt"],
-                "xlsx": [".xlsx", ".xls"],
-                "image": [".png", ".jpg", ".jpeg"],
-            }
-            extensions = type_map.get(file_type, [])
-            if extensions:
-                placeholders = ",".join("?" for _ in extensions)
-                where_clauses.append(f"f.file_type IN ({placeholders})")
-                params.extend(extensions)
+        type_clause, type_params = _file_type_clause(file_type)
+        if type_clause:
+            where_clauses.append(type_clause)
+            params.extend(type_params)
+            counts_clauses.append(type_clause)
+            counts_params.extend(type_params)
 
         if filename_search:
             where_clauses.append("f.filename LIKE ?")
-            params.append(f"%{filename_search}%")
+            like = f"%{filename_search}%"
+            params.append(like)
+            counts_clauses.append("f.filename LIKE ?")
+            counts_params.append(like)
 
         where_sql = " AND ".join(where_clauses)
+        counts_where_sql = " AND ".join(counts_clauses)
 
         # Offset-based pagination（占位符顺序 LIMIT ? OFFSET ? → 先 append limit+1 再 append offset）
         sql = (
@@ -324,7 +385,8 @@ async def get_project_files(
                        f.image_described_count, f.error_message, f.created_at
                 FROM files f
                 WHERE {where_sql}
-                ORDER BY f.created_at DESC, f.id DESC
+                ORDER BY CASE WHEN f.status IN ('pending','parsing') THEN 0 ELSE 1 END,
+                         f.created_at DESC, f.id DESC
                 LIMIT ?"""
         )
         params.append(limit + 1)  # fetch one extra to detect has_more
@@ -338,26 +400,23 @@ async def get_project_files(
         if has_more:
             rows = rows[:limit]
 
-        # Get total count (re-derive params without limit/offset)
-        count_params: list = [project_id]
-        if status_clause:
-            count_params.extend(status_params)
-        if file_type and file_type != "all":
-            type_map = {
-                "pdf": [".pdf"], "docx": [".docx", ".doc"],
-                "pptx": [".pptx", ".ppt"], "xlsx": [".xlsx", ".xls"],
-                "image": [".png", ".jpg", ".jpeg"],
-            }
-            extensions = type_map.get(file_type, [])
-            if extensions:
-                count_params.extend(extensions)
+        # Get total count（与主查询同口径，含状态筛选）
+        total_params: list = [project_id] + status_params + type_params
         if filename_search:
-            count_params.append(f"%{filename_search}%")
-        count_cursor = db.conn.execute(
+            total_params.append(f"%{filename_search}%")
+        total = db.conn.execute(
             f"SELECT COUNT(*) as cnt FROM files f WHERE {where_sql}",
-            count_params,
-        )
-        total = count_cursor.fetchone()["cnt"]
+            total_params,
+        ).fetchone()["cnt"]
+
+        # 状态分布（搜索/类型口径，不含状态筛选）——供前端筛选 Tab 计数
+        status_counts = {
+            r["status"]: r["cnt"]
+            for r in db.conn.execute(
+                f"SELECT f.status, COUNT(*) AS cnt FROM files f WHERE {counts_where_sql} GROUP BY f.status",
+                counts_params,
+            ).fetchall()
+        }
 
         result = []
         for row in rows:
@@ -374,7 +433,7 @@ async def get_project_files(
                 "error_message": row.get("error_message"),
                 "created_at": row["created_at"],
             })
-        return {"files": result, "has_more": has_more, "total": total}
+        return {"files": result, "has_more": has_more, "total": total, "status_counts": status_counts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -897,7 +956,8 @@ async def get_project_images(
                FROM images i
                JOIN files f ON f.id = i.file_id
                WHERE {full_where_sql}
-               ORDER BY i.created_at DESC
+               ORDER BY CASE WHEN i.status IN ('pending','processing') THEN 0 ELSE 1 END,
+                        i.created_at DESC
                LIMIT ? OFFSET ?""",
             full_params + [limit + 1, offset],
         )
@@ -1263,32 +1323,34 @@ async def get_base_lib_files(
 
         where_clauses = ["f.project_id = ?"]
         params: list = [lib_id]
+        counts_clauses = ["f.project_id = ?"]
+        counts_params: list = [lib_id]
         status_clause, status_params = _file_status_clause(status)
         if status_clause:
             where_clauses.append(status_clause)
             params.extend(status_params)
-        if file_type and file_type != "all":
-            type_map = {
-                "pdf": [".pdf"], "docx": [".docx", ".doc"],
-                "pptx": [".pptx", ".ppt"], "xlsx": [".xlsx", ".xls"],
-                "image": [".png", ".jpg", ".jpeg"],
-            }
-            extensions = type_map.get(file_type, [])
-            if extensions:
-                placeholders = ",".join("?" for _ in extensions)
-                where_clauses.append(f"f.file_type IN ({placeholders})")
-                params.extend(extensions)
+        type_clause, type_params = _file_type_clause(file_type)
+        if type_clause:
+            where_clauses.append(type_clause)
+            params.extend(type_params)
+            counts_clauses.append(type_clause)
+            counts_params.extend(type_params)
         if filename_search:
             where_clauses.append("f.filename LIKE ?")
-            params.append(f"%{filename_search}%")
+            like = f"%{filename_search}%"
+            params.append(like)
+            counts_clauses.append("f.filename LIKE ?")
+            counts_params.append(like)
         where_sql = " AND ".join(where_clauses)
+        counts_where_sql = " AND ".join(counts_clauses)
 
         # Offset-based pagination（占位符顺序 LIMIT ? OFFSET ? → 先 append limit+1 再 append offset）
         sql = f"""SELECT f.id, f.filename, f.file_type, f.status, f.progress,
                        f.chunk_count, f.image_count, f.image_status,
                        f.image_described_count, f.error_message, f.created_at
                 FROM files f WHERE {where_sql}
-                ORDER BY f.created_at DESC, f.id DESC LIMIT ?"""
+                ORDER BY CASE WHEN f.status IN ('pending','parsing') THEN 0 ELSE 1 END,
+                         f.created_at DESC, f.id DESC LIMIT ?"""
         params.append(limit + 1)  # fetch one extra to detect has_more
         if offset > 0:
             sql += " OFFSET ?"
@@ -1301,23 +1363,21 @@ async def get_base_lib_files(
             rows = rows[:limit]
 
         # Total count（筛选同口径，供分页器计算总页数）
-        count_params: list = [lib_id]
-        if status_clause:
-            count_params.extend(status_params)
-        if file_type and file_type != "all":
-            type_map = {
-                "pdf": [".pdf"], "docx": [".docx", ".doc"],
-                "pptx": [".pptx", ".ppt"], "xlsx": [".xlsx", ".xls"],
-                "image": [".png", ".jpg", ".jpeg"],
-            }
-            extensions = type_map.get(file_type, [])
-            if extensions:
-                count_params.extend(extensions)
+        total_params: list = [lib_id] + status_params + type_params
         if filename_search:
-            count_params.append(f"%{filename_search}%")
+            total_params.append(f"%{filename_search}%")
         total = db.conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM files f WHERE {where_sql}", count_params
+            f"SELECT COUNT(*) AS cnt FROM files f WHERE {where_sql}", total_params
         ).fetchone()["cnt"]
+
+        # 状态分布（搜索/类型口径，不含状态筛选）——供前端筛选 Tab 计数
+        status_counts = {
+            r["status"]: r["cnt"]
+            for r in db.conn.execute(
+                f"SELECT f.status, COUNT(*) AS cnt FROM files f WHERE {counts_where_sql} GROUP BY f.status",
+                counts_params,
+            ).fetchall()
+        }
 
         return {
             "files": [{
@@ -1330,6 +1390,7 @@ async def get_base_lib_files(
             } for r in rows],
             "has_more": has_more,
             "total": total,
+            "status_counts": status_counts,
         }
     except HTTPException:
         raise
@@ -1670,7 +1731,8 @@ async def get_base_lib_images(
                       i.created_at, f.filename, f.file_size
                FROM images i JOIN files f ON f.id = i.file_id
                WHERE {full_where_sql}
-               ORDER BY i.created_at DESC LIMIT ? OFFSET ?""",
+               ORDER BY CASE WHEN i.status IN ('pending','processing') THEN 0 ELSE 1 END,
+                        i.created_at DESC LIMIT ? OFFSET ?""",
             full_params + [limit + 1, offset],
         )
         rows = [dict(r) for r in cursor.fetchall()]

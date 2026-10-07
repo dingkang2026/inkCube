@@ -62,10 +62,10 @@ class VLMClient:
         )
     
     # Valid categories for auto-classification
-    CATEGORIES = ("chart", "photo", "diagram", "table", "formula", "logo", "qr_code", "signature", "other")
+    CATEGORIES = ("chart", "photo", "diagram", "table", "formula", "logo", "qr_code", "signature", "seal", "other")
 
     # Categories that should be auto-archived (not useful for report illustration)
-    AUTO_ARCHIVE_CATEGORIES = ("qr_code", "signature")
+    AUTO_ARCHIVE_CATEGORIES = ("qr_code", "signature", "seal")
 
     async def describe_image(
         self, image_path: str, context_text: str | None = None

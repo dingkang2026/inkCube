@@ -57,6 +57,7 @@ export const IMAGE_CATEGORIES = [
   'logo',
   'qr_code',
   'signature',
+  'seal',
   'other',
 ] as const
 

@@ -2,6 +2,7 @@
  *  背景 bug：图片描述轮询由全局心跳 image_describing 驱动自停，最后一批完成图
  *  可能落在末次 refreshImages 之后（默认 statusFilter='done'，新完成图不在列表）
  *  → 图库缺失刚完成的图。修复：hasActiveImages true→false 边沿补拉一次。
+ *  另：状态行/类别行「全部」标签计数回归（= 各计数之和，而非当前筛选的 total）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -35,7 +36,7 @@ vi.mock('../src/features/knowledge/SkeletonLoader', () => ({
   SkeletonImageGrid: () => null,
 }))
 
-import { render, cleanup, act } from '@testing-library/react'
+import { render, cleanup, act, screen } from '@testing-library/react'
 import { ImageGallery } from '../src/features/knowledge/ImageGallery'
 
 const invokeMock = vi.fn()
@@ -98,5 +99,35 @@ describe('ImageGallery terminal refetch', () => {
     rerender(<ImageGallery projectId="p1" />)
     await flush()
     expect(imagesInvokeCount()).toBe(1)
+  })
+})
+
+describe('ImageGallery all-tab counts', () => {
+  it('shows the all-tab count as the sum of status/category counts, not the filtered total', async () => {
+    // total 是当前筛选（默认 done）下的数；status_counts/category_counts
+    // 不含对应维度过滤，是真实分布 → 「全部」应显示求和而非 total
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:getProjectImages') {
+        return {
+          images: [],
+          total: 2,
+          status_counts: { done: 2, archived: 8 },
+          category_counts: { chart: 4, photo: 6 },
+        }
+      }
+      return {}
+    })
+    render(<ImageGallery projectId="p1" />)
+    await flush()
+    expect(screen.getByText('knowledge.imgStatus_done (2)')).toBeTruthy()
+    expect(screen.getByText('knowledge.imgStatus_archived (8)')).toBeTruthy()
+    expect(screen.getByText('knowledge.statusFilter_all (10)')).toBeTruthy()
+    expect(screen.getByText('knowledge.category_all (10)')).toBeTruthy()
+  })
+
+  it('renders the seal category tab (new auto-archived category)', async () => {
+    render(<ImageGallery projectId="p1" />)
+    await flush()
+    expect(screen.getByText('knowledge.category_seal')).toBeTruthy()
   })
 })

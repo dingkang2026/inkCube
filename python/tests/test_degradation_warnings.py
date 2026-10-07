@@ -108,6 +108,33 @@ class TestOfficeConversionDegradation:
         assert "内置解析器" in warning
 
 
+class TestEmptyParseWarning:
+    """空文件/无文本内容 → 0 chunks 是成功结果，但需显式声明（0.4 §7.3 v3.6）。"""
+
+    def _parser(self, tmp_path) -> DocumentParser:
+        parser = DocumentParser.__new__(DocumentParser)
+        parser.models_dir = tmp_path
+        parser.converter = MagicMock()
+        parser._chunker = MagicMock()
+        parser._chunker.chunk.return_value = iter([])  # 空文档 → 0 chunks
+        parser._tokenizer = None
+        return parser
+
+    def test_empty_parse_warns(self, tmp_path):
+        from docling_core.types.doc import DoclingDocument
+
+        parser = self._parser(tmp_path)
+        parser.converter.convert.return_value = MagicMock(
+            document=DoclingDocument(name="empty"),
+        )
+        f = tmp_path / "empty.txt"
+        f.write_bytes(b"")
+        result = parser.parse_file(str(f), "file_x")
+        assert result.text_chunks == []
+        warnings = result.metadata.get("warnings") or []
+        assert any("文本内容" in w for w in warnings)
+
+
 class _FakeConn:
     def __init__(self, row):
         self._row = row
