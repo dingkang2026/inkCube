@@ -108,8 +108,15 @@ def _smooth_transitions(text: str) -> str:
       - 清除悬空过渡词：节尾出现“如下：”“包括：”等但后面没有内容
       - 清除节首重复标题：节首重复了章节标题
       - 去除连续空行超过 2 行的情况
+
+    结构不变量：## 标题必须独立成行。re.split 的标题捕获组（$）不含
+    行尾换行（由下一内容块开头的换行提供），内容块节尾的 --- 分隔符
+    剥离后必须按标准形态（前后各一空行）重建，否则分隔符会与下一节
+    标题粘成一行（---## xxx），连带破坏 _build_toc 的标题扫描
+    （目录只剩首节）与 Markdown 渲染。
     """
-    # 按章节分割
+    # 按章节分割：奇数位为标题捕获组（不含行尾换行），偶数位为章节内容
+    # （以标题行尾换行开头；非末内容块以 “---” 分隔符结尾）
     section_parts = re.split(r"^(## .+)$", text, flags=re.MULTILINE)
 
     smoothed: list[str] = []
@@ -120,29 +127,39 @@ def _smooth_transitions(text: str) -> str:
             continue
 
         if i % 2 == 1:
-            # 章节标题行
+            # 章节标题行：行尾换行由下一内容块开头提供，原样保留
             smoothed.append(part)
         else:
-            # 章节内容
-            content = part
+            # 章节内容：拆 头部换行 + 正文 + 尾部分隔符 三段处理
+            head_nl = len(part) - len(part.lstrip("\n"))
+            head = part[:head_nl]
+            rest = part[head_nl:]
+
+            # 剥离节尾 --- 分隔符（_assemble_full_text 拼接产物，
+            # 非末内容块才有）：rstrip 只能剥到 --- 为止，若不剥离，
+            # 规则 1 的 $ 永远锚在分隔符上，对中间节从不生效
+            trailing = ""
+            if rest.rstrip().endswith("---"):
+                rest = rest.rstrip()[:-3].rstrip("\n")
+                if i < len(section_parts) - 1:
+                    trailing = "\n\n---\n\n"
+
+            body = rest.rstrip("\n")
 
             # 规则 1：清除悬空过渡词（节尾“如下：”“包括：”等后面无内容）
-            content = re.sub(
+            body = re.sub(
                 r"[，,]?\s*(如下|包括|详述|展开|如下所示)\s*[：:]\s*$",
                 "。",
-                content.rstrip(),
+                body,
             )
 
             # 规则 2：清除节首重复标题（节首第一行与上一节标题相同）
-            lines = content.split("\n", 1)
-            if lines:
-                first_line = lines[0].strip()
-                # 如果节首是重复的标题（去掉 ## 后与当前标题相同），跳过
-                prev_title = section_parts[i - 1].replace("## ", "").strip() if i > 0 else ""
-                if first_line == prev_title:
-                    content = lines[1] if len(lines) > 1 else ""
+            lines = body.split("\n")
+            prev_title = section_parts[i - 1].replace("## ", "").strip()
+            if lines and lines[0].strip() == prev_title:
+                body = "\n".join(lines[1:]).lstrip("\n")
 
-            smoothed.append(content)
+            smoothed.append(head + body + trailing)
 
     text = "".join(smoothed)
 

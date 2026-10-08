@@ -66,6 +66,19 @@ class TestBuildSystemPrompt:
         # v2 输出契约不再包含「目标字数 ±20%」
         assert "±20%" not in out
 
+    def test_format_spec_pandoc_aligned(self):
+        """行文形式规范（代码层统一，按 pandoc 支持矩阵实测闭环）：
+        表格/mermaid/引用块/公式可用；禁内联 HTML 与 emoji；不用 markdown 脚注
+        （多节生成期 LLM 无法协调全局唯一脚注编号，pandoc 遇重名定义静默取首个）。"""
+        out = build_system_prompt(company_name="X")
+        assert "Markdown 表格" in out
+        assert "mermaid" in out
+        assert "引用块" in out
+        assert "LaTeX" in out
+        assert "禁止内联 HTML" in out
+        assert "emoji" in out
+        assert "[^" not in out
+
 
 # ── build_extract_value_prompt ──────────────────────────────
 
@@ -147,13 +160,15 @@ class TestBuildStandardPrompt:
         assert "全文使用第三人称" in out
 
     def test_degraded_mode_hint(self):
+        """零材料降级注入 sparse 写作模式指令（§3.3：不是跳过而是换写法）。"""
         out = build_standard_prompt(
             section=self._base_section(), chapter_title="市场", report_title="R",
             completed_digests={}, section_order=[], ref_text="", ref_numbers=[],
             is_degraded=True,
         )
-        assert "分析推理模式" in out
-        assert "禁止虚构具体数据" in out
+        assert "sparse 写作模式" in out
+        assert "分析方法论" in out
+        assert "严禁虚构具体数据" in out
 
     def test_completed_digests_recent_shown(self):
         out = build_standard_prompt(
@@ -173,6 +188,75 @@ class TestBuildStandardPrompt:
         )
         for i in range(5):
             assert f"摘要{i}" in out
+
+    def test_writing_brief_as_main_body_description_dropped(self):
+        """有任务书时：brief 为主体段、description 不注入、附加要求单独分层（§3.5）。"""
+        section = {
+            "section_id": "s1", "title": "竞争对比",
+            "description": "给人看的检索素材说明",
+            "writing_brief": "1. 开篇以表格对比关键维度；\n2. 表后逐一成段展开",
+            "prompt_hint": "名单为空时按材料不足处理",
+        }
+        out = build_standard_prompt(
+            section=section, chapter_title="业务", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+        )
+        assert "【本节写作任务】" in out
+        assert "1. 开篇以表格对比关键维度" in out
+        assert "【附加写作要求】" in out
+        # description 职责收窄：给人看（检索素材/前端展示），不注入写作 prompt
+        assert "给人看的检索素材说明" not in out
+        assert "名单为空时按材料不足处理" in out
+
+    def test_no_brief_falls_back_to_description(self):
+        """无任务书时回退注入 description（向后兼容旧模板/提取器未升级场景）。"""
+        section = {
+            "section_id": "s1", "title": "市场规模",
+            "description": "市场规模整体说明",
+        }
+        out = build_standard_prompt(
+            section=section, chapter_title="市场", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+        )
+        assert "市场规模整体说明" in out
+        assert "【附加写作要求】" not in out  # 无任务书保持原单层结构
+
+    def test_target_words_injected(self):
+        """节级篇幅护栏注入 prompt（§3.6 规则 3 的 prompt 侧对应）。"""
+        section = {**self._base_section(), "target_words": 800}
+        out = build_standard_prompt(
+            section=section, chapter_title="市场", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+        )
+        assert "本节篇幅约 800 字" in out
+
+    def test_no_target_words_no_hint(self):
+        out = build_standard_prompt(
+            section=self._base_section(), chapter_title="市场", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+        )
+        assert "本节篇幅约" not in out
+
+    def test_insufficient_sufficiency_directive(self):
+        """insufficient（材料有限）注入弱化 sparse 指令：可用维度正常写、不足维度定性。"""
+        out = build_standard_prompt(
+            section=self._base_section(), chapter_title="市场", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+            sufficiency={"level": "insufficient", "reason": "知识卡片少于充足阈值"},
+        )
+        assert "检索材料有限" in out
+        assert "知识卡片少于充足阈值" in out
+        assert "严禁编造具体数据" in out
+
+    def test_sufficient_no_sparse_directive(self):
+        """材料充足不注入任何 sparse 指令。"""
+        out = build_standard_prompt(
+            section=self._base_section(), chapter_title="市场", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+            sufficiency={"level": "sufficient", "reason": ""},
+        )
+        assert "sparse 写作模式" not in out
+        assert "检索材料有限" not in out
 
 
 # ── build_digest_prompt: 纲要式定位 ─────────────────────────
@@ -223,3 +307,21 @@ class TestBuildPostBodyPrompt:
         assert "结论先行" in out
         assert "营收: 100亿" in out
         assert "[1] 《文档》" in out
+
+    def test_writing_brief_as_main_body(self):
+        """post_body 同样支持 writing_brief 任务书主体（§3.5；模板摘要节示范）。"""
+        registry = MagicMock()
+        registry.format_source_list.return_value = ""
+        section = {
+            "section_id": "summary", "title": "摘要", "compose_mode": "post_body",
+            "description": "给人看的描述",
+            "writing_brief": "1. 用 3-5 条要点呈现核心发现；\n2. 成段给出投资建议",
+        }
+        out = build_post_body_prompt(
+            section=section, digests={"s1": "正文摘要"}, section_order=["s1"],
+            key_data_text="", registry=registry,
+        )
+        assert "【本节写作任务】" in out
+        assert "1. 用 3-5 条要点呈现核心发现" in out
+        assert "【附加写作要求】" in out
+        assert "给人看的描述" not in out

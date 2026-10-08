@@ -17,21 +17,25 @@
     {
       "section_id": "overview",
       "title": "项目概览",
-      "description": "{{company_name}} 的核心业务、发展阶段和关键亮点概览"
+      "description": "{{company_name}} 的核心业务、发展阶段和关键亮点概览",
+      "writing_brief": "1. 成段概述 {{company_name}} 的核心业务、发展阶段与商业模式要点；\n2. 用 3 条以内要点列出关键亮点，每条一句结论加数据支撑。"
     },
     {
       "section_id": "highlights",
       "title": "核心亮点与风险",
-      "description": "最值得关注的正面因素和风险因素"
+      "description": "最值得关注的正面因素和风险因素",
+      "writing_brief": "1. 成段阐述最值得关注的 2-3 个正面因素，给出依据；\n2. 成段并列主要风险因素，与正面因素可对照表述；\n3. 正反因素均须材料支撑，无材料的判断不写。"
     },
     {
       "section_id": "outlook",
       "title": "展望与建议",
+      "writing_brief": "1. 成段给出后续观察要点与行动建议（2-3 条，可执行、有时限或触发条件）。",
       "prompt_hint": "基于前文给出简洁的后续行动建议"
     },
     {
       "section_id": "summary",
       "title": "一页纸摘要",
+      "writing_brief": "1. 用 3-5 个要点概括全文，每条一句话；\n2. 要点覆盖：主体是谁、核心亮点、主要风险、建议动作。",
       "compose_mode": "post_body",
       "prompt_hint": "用 3-5 个要点概括全文，适合快速浏览",
       "position": "front"

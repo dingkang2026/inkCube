@@ -11,6 +11,7 @@
 async 用例统一用 asyncio.run 驱动（不引入 pytest-asyncio 依赖）。
 """
 import asyncio
+import logging
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -293,6 +294,25 @@ class TestResolveVariables:
         # extract prompt 的 user 消息含检索证据
         assert any("芯片证据" in m[-1]["content"] for m in llm.calls)
         assert evidence["sector"][0]["content"] == "芯片证据"
+
+    def test_zero_cards_logged_as_warning(self, caplog):
+        """检索 0 张卡片 → 显式 warning（区分「无材料」与「LLM 抽取失败」两种根因）。"""
+        template = {"variables": [
+            {"name": "sector", "source": "derived", "depends_on": [],
+             "derive_hint": "判断赛道", "cardinality": "scalar", "data_sources": ["knowledge"]},
+        ]}
+        llm = FakeLLM(default="半导体")
+        with caplog.at_level(logging.WARNING, logger="report_generator.variable_resolver"):
+            with patch("report_generator.variable_resolver.retrieve_for_section",
+                       _fake_retrieve(None, cards=[])):
+                resolved, evidence, _ = asyncio.run(resolve_variables(
+                    template, {}, {}, search_tool=MagicMock(), llm_client=llm, llm_settings={},
+                ))
+        # warning 含变量名，审计可定位到具体节点
+        assert any("sector" in r.getMessage() and "0 张卡片" in r.getMessage()
+                   for r in caplog.records)
+        # 行为无回归：空证据列表照常留存，抽值流程不中断
+        assert evidence["sector"] == []
 
     def test_retrieve_failure_degrades(self):
         """检索抛异常 → 该 derived 变量降级 UNRESOLVED，不中断整体解析。"""

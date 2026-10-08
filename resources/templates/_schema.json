@@ -98,7 +98,16 @@
         },
         "description": {
           "type": "string",
-          "description": "章节内容说明（给人看，用于搜索和预览）"
+          "description": "章节内容说明（给人看：检索 query 素材与前端展示，不注入写作 prompt）"
+        },
+        "writing_brief": {
+          "type": "string",
+          "description": "行文任务书：编号小节清单，逐条写明写什么/怎么写/用什么形式；作为该节写作 prompt 主体（缺省回退 description）"
+        },
+        "target_words": {
+          "type": "integer",
+          "minimum": 100,
+          "description": "节级篇幅护栏（字），覆盖全局 report_depth 的字数校验目标"
         },
         "compose_mode": {
           "type": "string",
@@ -108,7 +117,7 @@
         },
         "prompt_hint": {
           "type": "string",
-          "description": "内容生成指引（给 LLM 看）"
+          "description": "写作指引（任务书之外的补充约束）"
         },
         "optional": {
           "type": "boolean",

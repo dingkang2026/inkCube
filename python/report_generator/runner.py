@@ -280,11 +280,19 @@ class ReportRunner:
                     sufficiency=retrieval.sufficiency,
                 )
 
-                # 生成 + 重试
+                # 生成 + 重试（sparse/材料有限时校验放宽，§3.6 规则 3）
+                is_sparse = retrieval.is_degraded
+                word_floor = (
+                    0.6
+                    if (retrieval.sufficiency or {}).get("level") == "insufficient"
+                    else 0.8
+                )
                 output, finish_reason = await self._generate_with_retry(
                     section=sec,
                     user_prompt=user_prompt,
                     given_refs=set(ref_numbers),
+                    is_sparse=is_sparse,
+                    word_floor_ratio=word_floor,
                 )
 
                 # 输出截断用户可见（§3.9：finish_reason=length 不抛错）
@@ -532,8 +540,14 @@ class ReportRunner:
         section: dict,
         user_prompt: str,
         given_refs: set[int],
+        is_sparse: bool = False,
+        word_floor_ratio: float = 0.8,
     ) -> tuple[str, str]:
         """生成单节内容，智能重试 + 精准 token 追踪。
+
+        Args:
+            is_sparse: sparse 降级节（零材料 degraded），字数校验不启用（§3.6）
+            word_floor_ratio: 字数下限比例（insufficient 材料有限时放宽至 0.6）
 
         Returns:
             (output, finish_reason)：finish_reason 为最后一次成功调用的
@@ -562,7 +576,12 @@ class ReportRunner:
                     )
 
                 # 校验
-                violations = validate_section(output, given_refs, section, report_depth=self.report_depth)
+                violations = validate_section(
+                    output, given_refs, section,
+                    report_depth=self.report_depth,
+                    is_sparse=is_sparse,
+                    word_floor_ratio=word_floor_ratio,
+                )
                 if not violations:
                     return output, finish_reason
 

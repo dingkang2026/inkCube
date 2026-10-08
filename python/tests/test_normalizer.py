@@ -146,6 +146,27 @@ class TestNormalizeOutline:
         node = {"title": "规模", "prompt_hint": "给出TAM"}
         assert _fold_node(node) == "须覆盖：规模（给出TAM）"
 
+    def test_fold_node_with_writing_brief(self):
+        """深层节点 writing_brief 整段并入，换行压缩为分号（§2.1.3）。"""
+        node = {"title": "规模", "writing_brief": "1. 给出总量；\n2. 表格对比"}
+        assert _fold_node(node) == "须覆盖：规模：1. 给出总量；2. 表格对比"
+
+    def test_fold_node_brief_crlf_normalized(self):
+        """\r\n 与 \n 统一压缩为分号，保持 writing_requirements 单行形态。"""
+        node = {"title": "规模", "writing_brief": "1. A\r\n2. B\n3. C"}
+        assert _fold_node(node) == "须覆盖：规模：1. A；2. B；3. C"
+
+    def test_normalize_outline_deep_brief_merged(self):
+        """三级节点的 brief 随整枝折叠并入二级节的 writing_requirements。"""
+        outline = [{"section_id": "ch1", "title": "章", "children": [
+            {"section_id": "s1", "title": "节", "children": [
+                {"section_id": "ss1", "title": "子", "writing_brief": "1. x"},
+            ]},
+        ]}]
+        out = normalize_outline(outline)
+        reqs = out[0]["children"][0]["writing_requirements"]
+        assert any("1. x" in r for r in reqs)
+
 
 # ── validate_execution_outline ──────────────────────────────
 

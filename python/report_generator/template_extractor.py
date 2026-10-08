@@ -166,8 +166,9 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
         {
           "section_id": "ch1.1",
           "title": "子节标题",
-          "description": "本节内容说明（给人看）",
-          "prompt_hint": "写作指引（给LLM看）"
+          "description": "本节内容说明（给人看：检索素材与展示用）",
+          "writing_brief": "行文任务书：编号小节清单，每条写明「写什么 + 怎么写 + 用什么形式」，\n如：\n1. 先给出……，引用注明口径；\n2. 以 Markdown 表格对比……；\n3. 给出……判断，说明依据与不确定性",
+          "prompt_hint": "写作指引（任务书之外的补充约束，可选）"
         }
       ]
     }
@@ -177,7 +178,7 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
 
 分析要求：
 1. **大纲结构**：根据报告的实际章节划分，提取完整的层级结构
-2. **每节说明**：为每个章节生成 description（内容说明）和 prompt_hint（写作指引）
+2. **每节说明**：为每个章节生成 description（内容说明，给人看）和 **writing_brief（行文任务书，重点）**：根据样例中该节的实际内容，反推出 2-5 条编号写作指令（每条=写什么+怎么写+用什么形式，如表格/mermaid 图/引用块/公式），任务书决定行文结构与篇幅，务必具体可执行；prompt_hint 仅放任务书之外的补充约束，无则省略
 3. **角色定位**：根据报告的专业领域和文风推断 role_hint
 4. **目标读者**：根据报告的用语和深度推断 audience
 5. **项目类型**：推断报告属于投资分析(investment)、招商引资(recruitment)还是通用(general)
@@ -186,7 +187,7 @@ EXTRACTION_SYSTEM_PROMPT = """你是一位专业的报告模板分析师。用�
    - **user 变量**：需用户在向导手填的输入项（如报告期、目标区域、行业），声明 source="user" + label + required + placeholder
    - **derived 变量**：可由系统研究得出的实体锚点（如产业领域、竞争对手名单），声明 source="derived" + depends_on（依赖链，可指向 company_name 等隐式变量或其他变量）+ derive_hint（自然语言解析指令）+ data_sources（检索通道，恒非空，["knowledge"] 或 ["knowledge","internet"]）+ cardinality（scalar 单个值 / list 名单数组）
    - **隐式项目变量**（company_name / credit_code / project_name / project_type / stage）无需声明，可直接在 depends_on 或正文 {{}} 中引用
-   - 变量值通过正文 {{name}} 注入到相关章节的 description / prompt_hint，**不改变大纲结构**；list 变量注入时以顿号连接
+   - 变量值通过正文 {{name}} 注入到相关章节的 description / writing_brief / prompt_hint，**不改变大纲结构**；list 变量注入时以顿号连接
    - 若报告无明显动态变量，variables 输出空数组 []
 
 直接输出 JSON，不要包含 markdown 代码块标记。"""

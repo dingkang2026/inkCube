@@ -134,6 +134,12 @@ def _fold_node(node: dict) -> str:
     chain.extend(_collect_titles(node.get("children", [])))
     r = f"须覆盖：{'——'.join(chain)}"
 
+    # v2 深层节点的 writing_brief 任务书整段并入（换行压缩为分号，
+    # 保持 writing_requirements 单条单行形态）
+    brief = (node.get("writing_brief") or "").strip()
+    if brief:
+        r += "：" + brief.replace("\r\n", "\n").replace("\n", "；")
+
     # v2 用 prompt_hint 作为附加说明（替代 v1 的 notes / promote_subhead）
     prompt_hint = node.get("prompt_hint", "")
     if prompt_hint:

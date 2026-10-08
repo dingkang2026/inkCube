@@ -11,6 +11,20 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# 围栏代码块（含未闭合到文末的流式中间态）——加粗检查豁免区
+_FENCED_CODE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
+
+
+def _text_for_bold_check(output: str) -> str:
+    """剥离围栏代码块与表格行后的文本（§3.6 规则 2 加粗检查豁免区）。
+
+    表格单元格内的粗体是合法强调形式（§3.5 形式规范明确允许），
+    mermaid / LaTeX 等代码块内容也可能含 ** 字符，均不参与加粗违规判定。
+    """
+    no_code = _FENCED_CODE_RE.sub("", output)
+    lines = [ln for ln in no_code.split("\n") if ln.strip().count("|") < 2]
+    return "\n".join(lines)
+
 
 # ── 单节校验 ────────────────────────────────────────────────
 
@@ -32,6 +46,8 @@ def validate_section(
     given_ref_numbers: set[int],
     section: dict,
     report_depth: str = "full",
+    is_sparse: bool = False,
+    word_floor_ratio: float = 0.8,
 ) -> list[SectionViolation]:
     """对单节生成结果执行校验规则（§3.6）。
 
@@ -40,6 +56,8 @@ def validate_section(
         given_ref_numbers: 本节给定的引用编号集合
         section: 节定义 dict（含 section_id、title、compose_mode 等）
         report_depth: 报告深度 "full" | "brief"，决定 Rule 3 是否启用及目标字数
+        is_sparse: sparse 降级节（零材料 degraded 模式），Rule 3 不启用
+        word_floor_ratio: Rule 3 字数下限比例（insufficient 材料有限时放宽至 0.6）
 
     Returns:
         违规列表。空列表表示全部通过。
@@ -55,9 +73,9 @@ def validate_section(
             message=f"引用了未给定的编号: {sorted(hallucinated)}",
         ))
 
-    # Rule 2: 出现 markdown 标题或加粗
+    # Rule 2: 出现 markdown 标题或加粗（加粗检查豁免表格行与围栏代码块，§3.6）
     md_headings = re.findall(r"^#{1,6}\s+.+$", output, re.MULTILINE)
-    bold_text = re.findall(r"\*\*.+?\*\*", output)
+    bold_text = re.findall(r"\*\*.+?\*\*", _text_for_bold_check(output))
     if md_headings:
         violations.append(SectionViolation(
             rule=2,
@@ -69,19 +87,25 @@ def validate_section(
             message=f"出现 Markdown 加粗: {bold_text[:3]}",
         ))
 
-    # Rule 3: 字数偏差 > ±20%（§3.6）。v2 已删除模板 word_count，目标字数按 depth 推算。
+    # Rule 3: 字数偏差（§3.6）。目标 = 节级 target_words（有则用）否则 1200。
     # 仅对 full 深度的 standard 节启用：
     #   - post_body（摘要/结论）天然短小，不适用每节字数目标；
     #   - brief 深度 §3.5 指示「每节 200-500 字」与 §3.6 目标 1200 存在冲突，
-    #     强校验会触发无谓重试，故 brief 不启用。
-    if report_depth == "full" and section.get("compose_mode") != "post_body":
-        target = 1200
+    #     强校验会触发无谓重试，故 brief 不启用；
+    #   - sparse 降级节（零材料）内容天然短小，不启用；
+    #   - insufficient（材料有限）下限放宽至 0.6（§3.3，sparse 弱化指令允许
+    #     材料不足维度只做定性论述）。
+    if not is_sparse and report_depth == "full" and section.get("compose_mode") != "post_body":
+        target = section.get("target_words") or 1200
         actual = len(output)
         ratio = actual / target
-        if ratio < 0.8 or ratio > 1.2:
+        if ratio < word_floor_ratio or ratio > 1.2:
             violations.append(SectionViolation(
                 rule=3,
-                message=f"字数 {actual} 偏离目标 {target}（{ratio:.0%}，允许 ±20%）",
+                message=(
+                    f"字数 {actual} 偏离目标 {target}"
+                    f"（{ratio:.0%}，允许 {word_floor_ratio:.0%}-120%）"
+                ),
             ))
 
     # Rule 4: ◆ 小标题超过 15 字（v2 已删除 promote_subhead，不再检查小标题数量）

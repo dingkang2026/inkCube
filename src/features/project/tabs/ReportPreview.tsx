@@ -1,8 +1,7 @@
 /** src/features/project/tabs/ReportPreview.tsx — Report detail view (rendered markdown + sources + logs) */
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { Markdown } from '../../../components/Markdown'
 import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2, Pause, PauseCircle, Play, RefreshCw } from 'lucide-react'
 import type { Report, ReportLog } from '../types'
 import { useToast } from '../../knowledge/Toast'
@@ -233,12 +232,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
             <span>{report.error_message || t('project.report.failed')}</span>
           </div>
         ) : (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            className={s.markdownBody}
-          >
-            {markdownContent}
-          </ReactMarkdown>
+          <Markdown content={markdownContent} className={s.markdownBody} />
         )}
       </div>
 

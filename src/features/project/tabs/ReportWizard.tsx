@@ -251,14 +251,6 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     }
   }, [])
 
-  // Entry guard per 0.4 §7.3: report generation requires LLM + embedding
-  const handleStartGenerate = useCallback(() => {
-    if (!selectedTemplate || generating) return
-    void guard('report', () => {
-      void doStartGenerate()
-    })
-  }, [selectedTemplate, generating, guard])
-
   const doStartGenerate = useCallback(async () => {
     if (!selectedTemplate) return
     setGenerating(true)
@@ -299,6 +291,18 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       setGenerating(false)
     }
   }, [selectedTemplate, projectId, variableValues, supplementaryNotes, sectionInternet, internetEnabled, knowledgeSources, checkedSources, onComplete])
+
+  // Entry guard per 0.4 §7.3: report generation requires LLM + embedding.
+  // 依赖必须含 doStartGenerate：勾选互联网开关后 doStartGenerate 重建
+  // （捕获新的 internetEnabled/sectionInternet），若此回调保留旧闭包，
+  // 会把勾选前的值提交给后端（UI 显示与提交不一致）。
+  // doStartGenerate 定义必须在其之前：deps 数组求值时读取该 const。
+  const handleStartGenerate = useCallback(() => {
+    if (!selectedTemplate || generating) return
+    void guard('report', () => {
+      void doStartGenerate()
+    })
+  }, [selectedTemplate, generating, guard, doStartGenerate])
 
   const toggleSource = (id: string) => {
     setCheckedSources(prev => {

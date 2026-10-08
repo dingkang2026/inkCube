@@ -37,8 +37,18 @@ SYSTEM_PROMPT_TEMPLATE = """\
 - 专业、客观、克制；观点须有证据支撑，不使用夸张修辞
 - 书面语，段落 150-300 字；分析性语言优先于描述性语言
 - 给出判断时说明依据与不确定性
+- 对专业术语、公司、技术给出必要的背景解释，确保非领域专家也能理解
+- 可基于材料做逻辑延伸与过渡衔接，但不得改写材料中的事实、数据与专有名词
 - 数字规范：千分位、单位统一、不确定数据用区间；数据须注明口径
 - 行文用"本报告""我们认为"
+
+【行文形式规范】（全文统一；形式能力已按 pandoc 导出支持矩阵实测闭环）
+- 结构化对比数据（多实体 × 多维度）优先使用 Markdown 表格呈现，表内单元格可用粗体强调关键值
+- 流程、结构关系、时间线可用 mermaid 图（```mermaid 代码块，支持 graph / timeline / gantt / pie / xychart-beta）；每张图前后必须有文字说明与数据解读，图不替代分析
+- 关键结论或风险提示可用引用块（以 > 开头）强调
+- 公式用 LaTeX：行内 $...$，独立公式 $$...$$
+- 禁止内联 HTML 标签（如 <br> <b>，导出会丢失语义）；禁止 emoji 表情符号
+- 未指定形式的内容一律连贯成段
 
 【输出契约】（严格遵守）
 1. 不输出本节章节标题，首行直接开始正文
@@ -55,6 +65,26 @@ _DEPTH_INSTRUCTIONS = {
     "full": "撰写详尽的长篇研究报告，每节充分展开，多角度分析，数据详实",
     "brief": "撰写精炼的短篇报告，每节 200-500 字，结论先行，言简意赅",
 }
+
+
+# sparse 写作指令（§3.3 降级路径；借鉴 enterprise_report_1_1 的 sparse 分支纪律：
+# 材料稀疏不是跳过，而是换一种写法）
+SPARSE_FULL_DIRECTIVE = """\
+⚠️ 【sparse 写作模式】本节无检索材料，请按以下纪律撰写：
+1. 首行以一句纯文本声明开头（不用加粗、不用标题）：本节内容基于分析方法论与行业通用实践撰写，因相关检索材料缺失，不涉及报告主体的具体数据。
+2. 仅论述方法论、分析框架与行业通用规律，不出现任何具体数据、事实与引用编号
+3. 将「该维度信息缺失」本身作为局限性或风险点展开分析，说明其对结论可靠性的影响
+4. 全文使用审慎、推测性措辞；严禁虚构具体数据与引用编号"""
+
+
+def _sparse_limited_directive(reason: str) -> str:
+    """insufficient（材料有限）弱化版 sparse 指令（§3.5）。"""
+    reason_text = f"（{reason}）" if reason else ""
+    return (
+        f"⚠️ 【信息充足性】本节检索材料有限{reason_text}：\n"
+        "- 材料可支撑的维度正常展开论述并引用给定编号\n"
+        "- 材料不足的维度只做定性、框架性论述并明示局限，严禁编造具体数据与引用编号"
+    )
 
 
 def build_system_prompt(
@@ -123,43 +153,37 @@ def build_standard_prompt(
             digest_lines.append(f"- {sid}: {completed_digests[sid]}")
     digest_text = "\n".join(digest_lines) if digest_lines else "（无前文）"
 
-    # 写作要求（§3.5：prompt_hint + effective_requirements）
-    requirements = []
+    # 写作任务（§3.5：writing_brief 任务书主体 → 附加要求分层呈现；
+    # 无任务书时回退 description 兜底注入）
+    brief = (section.get("writing_brief") or "").strip()
+    extras: list[str] = []
     prompt_hint = section.get("prompt_hint", "")
     if prompt_hint:
-        requirements.append(prompt_hint)
-    desc = section.get("description", "")
-    if desc:
-        requirements.append(desc)
+        extras.append(prompt_hint)
+    if not brief:
+        desc = section.get("description", "")
+        if desc:
+            extras.append(desc)
     # 多级大纲折叠产生的写作要求（§3.2 归一化注入）
     for wr in section.get("writing_requirements", []):
-        if wr and wr not in requirements:
-            requirements.append(wr)
+        if wr and wr not in extras:
+            extras.append(wr)
     if global_requirements:
-        requirements.extend(global_requirements)
-    req_text = "\n".join(f"- {r}" for r in requirements) if requirements else "无特殊要求"
+        extras.extend(global_requirements)
+    # 节级篇幅护栏（§3.6 规则 3 的 prompt 侧对应；主要篇幅控制手段仍是任务书结构）
+    target_words = section.get("target_words")
+    if target_words:
+        extras.append(f"本节篇幅约 {target_words} 字。")
+    extras_text = "\n".join(f"- {e}" for e in extras) if extras else "无特殊要求"
 
-    # 降级模式
-    degraded_hint = ""
+    # sparse 降级 / 充足性指令（命中才注入）
+    sparse_hint = ""
     if is_degraded:
-        degraded_hint = """
-⚠️ 【分析推理模式】当前无检索材料，请基于专业知识论述。
-- 禁止虚构具体数据与引用
-- 禁止编造引用编号
-- 报告中将标注数据缺口
-"""
+        sparse_hint = SPARSE_FULL_DIRECTIVE
+    elif sufficiency and sufficiency.get("level") == "insufficient":
+        sparse_hint = _sparse_limited_directive(sufficiency.get("reason", ""))
 
-    # 充足性提示
-    sufficiency_hint = ""
-    if sufficiency and sufficiency.get("level") == "insufficient":
-        reason = sufficiency.get("reason", "")
-        sufficiency_hint = (
-            "\n⚠️ 【信息充足性】本节检索材料有限"
-            + (f"（{reason}）" if reason else "")
-            + "，侧重分析推理，禁止虚构具体数据与引用"
-        )
-
-    # 组装
+    # 组装（有任务书时任务书为主体段，附加要求单独分层）
     parts = [
         f"【全局上下文】",
         f"报告题目：{report_title}",
@@ -167,12 +191,17 @@ def build_standard_prompt(
         f"前文各节摘要（供衔接，勿重复）：",
         digest_text,
         "",
-        f"【本节写作任务】",
-        f"写作要求：",
-        req_text,
-        degraded_hint,
-        sufficiency_hint,
+        "【本节写作任务】",
     ]
+    if brief:
+        parts.append(brief)
+        parts.append("")
+        parts.append("【附加写作要求】")
+        parts.append(extras_text)
+    else:
+        parts.append("写作要求：")
+        parts.append(extras_text)
+    parts.extend(["", sparse_hint] if sparse_hint else [])
 
     if not is_degraded and ref_text:
         parts.extend([
@@ -215,17 +244,18 @@ def build_post_body_prompt(
             digest_lines.append(f"- {sid}: {digests[sid]}")
     digest_text = "\n".join(digest_lines) if digest_lines else "（无正文内容）"
 
-    # 写作要求（§3.5：prompt_hint + effective_requirements）
-    requirements = []
+    # 写作任务（§3.5：post_body 同样支持 writing_brief 任务书主体）
+    brief = (section.get("writing_brief") or "").strip()
+    extras: list[str] = []
     prompt_hint = section.get("prompt_hint", "")
     if prompt_hint:
-        requirements.append(prompt_hint)
+        extras.append(prompt_hint)
     for wr in section.get("writing_requirements", []):
-        if wr and wr not in requirements:
-            requirements.append(wr)
+        if wr and wr not in extras:
+            extras.append(wr)
     if global_requirements:
-        requirements.extend(global_requirements)
-    req_text = "\n".join(f"- {r}" for r in requirements) if requirements else "无特殊要求"
+        extras.extend(global_requirements)
+    req_text = "\n".join(f"- {e}" for e in extras) if extras else "无特殊要求"
 
     # 可用引用
     source_list = registry.format_source_list()
@@ -238,13 +268,21 @@ def build_post_body_prompt(
         key_data_text or "（无提取数据）",
         "",
         f"【本节写作任务】",
-        f"写作要求：",
-        req_text,
+    ]
+    if brief:
+        parts.append(brief)
+        parts.append("")
+        parts.append("【附加写作要求】")
+        parts.append(req_text)
+    else:
+        parts.append("写作要求：")
+        parts.append(req_text)
+    parts.extend([
         f"附加要求：不得简单重复正文内容，须给出跨章节的综合判断",
         "",
         f"【可用引用编号】",
         source_list or "（无可用引用）",
-    ]
+    ])
 
     return "\n".join(parts)
 

@@ -11,8 +11,10 @@
 """
 import asyncio
 import base64
+import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,14 @@ class TestCorsPolicy:
     def test_foreign_origin_rejected_dev_allowed(self):
         import main as main_module
         from fastapi.testclient import TestClient
+
+        # main 在模块导入时给 root logger 挂生产 app.log 的 file handler；
+        # 不立即摘除的话，本测试体内的 httpx 请求日志（TestClient）会写进
+        # 生产日志。conftest 的 autouse fixture 只在测试前后摘，覆盖不到
+        # 同一测试体内的这个窗口，此处必须就地摘除。
+        for h in [h for h in logging.root.handlers
+                  if isinstance(h, RotatingFileHandler)]:
+            logging.root.handlers.remove(h)
 
         client = TestClient(main_module.app)  # no `with` → lifespan not started
         res = client.options("/settings", headers={

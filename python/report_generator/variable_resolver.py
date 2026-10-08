@@ -202,6 +202,12 @@ async def resolve_variables(
             continue
 
         cards = retrieval.cards or []
+        if not cards:
+            # 无材料与 LLM 抽取失败是两种根因，审计时须可区分（否则只能靠
+            # 汇总行「证据 0 组」间接推断）
+            logger.warning(
+                "resolve_variables: '%s' 检索 0 张卡片（各通道无相关材料），抽值无证据可用", name,
+            )
         evidence_text = "\n".join(
             c.get("content", "") for c in cards if c.get("content")
         )

@@ -30,8 +30,11 @@ def _benign(n: int) -> str:
 _STD = {"section_id": "s1", "title": "T", "compose_mode": "standard"}
 
 
-def _rules(output, section, depth="full", given=None):
-    return [v.rule for v in validate_section(output, given or set(), section, report_depth=depth)]
+def _rules(output, section, depth="full", given=None, sparse=False, floor=0.8):
+    return [v.rule for v in validate_section(
+        output, given or set(), section,
+        report_depth=depth, is_sparse=sparse, word_floor_ratio=floor,
+    )]
 
 
 # ── Rule 3：depth 化目标字数 ────────────────────────────────
@@ -82,6 +85,47 @@ class TestRule3DepthTarget:
         violations = validate_section(_benign(1200), set(), sec_v1, "full")
         assert violations == []
         assert all("must_cite" not in v.message for v in violations)
+
+
+# ── Rule 2 豁免区（表格行 / 围栏代码块）─────────────────────
+
+
+class TestRule2Exemptions:
+    def test_bold_in_table_cell_exempt(self):
+        """表格单元格内粗体是合法强调形式（§3.5 形式规范），不触发规则 2。"""
+        out = _benign(1200) + "\n| 指标 | 数值 |\n|---|---|\n| **营收** | 100亿 |\n"
+        assert 2 not in _rules(out, _STD, "full")
+
+    def test_bold_in_fenced_code_exempt(self):
+        """围栏代码块（mermaid/LaTeX 源码等）内的 ** 不参与加粗判定。"""
+        out = _benign(1200) + "\n```\n**not bold in code**\n```\n"
+        assert 2 not in _rules(out, _STD, "full")
+
+    def test_bold_outside_table_still_triggers(self):
+        """豁免区之外的正文加粗仍触发规则 2。"""
+        out = _benign(600) + "**重点**" + _benign(600) + "\n| a | b |\n"
+        assert 2 in _rules(out, _STD, "full")
+
+
+# ── Rule 3：sparse / target_words / 下限放宽 ────────────────
+
+
+class TestRule3SparseAndTargetWords:
+    def test_sparse_skips_rule3(self):
+        """sparse 降级节（零材料分析推理模式）字数不校验（§3.6）。"""
+        assert 3 not in _rules(_benign(100), _STD, "full", sparse=True)
+
+    def test_target_words_overrides_default(self):
+        """节级 target_words 覆盖全局 1200（模板篇幅护栏，§2.1.3/§3.6）。"""
+        sec = {**_STD, "target_words": 600}
+        # 600±20% → 480-720：700 达标、1200 超标
+        assert 3 not in _rules(_benign(700), sec, "full")
+        assert 3 in _rules(_benign(1200), sec, "full")
+
+    def test_insufficient_floor_relaxed(self):
+        """insufficient 材料有限：下限放宽至 0.6（720 达标；默认 0.8 下触发）。"""
+        assert 3 not in _rules(_benign(720), _STD, "full", floor=0.6)
+        assert 3 in _rules(_benign(720), _STD, "full")
 
 
 # ── 其它单节规则 ────────────────────────────────────────────

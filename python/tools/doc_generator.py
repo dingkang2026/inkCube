@@ -13,15 +13,12 @@ import asyncio
 import json
 import logging
 import os
-import re
-import shutil
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from tools.base import BaseTool
+from tools.mermaid_bridge import cleanup_temp_dir, preprocess_mermaid
 from tools.tool_resolver import resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -137,7 +134,7 @@ class DocGeneratorTool(BaseTool):
         Mermaid diagrams are pre-processed to SVG before pandoc.
         """
         # Step 0: Pre-process Mermaid diagrams
-        actual_input, mmd_tmp = self._preprocess_mermaid(input_file)
+        actual_input, mmd_tmp = preprocess_mermaid(input_file)
 
         # Step 1: Check pandoc availability
         pandoc = resolve_tool("pandoc")
@@ -217,8 +214,7 @@ class DocGeneratorTool(BaseTool):
                 except OSError:
                     pass
             # Clean up mermaid temp dir
-            if mmd_tmp:
-                shutil.rmtree(mmd_tmp, ignore_errors=True)
+            cleanup_temp_dir(mmd_tmp)
 
     def _md_to_docx(self, input_file: Path, output_file: Path) -> str:
         """Convert Markdown to DOCX using pandoc.
@@ -226,7 +222,7 @@ class DocGeneratorTool(BaseTool):
         Mermaid diagrams are pre-processed to SVG before pandoc.
         """
         # Pre-process Mermaid diagrams
-        actual_input, mmd_tmp = self._preprocess_mermaid(input_file)
+        actual_input, mmd_tmp = preprocess_mermaid(input_file)
 
         try:
             # Check if pandoc is available (unified resolver: bundled > PATH)
@@ -266,121 +262,7 @@ class DocGeneratorTool(BaseTool):
                 "size_kb": size_kb,
             }, ensure_ascii=False)
         finally:
-            if mmd_tmp:
-                shutil.rmtree(mmd_tmp, ignore_errors=True)
-
-    # ── Mermaid pre-processing (zero-dependency via Electron) ───────────
-
-    _MERMAID_RE = re.compile(r'^```mermaid\s*\n(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
-
-    def _find_electron(self) -> str | None:
-        """Locate the Electron binary for spawning a mermaid renderer."""
-        # 1. Environment variable override
-        env = os.environ.get('INKCUBE_ELECTRON_PATH')
-        if env and os.path.isfile(env):
-            return env
-
-        project_root = Path(__file__).resolve().parent.parent.parent
-
-        # 2. Development: node_modules/electron/dist/
-        if sys.platform == 'win32':
-            candidates = [
-                project_root / 'node_modules' / 'electron' / 'dist' / 'electron.exe',
-            ]
-        else:
-            candidates = [
-                project_root / 'node_modules' / 'electron' / 'dist' / 'electron',
-            ]
-        for c in candidates:
-            if c.is_file():
-                return str(c)
-
-        # 3. System PATH
-        found = shutil.which('electron')
-        if found:
-            return found
-
-        logger.warning('Electron binary not found — Mermaid diagrams will be skipped')
-        return None
-
-    def _render_mermaid_to_svg(self, electron: str, code: str) -> str | None:
-        """Render a single Mermaid diagram to SVG via a headless Electron process."""
-        renderer_script = str(
-            Path(__file__).resolve().parent.parent.parent / 'electron' / 'mermaid-renderer.js'
-        )
-        if not os.path.isfile(renderer_script):
-            logger.warning('mermaid-renderer.js not found at %s', renderer_script)
-            return None
-
-        try:
-            result = subprocess.run(
-                [electron, renderer_script],
-                input=code,
-                capture_output=True,
-                encoding='utf-8',
-                timeout=30,
-                env={**os.environ, 'INKCUBE_MERMAID_RENDERER': '1'},
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    'Mermaid render failed (exit %d): %s',
-                    result.returncode, result.stderr.strip(),
-                )
-                return None
-            svg = result.stdout.strip()
-            return svg if svg.startswith('<svg') or svg.startswith('<?xml') else None
-        except subprocess.TimeoutExpired:
-            logger.warning('Mermaid render timed out')
-            return None
-        except Exception as e:
-            logger.warning('Mermaid render error: %s', e)
-            return None
-
-    def _preprocess_mermaid(self, input_file: Path) -> tuple[Path, str | None]:
-        """Replace ```mermaid blocks with SVG image references.
-
-        Returns (actual_input_path, temp_dir_or_None).
-        If no mermaid blocks exist or Electron is unavailable, returns the
-        original input_file and None — callers can use input_file directly.
-        """
-        content = input_file.read_text(encoding='utf-8')
-        if not self._MERMAID_RE.search(content):
-            return input_file, None
-
-        electron = self._find_electron()
-        if not electron:
-            return input_file, None
-
-        tmp_dir = tempfile.mkdtemp(prefix='inkcube_mmd_')
-        svg_dir = Path(tmp_dir) / 'svgs'
-        svg_dir.mkdir()
-
-        success_count = 0
-
-        def _replace_block(m: re.Match) -> str:
-            nonlocal success_count
-            code = m.group(1)
-            svg = self._render_mermaid_to_svg(electron, code)
-            if svg:
-                svg_path = svg_dir / f'diagram_{success_count}.svg'
-                svg_path.write_text(svg, encoding='utf-8')
-                success_count += 1
-                return f'![diagram]({svg_path})'
-            logger.warning('Mermaid block render failed, keeping as code')
-            return m.group(0)  # leave block unchanged on failure
-
-        modified = self._MERMAID_RE.sub(_replace_block, content)
-
-        if success_count == 0:
-            # All renders failed — no change
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return input_file, None
-
-        # Write pre-processed markdown to a temp file
-        preprocessed = Path(tmp_dir) / 'preprocessed.md'
-        preprocessed.write_text(modified, encoding='utf-8')
-        logger.info('Mermaid: rendered %d diagram(s) to SVG', success_count)
-        return preprocessed, tmp_dir
+            cleanup_temp_dir(mmd_tmp)
 
     def _docx_to_pdf(self, input_file: Path, output_file: Path) -> str:
         """Convert DOCX to PDF using MS Office (Windows) or LibreOffice."""

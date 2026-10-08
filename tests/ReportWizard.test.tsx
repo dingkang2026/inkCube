@@ -16,9 +16,12 @@ vi.mock('../src/features/settings/useSettings', () => ({
   useSettings: () => ({ settings: { tavily_key: 'tv-key' } }),
 }))
 
-vi.mock('../src/features/readiness/useReadiness', () => ({
-  useFeatureGuard: () => (_feature: string, fn: () => void) => fn(),
-}))
+vi.mock('../src/features/readiness/useReadiness', () => {
+  // guard 必须跨渲染引用稳定（真实实现是 useCallback 包装），
+  // 否则 handleStartGenerate 每次重建，stale closure 无法复现
+  const guard = (_feature: string, fn: () => void) => fn()
+  return { useFeatureGuard: () => guard }
+})
 
 vi.mock('../src/features/project/tabs/ReportWizard.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
@@ -74,7 +77,8 @@ async function openWizardWithOutline(outline: unknown[]) {
       }
     }
     if (channel === 'reports:getTemplate') {
-      return { template: { outline, variables: [] } }
+      // template_id/template_name 供 doStartGenerate 提交 payload 使用
+      return { template: { outline, variables: [], template_id: 'dd', template_name: '尽职调查报告' } }
     }
     if (channel === 'baseLib:list') return { base_libs: [] }
     if (channel === 'project:getBaseLibs') return { base_libs: [] }
@@ -134,5 +138,85 @@ describe('ReportWizard outline rendering (chapter-grouped)', () => {
     expect(screen.getByText('1.')).toBeTruthy()
     expect(screen.getByText('2.')).toBeTruthy()
     expect(screen.queryByText('1.1')).toBeNull()
+  })
+})
+
+describe('ReportWizard internet toggle submission (stale closure regression)', () => {
+  it('submits internet toggles set AFTER mount, not values captured at mount', async () => {
+    await openWizardWithOutline(OUTLINE_MIXED)
+
+    // 用户操作：勾选总闸 + 仅勾选 ch2.1 的逐节开关（ch1 不勾，验证逐节选择保真）
+    fireEvent.click(
+      screen.getByText('project.report.wizard.masterInternet').closest('label')!
+        .querySelector('input[type="checkbox"]')!,
+    )
+    fireEvent.click(
+      screen.getByText('2.1').closest('div')!.querySelector('input[type="checkbox"]')!,
+    )
+
+    // 生成请求 mock：记录提交的 payload
+    let submitted: Record<string, unknown> | undefined
+    invokeMock.mockImplementation(async (channel: string, args?: unknown) => {
+      if (channel === 'reports:generateReport') {
+        submitted = args as Record<string, unknown>
+        return { report_id: 'r-new' }
+      }
+      if (channel === 'reports:listTemplates') {
+        return { templates: [{
+          template_id: 'dd', template_name: '尽职调查报告', version: '2.0',
+          project_types: ['investment'], stage: 'during', output_format: 'docx',
+          report_depth: 'deep', chapter_count: OUTLINE_MIXED.length, is_custom: false,
+        }] }
+      }
+      if (channel === 'reports:getTemplate') {
+        return { template: { outline: OUTLINE_MIXED, variables: [], template_id: 'dd', template_name: '尽职调查报告' } }
+      }
+      if (channel === 'baseLib:list') return { base_libs: [] }
+      if (channel === 'project:getBaseLibs') return { base_libs: [] }
+      return {}
+    })
+
+    fireEvent.click(screen.getByText('project.report.wizard.startGenerate').closest('button')!)
+    await flush()
+
+    // 修复前：handleStartGenerate 的 useCallback 依赖缺 doStartGenerate，
+    // 勾选后 doStartGenerate 重建（捕获新值），但 handleStartGenerate 保留
+    // 旧闭包 → 提交 internetEnabled=false / sectionInternet={}（UI 显示与
+    // 提交不一致，DB 落库 0）。修复后必须提交当前勾选值。
+    expect(submitted).toBeTruthy()
+    expect(submitted!.internetEnabled).toBe(true)
+    expect(submitted!.sectionInternet).toEqual({ 'ch2.1': true })
+    expect(submitted!.templateId).toBe('dd')
+  })
+
+  it('submits empty internet config when master toggle stays off', async () => {
+    await openWizardWithOutline(OUTLINE_MIXED)
+    let submitted: Record<string, unknown> | undefined
+    invokeMock.mockImplementation(async (channel: string, args?: unknown) => {
+      if (channel === 'reports:generateReport') {
+        submitted = args as Record<string, unknown>
+        return { report_id: 'r-new' }
+      }
+      if (channel === 'reports:listTemplates') {
+        return { templates: [{
+          template_id: 'dd', template_name: '尽职调查报告', version: '2.0',
+          project_types: ['investment'], stage: 'during', output_format: 'docx',
+          report_depth: 'deep', chapter_count: OUTLINE_MIXED.length, is_custom: false,
+        }] }
+      }
+      if (channel === 'reports:getTemplate') {
+        return { template: { outline: OUTLINE_MIXED, variables: [], template_id: 'dd', template_name: '尽职调查报告' } }
+      }
+      if (channel === 'baseLib:list') return { base_libs: [] }
+      if (channel === 'project:getBaseLibs') return { base_libs: [] }
+      return {}
+    })
+
+    fireEvent.click(screen.getByText('project.report.wizard.startGenerate').closest('button')!)
+    await flush()
+
+    expect(submitted).toBeTruthy()
+    expect(submitted!.internetEnabled).toBe(false)
+    expect(submitted!.sectionInternet).toEqual({})
   })
 })
