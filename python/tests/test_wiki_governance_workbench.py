@@ -500,7 +500,7 @@ def _add_text_chunk(db, project_id: str, file_id: str, content: str = "公司成
     db.conn.commit()
 
 
-def _make_capture_ingestor(monkeypatch, db, stage2_output: str):
+def _make_capture_ingestor(monkeypatch, db, stage2_output: str, data_dir: str):
     """Stub LLM：stage1 返回分析文本；stage2 记录 messages 并返回指定输出。"""
     captured = {}
 
@@ -511,18 +511,19 @@ def _make_capture_ingestor(monkeypatch, db, stage2_output: str):
         return stage2_output
 
     monkeypatch.setattr(WikiIngestor, "_chat_with_retry", fake_chat)
-    return WikiIngestor(db, "/tmp/inkcube-test", None, {}), captured
+    return WikiIngestor(db, data_dir, None, {}), captured
 
 
 class TestGapClosure:
-    def test_open_gap_injected_and_resolved(self, db, project_id, monkeypatch):
+    def test_open_gap_injected_and_resolved(self, db, project_id, monkeypatch, tmp_path):
         """预置未解决 data-gap → 注入 prompt + RESOLVES: 1 → auto_resolved 归档。"""
         db.create_or_update_wiki_review(
             review_id="rev_gap", project_id=project_id,
             review_type="data-gap", title="缺少注册资本",
             description="年报未提及注册资本，需补充材料",
         )
-        ingestor, captured = _make_capture_ingestor(monkeypatch, db, _STAGE2_RESOLVES_1)
+        ingestor, captured = _make_capture_ingestor(
+            monkeypatch, db, _STAGE2_RESOLVES_1, str(tmp_path))
         file_id = _add_done_file(db, project_id)
         _add_text_chunk(db, project_id, file_id)
 
@@ -539,9 +540,10 @@ class TestGapClosure:
         assert gap["resolved"] == 1
         assert gap["resolved_action"] == "auto_resolved"
 
-    def test_no_open_gaps_no_injection(self, db, project_id, monkeypatch):
+    def test_no_open_gaps_no_injection(self, db, project_id, monkeypatch, tmp_path):
         """无未解决缺口 → prompt 无待补缺口段，RESOLVES 段也不该出现在输出约定里。"""
-        ingestor, captured = _make_capture_ingestor(monkeypatch, db, _STAGE2_PLAIN)
+        ingestor, captured = _make_capture_ingestor(
+            monkeypatch, db, _STAGE2_PLAIN, str(tmp_path))
         file_id = _add_done_file(db, project_id)
         _add_text_chunk(db, project_id, file_id)
 
@@ -551,14 +553,15 @@ class TestGapClosure:
         assert "待补缺口" not in prompt_text
         assert result["gaps_resolved"] == 0
 
-    def test_resolves_unknown_number_ignored(self, db, project_id, monkeypatch):
+    def test_resolves_unknown_number_ignored(self, db, project_id, monkeypatch, tmp_path):
         """LLM 幻觉编号（99 不存在）→ 不误归档，真实缺口保持待处理。"""
         db.create_or_update_wiki_review(
             review_id="rev_gap", project_id=project_id,
             review_type="missing-page", title="缺少组织架构页",
             description="材料中未涉及组织架构",
         )
-        ingestor, _ = _make_capture_ingestor(monkeypatch, db, _STAGE2_RESOLVES_UNKNOWN)
+        ingestor, _ = _make_capture_ingestor(
+            monkeypatch, db, _STAGE2_RESOLVES_UNKNOWN, str(tmp_path))
         file_id = _add_done_file(db, project_id)
         _add_text_chunk(db, project_id, file_id)
 
@@ -591,7 +594,7 @@ class TestReviewEvidencePreserved:
 
 
 class TestIngestUserEditedWindow:
-    def test_ingest_skips_page_edited_during_llm_window(self, db, project_id, monkeypatch):
+    def test_ingest_skips_page_edited_during_llm_window(self, db, project_id, monkeypatch, tmp_path):
         """两次 LLM 调用窗口内页面被置 user_edited → Step 4 实时重读跳过，不回滚。
 
         修复回归（review #1 根因）：Step 1 快照在数分钟 LLM 窗口内会陈旧，
@@ -612,7 +615,7 @@ class TestIngestUserEditedWindow:
             return _STAGE2_PLAIN
 
         monkeypatch.setattr(WikiIngestor, "_chat_with_retry", fake_chat)
-        ingestor = WikiIngestor(db, "/tmp/inkcube-test", None, {})
+        ingestor = WikiIngestor(db, str(tmp_path), None, {})
         file_id = _add_done_file(db, project_id)
         _add_text_chunk(db, project_id, file_id)
 

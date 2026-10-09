@@ -3,12 +3,14 @@
 覆盖（2026-10-07 GPU 落地）：
   - CUDA 可用 → BGEM3FlagModel(use_fp16=True, devices=["cuda"])；
   - 无 CUDA → BGEM3FlagModel(use_fp16=False)（CPU 回退，不传 devices）；
-  - 模块级单例：第二次调用不再重新加载。
+  - 模块级单例：第二次调用不再重新加载；
+  - encode 批次/截断参数（2026-10-09 GPU TDR 崩溃根因修复）。
 """
 import os
 import sys
 import types
 
+import numpy as np
 import pytest
 import torch
 
@@ -73,3 +75,41 @@ class TestBgeM3DeviceSelection:
 
         assert m1 is m2
         assert len(fake_flagembedding) == 1
+
+
+class TestBgeM3EncodeParams:
+    """encode 批次/截断参数回归（2026-10-09 GPU TDR 崩溃根因修复）。
+
+    FlagEmbedding 默认 batch_size=256 会在批量入库时把全部 chunks 一次送进
+    GPU forward（8GB 卡必爆 → 驱动 TDR）；调用点必须显式限定小批次与
+    max_length=1024（与 doc_parser chunker 的 max_tokens=1024 对齐）。
+    """
+
+    def test_embedding_function_encodes_with_safe_batch(
+        self, monkeypatch, fake_flagembedding, tmp_path,
+    ):
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+        encode_calls = []
+
+        def _fake_encode(texts, **kwargs):
+            encode_calls.append({"texts": texts, **kwargs})
+            # 真实 FlagEmbedding 返回 numpy 数组（__call__ 会调 .tolist()）
+            return {"dense_vecs": np.zeros((len(texts), 4))}
+
+        model = vs._get_bge_m3_model(str(tmp_path))
+        model.encode = _fake_encode
+
+        ef = vs.BgeM3EmbeddingFunction(str(tmp_path))
+        out = ef(["文本一", "文本二"])
+
+        # 核心契约：encode 被以安全批次/截断参数调用（本回归的主断言）
+        assert encode_calls == [{
+            "texts": ["文本一", "文本二"],
+            "return_dense": True,
+            "batch_size": 8,
+            "max_length": 1024,
+        }]
+        # 返回维度正确（chromadb 基类包装后元素可能是 ndarray，不比元素类型）
+        assert len(out) == 2
+        assert all(len(vec) == 4 for vec in out)

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from datetime import datetime
 from typing import AsyncGenerator
@@ -26,7 +27,7 @@ from tools.repo_map import RepoMapTool
 from tools.skill_runner import SkillRunnerTool
 from tools.git_ops import GitOpsTool
 from tools.lsp_client import LSPClientTool
-from tools.venv_manager import ensure_venv, get_venv_python
+from tools.venv_manager import ensure_venv, get_venv_python, is_preinstall_done
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter, SKILL_GUIDE_MAX_CHARS
@@ -455,20 +456,29 @@ class TaskAgent:
                     return None
         return None
 
-    async def _ensure_task_venv(self, venv_path: str) -> str:
+    async def _ensure_task_venv(self, task_id: str, venv_path: str) -> str:
         """懒创建任务 venv：任务创建时仅登记路径，首次执行代码/装包/跑 Skill 时落盘。
 
-        已存在直接返回（零开销，仅一次 isfile）；创建失败返回 ""，后续执行
+        快路径要求 venv 与预装 marker 均在位（零创建开销）——marker 缺失时
+        落入 ensure_venv 补跑预装（create_venv 幂等 no-op），兑现「预装失败
+        不写 marker、下次 ensure 重试」的承诺（含跨重启的中断预装补装）。
+        创建后校验任务仍存在：delete_task 在 cancel 等待超时后直接 rmtree
+        任务目录，若落在 create_venv 的 makedirs 窗口内目录会被重建，此处
+        回收刚落盘的 venv 避免孤儿目录。创建失败/任务已删返回 ""，后续执行
         自动回退系统 Python（code_executor/shell 对不存在的 venv 路径自带
         降级），与旧「创建期失败 → venv_path=''」行为一致。同一任务经
         try_acquire_task 互斥，无并发创建竞态。
         """
         if not venv_path:
             return ""
-        if os.path.isfile(get_venv_python(venv_path)):
+        if os.path.isfile(get_venv_python(venv_path)) and is_preinstall_done(venv_path):
             return venv_path
         try:
             await asyncio.to_thread(ensure_venv, os.path.dirname(venv_path))
+            if self.db.get_task(task_id) is None:
+                shutil.rmtree(os.path.dirname(venv_path), ignore_errors=True)
+                logger.info("Task %s deleted during venv creation, cleaned %s", task_id, venv_path)
+                return ""
             logger.info("Task venv lazily created: %s", venv_path)
             return venv_path
         except Exception as e:
@@ -1608,7 +1618,7 @@ class TaskAgent:
                     # (失败时 venv_path 置 ""，同轮后续外部 Skill 上下文一并降级)
                     if tool_name in _VENV_TOOL_ATTRS and getattr(
                             tool, _VENV_TOOL_ATTRS[tool_name], ""):
-                        venv_path = await self._ensure_task_venv(venv_path)
+                        venv_path = await self._ensure_task_venv(task_id, venv_path)
                     # Log key param details for diagnostics
                     _param_summary = {k: (f"len={len(v)}" if isinstance(v, str) and len(v) > 100 else v)
                                       for k, v in tool_params.items()}
@@ -1683,7 +1693,7 @@ class TaskAgent:
                         # External skill execution via SkillRegistry
                         if result_str is None:
                             try:
-                                venv_path = await self._ensure_task_venv(venv_path)
+                                venv_path = await self._ensure_task_venv(task_id, venv_path)
                                 _venv_py = ""
                                 if venv_path:
                                     _venv_py = get_venv_python(venv_path)

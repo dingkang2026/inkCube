@@ -145,7 +145,16 @@ class BgeM3EmbeddingFunction(embedding_functions.EmbeddingFunction):
     def __call__(self, texts: List[str]) -> List[List[float]]:
         model = self._get_model()
         with _bge_encode_lock:
-            result = model.encode(texts, return_dense=True)
+            # 显式限定批次与截断（2026-10-09 GPU TDR 崩溃根因修复）：
+            # FlagEmbedding 默认 batch_size=256，批量入库（如 94 chunks）会
+            # 一炮全进 GPU forward，fp16 eager attention 峰值 ~7.4GB 打爆
+            # 8GB 显存 → 库内 OOM 降级循环反复满载重试 → 驱动 TDR
+            # （nvlddmkm 153）→ CUDA 上下文失效 → 后端进程假死。
+            # batch_size=8 将单批显存峰值压到 ~250MB；max_length=1024 与
+            # doc_parser chunker 的 max_tokens=1024 对齐，入库文本零截断损失。
+            result = model.encode(
+                texts, return_dense=True, batch_size=8, max_length=1024,
+            )
         return result['dense_vecs'].tolist()
 
 

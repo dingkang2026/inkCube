@@ -140,6 +140,11 @@ def _get_preinstall_lock(venv_path: str) -> threading.Lock:
         return _preinstall_locks.setdefault(venv_path, threading.Lock())
 
 
+def is_preinstall_done(venv_path: str) -> bool:
+    """Whether the preinstall marker exists for this venv."""
+    return os.path.isfile(os.path.join(venv_path, _PREINSTALL_MARKER))
+
+
 def ensure_venv(task_dir: str) -> str:
     """Lazily ensure a task venv exists, then preinstall packages once.
 
@@ -153,17 +158,17 @@ def ensure_venv(task_dir: str) -> str:
     """
     venv_path = create_venv(task_dir)
     venv_python = get_venv_python(venv_path)
-    marker = os.path.join(venv_path, _PREINSTALL_MARKER)
     lock = _get_preinstall_lock(venv_path)
-    if not os.path.isfile(marker) and lock.acquire(blocking=False):
+    if not is_preinstall_done(venv_path) and lock.acquire(blocking=False):
         def _preinstall():
             try:
                 # 双检：拿锁前的窗口内上一轮预装可能已完成并写入 marker
-                if os.path.isfile(marker):
+                if is_preinstall_done(venv_path):
                     return
                 if preinstall_packages(venv_python):
                     try:
-                        with open(marker, "w", encoding="utf-8") as f:
+                        with open(os.path.join(venv_path, _PREINSTALL_MARKER), "w",
+                                  encoding="utf-8") as f:
                             f.write("ok")
                     except OSError as e:
                         logger.warning("preinstall marker write failed: %s", e)

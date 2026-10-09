@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InkCube 3.0 项目生命周期 · 交互原型（非产品代码）</title>
+<style>
+:root{
+  --success:#22c55e; --error:#ef4444; --warning:#f59e0b; --accent:#2563eb;
+  --text-primary:#1f2937; --text-secondary:#4b5563; --text-muted:#9ca3af;
+  --bg:#f3f4f6; --bg-card:#ffffff; --border:#e5e7eb; --accent-soft:#eff6ff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--text-primary);font-size:14px}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+.hidden{display:none!important}
+.ic{display:inline-flex;align-items:center}
+
+/* ── 原型工具条 ── */
+.proto-bar{position:fixed;top:0;left:0;right:0;height:32px;background:#111827;color:#f9fafb;display:flex;align-items:center;gap:16px;padding:0 16px;z-index:50;font-size:12px}
+.proto-bar .tag{background:var(--warning);color:#111827;font-weight:600;border-radius:3px;padding:1px 8px}
+.proto-bar .views{margin-left:auto;display:flex;gap:8px}
+.proto-bar .views button{color:#d1d5db;padding:2px 12px;border-radius:4px}
+.proto-bar .views button.on{background:#374151;color:#fff}
+.proto-bar .note{color:#9ca3af}
+
+/* ── 应用骨架 ── */
+.app{display:flex;padding-top:32px;height:100vh}
+.sidebar{width:230px;min-width:230px;background:var(--bg-card);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.brand{font-weight:700;padding:14px 16px;border-bottom:1px solid var(--border)}
+.nav{padding:8px}
+.nav button{display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border-radius:6px;color:var(--text-secondary)}
+.nav button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.proj-list{flex:1;overflow:auto;border-top:1px solid var(--border);padding:8px}
+.proj-list h4{font-size:12px;color:var(--text-muted);font-weight:500;padding:4px 10px}
+.proj-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;width:100%;text-align:left}
+.proj-item:hover{background:var(--bg)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.dot.ok{background:var(--success)} .dot.err{background:var(--error)} .dot.warn{background:var(--warning)} .dot.mut{background:var(--text-muted)}
+.proj-item small{margin-left:auto;color:var(--text-muted);font-size:11px}
+.userbar{border-top:1px solid var(--border);padding:10px 16px;color:var(--text-secondary);display:flex;gap:8px;align-items:center}
+main{flex:1;overflow:auto;padding:20px 24px;position:relative}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.card h3{font-size:13px;color:var(--text-secondary);font-weight:600;margin-bottom:10px}
+.muted{color:var(--text-muted)} .sec{color:var(--text-secondary)}
+.t-err{color:var(--error)} .t-warn{color:#b45309} .t-ok{color:var(--success)}
+
+/* ── 首页 ── */
+.sys-cards{display:flex;gap:12px;margin-bottom:14px}
+.sys-card{flex:1;display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.home-grid{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start}
+.todo-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border)}
+.todo-row:last-child{border-bottom:none}
+.todo-row .t{flex:1}
+.todo-row .due{font-size:12px}
+.btn{border:1px solid var(--border);border-radius:6px;padding:4px 12px;background:var(--bg-card);color:var(--text-secondary);font-size:13px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.sm{padding:2px 8px;font-size:12px}
+.btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.cal-strip{display:flex;gap:8px;flex-wrap:wrap}
+.cal-day{flex:1;min-width:100px;border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px}
+.cal-day b{display:block;color:var(--text-muted);font-weight:500;margin-bottom:4px}
+.cal-item{display:flex;align-items:center;gap:5px;padding:2px 0}
+.cards-wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.p-card{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:14px;cursor:pointer}
+.p-card:hover{border-color:var(--accent)}
+.p-card .stage{font-size:12px;color:var(--text-secondary);margin:6px 0}
+.p-card .next{font-size:12px;border-top:1px dashed var(--border);margin-top:8px;padding-top:8px}
+.quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.quick-item{display:flex;gap:10px;align-items:center;border:1px solid var(--border);border-radius:6px;padding:10px;text-align:left}
+.quick-item b{display:block;font-size:13px}
+.feed-item{padding:6px 0;border-bottom:1px solid var(--border);font-size:13px}
+.feed-item:last-child{border-bottom:none}
+.feed-item small{display:block;color:var(--text-muted);font-size:11px}
+
+/* ── 项目详情 ── */
+.pd-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.badge{background:var(--accent-soft);color:var(--accent);border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600}
+.stage-pills{display:flex;align-items:center;gap:6px;margin:10px 0;font-size:13px}
+.stage-pills .sp{display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;color:var(--text-muted);cursor:pointer}
+.stage-pills .sp.cur{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.stage-pills .sp.done{color:var(--success)}
+.stage-pills .ln{width:28px;height:1px;background:var(--border)}
+.pulse{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
+.pulse-head{display:flex;align-items:center;gap:10px;padding:10px 14px}
+.pulse-head .sent{flex:1;color:var(--text-secondary)}
+.pulse-head .sent b{color:var(--text-primary)}
+.chips{display:flex;gap:8px;padding:0 14px 12px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:99px;padding:3px 12px;font-size:13px;background:var(--bg)}
+.chip.err{border-color:#fecaca;background:#fef2f2;color:var(--error)}
+.chip.warn{border-color:#fde68a;background:#fffbeb;color:#b45309}
+.chip.acc{border-color:#bfdbfe;background:var(--accent-soft);color:var(--accent)}
+.pulse.folded{padding:8px 14px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px}
+.tabs button{padding:8px 16px;color:var(--text-secondary);border-bottom:2px solid transparent;display:flex;gap:6px;align-items:center}
+.tabs button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.tabs .chat-toggle{margin-left:auto}
+.pd-body{display:flex;gap:14px;align-items:flex-start}
+.pd-main{flex:1;min-width:0}
+
+/* Chat 开合面板（现状：chatOpen 控制，absolute 全高覆盖） */
+.chat{position:absolute;top:20px;right:24px;bottom:20px;width:340px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;z-index:20;box-shadow:-8px 0 24px rgba(0,0,0,.08)}
+.chat .hd{padding:10px 14px;border-bottom:1px solid var(--border);font-weight:600;display:flex;align-items:center}
+.chat .hd button{margin-left:auto;color:var(--text-muted)}
+.chat .msgs{flex:1;padding:12px;color:var(--text-muted);font-size:13px}
+
+/* 知识 Tab：现状左侧子导航 + 内容区 */
+.wiki-wrap{display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-card)}
+.wiki-subnav{width:150px;min-width:150px;border-right:1px solid var(--border);padding:10px 8px;background:#fafafa}
+.wiki-subnav .si{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;font-size:13px;color:var(--text-secondary);width:100%;text-align:left}
+.wiki-subnav .si.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.wiki-subnav .si .bdg{margin-left:auto;background:var(--error);color:#fff;border-radius:99px;font-size:11px;padding:0 6px}
+.wiki-content{flex:1;padding:14px 16px;min-width:0}
+.wiki-content .card{border:none;padding:0 0 14px;margin-bottom:14px;border-bottom:1px solid var(--border);border-radius:0}
+.wiki-content .card:last-child{border-bottom:none;margin-bottom:0}
+.kpi-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.progress-bar{height:8px;background:var(--bg);border-radius:99px;overflow:hidden;flex:1;min-width:160px}
+.progress-bar i{display:block;height:100%;background:var(--success)}
+.skel{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border);border-radius:6px;padding:3px 10px;font-size:12px;color:var(--text-muted);margin:3px 4px 0 0}
+.done-page{display:inline-flex;align-items:center;gap:6px;border:1px solid #bbf7d0;border-radius:6px;padding:3px 10px;font-size:12px;color:#15803d;background:#f0fdf4;margin:3px 4px 0 0}
+.idx-row{display:flex;gap:14px;padding:6px 0;color:var(--text-secondary)}
+.idx-row b{min-width:70px;font-weight:600;color:var(--text-primary)}
+.stat-row{display:flex;gap:20px;color:var(--text-secondary);font-size:13px}
+.stat-row b{color:var(--text-primary)}
+
+/* 时期看板 */
+.board-head{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.task-g{margin-bottom:12px}
+.task-g>h4{font-size:12px;color:var(--text-muted);font-weight:600;margin-bottom:6px}
+.task-row{display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:9px 12px;margin-bottom:6px;cursor:pointer}
+.task-row:hover{border-color:var(--accent)}
+.task-row .t{flex:1}
+.task-row .due{font-size:12px}
+.task-row.done .t{color:var(--text-muted);text-decoration:line-through}
+.ring{width:14px;height:14px;border-radius:50%;border:1.6px solid var(--text-muted);flex:none}
+.ring.err{border-color:var(--error)} .ring.warn{border-color:var(--warning)}
+.ring-done{width:14px;height:14px;border-radius:50%;background:var(--success);flex:none;display:inline-flex;align-items:center;justify-content:center;color:#fff}
+
+/* 周期节奏 */
+.rhythm-card{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--bg-card)}
+.rhythm-card .hd{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.rhythm-card .hd b{flex:1}
+.occs{display:flex;gap:8px;flex-wrap:wrap;font-size:12px}
+.occ{border:1px solid var(--border);border-radius:6px;padding:4px 10px}
+.occ.ok{border-color:#bbf7d0;background:#f0fdf4;color:#15803d}
+.occ.err{border-color:#fecaca;background:#fef2f2;color:var(--error)}
+.occ.warn{border-color:#fde68a;background:#fffbeb;color:#b45309}
+.occ.mut{color:var(--text-muted)}
+.seq{display:flex;gap:4px;margin-top:8px}
+
+/* 日历 */
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.cal .wd{font-size:12px;color:var(--text-muted);text-align:center;padding:4px 0}
+.cell{min-height:64px;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:12px;background:var(--bg-card)}
+.cell.out{background:transparent;border-style:dashed;color:var(--text-muted)}
+.cell.today{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.cell .d{color:var(--text-muted)}
+.cell.today .d{color:var(--accent);font-weight:700}
+.ev{display:flex;align-items:center;gap:4px;border-radius:4px;padding:1px 4px;margin-top:3px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ev.err{background:#fef2f2;color:var(--error)}
+.ev.warn{background:#fffbeb;color:#b45309}
+.ev.norm{background:var(--accent-soft);color:var(--accent)}
+
+/* 抽屉（复用 Wiki 预览面板交互：右侧滑入/遮罩收起） */
+.mask{position:fixed;inset:0;background:rgba(17,24,39,.35);z-index:60}
+.drawer{position:fixed;top:32px;right:0;bottom:0;width:420px;background:var(--bg-card);border-left:1px solid var(--border);z-index:70;padding:18px 20px;overflow:auto;box-shadow:-8px 0 24px rgba(0,0,0,.08)}
+.drawer .hd{display:flex;align-items:flex-start;gap:10px;margin-bottom:4px}
+.drawer .hd b{flex:1;font-size:16px}
+.drawer .meta{color:var(--text-secondary);font-size:13px;margin-bottom:14px}
+.drawer .sec-block{border-top:1px solid var(--border);padding:12px 0}
+.drawer .acts{display:flex;gap:8px;margin-top:16px}
+.kv{display:flex;gap:8px;font-size:13px;padding:4px 0}
+.kv .k{color:var(--text-muted);min-width:76px}
+.drawer .del-row{border-top:1px solid var(--border);margin-top:14px;padding-top:12px}
+.del-t{color:var(--error)}
+
+/* 表单/确认弹窗（0.3 §4.2 全局弹窗风格） */
+.modal-mask{position:fixed;inset:0;background:rgba(17,24,39,.35);z-index:80;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--bg-card);border-radius:10px;min-width:400px;max-width:480px;box-shadow:0 16px 48px rgba(0,0,0,.18);padding:18px 20px}
+.modal h3{font-size:15px;margin-bottom:14px}
+.form-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.form-row label{width:70px;color:var(--text-secondary);font-size:13px;flex:none}
+.form-row input,.form-row select{flex:1;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;color:var(--text-primary);background:var(--bg-card)}
+.form-sep{border-top:1px dashed var(--border);margin:12px 0;color:var(--text-muted);font-size:12px;text-align:center}
+.modal .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.modal .confirm-msg{color:var(--text-secondary);font-size:13px;line-height:1.6}
+
+/* Toast（模拟 0.3 §4.5） */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#111827;color:#f9fafb;border-radius:6px;padding:8px 18px;font-size:13px;z-index:90}
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <span class="tag">原型</span>
+  <span>3.0 项目生命周期 · 交互原型（mock 数据，非产品代码）</span>
+  <span class="note">对应 docs/3.0project-lifecycle-design.md §6.1 · 图标为 Lucide 内联 SVG（0.3 §3）</span>
+  <span class="views">
+    <button id="v-home" class="on" onclick="switchView('home')">首页工作台</button>
+    <button id="v-project" onclick="switchView('project')">项目详情</button>
+  </span>
+</div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">墨方 InkCube</div>
+    <nav class="nav">
+      <button id="nav-home" class="on" onclick="switchView('home')">首页</button>
+      <button>任务</button>
+      <button id="nav-projects" onclick="switchView('project')">项目</button>
+    </nav>
+    <div class="proj-list">
+      <h4>项目</h4>
+      <button class="proj-item on" onclick="openProject('xx')"><span class="dot err"></span>XX科技智能制造<small>推进中</small></button>
+      <button class="proj-item" onclick="openProject('yy')"><span class="dot ok"></span>YY生物医药<small>投前</small></button>
+      <button class="proj-item" onclick="openProject('zz')"><span class="dot warn"></span>ZZ新材料产业园<small>已落地</small></button>
+    </div>
+    <div class="userbar"><span class="ic" data-icon="sliders"></span>设置 · Kelvin</div>
+  </aside>
+
+  <main>
+    <!-- ═══ 首页工作台 §6.1.7（现状区块保留：快速开始/最近动态） ═══ -->
+    <section id="view-home">
+      <div class="sys-cards">
+        <div class="sys-card"><span class="dot ok"></span><div><div>Python 服务</div><small class="muted">运行中</small></div></div>
+        <div class="sys-card"><span class="dot ok"></span><div><div>内部模型</div><small class="muted">已就绪</small></div></div>
+        <div class="sys-card"><span class="dot warn"></span><div><div>工作目录</div><small class="muted">剩余 12% · 建议清理</small></div></div>
+      </div>
+
+      <div class="home-grid">
+        <div>
+          <div class="card">
+            <h3>今日待办（跨项目）</h3>
+            <div class="todo-row">
+              <span class="ic t-err" data-icon="alert"></span>
+              <div class="t"><b>XX科技智能制造</b> · 收集尽调材料清单<br><small class="muted">截止 10-12</small></div>
+              <span class="due t-err">已逾期 3 天</span>
+              <button class="btn primary sm" onclick="openProject('xx');openDrawer('t1')">立即上传</button>
+            </div>
+            <div class="todo-row">
+              <span class="ic t-warn" data-icon="clock"></span>
+              <div class="t"><b>XX科技智能制造</b> · 企业月报（10月）<br><small class="muted">截止 10-15</small></div>
+              <span class="due t-warn">今日到期</span>
+              <button class="btn primary sm" onclick="openProject('xx');switchAffairs('rhythm')">上传</button>
+            </div>
+            <div class="todo-row">
+              <span class="ring"></span>
+              <div class="t"><b>YY生物医药</b> · 产出尽职调查报告<br><small class="muted">截止 10-20</small></div>
+              <span class="due sec">剩余 5 天</span>
+              <button class="btn sm" onclick="openProject('yy')">打开</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>近期日历（未来 7 天）</h3>
+            <div class="cal-strip">
+              <div class="cal-day"><b>周三 10-15</b><span class="cal-item"><span class="dot warn"></span>XX科技 · 月报</span></div>
+              <div class="cal-day"><b>周四 10-16</b><span class="muted">—</span></div>
+              <div class="cal-day"><b>周五 10-17</b><span class="muted">—</span></div>
+              <div class="cal-day"><b>周一 10-20</b><span class="cal-item"><span class="ring" style="width:8px;height:8px"></span>YY生物 · 尽调报告</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>项目</h3>
+            <div class="cards-wall">
+              <div class="p-card" onclick="openProject('xx')">
+                <div style="display:flex;align-items:center;gap:8px"><span class="dot err"></span><b>XX科技智能制造</b></div>
+                <div class="stage">招商引资 · 推进中</div>
+                <div class="next"><span class="t-err">下一事务：尽调材料 已逾期 3 天</span></div>
+              </div>
+              <div class="p-card" onclick="openProject('yy')">
+                <div style="display:flex;align-items:center;gap:8px"><span class="dot ok"></span><b>YY生物医药</b></div>
+                <div class="stage">投资分析 · 投前</div>
+                <div class="next sec">下一事务：尽调报告 剩余 5 天</div>
+              </div>
+              <div class="p-card" onclick="openProject('zz')">
+                <div style="display:flex;align-items:center;gap:8px"><span class="dot warn"></span><b>ZZ新材料产业园</b></div>
+                <div class="stage">招商引资 · 已落地</div>
+                <div class="next t-warn">下一事务：10月月报 剩余 5 天</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <!-- 现状区块（0.4）：快捷入口 + 活动流，设计 §7 保留 -->
+          <div class="card">
+            <h3>快速开始</h3>
+            <div class="quick-grid">
+              <button class="quick-item"><span class="ic" data-icon="wrench"></span><span><b>任务</b><small class="muted">通用 AI 助手</small></span></button>
+              <button class="quick-item"><span class="ic" data-icon="book"></span><span><b>项目</b><small class="muted">管理知识资产</small></span></button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>最近动态</h3>
+            <div class="feed-item"><span class="t-ok">✓</span> XX科技 · 尽调报告生成完成<small>10 分钟前 · 报告</small></div>
+            <div class="feed-item"><span class="t-ok">✓</span> XX科技 · 3 个新文件解析完成<small>1 小时前 · 解析</small></div>
+            <div class="feed-item"><span class="t-warn">⟳</span> YY生物 · Wiki 编译进行中（5/9）<small>刚刚 · 编译</small></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ 项目详情 §6.1.1 ═══ -->
+    <section id="view-project" hidden>
+      <div class="pd-head">
+        <span class="badge">招商</span>
+        <h2>XX科技智能制造项目</h2>
+        <span class="muted">XX 科技有限公司 · 91330100MAxxxxxx</span>
+        <button class="btn sm">类型 ▾</button>
+      </div>
+      <div class="stage-pills" id="stagePills">
+        <button class="sp done" onclick="pickStage(this)"><span class="dot ok"></span>前期接触</button><span class="ln"></span>
+        <button class="sp cur" onclick="pickStage(this)"><span class="dot" style="background:var(--accent)"></span>推进中</button><span class="ln"></span>
+        <button class="sp" onclick="pickStage(this)"><span class="dot mut"></span>已落地</button>
+      </div>
+
+      <!-- 脉搏带 -->
+      <div class="pulse" id="pulse-full">
+        <div class="pulse-head">
+          <span class="dot warn"></span>
+          <span class="sent"><b>推进中</b> · 3 个矛盾待裁决 · 尽调材料已逾期 3 天</span>
+          <button class="btn sm" onclick="togglePulse(true)">收起 ▴</button>
+        </div>
+        <div class="chips">
+          <button class="chip err" onclick="switchTab('wiki')"><span class="ic" data-icon="alert"></span>矛盾 3</button>
+          <button class="chip err" onclick="switchTab('wiki')"><span class="ic" data-icon="alert"></span>缺口 5</button>
+          <button class="chip warn">待编译 5</button>
+          <button class="chip warn" onclick="switchTab('affairs')"><span class="ic" data-icon="calendar"></span>应办 2</button>
+          <button class="chip acc"><span class="ic" data-icon="refresh"></span>报告生成中 1</button>
+        </div>
+      </div>
+      <div class="pulse folded hidden" id="pulse-folded">
+        <div class="pulse-head" style="padding:0">
+          <span class="ic" data-icon="activity"></span><span class="sent">脉搏</span>
+          <span class="chip err" style="padding:1px 8px"><span class="ic" data-icon="alert"></span>2</span>
+          <button class="btn sm" onclick="togglePulse(false)">展开 ▾</button>
+        </div>
+      </div>
+
+      <!-- Tab 栏（现状图标基线：FolderOpen/BookOpen/FileText/ClipboardList；知识=Library 事务=CalendarDays 为 3.0 新增） -->
+      <div class="tabs">
+        <button id="tab-wiki" class="on" onclick="switchTab('wiki')"><span class="ic" data-icon="book"></span>知识</button>
+        <button id="tab-affairs" onclick="switchTab('affairs')"><span class="ic" data-icon="calendar"></span>事务</button>
+        <button id="tab-files" onclick="switchTab('files')"><span class="ic" data-icon="folder"></span>资料</button>
+        <button id="tab-reports" onclick="switchTab('reports')"><span class="ic" data-icon="chart"></span>报告</button>
+        <button id="tab-forms" onclick="switchTab('forms')"><span class="ic" data-icon="clipboard"></span>填表</button>
+        <button class="btn sm chat-toggle" onclick="toggleChat()">对话</button>
+      </div>
+
+      <div class="pd-main">
+        <!-- 知识 Tab：现状子导航保留（首页/变更日志/搜索/关系图谱/治理/结构页），§6.1.2 布局图为「首页」视图 -->
+        <div id="pane-wiki">
+          <div class="wiki-wrap">
+            <div class="wiki-subnav">
+              <button class="si on"><span class="ic" data-icon="home"></span>首页</button>
+              <button class="si"><span class="ic" data-icon="clock"></span>变更日志</button>
+              <button class="si"><span class="ic" data-icon="search"></span>搜索</button>
+              <button class="si"><span class="ic" data-icon="share"></span>关系图谱</button>
+              <button class="si"><span class="ic" data-icon="shield"></span>治理<span class="bdg">10</span></button>
+              <button class="si"><span class="ic" data-icon="list"></span>结构页</button>
+            </div>
+            <div class="wiki-content">
+              <div class="card">
+                <h3 style="display:flex;align-items:center">知识健康
+                  <button class="btn sm" style="margin-left:auto">去处理</button></h3>
+                <div class="kpi-row">
+                  <span class="chip err"><span class="ic" data-icon="alert"></span>矛盾 3</span>
+                  <span class="chip err"><span class="ic" data-icon="alert"></span>缺口 5</span>
+                  <span class="chip warn">死链 2</span>
+                </div>
+              </div>
+              <div class="card">
+                <h3>结构页完成度 <span class="muted" style="font-weight:400">7/10 已生成</span></h3>
+                <div class="progress-bar" style="margin-bottom:8px"><i style="width:70%"></i></div>
+                <div>
+                  <span class="done-page">✓ 企业画像</span><span class="done-page">✓ 政策台账</span><span class="done-page">✓ 财务监控</span>
+                  <span class="skel">▢ 风险台账</span><span class="skel">▢ 服务纪要</span><span class="skel">▢ +3</span>
+                </div>
+                <div class="muted" style="font-size:12px;margin-top:6px">未生成结构页点击可查看缺失资料清单（缺口补料）</div>
+              </div>
+              <div class="card">
+                <h3>项目目标</h3>
+                <p class="sec">引入智能制造项目落地园区，完成尽调、签约与投产陪跑。</p>
+              </div>
+              <div class="card">
+                <h3>全局摘要</h3>
+                <p class="sec">企业主营工业机器人集成，2025 年营收 2.1 亿（2025 年报），拟购地 40 亩；核心团队 3 人背景已核实；当前处于尽调推进阶段。</p>
+              </div>
+              <div class="card">
+                <h3>页面索引</h3>
+                <div class="idx-row"><b>实体（6）</b><span class="muted">企业画像 · 核心团队 · 股权结构 · 竞品 …</span></div>
+                <div class="idx-row"><b>主题（4）</b><span class="muted">政策台账 · 财务监控 · 风险台账 …</span></div>
+                <div class="idx-row"><b>来源（9）</b><span class="muted">BP · 尽调清单 · 协议文本 …</span></div>
+              </div>
+              <div class="card">
+                <h3>统计</h3>
+                <div class="stat-row"><span>Wiki 页面 <b>26</b></span><span>来源文件 <b>9</b></span><span>待编译 <b>5</b></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 事务 §6.1.3-6.1.5 -->
+        <div id="pane-affairs" hidden>
+          <div class="tabs" style="margin-bottom:12px">
+            <button id="av-board" class="on" onclick="switchAffairs('board')">时期看板</button>
+            <button id="av-rhythm" onclick="switchAffairs('rhythm')">周期节奏</button>
+            <button id="av-cal" onclick="switchAffairs('cal')">日历</button>
+          </div>
+          <div id="affairs-board">
+            <div class="board-head">
+              <span class="badge">推进中</span>
+              <span class="sec" id="boardCount">7 项任务 · 2 项本周到期</span>
+              <label id="skipToggle" style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:13px;color:var(--text-secondary)"><input type="checkbox" onchange="renderBoard()"> 显示已跳过</label>
+              <button class="btn sm" onclick="openTaskForm()"><span class="ic" data-icon="plus"></span> 添加任务</button>
+            </div>
+            <div class="muted" style="font-size:12px;margin:-6px 0 10px">周期事务在「周期节奏」视图管理，不进本看板（避免双入口）</div>
+            <div class="task-g"><h4>资料（3）</h4><div id="g-material"></div></div>
+            <div class="task-g"><h4>报告（2）</h4><div id="g-report"></div></div>
+            <div class="task-g"><h4>节点（2）</h4><div id="g-milestone"></div></div>
+          </div>
+          <div id="affairs-rhythm" hidden>
+            <div class="rhythm-card">
+              <div class="hd"><b>企业月报</b><span class="muted">每月 15 日前 · 完成规则：文件名含「月报」</span><button class="btn sm" onclick="openTaskForm('rhythm')">编辑</button></div>
+              <div class="occs"><span class="occ ok">09月 ✓ 已收 09-12</span><span class="occ warn">10月 ◐ 今日截止</span><span class="occ mut">11月 ○ 待收</span></div>
+              <div class="seq"><span class="occ ok">✓</span><span class="occ ok">✓</span><span class="occ ok">✓</span><span class="occ ok">✓</span><span class="occ ok">✓</span><span class="occ warn">◐</span><span class="muted" style="font-size:12px;align-self:center">近 6 期</span></div>
+            </div>
+            <div class="rhythm-card">
+              <div class="hd"><b>企业季报</b><span class="muted">每季末 · 完成规则：文件名含「季报」</span><button class="btn sm">编辑</button></div>
+              <div class="occs"><span class="occ ok">Q3 ✓ 已收 10-09</span><span class="occ mut">Q4 ○ 待收</span></div>
+            </div>
+            <div class="rhythm-card">
+              <div class="hd"><b>年度经营数据</b><span class="muted">每年 4-30 前 · 完成规则：文件名含「年报」</span><button class="btn sm">编辑</button></div>
+              <div class="occs"><span class="occ mut">2027 期 ○ 待收</span></div>
+            </div>
+          </div>
+          <div id="affairs-cal" hidden>
+            <div class="board-head">
+              <span class="sec"><b>2026 年 10 月</b></span>
+              <span style="margin-left:auto"><button class="btn sm on">月历</button> <button class="btn sm">周历</button> <button class="btn sm" onclick="openTaskForm()"><span class="ic" data-icon="plus"></span> 添加</button></span>
+            </div>
+            <div class="cal" id="cal"></div>
+          </div>
+        </div>
+
+        <div id="pane-files" hidden><div class="card"><h3>资料</h3><p class="muted">现状界面（知识库文件列表），不在本原型范围。</p></div></div>
+        <div id="pane-reports" hidden><div class="card"><h3>报告</h3><p class="muted">现状界面（报告列表 + 生成中进度），不在本原型范围。</p></div></div>
+        <div id="pane-forms" hidden><div class="card"><h3>填表</h3><p class="muted">现状界面（结构化表单），不在本原型范围。</p></div></div>
+      </div>
+    </section>
+
+    <!-- Chat 开合面板（现状 chatOpen 语义：absolute 全高，与预览/抽屉互斥） -->
+    <aside class="chat hidden" id="chat">
+      <div class="hd">对话<button onclick="toggleChat()">✕</button></div>
+      <div class="msgs">Chat 面板占位 —— 开合式（现状语义），与 Wiki 预览/执行抽屉互斥（2.1 §6.3）</div>
+    </aside>
+  </main>
+</div>
+
+<!-- 执行抽屉 §6.1.6 -->
+<div class="mask hidden" id="mask" onclick="closeDrawer()"></div>
+<aside class="drawer hidden" id="drawer"></aside>
+
+<!-- 任务表单弹窗（新建/编辑共用，§6.1.7） -->
+<div class="modal-mask hidden" id="formMask" onclick="if(event.target===this)closeForm()">
+  <div class="modal">
+    <h3 id="fmTitle">新建任务</h3>
+    <div class="form-row"><label>标题</label><input id="fTitle" placeholder="如：收集企业征信报告"></div>
+    <div class="form-row"><label>类型</label>
+      <select id="fKind" onchange="document.getElementById('fOnce').classList.toggle('hidden',this.value==='recurring');document.getElementById('fRec').classList.toggle('hidden',this.value!=='recurring')">
+        <option value="material">资料</option><option value="report">报告</option><option value="milestone">节点</option><option value="recurring">周期事务</option>
+      </select></div>
+    <div id="fOnce">
+      <div class="form-row"><label>截止</label><input id="fDue" type="date" value="2026-10-20"><span class="muted" style="font-size:12px">节点可空 = 手动定日期</span></div>
+    </div>
+    <div id="fRec" class="hidden">
+      <div class="form-row"><label>频率</label><select><option>每月</option><option>每季</option><option>每年</option></select>
+        <label style="width:60px">每期截止</label><select><option>15 日</option><option>季末</option><option>4 月 30 日</option></select></div>
+      <div class="form-row"><label>完成匹配</label><input placeholder="文件名含「月报」"></div>
+    </div>
+    <div class="acts"><button class="btn" onclick="closeForm()">取消</button><button class="btn primary" onclick="saveTask()">创建</button></div>
+  </div>
+</div>
+
+<!-- 删除确认弹窗（模拟 useConfirm(danger)，0.3 §4.2） -->
+<div class="modal-mask hidden" id="delMask" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="modal">
+    <h3>删除任务</h3>
+    <p class="confirm-msg" id="delMsg"></p>
+    <div class="acts"><button class="btn" onclick="document.getElementById('delMask').classList.add('hidden')">取消</button><button class="btn del-t" onclick="doDelete()">删除</button></div>
+  </div>
+</div>
+<div id="toast" class="hidden"></div>
+
+<script>
+/* ── Lucide 内联 SVG（0.3 §3：Lucide 中央注册表，禁 emoji 当图标） ── */
+const P={
+ check:'<polyline points="20 6 9 17 4 12"/>',
+ x:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+ plus:'<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+ alert:'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><path d="M12 17h.01"/>',
+ clock:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+ book:'<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>',
+ calendar:'<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+ folder:'<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>',
+ chart:'<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+ clipboard:'<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
+ activity:'<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+ refresh:'<path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>',
+ home:'<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+ search:'<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+ share:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
+ shield:'<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+ list:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+ sliders:'<line x1="21" y1="4" x2="14" y2="4"/><line x1="10" y1="4" x2="3" y2="4"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="20" x2="16" y2="20"/><line x1="12" y1="20" x2="3" y2="20"/><line x1="14" y1="2" x2="14" y2="6"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="18" x2="16" y2="22"/>',
+ wrench:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+};
+function ic(n,s=15){return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${P[n]||''}</svg>`}
+document.querySelectorAll('[data-icon]').forEach(el=>{el.innerHTML=ic(el.dataset.icon)});
+
+/* ── mock：推进中任务（时期看板；kind 决定抽屉动作区，§6.1.6） ── */
+const TASKS={
+ material:[
+  {id:'t1',kind:'material',title:'收集尽调材料清单',due:'截止 10-12',state:'err',dueTxt:'逾期 3 天',rule:'文件名含「尽调」'},
+  {id:'t2',kind:'material',title:'收集政策申报材料',due:'无截止',state:'norm',dueTxt:'',rule:'文件名含「申报」'},
+  {id:'t8',kind:'material',title:'收集企业征信/信用报告',due:'—',state:'skip',dueTxt:'',rule:'文件名含「征信」'},
+  {id:'t3',kind:'material',title:'收集投资/合作协议文本',due:'完成 10-08',state:'done',dueTxt:''}
+ ],
+ report:[
+  {id:'t4',kind:'report',title:'产出项目尽调/评估报告',due:'截止 10-20',state:'warn',dueTxt:'剩余 5 天',rule:'标题含「尽调」'},
+  {id:'t5',kind:'report',title:'产出落地方案（选址/政策/时间表）',due:'完成 10-09',state:'done',dueTxt:''}
+ ],
+ milestone:[
+  {id:'t6',kind:'milestone',title:'完成项目签约',due:'定日期',state:'norm',dueTxt:''},
+  {id:'t7',kind:'milestone',title:'完成公司注册落地',due:'定日期',state:'norm',dueTxt:''}
+ ]
+};
+const RING={err:'<span class="ring err"></span>',warn:'<span class="ring warn"></span>',norm:'<span class="ring"></span>',skip:'<span class="ring" style="border-style:dashed"></span>',done:'<span class="ring-done">'+ic('check',10)+'</span>'};
+function findTask(id){for(const g in TASKS){const f=TASKS[g].find(x=>x.id===id);if(f)return f;}return null;}
+function renderBoard(){
+ const showSkip=document.querySelector('#skipToggle input').checked;
+ let total=0;
+ for(const g of ['material','report','milestone']){
+  const list=TASKS[g].filter(t=>showSkip||t.state!=='skip');
+  total+=list.length;
+  document.getElementById('g-'+g).innerHTML=list.map(t=>`
+   <div class="task-row ${t.state==='done'?'done':''}" onclick="openDrawer('${t.id}')">
+    ${RING[t.state]}<span class="t">${t.title}${t.state==='skip'?' <span class="muted">（已跳过）</span>':''}</span>
+    <span class="due ${t.state==='err'?'t-err':t.state==='warn'?'t-warn':'muted'}">${t.due}</span>
+    ${t.dueTxt?`<span class="due ${t.state==='err'?'t-err':'t-warn'}">${t.dueTxt}</span>`:''}
+   </div>`).join('');
+ }
+ document.getElementById('boardCount').textContent=total+' 项任务 · 2 项本周到期';
+}
+/* ── 日历（2026-10，今天 10-15） ── */
+const EV={12:[['err','尽调材料（逾期）']],15:[['warn','企业月报（今日）']],20:[['norm','尽调报告']],31:[['norm','政策申报窗口（可调）']]};
+function renderCal(){
+ const wd=['一','二','三','四','五','六','日'];
+ let h=wd.map(d=>`<div class="wd">${d}</div>`).join('');
+ for(let i=0;i<3;i++)h+=`<div class="cell out">${28+i}</div>`;
+ for(let d=1;d<=31;d++){
+  const evs=(EV[d]||[]).map(([c,t])=>`<div class="ev ${c}">${t}</div>`).join('');
+  h+=`<div class="cell ${d===15?'today':''}"><span class="d">${d}</span>${evs}</div>`;
+ }
+ document.getElementById('cal').innerHTML=h;
+}
+/* ── 抽屉：动作区按任务类型分化（§6.1.6：material=上传 / report=发起报告 / milestone=无上传区） ── */
+let drawerTask=null;
+function openDrawer(id){
+ const t=findTask(id);if(!t)return;drawerTask=t;
+ let act='';
+ if(t.state==='skip')act='';
+ else if(t.kind==='material')act=`
+  <div class="sec-block"><button class="btn primary">上传材料</button>
+   <div class="muted" style="font-size:12px;margin-top:6px">挂本项目知识库，自动进解析队列（0.4 长时活动）</div></div>`;
+ else if(t.kind==='report')act=`
+  <div class="sec-block"><button class="btn primary">发起报告</button>
+   <div class="muted" style="font-size:12px;margin-top:6px">进入报告向导（预选本项目与推荐模板）</div></div>`;
+ else act=`
+  <div class="sec-block"><button class="btn primary">设定日期</button>
+   <div class="muted" style="font-size:12px;margin-top:6px">节点类无资料动作，完成靠手动确认</div></div>`;
+ const mainActs=t.state==='skip'
+  ?'<button class="btn primary" onclick="restoreTask()">恢复为待办</button>'
+  :`<button class="btn primary" onclick="completeTask()">✓ 完成</button><button class="btn" onclick="skipTask()">跳过</button>`;
+ document.getElementById('drawer').innerHTML=`
+  <div class="hd">${RING[t.state]}<b>${t.title}</b>
+   <button class="btn sm" onclick="closeDrawer()">${ic('x')}</button></div>
+  <div class="meta">${t.due}${t.dueTxt?` · <span class="${t.state==='err'?'t-err':'t-warn'}">${t.dueTxt}</span>`:''}${t.state==='skip'?' · <span class="muted">已跳过</span>':''}</div>
+  ${t.state!=='done'&&t.state!=='skip'?act:''}
+  <div class="sec-block">
+   <div class="kv"><span class="k">完成规则</span><span>${t.rule||'手动'} <button class="btn sm" onclick="openTaskForm('${t.id}')">可改</button></span></div>
+   <div class="kv"><span class="k">备注</span><span class="muted">—</span></div>
+  </div>
+  <div class="acts">${mainActs}<button class="btn" onclick="openTaskForm('${t.id}')">编辑</button></div>
+  <div class="del-row"><button class="btn sm del-t" onclick="askDelete()">删除</button></div>`;
+ document.getElementById('mask').classList.remove('hidden');
+ document.getElementById('drawer').classList.remove('hidden');
+}
+function closeDrawer(){document.getElementById('mask').classList.add('hidden');document.getElementById('drawer').classList.add('hidden');}
+function completeTask(){if(!drawerTask)return;drawerTask.state='done';drawerTask.dueTxt='';renderBoard();closeDrawer();toast('已完成');}
+function skipTask(){if(!drawerTask)return;drawerTask.state='skip';renderBoard();closeDrawer();toast('已跳过（可在「显示已跳过」中恢复）');}
+function restoreTask(){if(!drawerTask)return;drawerTask.state='norm';renderBoard();closeDrawer();toast('已恢复为待办');}
+
+/* ── 任务表单弹窗（新建/编辑共用，§6.1.7）── */
+let editId=null,delId=null,toastTimer=null;
+function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),2000);}
+function setKind(k){const s=document.getElementById('fKind');s.value=k;s.onchange();}
+function openTaskForm(target){
+ const fm=document.getElementById('formMask');
+ if(target==='rhythm'){
+  editId=null;
+  document.getElementById('fmTitle').textContent='编辑节奏：企业月报';
+  document.getElementById('fTitle').value='企业月报';setKind('recurring');
+ }else if(target){
+  const t=findTask(target);if(!t)return;editId=target;
+  document.getElementById('fmTitle').textContent='编辑任务';
+  document.getElementById('fTitle').value=t.title;setKind(t.kind);
+  document.getElementById('fDue').value='2026-10-20';
+ }else{
+  editId=null;
+  document.getElementById('fmTitle').textContent='新建任务';
+  document.getElementById('fTitle').value='';setKind('material');
+ }
+ fm.querySelector('.acts .primary').textContent=editId?'保存':'创建';
+ fm.classList.remove('hidden');
+}
+function closeForm(){document.getElementById('formMask').classList.add('hidden');}
+function saveTask(){
+ const title=document.getElementById('fTitle').value.trim();
+ if(!title){toast('请填写标题');return;}
+ const kind=document.getElementById('fKind').value;
+ if(kind==='recurring'){closeForm();toast(editId?'节奏已更新（仅影响未来期次）':'节奏已保存，当期实例已生成');return;}
+ const dueV=document.getElementById('fDue').value;
+ const due=dueV?'截止 '+dueV.slice(5).replace('-','月')+'日':'无截止';
+ if(editId){const t=findTask(editId);t.title=title;t.kind=kind;t.due=due;toast('已保存');}
+ else{TASKS[kind].push({id:'n'+Date.now(),kind,title,due,state:'norm',dueTxt:'',rule:'手动'});toast('已创建任务');}
+ renderBoard();closeForm();
+}
+function askDelete(){
+ if(!drawerTask)return;delId=drawerTask.id;
+ document.getElementById('delMsg').textContent='删除「'+drawerTask.title+'」？模板带入的任务删除后不会在下次启动时重新铺入（playbook_seeded 防重入）。';
+ document.getElementById('delMask').classList.remove('hidden');
+}
+function doDelete(){
+ const t=findTask(delId);
+ if(t)TASKS[t.kind]=TASKS[t.kind].filter(x=>x.id!==delId);
+ document.getElementById('delMask').classList.add('hidden');
+ renderBoard();closeDrawer();toast('已删除');
+}
+/* ── 视图切换 ── */
+function switchView(v){
+ document.getElementById('view-home').hidden=v!=='home';
+ document.getElementById('view-project').hidden=v!=='project';
+ document.getElementById('chat').classList.add('hidden');
+ document.getElementById('v-home').classList.toggle('on',v==='home');
+ document.getElementById('v-project').classList.toggle('on',v==='project');
+ document.getElementById('nav-home').classList.toggle('on',v==='home');
+ document.getElementById('nav-projects').classList.toggle('on',v==='project');
+}
+function openProject(){switchView('project');}
+function togglePulse(fold){
+ document.getElementById('pulse-full').classList.toggle('hidden',fold);
+ document.getElementById('pulse-folded').classList.toggle('hidden',!fold);
+}
+function toggleChat(){document.getElementById('chat').classList.toggle('hidden');}
+function pickStage(el){
+ document.querySelectorAll('#stagePills .sp').forEach(b=>{b.classList.remove('cur','done');b.querySelector('.dot').style.background='';b.querySelector('.dot').classList.add('mut');});
+ el.classList.add('cur');const d=el.querySelector('.dot');d.classList.remove('mut');d.style.background='var(--accent)';
+ /* 设计语义：阶段切换 → 激活该时期 pending_activation 任务（mock 不展开） */
+}
+function switchTab(t){
+ ['wiki','affairs','files','reports','forms'].forEach(k=>{
+  document.getElementById('tab-'+k).classList.toggle('on',k===t);
+  document.getElementById('pane-'+k).hidden=k!==t;
+ });
+}
+function switchAffairs(v){
+ ['board','rhythm','cal'].forEach(k=>{
+  document.getElementById('av-'+k).classList.toggle('on',k===v);
+  document.getElementById('affairs-'+k).hidden=k!==v;
+ });
+}
+renderBoard();renderCal();
+</script>
+</body>
+</html>

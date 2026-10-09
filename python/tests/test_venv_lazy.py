@@ -170,13 +170,44 @@ class TestEnsureVenv:
 class TestAgentEnsureTaskVenv:
     def test_empty_path_passthrough(self, agent):
         """无 venv 任务（外部工作区 / 创建期登记为空）→ 原样返回空。"""
-        assert asyncio.run(agent._ensure_task_venv("")) == ""
+        assert asyncio.run(agent._ensure_task_venv("t1", "")) == ""
 
     def test_existing_venv_returned_without_creation(self, agent, tmp_path):
-        """venv 已在位 → 直接返回，不触发创建（幂等零开销）。"""
+        """venv 与预装 marker 均在位 → 直接返回，不触发创建（幂等零开销）。"""
         venv_path = str(tmp_path / ".venv")
         _fake_venv_skeleton(venv_path)
-        assert asyncio.run(agent._ensure_task_venv(venv_path)) == venv_path
+        with open(os.path.join(venv_path, vm._PREINSTALL_MARKER), "w",
+                  encoding="utf-8") as f:
+            f.write("ok")
+        assert asyncio.run(agent._ensure_task_venv("t1", venv_path)) == venv_path
+
+    def test_venv_without_marker_retries_preinstall(self, agent, db, tmp_path, monkeypatch):
+        """venv 在位但 marker 缺失（预装中断/跨重启）→ 补跑预装（重试语义）。"""
+        task = db.create_task("t", str(tmp_path / "data"), "")
+        venv_path = task["venv_path"]
+        _fake_venv_skeleton(venv_path)
+        installs = []
+        monkeypatch.setattr(
+            vm, "preinstall_packages", lambda py: installs.append(py) or True)
+
+        assert asyncio.run(agent._ensure_task_venv(task["id"], venv_path)) == venv_path
+        _wait_preinstall_done(venv_path)
+        assert len(installs) == 1
+        assert os.path.isfile(os.path.join(venv_path, vm._PREINSTALL_MARKER))
+
+    def test_deleted_task_cleans_up_orphan_venv(self, agent, tmp_path, monkeypatch):
+        """创建窗口内任务被删（delete cancel 超时后 rmtree）→ 回收刚建的 venv。"""
+        import agent.task_agent as ta
+
+        task_dir = tmp_path / "tasks" / "t-del"
+        venv_path = str(task_dir / ".venv")
+        _fake_venv_skeleton(venv_path)  # venv 已在 → create_venv 幂等 no-op
+        # 同步 no-op：不真建 venv、不起预装线程，让回收分支确定性可达
+        monkeypatch.setattr(ta, "ensure_venv", lambda task_dir: task_dir)
+
+        # t-del 未登记进 db → get_task 返回 None → rmtree 回收
+        assert asyncio.run(agent._ensure_task_venv("t-del", venv_path)) == ""
+        assert not os.path.isdir(task_dir)
 
     def test_creation_failure_returns_empty(self, agent, tmp_path, monkeypatch):
         """创建失败 → 返回 ""，后续执行自动回退系统 Python（与旧创建期失败一致）。"""
@@ -187,4 +218,4 @@ class TestAgentEnsureTaskVenv:
 
         monkeypatch.setattr(ta, "ensure_venv", boom)
         venv_path = str(tmp_path / "tasks" / "t1" / ".venv")
-        assert asyncio.run(agent._ensure_task_venv(venv_path)) == ""
+        assert asyncio.run(agent._ensure_task_venv("t1", venv_path)) == ""
