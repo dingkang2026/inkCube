@@ -7,6 +7,7 @@ import { STAGE_MAP } from '../types'
 import s from './ReportWizard.module.css'
 import { useSettings } from '../../settings/useSettings'
 import { useFeatureGuard } from '../../readiness/useReadiness'
+import { useToast } from '../../knowledge/Toast'
 
 /** Template from backend */
 interface BackendTemplate {
@@ -105,6 +106,7 @@ interface ReportWizardProps {
 
 export function ReportWizard({ projectId, projectType, onComplete, onCancel }: ReportWizardProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const { settings } = useSettings()
   const guard = useFeatureGuard()
   const internetConfigured = Boolean(settings?.tavily_key)
@@ -253,6 +255,18 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
 
   const doStartGenerate = useCallback(async () => {
     if (!selectedTemplate) return
+
+    // 必填变量非空校验（与后端 resolver 同口径：空白归一 UNRESOLVED 后
+    // required fast-fail；前端拦截给出即时反馈，不进生成流程）
+    const missing = userVariables
+      .filter(v => v.required !== false)
+      .filter(v => !(variableValues[v.name] || '').trim())
+      .map(v => v.label || v.name)
+    if (missing.length > 0) {
+      showToast(t('project.report.wizard.missingVariables', { names: missing.join('、') }), 'error')
+      return
+    }
+
     setGenerating(true)
 
     // Map checked sources → the set of base-lib IDs to retrieve from; the
@@ -286,11 +300,14 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       } else {
         setGenerating(false)
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Generation failed:', err)
+      // 启动失败必须可见（429 并发上限 / 模板已删 / 500）：静默会让用户
+      // 以为已提交，反复点击（err.message 含后端 detail）
+      showToast(t('project.report.wizard.generateFailed', { error: String(err?.message || err) }), 'error')
       setGenerating(false)
     }
-  }, [selectedTemplate, projectId, variableValues, supplementaryNotes, sectionInternet, internetEnabled, knowledgeSources, checkedSources, onComplete])
+  }, [selectedTemplate, projectId, variableValues, supplementaryNotes, sectionInternet, internetEnabled, knowledgeSources, checkedSources, userVariables, showToast, t, onComplete])
 
   // Entry guard per 0.4 §7.3: report generation requires LLM + embedding.
   // 依赖必须含 doStartGenerate：勾选互联网开关后 doStartGenerate 重建

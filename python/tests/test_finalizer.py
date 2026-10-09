@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from report_generator.finalizer import (  # noqa: E402
     _build_toc,
+    _convert_subheads,
     _smooth_transitions,
     finalize_report,
 )
@@ -54,6 +55,52 @@ class TestBuildToc:
         """无 ## 标题时仅返回目录头。"""
         assert _build_toc("纯正文无标题").strip() == "## 目录"
 
+    def test_toc_strips_injected_number(self):
+        """组装层注入的前导序号被剥去，目录行 idx. 与正文编号语义一致无双号。"""
+        text = "## 1 执行摘要\n\n...\n\n## 2 市场分析\n\n...\n"
+        toc = _build_toc(text)
+        assert "1. 执行摘要" in toc
+        assert "2. 市场分析" in toc
+        assert "1. 1" not in toc
+        assert "2. 2" not in toc
+
+
+class TestConvertSubheads:
+    """◆ 小节 → 三级标题（章号.节号，§3.5 层级：H2 章 / H3 小节）。"""
+
+    def test_subheads_numbered_within_section(self):
+        """◆ 小节转换三级标题并按章内递增编号。"""
+        text = "## 2 产品与服务\n\n◆ 竞品对比\n\n内容甲\n\n◆ 价格体系\n\n内容乙"
+        out = _convert_subheads(text)
+        assert "### 2.1 竞品对比" in out
+        assert "### 2.2 价格体系" in out
+        assert "◆" not in out
+
+    def test_sub_counter_resets_on_new_section(self):
+        """遇新章节小节号重置，章号随标题更新。"""
+        text = "## 2 产品\n\n◆ 甲\n\n## 3 市场\n\n◆ 乙\n\n◆ 丙"
+        out = _convert_subheads(text)
+        assert "### 2.1 甲" in out
+        assert "### 3.1 乙" in out
+        assert "### 3.2 丙" in out
+
+    def test_tolerates_leading_whitespace_and_fullwidth_space(self):
+        """行首空白与 ◆ 后全角空格均容忍。"""
+        text = "## 1 章\n\n\u3000◆ 全角后标题\n\n ◆ 前导空白标题"
+        out = _convert_subheads(text)
+        assert "### 1.1 全角后标题" in out
+        assert "### 1.2 前导空白标题" in out
+
+    def test_unnumbered_sections_yield_zero_prefix(self):
+        """无号章节（非 runner 组装输入）小节号前缀为 0.x，可见异常不静默。"""
+        text = "## 裸章\n\n◆ 甲"
+        assert "### 0.1 甲" in _convert_subheads(text)
+
+    def test_plain_text_passthrough(self):
+        """无 ◆ 输入原样返回。"""
+        text = "## 1 章\n\n正文提到 ◆ 符号不在行首不影响"
+        assert _convert_subheads(text) == text
+
 
 class TestSmoothTransitions:
     """回归：_smooth_transitions 不得破坏“## 标题独立成行”不变量。"""
@@ -91,6 +138,29 @@ class TestSmoothTransitions:
         out = _smooth_transitions(text)
         assert out.count("## 基本信息") == 1
         assert not re.search(r"^基本信息$", out, flags=re.M)
+
+    def test_leading_duplicate_numbered_title_removed(self):
+        """规则2 回归（L1 修复）：标题带组装序号（## 1 X）时节首裸重复行仍须清除。
+
+        修复前 prev_title 不剥号（"1 基本信息"）与裸行（"基本信息"）
+        永不相等，规则对带编号标题从不生效。
+        """
+        text = "## 1 基本信息\n\n基本信息\n\n正文内容\n\n---\n\n## 2 风险\n\n正文B"
+        out = _smooth_transitions(text)
+        assert not re.search(r"^基本信息$", out, flags=re.M)
+        assert out.count("## 1 基本信息") == 1
+
+    def test_leading_duplicate_strips_numbers_on_both_sides(self):
+        """规则2 双向剥号对称：节首行带编号而标题无编号时同样清除。"""
+        text = "## 基本信息\n\n1 基本信息\n\n正文内容"
+        out = _smooth_transitions(text)
+        assert not re.search(r"^1 基本信息$", out, flags=re.M)
+
+    def test_leading_line_different_from_title_kept(self):
+        """规则2 不误伤：节首行剥号后仍与标题不同 → 保留。"""
+        text = "## 1 基本信息\n\n公司概况说明\n\n正文内容"
+        out = _smooth_transitions(text)
+        assert "公司概况说明" in out
 
 
 class TestFinalizeReportE2E:

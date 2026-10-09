@@ -1,7 +1,7 @@
 """Agent Skills 标准合规回归测试。
 
 回归背景（1.1 §4.4）：为验证「外部标准 skill 拷来即用」承诺，仓库内置
-dev/demo-skills/color-conv（严格遵循 agentskills.io 规范：name 与目录一致、
+python/tests/fixtures/demo-skills/color-conv（严格遵循 agentskills.io 规范：name 与目录一致、
 第三人称 description、license/compatibility 标准语义、references/ 渐进式
 披露、脚本不自知颜色名）。本文件覆盖由它暴露的四个平台侧问题：
 
@@ -32,8 +32,8 @@ from skills.loader import AgentSkillAdapter
 from skills.parser import parse_skill_md, validate_skill_md
 from tools.file_ops import FileOpsTool
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEMO_SKILL = REPO_ROOT / "dev" / "demo-skills" / "color-conv"
+TESTS_DIR = Path(__file__).resolve().parent
+DEMO_SKILL = TESTS_DIR / "fixtures" / "demo-skills" / "color-conv"
 
 # 标准 compatibility 字段（旧实现会误解析出一堆英文词当包名）
 STD_COMPAT = (
@@ -104,7 +104,7 @@ class TestSpecCompliance:
     """标准格式容错 + compatibility 语义。"""
 
     def test_repo_demo_skill_parses_with_zero_errors(self):
-        """dev/demo-skills/color-conv（标准格式）解析校验零错误。"""
+        """fixtures/demo-skills/color-conv（标准格式）解析校验零错误。"""
         assert DEMO_SKILL.is_dir(), "color-conv demo skill missing from repo"
         parsed = parse_skill_md(str(DEMO_SKILL / "SKILL.md"))
         assert validate_skill_md(parsed) == []

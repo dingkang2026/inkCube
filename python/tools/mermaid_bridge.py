@@ -1,12 +1,18 @@
-"""python/tools/mermaid_bridge.py — Mermaid → SVG 离线渲染桥（公共模块）。
+"""python/tools/mermaid_bridge.py — Mermaid → PNG 离线渲染桥（公共模块）。
 
 doc_generator（任务智能体导出）与 report_generator.renderer（报告导出）共用，
 避免双实现。链路：```mermaid 代码块 → 无头 Electron 子进程（electron/mermaid-renderer.js，
-注入项目内置 mermaid.min.js）→ SVG → 以 ![diagram](svg路径) 替换原代码块 → pandoc。
+注入项目内置 mermaid.min.js）→ 白底 2× 光栅化 PNG（base64 经 stdout 回传）→
+以 ![diagram](png路径) 替换原代码块 → pandoc。
+
+为何落成 PNG 而非 SVG：Word 的 SVG 引擎丢弃 mermaid SVG 内嵌 <style> 的类样式
+（填充回退黑块）且按自身字体度量重排文字（中文叠压成乱码），PNG 位图在
+各查看器下渲染一致，且 pandoc 嵌 PNG 不再依赖 rsvg-convert。
 
 降级纪律（§3.7 渲染规则）：单块渲染失败保留原代码块；全部失败返回原文件，
 调用方无需感知 Electron 是否可用。
 """
+import base64
 import logging
 import os
 import re
@@ -58,42 +64,75 @@ def find_electron() -> str | None:
     return None
 
 
-def render_mermaid_to_svg(electron: str, code: str) -> str | None:
-    """Render a single Mermaid diagram to SVG via a headless Electron process."""
-    renderer_script = str(
+def _resolve_renderer_script() -> str:
+    """Locate mermaid-renderer.js.
+
+    Packaged builds get the explicit path via INKCUBE_MERMAID_RENDERER_SCRIPT
+    (injected by the Electron main process when spawning Python — the script
+    ships in extraResources because app.asar is opaque to Python's isfile);
+    dev falls back to the repo-relative path.
+    """
+    env_path = os.environ.get('INKCUBE_MERMAID_RENDERER_SCRIPT', '')
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    return str(
         Path(__file__).resolve().parent.parent.parent / 'electron' / 'mermaid-renderer.js'
     )
+
+
+def render_mermaid_to_png(electron: str, code: str) -> bytes | None:
+    """Render a single Mermaid diagram to a white-background PNG via headless Electron.
+
+    Mermaid code is written to a temp file passed via argv: a piped stdin
+    yields 0 bytes on Windows Electron (GUI subsystem) child processes,
+    so file input is the only reliable channel. The renderer returns the
+    PNG as base64 on stdout (text-safe on any platform).
+    """
+    renderer_script = _resolve_renderer_script()
     if not os.path.isfile(renderer_script):
         logger.warning('mermaid-renderer.js not found at %s', renderer_script)
         return None
 
+    fd, input_path = tempfile.mkstemp(prefix='inkcube_mmd_input_', suffix='.mmd')
     try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(code)
         result = subprocess.run(
-            [electron, renderer_script],
-            input=code,
+            [electron, renderer_script, input_path],
             capture_output=True,
             encoding='utf-8',
+            stdin=subprocess.DEVNULL,
             timeout=_MERMAID_RENDER_TIMEOUT,
             env={**os.environ, 'INKCUBE_MERMAID_RENDERER': '1'},
         )
-        if result.returncode != 0:
-            logger.warning(
-                'Mermaid render failed (exit %d): %s',
-                result.returncode, result.stderr.strip(),
-            )
-            return None
-        svg = result.stdout.strip()
-        return svg if svg.startswith('<svg') or svg.startswith('<?xml') else None
     except subprocess.TimeoutExpired:
         logger.warning('Mermaid render timed out')
         return None
     except Exception as e:
         logger.warning('Mermaid render error: %s', e)
         return None
+    finally:
+        try:
+            os.remove(input_path)
+        except OSError:
+            pass
+
+    if result.returncode != 0:
+        logger.warning(
+            'Mermaid render failed (exit %d): %s',
+            result.returncode, result.stderr.strip(),
+        )
+        return None
+    try:
+        png = base64.b64decode(result.stdout.strip(), validate=True)
+    except ValueError:
+        logger.warning('Mermaid render output is not valid base64')
+        return None
+    return png if png.startswith(b'\x89PNG') else None
 
 
 def preprocess_mermaid(input_file: Path) -> tuple[Path, str | None]:
-    """Replace ```mermaid blocks with SVG image references.
+    """Replace ```mermaid blocks with image references.
 
     Args:
         input_file: 待预处理的 Markdown 文件路径
@@ -113,20 +152,33 @@ def preprocess_mermaid(input_file: Path) -> tuple[Path, str | None]:
         return input_file, None
 
     tmp_dir = tempfile.mkdtemp(prefix='inkcube_mmd_')
-    svg_dir = Path(tmp_dir) / 'svgs'
-    svg_dir.mkdir()
+    try:
+        return _render_blocks_to_file(input_file, content, Path(tmp_dir), electron)
+    except OSError:
+        # 写盘异常（磁盘满/权限/杀软锁文件）：清理后降级返回原文件，
+        # 不让预处理异常阻断调用方的导出主链路（降级纪律）
+        logger.warning('Mermaid preprocess IO failed, keeping original markdown',
+                       exc_info=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return input_file, None
+
+
+def _render_blocks_to_file(input_file: Path, content: str,
+                           tmp_dir: Path, electron: str) -> tuple[Path, str | None]:
+    image_dir = tmp_dir / 'images'
+    image_dir.mkdir()
 
     success_count = 0
 
     def _replace_block(m: re.Match) -> str:
         nonlocal success_count
         code = m.group(1)
-        svg = render_mermaid_to_svg(electron, code)
-        if svg:
-            svg_path = svg_dir / f'diagram_{success_count}.svg'
-            svg_path.write_text(svg, encoding='utf-8')
+        png = render_mermaid_to_png(electron, code)
+        if png:
+            png_path = image_dir / f'diagram_{success_count}.png'
+            png_path.write_bytes(png)
             success_count += 1
-            return f'![diagram]({svg_path})'
+            return f'![diagram]({png_path})'
         logger.warning('Mermaid block render failed, keeping as code')
         return m.group(0)  # leave block unchanged on failure
 
@@ -138,10 +190,10 @@ def preprocess_mermaid(input_file: Path) -> tuple[Path, str | None]:
         return input_file, None
 
     # Write pre-processed markdown to a temp file
-    preprocessed = Path(tmp_dir) / 'preprocessed.md'
+    preprocessed = tmp_dir / 'preprocessed.md'
     preprocessed.write_text(modified, encoding='utf-8')
-    logger.info('Mermaid: rendered %d diagram(s) to SVG', success_count)
-    return preprocessed, tmp_dir
+    logger.info('Mermaid: rendered %d diagram(s) to PNG', success_count)
+    return preprocessed, str(tmp_dir)
 
 
 def cleanup_temp_dir(tmp_dir: str | None) -> None:

@@ -154,8 +154,28 @@ class TestWikiChangeLogNewFields:
 
 
 class TestProjectsWikiFields:
-    def test_purpose_default_empty(self, db, project_id):
-        assert db.get_wiki_purpose(project_id) == ""
+    def test_purpose_prefilled_by_type(self, db):
+        """create_project pre-fills wiki_purpose per project type (§4.6)."""
+        from db.database import Database
+
+        # recruitment/investment auto-link preset base libs on creation;
+        # mirror the real startup sequence (main.py) to satisfy the FK.
+        db.ensure_preset_base_libs()
+
+        general = db.create_project(name="P1", project_type="general")
+        recruitment = db.create_project(name="P2", project_type="recruitment")
+        investment = db.create_project(name="P3", project_type="investment")
+
+        assert db.get_wiki_purpose(general["id"]) == Database.DEFAULT_PURPOSES["general"]
+        assert db.get_wiki_purpose(recruitment["id"]) == Database.DEFAULT_PURPOSES["recruitment"]
+        assert db.get_wiki_purpose(investment["id"]) == Database.DEFAULT_PURPOSES["investment"]
+
+    def test_purpose_unknown_type_falls_back_to_general(self, db):
+        """Unknown project types fall back to the general purpose template."""
+        from db.database import Database
+
+        proj = db.create_project(name="P4", project_type="custom")
+        assert db.get_wiki_purpose(proj["id"]) == Database.DEFAULT_PURPOSES["general"]
 
     def test_update_and_get_purpose(self, db, project_id):
         db.update_wiki_purpose(project_id, "构建招商知识库")
@@ -217,6 +237,22 @@ class TestWikiSourcePages:
         db.create_or_update_source_page(project_id, f2["id"], content_hash="h2")
         pages = db.list_source_pages(project_id)
         assert len(pages) == 2
+
+    def test_list_source_pages_includes_filename(self, db, project_id):
+        """LEFT JOIN files 带 filename（2.2 §10.4）：src 页「打开原文件」数据源。"""
+        f1 = db.create_file(project_id, "a.pdf", "pdf", 100, "h1")
+        db.create_or_update_source_page(project_id, f1["id"], content_hash="h1")
+        pages = db.list_source_pages(project_id)
+        assert pages[0]["filename"] == "a.pdf"
+
+    def test_list_source_pages_orphan_file(self, db, project_id):
+        """files 行被删而摄入跟踪残留时 filename 为 None（LEFT JOIN 不丢行）。"""
+        f = db.create_file(project_id, "gone.pdf", "pdf", 1, "hg")
+        db.create_or_update_source_page(project_id, f["id"], content_hash="hg")
+        db.delete_file(f["id"])
+        pages = db.list_source_pages(project_id)
+        assert len(pages) == 1
+        assert pages[0]["filename"] is None
 
     def test_delete_source_page(self, db, project_id, file_id):
         db.create_or_update_source_page(project_id, file_id)

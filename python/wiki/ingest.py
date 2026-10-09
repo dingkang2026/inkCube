@@ -12,10 +12,11 @@ with an ingested source_page), not in this module.
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 
 from errors import LLMNetworkError, LLMCallFailed, LLMInvalidKey
-from wiki.parser import parse_compile_output_v2
+from wiki.parser import parse_compile_output_v2, parse_resolves_blocks
 from wiki.prompts import build_ingest_analysis_prompt, build_ingest_generation_prompt
 from wiki.llm_routing import get_task_settings
 
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 _MAX_MATERIALS_CHARS = 100_000
 # Max chars for overview update
 _MAX_OVERVIEW_CHARS = 3000
+# Per-page char cap when injecting existing pages into the Stage 2 prompt
+_MAX_EXISTING_PAGE_CHARS = 2000
+# Total char cap for the existing-pages block (whole-page granularity, see
+# _build_existing_content)
+_MAX_EXISTING_TOTAL_CHARS = 30000
 
 
 class WikiIngestor:
@@ -65,11 +71,25 @@ class WikiIngestor:
 
         self.db.update_compile_task_status(task_id, "ingesting", stage="read_source")
 
+        # Source page key for this file (needed both for skip-tracking below and Step 4)
+        file_slug = re.sub(r"[^\w]+", "_", filename.rsplit(".", 1)[0]).strip("_").lower()
+        source_page_key = f"src_{file_slug}" if file_slug else f"src_{file_id[:8]}"
+
         # ── Step 1: Prepare context ──
         full_text = self._read_full_text(file_id, project_id)
         if not full_text.strip():
-            logger.warning("Ingest [%s]: no text content for file '%s'", task_id, filename)
-            return {"skipped": False, "error": "no_text"}
+            # 无文本内容（纯扫描件/空文件）——skipped 留痕后跳过，不再进入待编译集合
+            # （否则每轮增量重复撞同一文件且计入 completed，伪装成功，§3.7/§4.2）
+            logger.warning("Ingest [%s]: no text content for file '%s' — skipped", task_id, filename)
+            self.db.create_or_update_source_page(
+                project_id=project_id,
+                file_id=file_id,
+                source_page_key=source_page_key,
+                content_hash=content_hash,
+                status="skipped",
+                pages_touched=[],
+            )
+            return {"skipped": True, "error": "no_text", "filename": filename, "file_id": file_id}
 
         purpose = self.db.get_wiki_purpose(project_id)
         overview = self.db.get_wiki_overview(project_id)
@@ -98,6 +118,7 @@ class WikiIngestor:
             index_summary=index_summary,
             schema_hints=schema_hints,
             base_lib_context=base_lib_context,
+            project_type=project_type,
         )
 
         # Stage 1 needs larger token budget for deep-thinking models
@@ -126,8 +147,24 @@ class WikiIngestor:
         # ── Step 3: LLM Generation ──
         self.db.update_compile_task_status(task_id, "ingesting", stage="stage2_generation")
 
-        # Build existing pages content for relevant pages (incremental merge)
-        existing_content = self._build_existing_content(existing_pages, analysis_report)
+        # Build existing pages content for incremental merge
+        existing_content = self._build_existing_content(existing_pages)
+
+        # 缺口闭环（§4.3/§4.4，E2-2026-10）：查未解决 data-gap/missing-page
+        # 注入编号清单，LLM 认定本文件补上则输出 RESOLVES，落库后按编号归档
+        open_gap_rows = [
+            r for r in (self.db.list_wiki_reviews(project_id, resolved=False) or [])
+            if r.get("type") in ("data-gap", "missing-page")
+        ]
+        open_gaps = [
+            {
+                "index": i,
+                "review_id": r["id"],
+                "title": r.get("title", ""),
+                "description": (r.get("description") or "")[:200],
+            }
+            for i, r in enumerate(open_gap_rows, start=1)
+        ]
 
         generation_messages = build_ingest_generation_prompt(
             source_text=full_text,
@@ -138,6 +175,8 @@ class WikiIngestor:
             existing_content=existing_content,
             schema_hints=schema_hints,
             base_lib_context=base_lib_context,
+            project_type=project_type,
+            open_gaps=open_gaps,
         )
 
         generation_settings = dict(self.settings)
@@ -160,11 +199,6 @@ class WikiIngestor:
 
         pages, reviews, overview_update = parse_compile_output_v2(generation_output)
 
-        # Determine source page key for this file
-        import re
-        file_slug = re.sub(r"[^\w]+", "_", filename.rsplit(".", 1)[0]).strip("_").lower()
-        source_page_key = f"src_{file_slug}" if file_slug else f"src_{file_id[:8]}"
-
         pages_created = 0
         pages_updated = 0
         pages_failed = 0
@@ -182,15 +216,19 @@ class WikiIngestor:
             refs = page_data.get("refs", [])
             tags = page_data.get("tags", [])
 
-            # Skip user_edited pages
+            # Skip user_edited pages — 以落库前实时状态为准：快照取自 Step 1，
+            # 其后的数分钟 LLM 窗口内用户可能已通过矛盾裁决/手动编辑写入
+            # user_edited（§5.5），按陈旧快照判定会静默回滚用户内容
             existing = existing_map.get(page_key)
-            if existing and existing.get("status") == "user_edited":
-                logger.info("Ingest [%s]: skipping user_edited page '%s'", task_id, page_key)
-                pages_updated += 1
-                stored_page_keys.append(page_key)
-                all_touched_keys.append(page_key)
-                user_edited_keys.add(page_key)
-                continue
+            if existing:
+                current = self.db.get_wiki_page(project_id, page_key)
+                if current and current.get("status") == "user_edited":
+                    logger.info("Ingest [%s]: skipping user_edited page '%s'", task_id, page_key)
+                    pages_updated += 1
+                    stored_page_keys.append(page_key)
+                    all_touched_keys.append(page_key)
+                    user_edited_keys.add(page_key)
+                    continue
 
             try:
                 if existing:
@@ -241,6 +279,9 @@ class WikiIngestor:
                     p = self.db.get_wiki_page(project_id, pk)
                     if p:
                         affected_ids.append(p["id"])
+                # confirm（「材料与百科吻合」类正面结论）不是待办——落库即归档（§4.4），
+                # 不占 Lint 待处理列表；其余类型 resolved=0 进入待处理
+                is_confirm = review_data["type"] == "confirm"
                 self.db.create_or_update_wiki_review(
                     review_id=review_id,
                     project_id=project_id,
@@ -249,10 +290,29 @@ class WikiIngestor:
                     description=review_data.get("description", ""),
                     affected_page_ids=affected_ids if affected_ids else None,
                     source_file_id=file_id,
+                    resolved=1 if is_confirm else 0,
+                    resolved_action="auto_confirmed" if is_confirm else None,
+                    evidence=review_data.get("evidence") or None,
                 )
                 reviews_count += 1
             except Exception as e:
                 logger.error("Ingest [%s]: failed to store review: %s", task_id, e)
+
+        # RESOLVES 归档（缺口闭环，§4.3/§4.4）：按注入编号确定性映射 review_id；
+        # 与新 reviews 落库无序——RESOLVES 引用的是摄入前快照里的旧缺口
+        gaps_resolved = 0
+        gap_number_map = {str(g["index"]): g["review_id"] for g in open_gaps}
+        for num in parse_resolves_blocks(generation_output):
+            rid = gap_number_map.get(num)
+            if not rid:
+                continue
+            try:
+                if self.db.resolve_wiki_review(rid, "auto_resolved"):
+                    gaps_resolved += 1
+            except Exception as e:
+                logger.error("Ingest [%s]: failed to resolve gap #%s: %s", task_id, num, e)
+        if gaps_resolved:
+            logger.info("Ingest [%s]: %d open gap(s) auto-resolved via RESOLVES", task_id, gaps_resolved)
 
         # Record in wiki_source_pages (ingestion tracking)
         self.db.create_or_update_source_page(
@@ -291,6 +351,7 @@ class WikiIngestor:
             "pages_updated": pages_updated,
             "pages_failed": pages_failed,
             "reviews_count": reviews_count,
+            "gaps_resolved": gaps_resolved,
             "pages_touched": all_touched_keys,
             "source_page_key": source_page_key,
             "filename": filename,
@@ -341,20 +402,29 @@ class WikiIngestor:
             lines.append(f"- {s['page_key']}: {s.get('title', '')} — {hint}")
         return "\n".join(lines)
 
-    def _build_existing_content(self, pages: list[dict], analysis_report: str) -> str:
-        """Build existing page content for incremental merge, filtered by analysis relevance."""
+    def _build_existing_content(self, pages: list[dict]) -> str:
+        """Build existing page content for incremental merge.
+
+        整页粒度预算：单页截断到 _MAX_EXISTING_PAGE_CHARS；总量按「放得下整页才
+        放」累计——避免在总量上限处把最后一页切成半页注入 Stage 2。
+        """
         if not pages:
             return ""
-        # For now, include all pages (could be smarter by filtering based on analysis)
-        parts = []
+        parts: list[str] = []
+        total = 0
         for p in pages:
-            content = (p.get("content") or "")[:2000]
-            parts.append(f"### {p['page_key']} ({p.get('title', '')})\n{content}")
-        result = "\n\n---\n\n".join(parts)
-        # Cap total size
-        if len(result) > 30000:
-            result = result[:30000]
-        return result
+            content = (p.get("content") or "")[:_MAX_EXISTING_PAGE_CHARS]
+            part = f"### {p['page_key']} ({p.get('title', '')})\n{content}"
+            if total + len(part) > _MAX_EXISTING_TOTAL_CHARS:
+                logger.info(
+                    "_build_existing_content: total cap %d reached before page '%s', "
+                    "skipping remaining %d pages",
+                    _MAX_EXISTING_TOTAL_CHARS, p["page_key"], len(pages) - len(parts),
+                )
+                break
+            parts.append(part)
+            total += len(part)
+        return "\n\n---\n\n".join(parts)
 
     async def _collect_base_lib_context(self, project_id: str, schemas: list[dict]) -> str:
         """Collect base library RAG context based on schema search hints."""

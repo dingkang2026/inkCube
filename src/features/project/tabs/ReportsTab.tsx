@@ -95,19 +95,24 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     }
   }
 
+  // 看板卡片导出：无面板，直接用详情页导出面板记忆的方向（§1.3 同一 localStorage 键）
   const handleExportReport = async (report: Report) => {
     try {
+      let orientation: string = 'portrait'
+      try {
+        if (localStorage.getItem('inkcube.report.export.orientation') === 'landscape') orientation = 'landscape'
+      } catch { /* ignore */ }
       const result: any = await window.electronAPI.invoke('reports:exportReport', {
         reportId: report.id,
+        title: report.title,
+        orientation,
+        saveAs: true,
       })
-      if (result.path) {
-        showToast(t('project.report.exportSuccess', { format: 'Word', title: report.title }), 'success')
-      } else {
-        showToast(t('project.report.exportFailed', { error: result.error }), 'error')
-      }
-    } catch (err) {
+      if (result.canceled) return
+      showToast(t('project.report.exportedTo', { path: result.path }), 'success')
+    } catch (err: any) {
       console.error('Export failed:', err)
-      showToast(t('project.report.exportFailed', { error: String(err) }), 'error')
+      showToast(t('project.report.exportFailed', { error: String(err?.message || err) }), 'error')
     }
   }
 
@@ -287,7 +292,8 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
                         <button
                           className={s.exportBtn}
                           onClick={(e) => { e.stopPropagation(); handleDeleteReport(report) }}
-                          title={t('project.report.delete')}
+                          disabled={report.status === 'generating'}
+                          title={report.status === 'generating' ? t('project.report.deleteDisabledWhileGenerating') : t('project.report.delete')}
                         >
                           <Trash2 size={12} />
                         </button>

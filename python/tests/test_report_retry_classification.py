@@ -4,8 +4,9 @@
   - _classify_error 纯函数全部分类规则：内容过滤→降级 / token 超限→截断 /
     401·invalid key→致命 / 限流·超时·网络·连接→重试 / 空输出→重试 / 未知→重试
   - _generate_with_retry 行为分支：首次成功直返 / 结构化异常类优先于字符串规则 /
-    限流重试后成功 / 凭据类致命抛 ReportGenerationError / 内容过滤降级返回空内容 /
-    上下文溢出保尾截断重试 / 校验违规携带反馈重试
+    限流重试后成功 / 凭据类致命抛 ReportGenerationError / 内容过滤降级模式重试一次
+    （成功 → 正常内容；仍失败 → 占位文本 finish=error，不静默返回空串）/
+    上下文溢出保尾截断重试（耗尽 → 占位）/ 校验违规携带反馈重试
 
 LLM 客户端 mock，validate_section patch，asyncio.sleep mock（不等待）。
 """
@@ -20,7 +21,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import report_generator.runner as runner_mod
 from errors import LLMInvalidKey, LLMRateLimited
-from report_generator.runner import MAX_RETRIES, ReportGenerationError, ReportRunner, _classify_error
+from report_generator.runner import (
+    DEGRADE_PLACEHOLDER, MAX_RETRIES, ReportGenerationError, ReportRunner,
+    _classify_error,
+)
 from report_generator.validator import SectionViolation
 
 
@@ -125,11 +129,46 @@ def test_invalid_key_fatal_no_retry(make_runner):
     assert runner.llm_client.chat_full.await_count == 1
 
 
-def test_content_filter_degrades_to_empty(make_runner):
-    """内容安全过滤 → 降级：返回 ("", "error")，不抛错、不再调用 LLM。"""
-    runner = make_runner([Exception("request blocked by content_filter")])
+def test_content_filter_degrade_retry_succeeds(make_runner):
+    """内容安全过滤 → 降级模式重试一次（§3.9）：第二次成功 → 正常内容。
+
+    递归调用的 prompt 必须带重写提示（中性事实陈述口径）；降级重试以
+    sparse 口径生成（字数校验不启用）。
+    """
+    runner = make_runner(
+        [Exception("request blocked by content_filter"), _ok_result("降级重写成功")]
+    )
     output, finish = _run_generation(runner)
-    assert (output, finish) == ("", "error")
+    assert (output, finish) == ("降级重写成功", "stop")
+    assert runner.llm_client.chat_full.await_count == 2
+    second_messages = runner.llm_client.chat_full.await_args_list[1].args[0]
+    assert "内容安全过滤" in second_messages[1]["content"]
+
+
+def test_content_filter_persists_returns_placeholder(make_runner):
+    """持续 content_filter → 降级重试一次仍失败 → 占位文本 + finish=error。
+
+    回归核心：不得返回空串（空串会在组装时静默消失，成品缺节且
+    resume 永不补）；占位节用户可见，可调整后重新生成。
+    """
+    runner = make_runner([Exception("blocked by content_filter")] * 4)
+    output, finish = _run_generation(runner)
+    assert (output, finish) == (DEGRADE_PLACEHOLDER, "error")
+    # 恰好重试一次：外层 1 次 + 递归 1 次（递归 allow_degrade_retry=False）
+    assert runner.llm_client.chat_full.await_count == 2
+    # 失败可观测：pending warning 带降级重试告知
+    assert any("内容安全过滤" in w for w in runner._pending_warnings)
+
+
+def test_degrade_retry_disabled_returns_placeholder_immediately(make_runner):
+    """allow_degrade_retry=False（递归内）→ 不再重试，直接占位。"""
+    runner = make_runner([Exception("blocked by safety")])
+    async def _go():
+        with patch.object(runner_mod, "validate_section", return_value=[]):
+            return await runner._generate_with_retry(
+                _SECTION, "写点什么", given_refs=set(), allow_degrade_retry=False)
+    output, finish = asyncio.run(_go())
+    assert (output, finish) == (DEGRADE_PLACEHOLDER, "error")
     assert runner.llm_client.chat_full.await_count == 1
 
 
@@ -147,14 +186,14 @@ def test_context_overflow_truncates_prompt_tail(make_runner):
     assert len(second_prompt) < 4100
 
 
-def test_truncate_exhausts_attempts_returns_empty(make_runner):
-    """截断分支不检查次数上限：每次溢出均保尾截断重试，for 循环耗尽后
-返回 ("", "error")（不抛错，L632 unreachable 兜底路径）。"""
+def test_truncate_exhausts_attempts_returns_placeholder(make_runner):
+    """截断分支每次重试仍溢出，for 循环耗尽后返回占位文本（不抛错、
+不返回空串——空串会静默消失，§3.9 降级终态一律可观测）。"""
     runner = make_runner(
         [Exception("context_length")] * (MAX_RETRIES + 1)
     )
     output, finish = _run_generation(runner, user_prompt="x" * 5000)
-    assert (output, finish) == ("", "error")
+    assert (output, finish) == (DEGRADE_PLACEHOLDER, "error")
     assert runner.llm_client.chat_full.await_count == MAX_RETRIES
 
 

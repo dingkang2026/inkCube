@@ -3,9 +3,11 @@
 Template management (CRUD, copy, extract-sample, upgrade).
 Report generation (background task + progress polling), retry, export (Word), content retrieval.
 """
+import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -417,12 +419,22 @@ async def delete_report(report_id: str):
         db = get_db()
         report = db.get_report(report_id)
         if report:
+            if report["status"] == "generating":
+                # 生成中的报告后台任务持有文件句柄/DB 引用：删文件与 runner 写盘
+                # 竞争、删行后事件落库 FK 失败，且 LLM 继续烧 token —— 拒绝删除
+                # （崩溃后遗留的孤儿 generating 由启动扫描置 error，不会被此门误拦）
+                raise HTTPException(
+                    status_code=409,
+                    detail="报告正在生成中，请先暂停或等待完成后再删除"
+                )
             content_path = report.get("content_path", "")
             if content_path and os.path.isdir(content_path):
                 shutil.rmtree(content_path, ignore_errors=True)
                 logger.info("Deleted report files: %s", content_path)
         db.delete_report(report_id)
         return {"success": True}
+    except HTTPException:
+        raise  # 409 拒绝门必须透传（否则被下方 except Exception 吞成 500，前端看不到「生成中」提示）
     except Exception as e:
         logger.error("Failed to delete report: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -539,8 +551,30 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
 # ── Export (Phase 4) ──
 
 
+_FILENAME_INVALID_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _sanitize_filename(title: str) -> str:
+    """报告标题 → 安全文件名主干（导出默认文件名，2.5 §1.3）。
+
+    替换 Windows/macOS/Linux 通用非法字符，去首尾空白与点（Windows 目录
+    结尾点非法），限长 80 字符；空标题回退「报告」。
+    """
+    name = _FILENAME_INVALID_RE.sub("_", str(title or "")).strip(" .")
+    name = name[:80].strip(" .")
+    return name or "报告"
+
+
+class ExportReportRequest(BaseModel):
+    """Request body for exporting a report as Word (2.5 §5 API 14)."""
+    # portrait | landscape → reference-doc 样式模板选择（§1.3 / §3.7）
+    orientation: str = "portrait"
+    # 提供时渲染到指定路径（另存为形式）；缺省写产物目录默认位置（直接打开形式）
+    target_path: Optional[str] = None
+
+
 @router.post("/{report_id}/export")
-async def export_report(report_id: str):
+async def export_report(report_id: str, req: Optional[ExportReportRequest] = None):
     """Export report as Word (docx).
 
     Returns the output file path.
@@ -550,6 +584,13 @@ async def export_report(report_id: str):
         report = db.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
+
+        req = req or ExportReportRequest()
+        if req.orientation not in ("portrait", "landscape"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid orientation: {req.orientation} (must be portrait or landscape)"
+            )
 
         content_path = report.get("content_path", "")
         if not content_path:
@@ -563,8 +604,20 @@ async def export_report(report_id: str):
         markdown_text = md_path.read_text(encoding="utf-8")
 
         from report_generator.renderer import render_markdown_to_docx
-        output_path = str(Path(content_path) / f"{report['title']}.docx")
-        render_markdown_to_docx(markdown_text, output_path, title=report["title"])
+        if req.target_path:
+            output_path = req.target_path  # 另存为：主进程 showSaveDialog 选定路径
+        else:
+            # 直接打开：产物目录默认位置（已存在则覆盖重渲染，§1.3）
+            output_path = str(Path(content_path) / f"{_sanitize_filename(report['title'])}.docx")
+        # 渲染含子进程链（N 图 × mermaid Electron + pandoc，最长分钟级）：
+        # 必须下沉线程池，否则 async 端点同步阻塞事件循环，全部路由排队假死
+        await asyncio.to_thread(
+            render_markdown_to_docx,
+            markdown_text, output_path,
+            title=report["title"], orientation=req.orientation,
+        )
+        logger.info("Report %s exported (orientation=%s): %s",
+                    report_id, req.orientation, output_path)
         return {"success": True, "format": "Word", "path": output_path}
 
     except HTTPException:
@@ -722,11 +775,14 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
         report_dir = report.get("content_path", "")
 
         if mode == "restart":
-            # 删除 checkpoint 文件
+            # 删除 checkpoint 文件 + 清空章节行：全量重跑不应在 DB 留旧章节行
+            # （UNIQUE(report_id, section_id) 之下 UPSERT 可依赖，但旧行的
+            # created_at/word_count 语义已失真，重置更干净）
             ckpt_path = Path(report_dir) / "checkpoint.json"
             if ckpt_path.exists():
                 ckpt_path.unlink()
-            logger.info("Report %s restart: checkpoint deleted", report_id)
+            db.delete_report_sections(report_id)
+            logger.info("Report %s restart: checkpoint deleted, sections reset", report_id)
 
         # 重置状态（前置解析全部成功后才落）。paused + resume 保留原进度（checkpoint
         # 已完成章节将跳过，进度随 section_done 携带的绝对完成数推进）；
@@ -793,6 +849,40 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
+def _format_retrieval_summary(title: str, summary: dict) -> str:
+    """section_done 检索摘要 → 报告日志文案（2.5 §3.8）。
+
+    覆盖 query 数 / 各通道命中 / raw→cards / 充足性三字段 / 每轮补搜 queries，
+    让用户在报告详情页直接看到检索行为全貌（B 层增强：UI 日志补检索明细）。
+    """
+    rounds = summary.get("rounds") or []
+    level = summary.get("sufficiency_level") or "unknown"
+    reason = str(summary.get("sufficiency_reason") or "").strip()
+    parts = [
+        f"章节「{title}」检索完成：queries={summary.get('query_count', 0)}, "
+        f"cards={summary.get('card_count', 0)}, 充足性={level}"
+    ]
+    if reason:
+        parts.append(f"（{reason}）")
+    round_descs = []
+    for r in rounds:
+        stats = r.get("channel_stats") or {}
+        stat_text = "/".join(f"{k}={v}" for k, v in stats.items()) or "无命中"
+        desc = (
+            f"第{r.get('round_no')}轮[{stat_text}] "
+            f"raw={r.get('raw_count', 0)}(新{r.get('new_raw_count', 0)})"
+        )
+        if r.get("card_count") is not None:
+            desc += f" cards={r['card_count']}"
+        fu = r.get("follow_up_queries") or []
+        if fu:
+            desc += f" → 补搜:{'; '.join(fu)}"
+        round_descs.append(desc)
+    if round_descs:
+        parts.append("；".join(round_descs))
+    return "，".join(parts)
+
+
 def _section_done_log(data: dict) -> tuple[str, str]:
     """section_done 事件 → (日志文案, 日志级别)。
 
@@ -800,6 +890,14 @@ def _section_done_log(data: dict) -> tuple[str, str]:
     必须写 warning 级日志让用户在报告详情页显式可见，而非静默完成。
     """
     title = data.get("title", "")
+    if data.get("generation_failed"):
+        # 降级终态可观测（§3.9）：重试后仍失败落占位说明，error 级显式告知，
+        # 不允许「日志写完成、正文缺内容」的静默不一致
+        return (
+            f"章节生成失败: {title}（多次重试后仍未通过，正文以占位说明呈现，"
+            "可调整模板写作要求后重新生成）",
+            "error",
+        )
     if data.get("skipped"):
         return f"章节跳过: {title}（材料不足）", "info"
     if data.get("degraded"):
@@ -809,6 +907,20 @@ def _section_done_log(data: dict) -> tuple[str, str]:
             "warning",
         )
     return f"章节完成: {title}", "info"
+
+
+def _fail_report_terminal(db, report_id: str, error_msg: str) -> None:
+    """报告失败终态统一落库（error 事件分支与 except 兜底分支共用，单一实现）。
+
+    失败通知 detail 由 error_msg 直接传参（不回读 reports.error_message 列——
+    旧 DB 钩子在 update_report_error 写入前读列恒为 NULL，detail 从未带出过
+    错误信息，顺序 4 修复，见 activity_events.fail_report）。
+    """
+    db.update_report_status(report_id, "error")
+    db.update_report_error(report_id, error_msg)
+    db.set_report_pause_requested(report_id, False)  # 终态统一清暂停标志
+    db.create_report_log(report_id, f"报告生成异常: {error_msg}", level="error")
+    activity_events.fail_report(db, report_id, error_msg)
 
 
 def _get_search_tool(db, data_dir: str):
@@ -911,6 +1023,16 @@ async def _run_report_generation(
                     section_id=event.data.get("section_id"),
                 )
 
+                # 检索摘要（§3.8）：query 数 / 各通道命中 / raw→cards / 充足性 / 补搜轮次
+                summary = event.data.get("retrieval_summary")
+                if summary:
+                    db.create_report_log(
+                        report_id,
+                        _format_retrieval_summary(event.data.get("title", ""), summary),
+                        level="info",
+                        section_id=event.data.get("section_id"),
+                    )
+
             elif event.event_type == "progress":
                 # 收尾阶段（finalizing）进度：写日志 + 推进到 95%
                 db.create_report_log(
@@ -956,16 +1078,10 @@ async def _run_report_generation(
                 )
 
             elif event.event_type == "error":
-                # 错误已由 runner.run() 内部 yield error 事件处理，此处不再重复写入
-                pass
+                # 章节致命失败终态（runner yield error 后正常返回，本分支是
+                # 唯一落库点；事件流之外的意外异常仍由下方 except 兜底）
+                _fail_report_terminal(db, report_id, event.data.get("message", "未知错误"))
 
     except Exception as e:
         logger.exception("Report generation failed for %s: %s", report_id, e)
-        error_msg = actionable(e)
-        db.update_report_status(report_id, "error")
-        db.update_report_error(report_id, error_msg)
-        db.set_report_pause_requested(report_id, False)  # 终态统一清暂停标志
-        db.create_report_log(report_id, f"报告生成异常: {error_msg}", level="error")
-        # 终态事件显式声明（E2，顺序 4）：error_msg 直接传参——旧 DB 钩子在
-        # update_report_error 写入前读列恒为 NULL，失败通知 detail 从未带出过错误信息
-        activity_events.fail_report(db, report_id, error_msg)
+        _fail_report_terminal(db, report_id, actionable(e))

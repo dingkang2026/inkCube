@@ -8,6 +8,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from errors import LLMInvalidKey
@@ -71,19 +73,25 @@ class StubDB:
         self.status_updates.append((status, kw))
 
 
-def _make_worker(db) -> KnowledgeWorker:
+@pytest.fixture
+def wiki_data_dir(tmp_path):
+    """隔离的 data_dir（tmp_path）：禁止硬编码 /tmp —— Windows 上会落到当前盘符根目录。"""
+    return str(tmp_path / "inkcube-test")
+
+
+def _make_worker(db, data_dir) -> KnowledgeWorker:
     worker = KnowledgeWorker.__new__(KnowledgeWorker)
     worker.db = db
-    worker.data_dir = "/tmp/inkcube-test"
+    worker.data_dir = data_dir
     worker._running = True
     return worker
 
 
-def _patch_ingestor(monkeypatch, db, script):
+def _patch_ingestor(monkeypatch, db, script, data_dir):
     """用固定脚本的 StubWikiIngestor 替换 wiki.ingest.WikiIngestor。"""
     import wiki.ingest as ingest_mod
 
-    ingestor = StubWikiIngestor(db, "/tmp/inkcube-test", None, {})
+    ingestor = StubWikiIngestor(db, data_dir, None, {})
     ingestor.script = script
     monkeypatch.setattr(ingest_mod, "WikiIngestor", lambda *a: ingestor)
     return ingestor
@@ -97,28 +105,28 @@ FILES = [
 
 
 class TestContinuousCompile:
-    def test_runs_all_files_without_pause(self, monkeypatch):
+    def test_runs_all_files_without_pause(self, monkeypatch, wiki_data_dir):
         """3 个文件连续跑完：直达 completed，无中间暂停。"""
         db = StubDB(FILES)
-        w = _make_worker(db)
+        w = _make_worker(db, wiki_data_dir)
 
-        _patch_ingestor(monkeypatch, db, [{"pages_created": 1}] * 3)
+        _patch_ingestor(monkeypatch, db, [{"pages_created": 1}] * 3, wiki_data_dir)
         asyncio.run(w._run_per_file_ingest("wc1", "p1", None, {}))
 
         assert db.status_updates[-1][0] == "completed"
         assert db.status_updates[-1][1] == {"pages_total": 3, "pages_completed": 3}
         assert len(db._summaries) == 3
 
-    def test_failed_file_isolated_and_queue_continues(self, monkeypatch):
+    def test_failed_file_isolated_and_queue_continues(self, monkeypatch, wiki_data_dir):
         """单文件失败：error 记入 summaries，不中断，后续文件照常摄入。"""
         db = StubDB(FILES)
-        w = _make_worker(db)
+        w = _make_worker(db, wiki_data_dir)
 
         _patch_ingestor(monkeypatch, db, [
             {"pages_created": 1},
             RuntimeError("boom"),
             {"pages_created": 1},
-        ])
+        ], wiki_data_dir)
         asyncio.run(w._run_per_file_ingest("wc1", "p1", None, {}))
 
         assert db.status_updates[-1][0] == "completed"  # 失败不改变终态
@@ -128,24 +136,24 @@ class TestContinuousCompile:
         assert not failed["skipped"]
         assert all(s["file_id"] in ("f1", "f2", "f3") for s in db._summaries)
 
-    def test_credential_error_isolated_with_actionable_text(self, monkeypatch):
+    def test_credential_error_isolated_with_actionable_text(self, monkeypatch, wiki_data_dir):
         """凭据类错误（Key 失效等）：该文件失败记 actionable 文案，不中断队列。"""
         db = StubDB(FILES[:2])
-        w = _make_worker(db)
+        w = _make_worker(db, wiki_data_dir)
 
-        _patch_ingestor(monkeypatch, db, [LLMInvalidKey(), {"pages_created": 1}])
+        _patch_ingestor(monkeypatch, db, [LLMInvalidKey(), {"pages_created": 1}], wiki_data_dir)
         asyncio.run(w._run_per_file_ingest("wc1", "p1", None, {}))
 
         assert db.status_updates[-1][0] == "completed"  # 队列不中断
         failed = next(s for s in db._summaries if s["file_id"] == "f1")
         assert "设置" in failed["error"]  # actionable 文案含设置页指引
 
-    def test_progress_updated_per_file(self, monkeypatch):
+    def test_progress_updated_per_file(self, monkeypatch, wiki_data_dir):
         """每个文件完成后刷新 ingesting 进度（前端进度条数据源）。"""
         db = StubDB(FILES)
-        w = _make_worker(db)
+        w = _make_worker(db, wiki_data_dir)
 
-        _patch_ingestor(monkeypatch, db, [{"pages_created": 1}] * 3)
+        _patch_ingestor(monkeypatch, db, [{"pages_created": 1}] * 3, wiki_data_dir)
         asyncio.run(w._run_per_file_ingest("wc1", "p1", None, {}))
 
         progress = [(s, kw) for s, kw in db.status_updates if s == "ingesting"]
@@ -155,14 +163,15 @@ class TestContinuousCompile:
             ("ingesting", {"pages_total": 3, "pages_completed": 3}),
         ]
 
-    def test_stop_takes_effect_after_current_file(self, monkeypatch):
+    def test_stop_takes_effect_after_current_file(self, monkeypatch, wiki_data_dir):
         """协作式停止：当前文件完成后生效，未摄入文件不再处理。"""
         db = StubDB(FILES)
-        w = _make_worker(db)
+        w = _make_worker(db, wiki_data_dir)
 
         ingestor = _patch_ingestor(
             monkeypatch, db,
             [("stop", {"pages_created": 1}), {"pages_created": 1}],
+            wiki_data_dir,
         )
         asyncio.run(w._run_per_file_ingest("wc1", "p1", None, {}))
 
@@ -170,15 +179,16 @@ class TestContinuousCompile:
         assert ingestor.calls == ["f1"]  # f2/f3 未再调用
         assert [s["file_id"] for s in db._summaries] == ["f1"]
 
-    def test_resume_skips_already_ingested_files(self, monkeypatch):
+    def test_resume_skips_already_ingested_files(self, monkeypatch, wiki_data_dir):
         """断点续跑（崩溃重启）：已有 summaries 的文件跳过，只补剩余。"""
         db = StubDB(FILES, existing_summaries=[
             {"file_id": "f1", "filename": "a.pdf", "pages_created": 1},
         ])
-        w = _make_worker(db)
+        w = _make_worker(db, wiki_data_dir)
 
         ingestor = _patch_ingestor(
             monkeypatch, db, [{"pages_created": 1}, {"pages_created": 1}],
+            wiki_data_dir,
         )
         asyncio.run(w._run_per_file_ingest("wc1", "p1", None, {}))
 

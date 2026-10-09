@@ -127,6 +127,7 @@ def build_standard_prompt(
     global_requirements: Optional[list[str]] = None,
     is_degraded: bool = False,
     sufficiency: Optional[dict] = None,
+    report_depth: str = "full",
 ) -> str:
     """构建 standard 章节的 User Prompt。
 
@@ -141,6 +142,8 @@ def build_standard_prompt(
         global_requirements: 全局写作要求
         is_degraded: 是否为降级模式（无检索材料）
         sufficiency: 充足性评估 {"level": "sufficient"|"insufficient", "reason": str}
+        report_depth: 报告深度 "full" | "brief"；brief 深度不注入 target_words
+                     （与 depth 指令「200-500 字」冲突，校验侧规则 3 同步豁免）
 
     Returns:
         User Prompt 文本
@@ -170,9 +173,10 @@ def build_standard_prompt(
             extras.append(wr)
     if global_requirements:
         extras.extend(global_requirements)
-    # 节级篇幅护栏（§3.6 规则 3 的 prompt 侧对应；主要篇幅控制手段仍是任务书结构）
+    # 节级篇幅护栏（§3.6 规则 3 的 prompt 侧对应；主要篇幅控制手段仍是任务书结构）。
+    # brief 深度不注入：与 depth 指令「每节 200-500 字」矛盾，校验侧规则 3 同步豁免
     target_words = section.get("target_words")
-    if target_words:
+    if target_words and report_depth == "full":
         extras.append(f"本节篇幅约 {target_words} 字。")
     extras_text = "\n".join(f"- {e}" for e in extras) if extras else "无特殊要求"
 

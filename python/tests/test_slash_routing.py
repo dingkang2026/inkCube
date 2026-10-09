@@ -179,8 +179,8 @@ class TestAgentSkillSchema:
 
 
 class TestExecuteSlashCommand:
-    def test_help_answers_directly(self, agent, db):
-        t = db.create_task("帮助", "/tmp", "", "general")
+    def test_help_answers_directly(self, agent, db, tmp_path):
+        t = db.create_task("帮助", str(tmp_path), "", "general")
         events = _collect(agent._execute_slash_command(t["id"], "help", _tools()))
         answer = "".join(e["data"]["content"] for e in events if e["type"] == "answer_chunk")
         assert "可用命令" in answer
@@ -188,16 +188,16 @@ class TestExecuteSlashCommand:
         assert events[-1]["type"] == "done"
         assert db.get_task_messages(t["id"])[-1]["role"] == "assistant"
 
-    def test_unknown_skill_reports_available(self, agent, db):
-        t = db.create_task("未知", "/tmp", "", "general")
+    def test_unknown_skill_reports_available(self, agent, db, tmp_path):
+        t = db.create_task("未知", str(tmp_path), "", "general")
         events = _collect(agent._execute_slash_command(t["id"], "no-such", _tools()))
         answer = "".join(e["data"]["content"] for e in events if e["type"] == "answer_chunk")
         assert "未找到 Skill" in answer
         assert "hello-world" in answer
 
-    def test_installed_skill_never_direct_runs(self, agent, db):
+    def test_installed_skill_never_direct_runs(self, agent, db, tmp_path):
         """防御分支：已安装 skill 意外到达直调入口时只提示，不执行脚本。"""
-        t = db.create_task("防御", "/tmp", "", "general")
+        t = db.create_task("防御", str(tmp_path), "", "general")
         events = _collect(agent._execute_slash_command(t["id"], "hello-world", _tools()))
         types = [e["type"] for e in events]
         assert "action" not in types  # 不产生工具执行事件

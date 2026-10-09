@@ -1,4 +1,4 @@
-"""Unit tests for RowMarkdownTableSerializer (doc_parser, 2.2 §4.3).
+"""Unit tests for RowMarkdownTableSerializer (docling_serializers, 2.2 §4.3).
 
 Covers the heuristics that replace docling_core's TripletTableSerializer:
 sparse title/unit rows become preamble, the dense row becomes the column
@@ -9,7 +9,7 @@ Markdown lines that the chunker can split on (get_header_and_body_lines).
 import pytest
 from docling_core.types.doc import DocItemLabel, TableData, TableCell, TableItem
 
-from knowledge.doc_parser import RowMarkdownTableSerializer
+from knowledge.docling_serializers import RowMarkdownTableSerializer
 
 
 def make_cell(r, c, text, row_span=1, col_span=1):

@@ -22,6 +22,12 @@ def get_data_dir() -> str:
 #   [YYYY-MM-DD HH:MM:SS.mmm] [source] [LEVEL] message
 # Rotation: 5 MB per file, keep 3 backups (app.log.1 / .2 / .3)
 _data_dir = get_data_dir()
+# uv 全局缓存指到数据目录同盘（进程级环境变量，所有 uv 子进程继承）：uv pip
+# 安装默认以硬链接复用缓存文件，硬链接不能跨盘符——缓存留在默认的
+# %LOCALAPPDATA%（C 盘）而任务 venv 在 D 盘时会退化为整包复制，每个任务
+# venv 重复占一份包体积。同盘后同版本包只存物理一份，新增任务零增量。
+# 用户显式设置的 UV_CACHE_DIR 优先（setdefault）。
+os.environ.setdefault("UV_CACHE_DIR", os.path.join(_data_dir, "uv-cache"))
 _log_dir = Path(_data_dir) / "logs"
 _log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,9 +187,10 @@ async def lifespan(app: FastAPI):
                         "\u6216\u53d1\u9001\u65b0\u6d88\u606f\u91cd\u65b0\u5f00\u59cb\u3002")
 
     # ── Detect interrupted reports (crash recovery, §3.8.3) ──
-    # 扫描卡在 generating 且超时（>5min）未更新的报告 → 标记 error（保留 checkpoint），
-    # 用户在详情页点「重新生成」从 checkpoint 续跑；启动时不自动拉起后台续跑。
-    _stale_reports = deps.db.recover_stale_generating_reports(timeout_minutes=5)
+    # 扫描遗留的 generating 报告 → 标记 error（保留 checkpoint）：runner 跑在本进程
+    # 内，重启后必然全部不存在，任何 generating 均为孤儿（不设时间阈值，§3.8.3）。
+    # 用户在详情页点「恢复生成」从 checkpoint 续跑；启动时不自动拉起后台续跑。
+    _stale_reports = deps.db.recover_stale_generating_reports()
     if _stale_reports:
         logging.getLogger(__name__).info(
             "Marked %d interrupted report(s) as error (stale generating): %s",

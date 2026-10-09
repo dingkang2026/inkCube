@@ -208,8 +208,8 @@ class TestDbHooksRemoved:
 class TestTaskTerminalEvents:
     """task 终态显式声明（E2 收尾，v3.9）：task_agent.py 旧直调已迁入。"""
 
-    def test_complete_task_writes_notification(self, db):
-        task_id = db.create_task("重构调研", "/tmp/x")["id"]
+    def test_complete_task_writes_notification(self, db, tmp_path):
+        task_id = db.create_task("重构调研", str(tmp_path))["id"]
         activity_events.complete_task(db, task_id)
 
         n = db.list_unread_notifications()[0]
@@ -219,8 +219,8 @@ class TestTaskTerminalEvents:
         assert n["entity_title"] == "重构调研"
         assert n["project_id"] is None  # 任务不隶属项目（导航固定任务页）
 
-    def test_fail_task_detail_truncated(self, db):
-        task_id = db.create_task("失败任务", "/tmp/y")["id"]
+    def test_fail_task_detail_truncated(self, db, tmp_path):
+        task_id = db.create_task("失败任务", str(tmp_path))["id"]
         activity_events.fail_task(db, task_id, "z" * 300)
 
         n = db.list_unread_notifications()[0]

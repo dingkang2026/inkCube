@@ -93,12 +93,28 @@ def finalize_report(
 
 
 def _convert_subheads(text: str) -> str:
-    """将 ◆ 小标题转换为 Markdown 四级标题。"""
-    def replace_subhead(m):
-        title = m.group(1).strip()
-        return f"#### {title}"
+    """将 ◆ 小标题转换为三级标题（章内小节，编号 `章号.节号`，§3.5）。
 
-    return re.sub(r"^\s*◆\s*(.+?)\s*$", replace_subhead, text, flags=re.MULTILINE)
+    章号取自组装层注入的章节标题（`## 3 产品与服务` → 3），节号在章内
+    递增、遇新章重置；层级由原四级收敛为三级（章 H2 → 小节 H3），
+    避免标题层级空跳（§3.5 标题层级：H1 文档题 / H2 章 / H3 小节）。
+    """
+    pattern = re.compile(r"^(## .+|[ \t\u3000]*◆\s*.+)$", re.MULTILINE)
+    state = {"section": 0, "sub": 0}
+
+    def repl(m: re.Match) -> str:
+        line = m.group(1)
+        if line.startswith("## "):
+            num = re.match(r"^## (\d+)[\s\u3000]", line)
+            if num:
+                state["section"] = int(num.group(1))
+            state["sub"] = 0
+            return line
+        state["sub"] += 1
+        title = line.strip().lstrip("◆").strip()
+        return f"### {state['section']}.{state['sub']} {title}"
+
+    return pattern.sub(repl, text)
 
 
 def _smooth_transitions(text: str) -> str:
@@ -153,10 +169,15 @@ def _smooth_transitions(text: str) -> str:
                 body,
             )
 
-            # 规则 2：清除节首重复标题（节首第一行与上一节标题相同）
+            # 规则 2：清除节首重复标题（节首第一行与上一节标题相同；双方剥去
+            # 组装层注入的前导序号再比较——LLM 节首重复标题必为无编号裸文本，
+            # 不剥号则带号标题永不相等、规则永不生效）
             lines = body.split("\n")
-            prev_title = section_parts[i - 1].replace("## ", "").strip()
-            if lines and lines[0].strip() == prev_title:
+            prev_title = re.sub(
+                r"^\d+\s+", "",
+                section_parts[i - 1].replace("## ", "").strip(),
+            )
+            if lines and re.sub(r"^\d+\s+", "", lines[0].strip()) == prev_title:
                 body = "\n".join(lines[1:]).lstrip("\n")
 
             smoothed.append(head + body + trailing)
@@ -174,11 +195,16 @@ def _build_toc(text: str) -> str:
 
     目录顺序与正文严格一致：正文经 _assemble_full_text 重排
     （post_body(front) 前置），故不能按大纲原序生成。
+
+    目录行保留 `idx.` 列表序号（Markdown 有序列表语法，预览/导出
+    渲染为列表），标题文本剥去组装层注入的前导序号（`1 标题` →
+    `标题`）避免双号；序号语义与正文标题编号同源一致（§3.5）。
     """
     lines = ["## 目录", ""]
     idx = 1
     for m in re.finditer(r"^## (.+)$", text, flags=re.MULTILINE):
-        lines.append(f"{idx}. {m.group(1).strip()}")
+        bare = re.sub(r"^\d+\s+", "", m.group(1).strip())
+        lines.append(f"{idx}. {bare}")
         idx += 1
     return "\n".join(lines)
 

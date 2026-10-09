@@ -252,6 +252,7 @@ def run_structural_lint(db, project_id: str) -> list[dict]:
                 "type": "empty-page",
                 "title": f"页面内容为空: {pd.title}",
                 "description": f"页面 '{pd.page_key}' 内容为空，建议重新编译或补充资料。",
+                "pages": [pd.page_key],
                 "affected_page_ids": [pd.page_id],
             })
         elif len(content_stripped) < 50:
@@ -259,6 +260,7 @@ def run_structural_lint(db, project_id: str) -> list[dict]:
                 "type": "empty-page",
                 "title": f"页面内容过短: {pd.title}",
                 "description": f"页面 '{pd.page_key}' 内容仅 {len(content_stripped)} 字符，可能编译不完整。",
+                "pages": [pd.page_key],
                 "affected_page_ids": [pd.page_id],
             })
 
@@ -270,6 +272,7 @@ def run_structural_lint(db, project_id: str) -> list[dict]:
                     "type": "missing-source",
                     "title": f"缺少来源追溯: {pd.title}",
                     "description": f"页面 '{pd.page_key}' 有内容但没有任何来源追溯记录。",
+                    "pages": [pd.page_key],
                     "affected_page_ids": [pd.page_id],
                 })
         except Exception:
@@ -282,8 +285,12 @@ def run_structural_lint(db, project_id: str) -> list[dict]:
             )
             finding: dict = {
                 "type": "orphan",
-                "title": f"孤立页面: {pd.title}",
+                # title 携带 page_key（wiki-link 形式）：sweep Stage1 从 [[key]] 提取
+                # 归一化后与 inbound counts 匹配；裸标题无法对应 page_key，
+                # orphan 永远无法自动解决（2.6 §5.3 承诺失效）
+                "title": f"孤立页面: [[{pd.page_key}]] ({pd.title})",
                 "description": f"页面 '{pd.page_key}' 没有任何其他页面链接到它。",
+                "pages": [pd.page_key],
                 "affected_page_ids": [pd.page_id],
             }
             if suggestion:
@@ -303,6 +310,8 @@ def run_structural_lint(db, project_id: str) -> list[dict]:
                     "type": "broken-link",
                     "title": f"死链: [[{link}]] (来自 {pd.title})",
                     "description": f"页面 '{pd.page_key}' 引用了不存在的页面 '[[{link}]]'。",
+                    # pages 经 router 落库为 "PAGES:" 行：前端一键修复据此定位源页面
+                    "pages": [pd.page_key],
                     "affected_page_ids": [pd.page_id],
                 }
                 if suggestion:
@@ -318,6 +327,7 @@ def run_structural_lint(db, project_id: str) -> list[dict]:
                 "type": "no-outlinks",
                 "title": f"无出链: {pd.title}",
                 "description": f"页面 '{pd.page_key}' 没有链接到任何其他页面。",
+                "pages": [pd.page_key],
                 "affected_page_ids": [pd.page_id],
             }
             if suggestion:

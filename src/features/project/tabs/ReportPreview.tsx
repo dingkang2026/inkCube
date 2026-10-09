@@ -1,5 +1,5 @@
 /** src/features/project/tabs/ReportPreview.tsx — Report detail view (rendered markdown + sources + logs) */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Markdown } from '../../../components/Markdown'
 import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2, Pause, PauseCircle, Play, RefreshCw } from 'lucide-react'
@@ -32,16 +32,33 @@ interface ReportPreviewProps {
   onBack: () => void
 }
 
+// 导出面板方向记忆（§1.3：默认纵向，localStorage 记忆上次选择）
+const ORIENTATION_STORAGE_KEY = 'inkcube.report.export.orientation'
+type ExportOrientation = 'portrait' | 'landscape'
+
+function _loadStoredOrientation(): ExportOrientation {
+  try {
+    return localStorage.getItem(ORIENTATION_STORAGE_KEY) === 'landscape' ? 'landscape' : 'portrait'
+  } catch {
+    return 'portrait'
+  }
+}
+
 export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
-  const [showSources, setShowSources] = useState(true)
-  const [showLogs, setShowLogs] = useState(false)
+  // 面板默认态（§1.3）：正文优先，来源/日志默认收起；生成中日志默认展开供盯进展
+  const [showSources, setShowSources] = useState(false)
+  const [showLogs, setShowLogs] = useState(() => report.status === 'generating')
   const [content, setContent] = useState<ReportContent | null>(null)
   const [logs, setLogs] = useState<ReportLog[]>([])
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
+  // 导出面板（§1.3）：点「Word」弹出、点外部关闭；方向 radio 共用于两形式
+  const [showExportPanel, setShowExportPanel] = useState(false)
+  const [orientation, setOrientation] = useState<ExportOrientation>(_loadStoredOrientation)
+  const exportPanelRef = useRef<HTMLDivElement | null>(null)
   // 乐观本地态（复审建议，2.5 §3.1 修订）：resume/restart 成功后后端已翻 generating，
   // 但快照要等心跳(≤5s)+轮询(3s)同步——窗口期内 paused 按钮仍可点、二次点击会被
   // 后端 400 拒绝弹出误导错误。本地立即置 generating：按钮即刻消失、spinner 即刻
@@ -105,6 +122,31 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   // 挂载即拉后，终态日志刷新统一由本边沿负责）
   useEdgeRefetch(generating, () => { void loadContent(); void loadLogs() })
 
+  // 终态收敛（§1.3）：生成完正文优先，日志自动收起（仍可手动展开）。
+  // 仅 generating 翻假时触发，不覆盖稳态下的手动展开
+  useEffect(() => {
+    if (!generating) setShowLogs(false)
+  }, [generating])
+
+  // 生成中新日志自动滚底（展开瞬间也滚一次；未展开时 ref 为 null 安全跳过）
+  const logsListRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = logsListRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [logs, showLogs])
+
+  // 导出面板点外部关闭（面板自身与触发按钮在 ref 内，不触发关闭）
+  useEffect(() => {
+    if (!showExportPanel) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (exportPanelRef.current && !exportPanelRef.current.contains(e.target as Node)) {
+        setShowExportPanel(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [showExportPanel])
+
   // ── 报告级暂停（2.5 §3.1 修订）：生成中可请求暂停（章节边界生效），paused 可恢复/重新生成
   const handlePause = async () => {
     try {
@@ -142,20 +184,30 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     }
   }
 
-  const handleExport = async () => {
+  // 导出（§1.3 两形式共用方向）：直接打开（另存为=false，渲染到产物目录默认位置后
+  // 系统默认程序打开）/ 另存为（showSaveDialog 选定路径渲染，toast 展示完整路径）。
+  // IPC 错误统一 throw（handlePythonResponse），在 catch 中可见呈现
+  const handleExport = async (saveAs: boolean) => {
     setExporting(true)
     try {
+      try { localStorage.setItem(ORIENTATION_STORAGE_KEY, orientation) } catch { /* ignore */ }
       const result: any = await window.electronAPI.invoke('reports:exportReport', {
         reportId: report.id,
+        title: report.title,
+        orientation,
+        saveAs,
       })
-      if (result.path) {
-        showToast(t('project.report.preview.exportSuccess', { format: 'Word', title: report.title }), 'success')
+      if (result.canceled) return // 用户取消另存为，静默收场
+      if (result.openError) {
+        showToast(t('project.report.preview.exportOpenFailed', { error: result.openError }), 'error')
+      } else if (saveAs) {
+        showToast(t('project.report.preview.exportedTo', { path: result.path }), 'success')
       } else {
-        showToast(t('project.report.preview.exportFailed', { error: result.error }), 'error')
+        showToast(t('project.report.preview.exportOpened'), 'success')
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Export failed:', err)
-      showToast(t('project.report.preview.exportFailed', { error: String(err) }), 'error')
+      showToast(t('project.report.preview.exportFailed', { error: String(err?.message || err) }), 'error')
     } finally {
       setExporting(false)
     }
@@ -197,9 +249,57 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
         </button>
         <h3 className={s.reportTitle}>{report.title}</h3>
         <div className={s.toolbar}>
-          <button className={s.exportBtn} onClick={handleExport} disabled={exporting}>
-            <FileText size={14} /> Word
-          </button>
+          <div className={s.exportWrap} ref={exportPanelRef}>
+            <button
+              className={s.exportBtn}
+              onClick={() => setShowExportPanel(v => !v)}
+              // 非 done 状态禁用：终稿 content.md 要到收尾才落盘，生成中导出必报文件不存在
+              disabled={exporting || status !== 'done'}
+            >
+              <FileText size={14} /> Word
+            </button>
+            {showExportPanel && (
+              <div className={s.exportPanel}>
+                <div className={s.exportPanelTitle}>
+                  {t('project.report.preview.exportPanel.title')}
+                </div>
+                <div className={s.exportOrientation}>
+                  <label className={s.radioLabel}>
+                    <input
+                      type="radio"
+                      name="export-orientation"
+                      checked={orientation === 'portrait'}
+                      onChange={() => setOrientation('portrait')}
+                    />
+                    {t('project.report.preview.exportPanel.portrait')}
+                  </label>
+                  <label className={s.radioLabel}>
+                    <input
+                      type="radio"
+                      name="export-orientation"
+                      checked={orientation === 'landscape'}
+                      onChange={() => setOrientation('landscape')}
+                    />
+                    {t('project.report.preview.exportPanel.landscape')}
+                  </label>
+                </div>
+                <button
+                  className={s.exportActionBtn}
+                  onClick={() => void handleExport(false)}
+                  disabled={exporting}
+                >
+                  {t('project.report.preview.exportPanel.openDirectly')}
+                </button>
+                <button
+                  className={s.exportActionBtn}
+                  onClick={() => void handleExport(true)}
+                  disabled={exporting}
+                >
+                  {t('project.report.preview.exportPanel.saveAs')}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -209,6 +309,15 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
           <div className={s.generatingState}>
             <Loader2 size={24} className={s.spinIcon} />
             <span>{t('project.report.wizard.generating')} {report.progress ? `${report.progress}%` : ''}</span>
+            <div
+              className={s.progressBar}
+              role="progressbar"
+              aria-valuenow={report.progress || 0}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div className={s.progressFill} style={{ width: `${report.progress || 0}%` }} />
+            </div>
             <button className={s.pauseActionBtn} onClick={() => void handlePause()} title={t('project.report.pauseTip')}>
               <Pause size={14} /> {t('project.report.pauseReport')}
             </button>
@@ -230,6 +339,17 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
           <div className={s.errorState}>
             <AlertCircle size={24} />
             <span>{report.error_message || t('project.report.failed')}</span>
+            {/* 崩溃恢复入口（§3.8.3）：error 保留 checkpoint，与 paused 同构提供
+                恢复（断点续跑）/ 重新生成（全量重跑，确认后）——兑现中断日志
+                「可重新生成续跑」的承诺，免去退回列表找重试按钮 */}
+            <div className={s.pausedActions}>
+              <button className={s.pauseActionBtn} onClick={() => void handleResume()} title={t('project.report.resumeTip')}>
+                <Play size={14} /> {t('project.report.resumeReport')}
+              </button>
+              <button className={s.pauseActionBtn} onClick={() => void handleRestart()}>
+                <RefreshCw size={14} /> {t('project.report.restartReport')}
+              </button>
+            </div>
           </div>
         ) : (
           <Markdown content={markdownContent} className={s.markdownBody} />
@@ -265,7 +385,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
           {showLogs ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         {showLogs && (
-          <div className={s.logsList}>
+          <div className={s.logsList} ref={logsListRef}>
             {logs.length === 0 ? (
               <div className={s.logEmpty}>{t('project.report.preview.noLogs')}</div>
             ) : (

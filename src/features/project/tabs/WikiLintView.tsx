@@ -7,13 +7,16 @@
  *   - One-click fix for broken-links
  *   - Re-scan trigger
  *   - Click to navigate to affected page
+ * 治理工作台（§5.5，E2-2026-10）：分型统计 chips + 矛盾两栏对比裁决卡
+ * （adjudicateReview）+ 缺口补料上传卡（knowledge:uploadFile）+ 死链分型
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Loader2, Shield, AlertTriangle, AlertCircle,
-  Info, Lightbulb, Search, RefreshCw, CheckCircle, Filter,
+  Info, Lightbulb, Search, RefreshCw, CheckCircle, Filter, Upload,
 } from 'lucide-react'
+import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
 
 interface WikiLintViewProps {
@@ -28,6 +31,8 @@ interface LintFinding {
   description: string
   resolved: number
   created_at: string
+  /** 矛盾证据结构化（§3.5/§5.5）：摄入产出的 contradiction 携带，存量与 Lint 产物为空 */
+  evidence?: { page_key: string; quote: string }[] | null
 }
 
 type LintMode = 'structural' | 'semantic' | 'full'
@@ -46,34 +51,49 @@ const TYPE_ICONS: Record<string, typeof AlertCircle> = {
   'explore-next': Lightbulb,
 }
 
-// Map lint types to severity (structural types have implicit severity)
+// Map lint types to severity (structural types have implicit severity;
+// 摄入管线产出的类型无 [severity] 前缀，按类型回落默认级别——§5.4，
+// 否则整列落到 info 导致级别筛选失效)
 const TYPE_SEVERITY: Record<string, string> = {
   'orphan': 'info',
   'broken-link': 'warning',
   'no-outlinks': 'info',
   'empty-page': 'warning',
+  'missing-source': 'medium',
+  'orphan-review': 'low',
+  'contradiction': 'high',
+  'stale': 'medium',
+  'stale-claim': 'medium',
+  'missing-page': 'medium',
+  'data-gap': 'medium',
+  'suggestion': 'low',
+  'explore-next': 'low',
 }
 
-// Chinese labels for lint types
-const TYPE_LABELS: Record<string, string> = {
-  'orphan': '孤立页',
-  'broken-link': '死链',
-  'no-outlinks': '无出链',
-  'empty-page': '空页面',
-  'contradiction': '矛盾',
-  'stale': '过时',
-  'missing-page': '缺页面',
-  'suggestion': '建议',
-  'explore-next': '探索建议',
+// Lint type label i18n keys（经 t() 翻译，缺失时回退原始 type）
+const TYPE_LABEL_KEYS: Record<string, string> = {
+  'orphan': 'project.wiki.lintTypeOrphan',
+  'broken-link': 'project.wiki.lintTypeBrokenLink',
+  'no-outlinks': 'project.wiki.lintTypeNoOutlinks',
+  'empty-page': 'project.wiki.lintTypeEmptyPage',
+  'missing-source': 'project.wiki.lintTypeMissingSource',
+  'orphan-review': 'project.wiki.lintTypeOrphanReview',
+  'contradiction': 'project.wiki.lintTypeContradiction',
+  'stale': 'project.wiki.lintTypeStale',
+  'stale-claim': 'project.wiki.lintTypeStaleClaim',
+  'missing-page': 'project.wiki.lintTypeMissingPage',
+  'data-gap': 'project.wiki.lintTypeDataGap',
+  'suggestion': 'project.wiki.lintTypeSuggestion',
+  'explore-next': 'project.wiki.lintTypeExploreNext',
 }
 
-// Chinese labels for severity
-const SEVERITY_LABELS: Record<string, string> = {
-  'high': '高',
-  'medium': '中',
-  'warning': '警告',
-  'low': '低',
-  'info': '信息',
+// Severity label i18n keys（经 t() 翻译，缺失时回退原始 severity）
+const SEVERITY_LABEL_KEYS: Record<string, string> = {
+  'high': 'project.wiki.lintSeverityHigh',
+  'medium': 'project.wiki.lintSeverityMedium',
+  'warning': 'project.wiki.lintSeverityWarning',
+  'low': 'project.wiki.lintSeverityLow',
+  'info': 'project.wiki.lintSeverityInfo',
 }
 
 // Extract severity from description (semantic lint prepends [severity])
@@ -90,13 +110,44 @@ function extractPages(desc: string): string[] {
   return m[1].split(',').map((item) => item.trim()).filter(Boolean)
 }
 
-// Extract suggestion target from description
-function extractSuggestion(desc: string): { label: string; target: string } | null {
+// Extract suggestion target from description（检测正则与后端 routers/wiki.py 落库文案契约，label 由 i18n 渲染）
+function extractSuggestion(desc: string): { kind: 'link' | 'related'; target: string } | null {
   const m = desc.match(/建议链接到: \[\[(.+?)\]\]/)
-  if (m) return { label: '链接到', target: m[1] }
+  if (m) return { kind: 'link', target: m[1] }
   const m2 = desc.match(/建议关联页面: \[\[(.+?)\]\]/)
-  if (m2) return { label: '关联', target: m2[1] }
+  if (m2) return { kind: 'related', target: m2[1] }
   return null
+}
+
+// Extract dead-link page key from finding title（lint.py 死链标题形如 "死链: [[key]] (来自 xxx)"）
+function extractDeadLinkKey(title: string): string | null {
+  const m = title.match(/\[\[(.+?)(?:\|[^\]]*)?\]\]/)
+  return m ? m[1] : null
+}
+
+// 死链分型（§5.5）：前端实时判定兼容存量——来源页缺失 / 结构页缺失 / 疑似异名
+// schema 匹配做宽松 slug 归一（与后端 _normalize_slug 的常用形态对齐：小写+空白转下划线）
+type BrokenLinkSubtype = 'missing-source' | 'missing-schema' | 'unknown'
+
+function normalizeSlug(key: string): string {
+  return key.trim().toLowerCase().replace(/\s+/g, '_')
+}
+
+function classifyBrokenLink(deadKey: string | null, schemaKeys: Set<string>): BrokenLinkSubtype | null {
+  if (!deadKey) return null
+  if (deadKey.startsWith('src_')) return 'missing-source'
+  if (schemaKeys.has(normalizeSlug(deadKey))) return 'missing-schema'
+  return 'unknown'
+}
+
+// read file as base64 data URL（缺口补料上传，与 KnowledgePage 同款通道格式）
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
 }
 
 // Strip metadata from description for display
@@ -111,6 +162,7 @@ function cleanDescription(desc: string): string {
 
 export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [findings, setFindings] = useState<LintFinding[]>([])
   const [loading, setLoading] = useState(false)
   const [scanning, setScanning] = useState(false)
@@ -119,6 +171,10 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all')
   const [fixingId, setFixingId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [schemaKeys, setSchemaKeys] = useState<Set<string>>(new Set())
+  const [uploadingGapId, setUploadingGapId] = useState<string | null>(null)
+  const gapFileInputRef = useRef<HTMLInputElement>(null)
+  const gapUploadTargetRef = useRef<string | null>(null)
 
   // Load findings (reviews)
   const loadFindings = useCallback(async () => {
@@ -135,6 +191,19 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
 
   useEffect(() => { loadFindings() }, [loadFindings])
 
+  // 结构页集合（死链分型用，§5.5）：getSchemas 返回项目类型的 schema 定义
+  useEffect(() => {
+    let cancelled = false
+    window.electronAPI.invoke('wiki:getSchemas', { projectId })
+      .then((result: any) => {
+        if (cancelled) return
+        const list: any[] = result?.schemas || []
+        setSchemaKeys(new Set(list.map((x) => normalizeSlug(String(x.page_key || '')))))
+      })
+      .catch((err: unknown) => console.error('Failed to load wiki schemas:', err))
+    return () => { cancelled = true }
+  }, [projectId])
+
   // Run lint scan
   const handleRunLint = async (mode?: LintMode) => {
     const m = mode || lintMode
@@ -146,6 +215,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
       }
     } catch (err) {
       console.error('Lint scan failed:', err)
+      showToast(t('project.wiki.lintFailed', { defaultValue: '检查失败' }), 'error')
     } finally {
       setScanning(false)
     }
@@ -160,6 +230,72 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
       await loadFindings()
     } catch (err) {
       console.error('Failed to dismiss finding:', err)
+    }
+  }
+
+  // 矛盾裁决（§5.5）：以选中侧为准，后端对其余各侧页面做确定性替换+快照+归档
+  const handleAdjudicate = async (f: LintFinding, chosen: number) => {
+    setFixingId(f.id)
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:adjudicateReview', {
+        projectId, reviewId: f.id, chosen,
+      })
+      if (result?.success) {
+        showToast(t('project.wiki.lintAdjudicateSuccess', { defaultValue: '已按选定说法更新相关页面' }), 'success')
+      } else {
+        // 部分失配：发现项保留待处理，提示人工（§5.5 宁可留待人工不误归档）
+        showToast(t('project.wiki.lintAdjudicatePartial', { defaultValue: '部分页面内容已变化，未能自动替换，请手动处理' }), 'warning')
+      }
+    } catch (err) {
+      console.error('Failed to adjudicate:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.lintAdjudicateFailed', { reason, defaultValue: '裁决失败: {{reason}}' }), 'error')
+    } finally {
+      setFixingId(null)
+      await loadFindings()
+    }
+  }
+
+  // 缺口补料（§5.5）：内嵌文件选择 → 直传本项目知识库（复用 knowledge:uploadFile）
+  const openGapFilePicker = (findingId: string) => {
+    gapUploadTargetRef.current = findingId
+    if (gapFileInputRef.current) {
+      gapFileInputRef.current.value = ''
+      gapFileInputRef.current.click()
+    }
+  }
+
+  const handleGapFileChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const findingId = gapUploadTargetRef.current
+    const file = e.target.files?.[0]
+    if (!file || !findingId) return
+    setUploadingGapId(findingId)
+    try {
+      const base64 = await readFileAsBase64(file)
+      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+      const result: any = await window.electronAPI.invoke('knowledge:uploadFile', {
+        projectId,
+        filename: file.name,
+        fileType: ext,
+        data: base64,
+      })
+      if (result && !result.success) {
+        showToast(`${file.name}: ${result.message || result.error || 'Upload failed'}`, 'error')
+      } else {
+        showToast(
+          t('project.wiki.lintGapUploaded', {
+            defaultValue: '已上传并开始解析；请稍后触发增量编译，若新文件补上该缺口将自动消除',
+          }),
+          'success',
+        )
+      }
+    } catch (err) {
+      console.error('Failed to upload gap material:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.lintGapUploadFailed', { reason, defaultValue: '上传失败: {{reason}}' }), 'error')
+    } finally {
+      setUploadingGapId(null)
+      gapUploadTargetRef.current = null
     }
   }
 
@@ -197,8 +333,58 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
     }
   }
 
+  // 一键修复死链（真实修复）：读源页面 → 替换死链 → 写回 → 标记发现项已修复
+  const handleFixBrokenLink = async (f: LintFinding, target: string) => {
+    const sourcePage = extractPages(f.description)[0]
+    const deadKey = extractDeadLinkKey(f.title)
+    if (!sourcePage || !deadKey) {
+      showToast(t('project.wiki.lintFixSourceMissing', { defaultValue: '无法定位源页面或死链，请手动处理' }), 'warning')
+      return
+    }
+    setFixingId(f.id)
+    try {
+      const detail: any = await window.electronAPI.invoke('wiki:getPage', { projectId, pageKey: sourcePage })
+      const content: string | null = detail?.page?.content ?? null
+      if (!content) {
+        showToast(t('project.wiki.lintFixSourceMissing', { defaultValue: '无法定位源页面或死链，请手动处理' }), 'warning')
+        return
+      }
+      // 匹配 [[dead]] 与 [[dead|别名]] 两种形式并保留别名
+      const escaped = deadKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const newContent = content.replace(
+        new RegExp(`\\[\\[${escaped}(\\|[^\\]]+)?\\]\\]`, 'g'),
+        `[[${target}$1]]`,
+      )
+      if (newContent === content) {
+        // 无匹配说明发现项已过时（源页面已被修改），提示后刷新列表
+        showToast(t('project.wiki.lintFixNoMatch', { defaultValue: '源页面中未找到该死链，发现项可能已过时' }), 'warning')
+        await loadFindings()
+        return
+      }
+      await window.electronAPI.invoke('wiki:editPage', {
+        projectId, pageKey: sourcePage, content: newContent, title: detail.page.title,
+      })
+      await window.electronAPI.invoke('wiki:resolveReview', { projectId, reviewId: f.id, action: 'fixed' })
+      showToast(t('project.wiki.lintFixSuccess', { defaultValue: '死链已修复' }), 'success')
+      await loadFindings()
+    } catch (err) {
+      console.error('Failed to fix broken link:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.lintFixFailed', { reason, defaultValue: '修复失败: {{reason}}' }), 'error')
+    } finally {
+      setFixingId(null)
+    }
+  }
+
   // Extract unique types for filter
   const allTypes = [...new Set(findings.map(f => f.type))]
+
+  // 治理面板分型统计（§5.5）：按类型计数，点击 chip 即筛选
+  const typeCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const f of findings) counts[f.type] = (counts[f.type] || 0) + 1
+    return counts
+  }, [findings])
 
   // Filter findings
   const filtered = findings.filter(f => {
@@ -234,6 +420,14 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
 
   return (
     <div className={s.lintView}>
+      {/* 缺口补料隐藏文件选择（§5.5）：复用 knowledge:uploadFile 通道 */}
+      <input
+        ref={gapFileInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        onChange={(e) => void handleGapFileChosen(e)}
+      />
+
       {/* Header */}
       <div className={s.lintHeader}>
         <Shield size={18} className={s.lintTitleIcon} />
@@ -264,6 +458,23 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
         </button>
       </div>
 
+      {/* 治理面板：分型统计 chips（§5.5）——点击筛选，再点取消 */}
+      {allTypes.length > 0 && (
+        <div className={s.lintStatsBar}>
+          {allTypes.map((type) => (
+            <button
+              key={type}
+              className={`${s.lintStatChip} ${typeFilter === type ? s.lintStatChipActive : ''}`}
+              onClick={() => setTypeFilter(typeFilter === type ? 'all' : type)}
+            >
+              {getIcon(type)}
+              <span>{TYPE_LABEL_KEYS[type] ? t(TYPE_LABEL_KEYS[type], { defaultValue: type }) : type}</span>
+              <span className={s.lintStatChipCount}>{typeCounts[type]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Filters */}
       <div className={s.lintFilters}>
         <Filter size={12} className={s.lintFilterIcon} />
@@ -274,7 +485,11 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
         >
           <option value="all">{t('project.wiki.allTypes', { defaultValue: '全部类型' })}</option>
           {allTypes.map(type => (
-            <option key={type} value={type}>{TYPE_LABELS[type] || type}</option>
+            <option key={type} value={type}>
+              {TYPE_LABEL_KEYS[type]
+                ? t(TYPE_LABEL_KEYS[type], { defaultValue: type })
+                : type}
+            </option>
           ))}
         </select>
         <select
@@ -283,10 +498,10 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
           onChange={(e) => setSeverityFilter(e.target.value as SeverityFilter)}
         >
           <option value="all">{t('project.wiki.allSeverities', { defaultValue: '全部级别' })}</option>
-          <option value="high">高</option>
-          <option value="medium">中</option>
-          <option value="low">低</option>
-          <option value="info">信息</option>
+          <option value="high">{t('project.wiki.lintSeverityHigh', { defaultValue: '高' })}</option>
+          <option value="medium">{t('project.wiki.lintSeverityMedium', { defaultValue: '中' })}</option>
+          <option value="low">{t('project.wiki.lintSeverityLow', { defaultValue: '低' })}</option>
+          <option value="info">{t('project.wiki.lintSeverityInfo', { defaultValue: '信息' })}</option>
         </select>
       </div>
 
@@ -298,10 +513,12 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
             checked={filtered.length > 0 && selectedIds.size === filtered.length}
             onChange={toggleSelectAll}
           />
-          <span>全选</span>
+          <span>{t('project.wiki.selectAll', { defaultValue: '全选' })}</span>
         </label>
         {selectedIds.size > 0 && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>已选 {selectedIds.size} 项</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {t('project.wiki.lintSelectedCount', { count: selectedIds.size, defaultValue: '已选 {{count}} 项' })}
+          </span>
         )}
         <div className={s.lintBatchActions}>
           <button
@@ -309,7 +526,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
             disabled={selectedIds.size === 0}
             onClick={handleBatchDismiss}
           >
-            忽略所选
+            {t('project.wiki.batchDismiss', { count: selectedIds.size, defaultValue: '批量忽略 ({{count}})' })}
           </button>
         </div>
       </div>
@@ -334,6 +551,11 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
           const pages = extractPages(f.description)
           const suggestion = extractSuggestion(f.description)
           const cleanDesc = cleanDescription(f.description)
+          // 死链分型（§5.5）与矛盾证据卡（§5.5）
+          const deadKey = f.type === 'broken-link' ? extractDeadLinkKey(f.title) : null
+          const blSubtype = f.type === 'broken-link' ? classifyBrokenLink(deadKey, schemaKeys) : null
+          const evidenceSides = f.type === 'contradiction' && Array.isArray(f.evidence) && f.evidence.length >= 2
+            ? f.evidence : null
 
           return (
             <div key={f.id} className={`${s.lintItem} ${selectedIds.has(f.id) ? s.lintItemSelected : ''}`}>
@@ -348,11 +570,25 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
                 <div className={s.lintItemHeader}>
                   <span className={s.lintTypeBadge}>
                     {getIcon(f.type)}
-                    {TYPE_LABELS[f.type] || f.type}
+                    {TYPE_LABEL_KEYS[f.type]
+                      ? t(TYPE_LABEL_KEYS[f.type], { defaultValue: f.type })
+                      : f.type}
                   </span>
                   <span className={`${s.lintSeverityBadge} ${getSeverityClass(severity)}`}>
-                    {SEVERITY_LABELS[severity] || severity}
+                    {SEVERITY_LABEL_KEYS[severity]
+                      ? t(SEVERITY_LABEL_KEYS[severity], { defaultValue: severity })
+                      : severity}
                   </span>
+                  {/* 死链分型徽章（§5.5） */}
+                  {blSubtype && (
+                    <span className={s.lintSubtypeBadge}>
+                      {blSubtype === 'missing-source'
+                        ? t('project.wiki.lintBlSubtypeSource', { defaultValue: '来源页缺失' })
+                        : blSubtype === 'missing-schema'
+                          ? t('project.wiki.lintBlSubtypeSchema', { defaultValue: '结构页缺失' })
+                          : t('project.wiki.lintBlSubtypeUnknown', { defaultValue: '疑似异名' })}
+                    </span>
+                  )}
                   <button
                     className={s.lintDismissBtn}
                     onClick={() => handleDismiss(f.id)}
@@ -363,6 +599,72 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
                 </div>
                 <div className={s.lintItemTitle}>{f.title}</div>
                 <p className={s.lintItemDesc}>{cleanDesc}</p>
+
+                {/* 矛盾两栏对比裁决卡（§5.5）：evidence 两侧并排，点选一侧自动替换被否侧 */}
+                {evidenceSides && (
+                  <div className={s.lintEvidenceRow}>
+                    {evidenceSides.map((ev, i) => (
+                      <div key={`${ev.page_key}-${i}`} className={s.lintEvidenceCard}>
+                        <button
+                          className={s.lintEvidencePage}
+                          onClick={() => onNavigateToPage(ev.page_key)}
+                          title={ev.page_key}
+                        >
+                          [[{ev.page_key}]]
+                        </button>
+                        <blockquote className={s.lintEvidenceQuote}>「{ev.quote}」</blockquote>
+                        <div className={s.lintEvidenceActions}>
+                          <button
+                            className={s.lintFixBtn}
+                            disabled={fixingId === f.id}
+                            onClick={() => void handleAdjudicate(f, i)}
+                          >
+                            {fixingId === f.id && <Loader2 size={12} className={s.spin} />}
+                            {t('project.wiki.lintAdjudicate', { defaultValue: '以此为准' })}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 存量矛盾（无结构化证据）：降级提示手动核对（§5.5） */}
+                {f.type === 'contradiction' && !evidenceSides && (
+                  <p className={s.lintHintLine}>
+                    {t('project.wiki.lintContradictionLegacy', { defaultValue: '此发现项产生于结构化证据之前，请点开相关页面手动核对' })}
+                  </p>
+                )}
+
+                {/* 死链分型提示（§5.5） */}
+                {blSubtype === 'missing-source' && (
+                  <p className={s.lintHintLine}>
+                    {t('project.wiki.lintBlSourceHint', { defaultValue: '链接目标是一个来源摘要页（src_），来源文件可能未摄入或已被删除——可触发增量编译或忽略' })}
+                  </p>
+                )}
+                {blSubtype === 'missing-schema' && (
+                  <p className={s.lintHintLine}>
+                    {t('project.wiki.lintBlSchemaHint', { defaultValue: '链接目标是结构页，尚未编译生成——触发增量编译后会自动创建' })}
+                  </p>
+                )}
+                {blSubtype === 'unknown' && !suggestion && (
+                  <p className={s.lintHintLine}>
+                    {t('project.wiki.lintBlUnknownHint', { defaultValue: '疑似异名或无效链接——无可靠建议目标，请点开源页面手动处理或忽略' })}
+                  </p>
+                )}
+
+                {/* 缺口补料卡（§5.5）：直传本项目知识库，下轮增量编译 RESOLVES 自动核销 */}
+                {(f.type === 'data-gap' || f.type === 'missing-page') && (
+                  <div className={s.lintGapActions}>
+                    <button
+                      className={s.lintGapUploadBtn}
+                      disabled={uploadingGapId === f.id}
+                      onClick={() => openGapFilePicker(f.id)}
+                    >
+                      {uploadingGapId === f.id ? <Loader2 size={12} className={s.spin} /> : <Upload size={12} />}
+                      {t('project.wiki.lintGapUpload', { defaultValue: '上传补充材料' })}
+                    </button>
+                  </div>
+                )}
 
                 {/* Affected pages */}
                 {pages.length > 0 && (
@@ -382,7 +684,11 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
                 {/* Suggestion with one-click fix */}
                 {suggestion && (
                   <div className={s.lintSuggestion}>
-                    <span className={s.lintSuggestionLabel}>{suggestion.label}:</span>
+                    <span className={s.lintSuggestionLabel}>
+                      {suggestion.kind === 'related'
+                        ? t('project.wiki.lintSuggestRelated', { defaultValue: '关联' })
+                        : t('project.wiki.lintSuggestLinkTo', { defaultValue: '链接到' })}:
+                    </span>
                     <button
                       className={s.lintPageLink}
                       onClick={() => onNavigateToPage(suggestion.target)}
@@ -393,15 +699,9 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
                       <button
                         className={s.lintFixBtn}
                         disabled={fixingId === f.id}
-                        onClick={async () => {
-                          setFixingId(f.id)
-                          const targetPage = pages[0]
-                          if (targetPage) {
-                            onNavigateToPage(targetPage)
-                          }
-                          setFixingId(null)
-                        }}
+                        onClick={() => void handleFixBrokenLink(f, suggestion.target)}
                       >
+                        {fixingId === f.id && <Loader2 size={12} className={s.spin} />}
                         {t('project.wiki.oneClickFix', { defaultValue: '一键修复' })}
                       </button>
                     )}

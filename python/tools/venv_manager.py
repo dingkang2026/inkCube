@@ -3,6 +3,10 @@
 Each task gets an isolated Python venv so that pip install in one task
 does not pollute another. Uses stdlib venv as the default backend;
 when `uv` is available it will be preferred for speed.
+
+Lazy creation: tasks only record the deterministic venv path (db.create_task);
+the venv directory itself is materialized on first code-execution need via
+`ensure_venv`, so chat-only tasks never cost any disk space.
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 
 from tools.tool_resolver import resolve_python, resolve_tool
 
@@ -89,11 +94,12 @@ def create_venv(task_dir: str) -> str:
         raise RuntimeError(f"无法创建任务虚拟环境: {e}") from e
 
 
-def preinstall_packages(venv_python: str) -> None:
+def preinstall_packages(venv_python: str) -> bool:
     """Preinstall common packages into a new task venv (best-effort).
 
     Uses uv if available (faster), falls back to pip.
     Both uv and pip have global caches, so repeated installs are fast.
+    Returns True when the install command succeeded.
     """
     uv = resolve_tool("uv")
     try:
@@ -111,8 +117,58 @@ def preinstall_packages(venv_python: str) -> None:
         )
         if proc.returncode == 0:
             logger.info("Preinstalled packages in %s", venv_python)
-        else:
-            logger.warning("Package preinstall failed (exit %d): %s",
-                           proc.returncode, (proc.stderr or "")[:500])
+            return True
+        logger.warning("Package preinstall failed (exit %d): %s",
+                       proc.returncode, (proc.stderr or "")[:500])
+        return False
     except Exception as e:
         logger.warning("Package preinstall failed (best-effort): %s", e)
+        return False
+
+
+_PREINSTALL_MARKER = ".inkcube-preinstalled"
+
+# 每 venv 一把预装锁：同一任务连续调用 venv 工具时，ensure 会在预装线程
+# 未完成前再次被调，锁保证不重复起线程（两个 uv/pip 并发写同一 venv 会
+# 互相破坏）。任务数有配额上限，锁字典生命周期内常驻、内存可忽略。
+_preinstall_locks: dict[str, threading.Lock] = {}
+_preinstall_locks_guard = threading.Lock()
+
+
+def _get_preinstall_lock(venv_path: str) -> threading.Lock:
+    with _preinstall_locks_guard:
+        return _preinstall_locks.setdefault(venv_path, threading.Lock())
+
+
+def ensure_venv(task_dir: str) -> str:
+    """Lazily ensure a task venv exists, then preinstall packages once.
+
+    create_venv is idempotent (existing venv → no-op). Preinstall runs at
+    most once per venv: the marker file guards across restarts/repeat runs,
+    the per-venv lock guards concurrent ensures within a process (second
+    caller skips while the first thread is installing); a failed install
+    leaves the marker absent so the next ensure retries. Preinstall itself
+    runs in a daemon thread — first code execution must not block on a
+    cold package cache.
+    """
+    venv_path = create_venv(task_dir)
+    venv_python = get_venv_python(venv_path)
+    marker = os.path.join(venv_path, _PREINSTALL_MARKER)
+    lock = _get_preinstall_lock(venv_path)
+    if not os.path.isfile(marker) and lock.acquire(blocking=False):
+        def _preinstall():
+            try:
+                # 双检：拿锁前的窗口内上一轮预装可能已完成并写入 marker
+                if os.path.isfile(marker):
+                    return
+                if preinstall_packages(venv_python):
+                    try:
+                        with open(marker, "w", encoding="utf-8") as f:
+                            f.write("ok")
+                    except OSError as e:
+                        logger.warning("preinstall marker write failed: %s", e)
+            finally:
+                lock.release()
+        threading.Thread(target=_preinstall, daemon=True,
+                         name="venv-preinstall").start()
+    return venv_path

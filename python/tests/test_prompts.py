@@ -230,6 +230,16 @@ class TestBuildStandardPrompt:
         )
         assert "本节篇幅约 800 字" in out
 
+    def test_target_words_skipped_for_brief_depth(self):
+        """brief 深度不注入 target_words（与 depth 指令「200-500 字」冲突）。"""
+        section = {**self._base_section(), "target_words": 800}
+        out = build_standard_prompt(
+            section=section, chapter_title="市场", report_title="R",
+            completed_digests={}, section_order=[], ref_text="[1] x", ref_numbers=[1],
+            report_depth="brief",
+        )
+        assert "本节篇幅约" not in out
+
     def test_no_target_words_no_hint(self):
         out = build_standard_prompt(
             section=self._base_section(), chapter_title="市场", report_title="R",

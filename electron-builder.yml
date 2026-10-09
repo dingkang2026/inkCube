@@ -28,6 +28,11 @@ extraResources:
       - "**/*"
   - from: "node_modules/mermaid/dist/mermaid.min.js"
     to: "mermaid/mermaid.min.js"
+  # Mermaid renderer script — Python's mermaid bridge spawns it via the Electron
+  # binary; must live outside app.asar (Python cannot read inside asar). Path is
+  # injected as INKCUBE_MERMAID_RENDERER_SCRIPT (python-manager.js).
+  - from: "electron/mermaid-renderer.js"
+    to: "electron-renderer/mermaid-renderer.js"
   # NOTE: resources/base_libraries/ (preset base-lib seed files) intentionally
   # not bundled — preset libs start empty; users upload their own files (2.7 P3)
 

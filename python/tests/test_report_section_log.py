@@ -42,3 +42,23 @@ class TestSectionDoneLog:
         )
         assert level == "info"
         assert "章节跳过" in msg
+
+    def test_generation_failed_is_error(self):
+        """核心回归（M2）：降级终态（占位文本）必须 error 级显式告知，
+        不允许「日志写完成、正文缺内容」的静默不一致。"""
+        msg, level = _section_done_log(
+            {"title": "市场分析", "generation_failed": True}
+        )
+        assert level == "error"
+        assert "章节生成失败" in msg
+        assert "市场分析" in msg
+        assert "重新生成" in msg  # 文案带行动指引（0.4 §7.4）
+
+    def test_generation_failed_takes_precedence_over_degraded(self):
+        """generation_failed 与 degraded 同现时失败优先（更终态）。"""
+        msg, level = _section_done_log(
+            {"title": "风险", "generation_failed": True, "degraded": True}
+        )
+        assert level == "error"
+        assert "章节生成失败" in msg
+        assert "章节降级" not in msg

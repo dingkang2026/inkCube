@@ -24,6 +24,10 @@ const DEFAULT_SETTINGS: LLMSettings = {
   llm_read_timeout: 120,
   task_model: '',
   task_planner_model: '',
+  // Wiki LLM task routing (empty = use global model)
+  wiki_ingest_model: '',
+  wiki_lint_model: '',
+  wiki_dedup_model: '',
   task_timeout: 30,
   task_max_iterations: 25,
   task_auto_confirm_shell: false,

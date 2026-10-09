@@ -13,8 +13,11 @@ V2 format (with YAML frontmatter):
   ---END PAGE---
 
   ---REVIEW: {type} | {title}---
+  EVIDENCE: [[{page_key}]] 「{quote}」   (contradiction 契约，两侧各一行)
   {description}
   ---END REVIEW---
+
+  ---RESOLVES: {缺口编号}---            (缺口闭环，§4.3，可逗号并列)
 
   ---OVERVIEW---
   {updated overview text}
@@ -33,11 +36,40 @@ _REVIEW_PATTERN = re.compile(
     re.DOTALL,
 )
 
+# EVIDENCE line inside REVIEW body (§4.3, E2-2026-10): contradiction evidence,
+# one line per side: EVIDENCE: [[page_key]] 「quote」 (中英引号容错)
+_EVIDENCE_PATTERN = re.compile(
+    r"^EVIDENCE:\s*\[\[(.+?)\]\]\s*[「『\"']?(.+?)[」』\"']?\s*$",
+    re.MULTILINE,
+)
+
+# RESOLVES block (§4.3 gap closure, E2-2026-10): ---RESOLVES: 1--- or
+# ---RESOLVES: 1, 3--- (LLM 格式漂移容忍：逗号并列与多余空白)
+_RESOLVES_PATTERN = re.compile(r"---RESOLVES:\s*(.+?)---")
+
 # LINT block format (per §12.2.9): ---LINT: type | severity | title---
 _LINT_PATTERN = re.compile(
     r"---LINT:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)---\s*\n(.*?)---END LINT---",
     re.DOTALL,
 )
+
+
+def _extract_evidence(body: str) -> tuple[str, list[dict]]:
+    """Extract EVIDENCE lines from a REVIEW body (§4.3).
+
+    Returns (clean_description, evidence) — evidence lines are stripped from
+    the description and returned as [{page_key, quote}].
+    """
+    evidence = []
+    for m in _EVIDENCE_PATTERN.finditer(body):
+        page_key = m.group(1).strip()
+        quote = m.group(2).strip()
+        if page_key and quote:
+            evidence.append({"page_key": page_key, "quote": quote})
+    if not evidence:
+        return body, []
+    clean = _EVIDENCE_PATTERN.sub("", body).strip()
+    return clean, evidence
 
 
 def parse_review_blocks(llm_output: str) -> list[dict]:
@@ -47,25 +79,45 @@ def parse_review_blocks(llm_output: str) -> list[dict]:
       - type: str (missing-page / contradiction / suggestion / confirm)
       - title: str
       - description: str
+      - evidence: list[{page_key, quote}] (empty unless EVIDENCE lines present;
+        contradiction 契约要求两侧各一行，§4.3/§4.4)
     """
     results = []
     valid_types = {"missing-page", "contradiction", "suggestion", "confirm", "data-gap", "stale-claim"}
     for match in _REVIEW_PATTERN.finditer(llm_output):
         review_type = match.group(1).strip().lower()
         title = match.group(2).strip()
-        description = match.group(3).strip()
+        body = match.group(3).strip()
 
         if review_type not in valid_types:
             logger.warning("Unknown REVIEW type: %s, skipping", review_type)
             continue
 
-        if title and description:
+        description, evidence = _extract_evidence(body)
+        # 纯 evidence 无描述（LLM 漂移跳过描述行）也保留——§4.4 宁可留待人工不误丢
+        if title and (description or evidence):
             results.append({
                 "type": review_type,
                 "title": title,
                 "description": description,
+                "evidence": evidence,
             })
     return results
+
+
+def parse_resolves_blocks(llm_output: str) -> list[str]:
+    """Extract gap numbers from RESOLVES blocks (§4.3 gap closure, E2-2026-10).
+
+    Accepts ---RESOLVES: 1--- / ---RESOLVES: 1, 3--- (comma-joined drift).
+    Returns list of number strings in output order.
+    """
+    numbers: list[str] = []
+    for m in _RESOLVES_PATTERN.finditer(llm_output):
+        for part in m.group(1).split(","):
+            n = part.strip()
+            if n and n not in numbers:
+                numbers.append(n)
+    return numbers
 
 
 def parse_lint_blocks(llm_output: str) -> list[dict]:
@@ -163,15 +215,27 @@ def _parse_page_v2(page_key: str, raw_block: str) -> dict:
     meta_lines = []
     body_start = 0
 
-    # Extract metadata lines from the top of the block
-    for i, line in enumerate(lines):
-        if _META_LINE_PATTERN.match(line.strip()):
-            meta_lines.append(line.strip())
+    # Extract metadata lines from the top of the block.
+    # 块首/元数据行之间的空行是 LLM 输出格式漂移的常态：空行不能终止 metadata 区，
+    # 否则整块 type/title/refs 静默丢失（图谱断边、backlinks 缺失、broken-link 漏检）。
+    # 规则：遇空行向后看，跳过空行后若仍是 meta 行则继续收集；否则 metadata 区
+    # 止于最后一个 meta 行，首个非空非 meta 行即 body 起点。
+    n = len(lines)
+    i = 0
+    while i < n:
+        stripped = lines[i].strip()
+        if _META_LINE_PATTERN.match(stripped):
+            meta_lines.append(stripped)
             body_start = i + 1
-        elif line.strip() == "" and i == body_start:
-            # Skip blank line after metadata
-            body_start = i + 1
-            break
+            i += 1
+        elif stripped == "":
+            j = i + 1
+            while j < n and lines[j].strip() == "":
+                j += 1
+            if j < n and _META_LINE_PATTERN.match(lines[j].strip()):
+                i = j
+            else:
+                break
         else:
             break
 

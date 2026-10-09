@@ -1,10 +1,12 @@
 /** src/features/project/tabs/WikiPageReader.tsx — Wiki page reader with frontmatter, backlinks, sources */
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
-  Link2, FileText, Clock, Tag, Edit3,
+  Link2, FileText, Clock, Tag, Edit3, ExternalLink,
 } from 'lucide-react'
 import { Markdown } from '../../../components/Markdown'
-import { parseFrontmatter, PAGE_TYPE_LABELS, formatChangelogTime, ACTION_LABELS } from './wikiUtils'
+import { parseFrontmatter, PAGE_TYPE_LABEL_KEYS, formatChangelogTime, ACTION_LABEL_KEYS } from './wikiUtils'
+import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
 
 interface WikiPageReaderProps {
@@ -19,13 +21,17 @@ interface WikiPageReaderProps {
     sources: Array<{ id: string; file_id: string; filename?: string; contribution?: string }>
     change_log: Array<{ id: string; action: string; summary: string; source_title: string; created_at: string }>
   }
+  /** 摄入跟踪列表（wiki_source_pages）：src 页 header「打开原文件」的映射数据源 */
+  sourcePages?: Array<{ source_page_key: string | null; file_id: string; filename?: string | null }>
   onEdit: () => void
   onNavigateToPage: (pageKey: string) => void
 }
 
 export function WikiPageReader({
-  projectId, pageDetail, onEdit, onNavigateToPage,
+  projectId, pageDetail, sourcePages, onEdit, onNavigateToPage,
 }: WikiPageReaderProps) {
+  const { t, i18n } = useTranslation()
+  const toast = useToast()
   const page = pageDetail.page
   const { meta, body } = parseFrontmatter(page.content || '')
   const [backlinks, setBacklinks] = useState<Array<{ page_key: string; title: string; page_type: string }>>([])
@@ -59,6 +65,32 @@ export function WikiPageReader({
   const tags = page.tags?.length ? page.tags : (Array.isArray(meta.tags) ? meta.tags : [])
   const pageType = page.page_type || meta.type || 'structure'
 
+  // src 来源摘要页 → 原文件映射（source_page_key → file_id/filename）；
+  // 映射不到（数据异常）不渲染按钮不报错（2.2 §10.4）
+  const sourcePageFile = pageType === 'source'
+    ? sourcePages?.find(sp => sp.source_page_key === page.page_key)
+    : undefined
+
+  const openOriginal = useCallback(async (fileId: string, filename?: string | null) => {
+    if (!fileId || !filename) return
+    try {
+      const result: any = await window.electronAPI.invoke('file:openOriginal', {
+        projectId, fileId, filename,
+      })
+      if (result && !result.success) {
+        toast(
+          result.reason === 'not_found'
+            ? t('knowledge.originalNotFound', { defaultValue: '原文件不存在，可能已被删除' })
+            : t('knowledge.openFailed', { defaultValue: '打开失败: {{reason}}', reason: result.message || result.reason }),
+          'error',
+        )
+      }
+    } catch (err) {
+      console.error('Open original failed:', err)
+      toast(t('knowledge.openFailed', { defaultValue: '打开失败: {{reason}}', reason: String(err) }), 'error')
+    }
+  }, [projectId, toast, t])
+
   return (
     <div className={s.readerPage}>
       {/* Header */}
@@ -66,14 +98,28 @@ export function WikiPageReader({
         <div className={s.readerHeaderInfo}>
           <h3 className={s.readerTitle}>{page.title}</h3>
           <div className={s.readerMeta}>
-            <span className={s.pageTypeBadge}>{PAGE_TYPE_LABELS[pageType] || pageType}</span>
-            {page.status === 'user_edited' && <span className={s.editedBadge}>用户已编辑</span>}
+            <span className={s.pageTypeBadge}>
+              {PAGE_TYPE_LABEL_KEYS[pageType]
+                ? t(PAGE_TYPE_LABEL_KEYS[pageType], { defaultValue: pageType })
+                : pageType}
+            </span>
+            {page.status === 'user_edited' && <span className={s.editedBadge}>{t('project.wiki.readerEditedBadge', { defaultValue: '用户已编辑' })}</span>}
             {page.compile_version > 0 && <span className={s.versionBadge}>v{page.compile_version}</span>}
           </div>
         </div>
-        <button className={s.editBtn} onClick={onEdit}>
-          <Edit3 size={12} /> 编辑
-        </button>
+        <div className={s.readerHeaderActions}>
+          {sourcePageFile && (
+            <button
+              className={s.editBtn}
+              onClick={() => void openOriginal(sourcePageFile.file_id, sourcePageFile.filename)}
+            >
+              <ExternalLink size={12} /> {t('knowledge.openOriginal', { defaultValue: '打开原文件' })}
+            </button>
+          )}
+          <button className={s.editBtn} onClick={onEdit}>
+            <Edit3 size={12} /> {t('project.wiki.edit', { defaultValue: '编辑' })}
+          </button>
+        </div>
       </div>
 
       {/* Frontmatter panel (collapsible) */}
@@ -82,7 +128,7 @@ export function WikiPageReader({
           {refs.length > 0 && (
             <div className={s.frontmatterRow}>
               <Link2 size={12} className={s.frontmatterIcon} />
-              <span className={s.frontmatterLabel}>引用:</span>
+              <span className={s.frontmatterLabel}>{t('project.wiki.readerRefsLabel', { defaultValue: '引用' })}:</span>
               <div className={s.frontmatterTags}>
                 {refs.map((ref: string) => (
                   <span key={ref} className={s.refTag} onClick={() => onNavigateToPage(ref)}>{ref}</span>
@@ -93,7 +139,7 @@ export function WikiPageReader({
           {tags.length > 0 && (
             <div className={s.frontmatterRow}>
               <Tag size={12} className={s.frontmatterIcon} />
-              <span className={s.frontmatterLabel}>标签:</span>
+              <span className={s.frontmatterLabel}>{t('project.wiki.readerTagsLabel', { defaultValue: '标签' })}:</span>
               <div className={s.frontmatterTags}>
                 {tags.map((tag: string) => (
                   <span key={tag} className={s.tagBadge}>{tag}</span>
@@ -114,7 +160,7 @@ export function WikiPageReader({
         <details className={s.backlinksPanel}>
           <summary className={s.collapsibleSummary}>
             <Link2 size={12} />
-            反向链接 ({backlinks.length})
+            {t('project.wiki.backlinks', { defaultValue: '反向链接' })} ({backlinks.length})
           </summary>
           <div className={s.backlinksList}>
             {backlinks.map((bl) => (
@@ -125,7 +171,11 @@ export function WikiPageReader({
               >
                 <FileText size={12} className={s.backlinkIcon} />
                 <span className={s.backlinkTitle}>{bl.title}</span>
-                <span className={s.pageTypeBadgeSm}>{PAGE_TYPE_LABELS[bl.page_type] || bl.page_type}</span>
+                <span className={s.pageTypeBadgeSm}>
+                  {PAGE_TYPE_LABEL_KEYS[bl.page_type]
+                    ? t(PAGE_TYPE_LABEL_KEYS[bl.page_type], { defaultValue: bl.page_type })
+                    : bl.page_type}
+                </span>
               </div>
             ))}
           </div>
@@ -137,13 +187,22 @@ export function WikiPageReader({
         <details className={s.sourcesPanel}>
           <summary className={s.collapsibleSummary}>
             <FileText size={12} />
-            来源文件 ({pageDetail.sources.length})
+            {t('project.wiki.sources', { defaultValue: '来源文件' })} ({pageDetail.sources.length})
           </summary>
           <ul className={s.sourcesList}>
             {pageDetail.sources.map((src: any) => (
               <li key={src.id}>
                 <span className={s.sourceName}>{src.filename || src.file_id}</span>
                 {src.contribution && <span className={s.sourceContrib}>{src.contribution}</span>}
+                {src.file_id && (
+                  <button
+                    className={s.sourceOpenBtn}
+                    title={t('knowledge.openOriginal', { defaultValue: '打开原文件' })}
+                    onClick={() => void openOriginal(src.file_id, src.filename)}
+                  >
+                    <ExternalLink size={12} />
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -155,13 +214,17 @@ export function WikiPageReader({
         <details className={s.pageChangelog}>
           <summary className={s.collapsibleSummary}>
             <Clock size={12} />
-            页面历史 ({pageDetail.change_log.length})
+            {t('project.wiki.pageHistory', { defaultValue: '页面历史' })} ({pageDetail.change_log.length})
           </summary>
           <div className={s.miniTimeline}>
             {pageDetail.change_log.slice(0, 5).map((log: any) => (
               <div key={log.id} className={s.timelineItem}>
-                <span className={s.timelineTime}>{formatChangelogTime(log.created_at)}</span>
-                <span className={s.timelineAction}>{ACTION_LABELS[log.action] || log.action}</span>
+                <span className={s.timelineTime}>{formatChangelogTime(log.created_at, i18n.language)}</span>
+                <span className={s.timelineAction}>
+                  {ACTION_LABEL_KEYS[log.action]
+                    ? t(ACTION_LABEL_KEYS[log.action], { defaultValue: log.action })
+                    : log.action}
+                </span>
                 {log.summary && <span className={s.timelineSummary}>{log.summary}</span>}
               </div>
             ))}

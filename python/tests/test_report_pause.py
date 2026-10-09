@@ -189,6 +189,8 @@ class TestRunnerSectionBoundary:
                 skip = False
                 is_degraded = False
                 sufficiency = None
+                queries: list = []  # 迭代检索全量已用 queries（§3.3，section_done 摘要消费）
+                rounds: list = []   # 每轮检索明细（§3.3，section_done 摘要消费）
 
             return R(), {}
 

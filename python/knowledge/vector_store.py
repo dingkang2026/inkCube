@@ -7,7 +7,6 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 
 import threading
 import chromadb
-import torch
 from chromadb.config import Settings as ChromaSettings
 from chromadb.utils import embedding_functions
 from pathlib import Path
@@ -38,6 +37,9 @@ def _get_bge_m3_model(model_path: str):
         if _bge_m3_model is not None:          # double-check inside lock
             return _bge_m3_model
         from FlagEmbedding import BGEM3FlagModel
+        # 懒加载 torch（唯一使用点：下方 cuda 探测）——模块级 import 会把
+        # torch 全家（~1.7s）拖进启动链；此处仅在首次 embedding 时付出
+        import torch
 
         resolved = Path(model_path)
         # Handle nested HF-cache snapshots directory

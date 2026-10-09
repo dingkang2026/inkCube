@@ -51,12 +51,15 @@ class TavilySearchTool(BaseTool):
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 "https://api.tavily.com/search",
+                # 认证走 Bearer header（官方推荐，Key 不进请求体）；
+                # language=zh-cn 中文命中加权（纯加权不丢结果）
                 json={
-                    "api_key": self.api_key,
                     "query": query,
                     "max_results": max_results,
                     "include_answer": True,
+                    "language": "zh-cn",
                 },
+                headers={"Authorization": f"Bearer {self.api_key}"},
             )
             response.raise_for_status()
             data = response.json()

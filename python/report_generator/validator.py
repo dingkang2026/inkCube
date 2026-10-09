@@ -15,11 +15,12 @@ logger = logging.getLogger(__name__)
 _FENCED_CODE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 
 
-def _text_for_bold_check(output: str) -> str:
-    """剥离围栏代码块与表格行后的文本（§3.6 规则 2 加粗检查豁免区）。
+def _exempt_zone_text(output: str) -> str:
+    """剥离围栏代码块与表格行后的文本（§3.6 规则 2 豁免区，标题/加粗共用）。
 
     表格单元格内的粗体是合法强调形式（§3.5 形式规范明确允许），
-    mermaid / LaTeX 等代码块内容也可能含 ** 字符，均不参与加粗违规判定。
+    mermaid / LaTeX 等代码块内容也可能含 ** 或 # 字符，均不参与
+    标题/加粗违规判定。
     """
     no_code = _FENCED_CODE_RE.sub("", output)
     lines = [ln for ln in no_code.split("\n") if ln.strip().count("|") < 2]
@@ -73,9 +74,10 @@ def validate_section(
             message=f"引用了未给定的编号: {sorted(hallucinated)}",
         ))
 
-    # Rule 2: 出现 markdown 标题或加粗（加粗检查豁免表格行与围栏代码块，§3.6）
-    md_headings = re.findall(r"^#{1,6}\s+.+$", output, re.MULTILINE)
-    bold_text = re.findall(r"\*\*.+?\*\*", _text_for_bold_check(output))
+    # Rule 2: 出现 markdown 标题或加粗（豁免表格行与围栏代码块，§3.6）
+    exempt_free = _exempt_zone_text(output)
+    md_headings = re.findall(r"^#{1,6}\s+.+$", exempt_free, re.MULTILINE)
+    bold_text = re.findall(r"\*\*.+?\*\*", exempt_free)
     if md_headings:
         violations.append(SectionViolation(
             rule=2,
@@ -161,6 +163,18 @@ def format_retry_feedback(violations: list[SectionViolation]) -> str:
         lines.append(f"{i}. {prefix} [规则{v.rule}] {v.message}")
     lines.append("\n请严格遵守输出契约，直接输出正文，不要输出标题或前言。")
     return "\n".join(lines)
+
+
+def format_violations_brief(violations: list[SectionViolation]) -> str:
+    """将违规列表格式化为日志用简明明细（规则号 + 内容 + 级别，§3.6）。
+
+    供 runner 写入 app.log 与报告日志 warning 事件，替代原先只记数量的日志。
+    """
+    parts = []
+    for v in violations:
+        sev = "警告" if v.severity == "warning" else "错误"
+        parts.append(f"[规则{v.rule}/{sev}] {v.message}")
+    return "；".join(parts)
 
 
 # ── 全局校验 ────────────────────────────────────────────────

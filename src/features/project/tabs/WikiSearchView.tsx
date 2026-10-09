@@ -26,6 +26,7 @@ export function WikiSearchView({ projectId, onNavigateToPage }: WikiSearchViewPr
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [searchFailed, setSearchFailed] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -39,6 +40,7 @@ export function WikiSearchView({ projectId, onNavigateToPage }: WikiSearchViewPr
     if (!q.trim()) {
       setResults([])
       setSearched(false)
+      setSearchFailed(false)
       return
     }
     setSearching(true)
@@ -49,10 +51,14 @@ export function WikiSearchView({ projectId, onNavigateToPage }: WikiSearchViewPr
         topK: 20,
       })
       setResults(result.results || [])
+      setSearchFailed(false)
       setSearched(true)
     } catch (err) {
       console.error('Wiki search failed:', err)
       setResults([])
+      // 故障与「无结果」是两种语义：错误态单独提示（后端 raise_on_error 透出）
+      setSearchFailed(true)
+      setSearched(true)
     } finally {
       setSearching(false)
     }
@@ -118,7 +124,11 @@ export function WikiSearchView({ projectId, onNavigateToPage }: WikiSearchViewPr
 
         {searched && results.length === 0 && !searching && (
           <div className={s.searchHint}>
-            <p>{t('project.wiki.noResults', { defaultValue: '未找到相关页面' })}</p>
+            <p>
+              {searchFailed
+                ? t('project.wiki.searchFailed', { defaultValue: '搜索失败，请稍后重试' })
+                : t('project.wiki.noResults', { defaultValue: '未找到相关页面' })}
+            </p>
           </div>
         )}
 

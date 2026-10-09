@@ -34,14 +34,21 @@ _EMPTY_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
 class VariableResolutionError(InkCubeError):
-    """模板派生变量解析错误（当前用于循环依赖检测）。"""
+    """模板变量解析错误（循环依赖 / 必填缺失）。
 
-    def __init__(self, detail: str = ""):
+    message 参数化：两种根因的 message/suggestion 不同，共用一个错误码
+    （均属模板配置类错误，前端呈现路径一致）。
+    """
+
+    def __init__(
+        self,
+        message: str = "模板派生变量存在循环依赖",
+        suggestion: str = "检查模板 variables 的 depends_on，确保不构成环",
+        detail: str = "",
+    ):
         super().__init__(
-            "TEMPLATE_VARIABLE_CYCLE", "CONFIG",
-            "模板派生变量存在循环依赖",
-            "检查模板 variables 的 depends_on，确保不构成环",
-            detail=detail,
+            "TEMPLATE_VARIABLE_ERROR", "CONFIG",
+            message, suggestion, detail=detail,
         )
 
 
@@ -132,8 +139,28 @@ async def resolve_variables(
     for v in declared:
         name = v["name"]
         if v.get("source") == "user":
-            # 声明的 user 变量：取用户输入，缺失则 UNRESOLVED（保证 instantiate 声明校验通过）
-            ctx[name] = user_inputs.get(name, UNRESOLVED)
+            # 声明的 user 变量：取用户输入；缺失或纯空白（向导初始值即空串，
+            # 空白不是有效输入）均归一 UNRESOLVED，required 变量由下方
+            # fast-fail 拦截，避免空白注入 prompt 后生成跑题内容
+            raw = user_inputs.get(name, UNRESOLVED)
+            if isinstance(raw, str) and not raw.strip():
+                raw = UNRESOLVED
+            ctx[name] = raw
+
+    # required user 变量缺失 fast-fail：进入检索/生成前报错，而非 instantiate
+    # 静默替换空串后生成跑题内容（§3.9）
+    missing_required = [
+        v.get("label") or v["name"]
+        for v in declared
+        if v.get("source") == "user" and v.get("required", True)
+        and ctx.get(v["name"]) is UNRESOLVED
+    ]
+    if missing_required:
+        raise VariableResolutionError(
+            message=f"必填变量未填写: {'、'.join(missing_required)}",
+            suggestion="请返回向导填写带 * 的必填变量后重新生成",
+            detail=f"missing_required={missing_required}",
+        )
     # user_inputs 中可能含未在模板声明的额外键，一并纳入（无害，供正文引用）
     for k, val in user_inputs.items():
         ctx.setdefault(k, val)

@@ -131,7 +131,8 @@ class DocGeneratorTool(BaseTool):
         1. pandoc (md → docx) — pandoc is bundled with the app
         2. LibreOffice or MS Office (docx → pdf) — detected at runtime
 
-        Mermaid diagrams are pre-processed to SVG before pandoc.
+        Mermaid diagrams are pre-processed to PNG before pandoc (shared
+        mermaid_bridge; SVG embedding breaks in Word's renderer).
         """
         # Step 0: Pre-process Mermaid diagrams
         actual_input, mmd_tmp = preprocess_mermaid(input_file)
@@ -219,7 +220,8 @@ class DocGeneratorTool(BaseTool):
     def _md_to_docx(self, input_file: Path, output_file: Path) -> str:
         """Convert Markdown to DOCX using pandoc.
 
-        Mermaid diagrams are pre-processed to SVG before pandoc.
+        Mermaid diagrams are pre-processed to PNG before pandoc (shared
+        mermaid_bridge; SVG embedding breaks in Word's renderer).
         """
         # Pre-process Mermaid diagrams
         actual_input, mmd_tmp = preprocess_mermaid(input_file)

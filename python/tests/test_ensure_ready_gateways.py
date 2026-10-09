@@ -98,10 +98,6 @@ class TestKnowledgeGateways:
 
 
 class TestWikiGateways:
-    def test_retry_page(self, no_llm):
-        with pytest.raises(LLMNotConfigured):
-            _run(wiki.retry_page("p1", "overview"))
-
     @pytest.mark.parametrize("mode", ["semantic", "full"])
     def test_lint_llm_modes_blocked(self, no_llm, mode):
         with pytest.raises(LLMNotConfigured):

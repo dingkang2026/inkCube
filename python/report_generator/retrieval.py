@@ -1,14 +1,16 @@
 """python/report_generator/retrieval.py — 多通道检索层。
 
 职责：
-  1. LLM 驱动检索策略（query_hints → 多组搜索关键词）
-  2. 多通道并行检索：
+  1. LLM 驱动检索策略（轮 1 query 生成）
+  2. 迭代检索循环（§3.3 多轮搜索-卡片积累）：轮 N 补搜 queries 由建卡调用的
+     sufficiency.follow_up_queries 直接产出，轮次上限 settings report_retrieval_max_rounds
+  3. 多通道并行检索（每轮）：
      - knowledge 通道：KnowledgeSearchTool（Vector + BM25 + RRF）
      - wiki 通道：项目已编译 Wiki 页面（关键词 + 图谱扩展，高权重骨架上下文）
-     - internet 通道：Tavily API 网络搜索
-  3. 知识卡片构建（LLM 提取 + 去重 + 归因）
-  4. 注册到全局 CitationRegistry
-  5. 降级策略（候选池为空时的处理）
+     - internet 通道：Tavily API（Bearer 认证 / language 加权 / 轮 2+ search_depth 可配）
+  4. 知识卡片构建（LLM 提取 + 去重 + 归因；补搜轮增量建卡 + 跨轮两级去重）
+  5. 注册到全局 CitationRegistry
+  6. 降级策略（候选池为空时的处理）
 
 设计参考：docs/2.5report-design.md §3.3
 """
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class RetrievalResult:
-    """单次检索结果。"""
+    """单节检索结果（迭代循环终态）。"""
 
     def __init__(
         self,
@@ -37,15 +39,23 @@ class RetrievalResult:
         sufficiency: Optional[dict] = None,
         raw_results: Optional[list[dict]] = None,
         warnings: Optional[list[str]] = None,
+        rounds: Optional[list[dict]] = None,
+        queries: Optional[list[str]] = None,
     ):
-        self.cards = cards  # 知识卡片列表
+        self.cards = cards  # 全量知识卡片（含 ref_number）
         self.is_degraded = is_degraded  # 降级为"分析推理模式"
         self.skip = skip  # 跳过该节（optional + 无材料）
-        self.sufficiency = sufficiency or {"level": "unknown", "reason": ""}
-        self.raw_results = raw_results or []  # 原始检索结果（调试用）
+        # 三字段 {level, reason, follow_up_queries}（§3.3 迭代循环）
+        self.sufficiency = sufficiency or {"level": "unknown", "reason": "", "follow_up_queries": []}
+        self.raw_results = raw_results or []  # 各轮累计原始结果（调试用）
         # 检索通道降级/失败显式警告（如 Tavily Key 缺失/无效/额度用尽/网络不通），
         # runner 转为 ProgressEvent("warning") → 报告日志，用户在报告详情页可见（0.4 §7.3 v3.6）
         self.warnings = warnings or []
+        # 每轮明细（§3.8 检索摘要落库用）：{round_no, queries, channel_stats,
+        # raw_count, new_raw_count, card_count, sufficiency_level, sufficiency_reason}
+        self.rounds = rounds or []
+        # 全部已执行 queries（轮 1 策略产物 + 各轮 follow_up）
+        self.queries = queries or []
 
 
 async def retrieve_for_section(
@@ -64,14 +74,13 @@ async def retrieve_for_section(
     data_sources: Optional[list[str]] = None,
     report_depth: str = "full",
 ) -> tuple[RetrievalResult, dict]:
-    """为一个章节执行多通道并行检索。
+    """为一个章节执行迭代检索循环（多轮搜索-卡片积累，§3.3）。
 
-    流程：
-      ① LLM 检索策略：生成搜索关键词
-      ② 知识库通道检索（默认启用）
-      ③ 各通道独立检索，结果合并
-      ④ LLM 构建知识卡片
-      ⑤ 注册到全局 Registry
+    流程（每轮「三通道检索 → 建卡 + 充足性评估」）：
+      轮 1：LLM 检索策略生成 queries → 三通道检索 → 建卡 + 评估
+      轮 N：上一轮 sufficiency.follow_up_queries 补搜 → 增量建卡 + 评估（累计材料）
+      退出：sufficient / follow_up_queries 为空 / 补搜无新料 / 达轮次上限
+      （settings report_retrieval_max_rounds，默认 3，钾制 1-5）
 
     Args:
         section: 归一化后的节定义（含 prompt_hint、optional 等）
@@ -90,7 +99,7 @@ async def retrieve_for_section(
         report_depth: 报告深度 "full" | "brief"，决定知识库检索量
 
     Returns:
-        (RetrievalResult, total_usage): 检索结果 + 累计 API usage
+        (RetrievalResult, total_usage): 检索结果（含每轮明细 rounds）+ 累计 API usage
     """
     section_id = section.get("section_id", "unknown")
     if data_sources is None:
@@ -104,17 +113,160 @@ async def retrieve_for_section(
         total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
         total_usage["total_tokens"] += usage.get("total_tokens", 0)
 
-    # ① LLM 检索策略：生成搜索关键词
+    # 轮次上限（§3.3）：settings 可配，默认 3，钾制 1-5
+    try:
+        max_rounds = int(llm_settings.get("report_retrieval_max_rounds", 3))
+    except (TypeError, ValueError):
+        max_rounds = 3
+    max_rounds = max(1, min(max_rounds, 5))
+
+    # 补搜轮（2+）Tavily search_depth 可配（默认 basic；轮 1 恒 basic，§3.3）
+    followup_search_depth = str(
+        llm_settings.get("report_tavily_search_depth", "basic") or "basic"
+    )
+
+    # ① LLM 检索策略：生成轮 1 搜索关键词
     queries, strategy_usage = await generate_search_queries(
         section, digests, llm_client, llm_settings,
     )
     _add_usage(strategy_usage)
-    logger.info("Retrieval: section=%s, queries=%d", section_id, len(queries))
+    used_queries: list[str] = list(queries)
+    logger.info("Retrieval: section=%s round=1 queries=%d, max_rounds=%d",
+                section_id, len(queries), max_rounds)
 
-    # ② 多通道检索装配（§3.3：knowledge 恒可用；wiki 按 data_sources + db；internet 按 data_sources + tavily_key）
-    raw_results: list[dict] = []
-    channel_tasks = []
     channel_warnings: list[str] = []
+    seen_sources: set[tuple[str, str]] = set()  # (source_type, source_from) 跨轮粗滤
+    all_raw: list[dict] = []  # 各轮累计原始结果（调试用）
+    cards: list[dict] = []
+    round_summaries: list[dict] = []
+    sufficiency: dict = {"level": "unknown", "reason": "", "follow_up_queries": []}
+
+    for round_no in range(1, max_rounds + 1):
+        # ② 单轮三通道并行检索（补搜轮 search_depth 可配）
+        raw_results, channel_stats, round_warnings, round_usage = await _run_retrieval_round(
+            queries,
+            search_tool=search_tool,
+            project_id=project_id,
+            base_project_ids=base_project_ids,
+            top_k=top_k,
+            query_parallelism=query_parallelism,
+            db=db,
+            data_sources=data_sources,
+            tavily_api_key=tavily_api_key,
+            search_depth="basic" if round_no == 1 else followup_search_depth,
+            section_id=section_id,
+        )
+        _add_usage(round_usage)
+        channel_warnings.extend(round_warnings)
+        all_raw.extend(raw_results)
+
+        # ③ 跨轮粗滤：剔除与此前轮次同来源的结果（补搜常撞回已搜页面）
+        new_results = [
+            r for r in raw_results
+            if (r.get("source_type", ""), r.get("source_from", "")) not in seen_sources
+        ]
+        for r in raw_results:
+            seen_sources.add((r.get("source_type", ""), r.get("source_from", "")))
+
+        round_summaries.append({
+            "round_no": round_no,
+            "queries": list(queries),
+            "channel_stats": channel_stats,
+            "raw_count": len(raw_results),
+            "new_raw_count": len(new_results),
+        })
+
+        # 轮 1 空结果 → 降级/跳过判定（§3.3 降级表）
+        if round_no == 1 and not raw_results:
+            if section.get("optional"):
+                logger.info("Section '%s': no results, optional=true → skip", section_id)
+                return RetrievalResult(
+                    cards=[], skip=True, warnings=channel_warnings,
+                    rounds=round_summaries, queries=used_queries,
+                ), total_usage
+            logger.info("Section '%s': no results, optional=false → degraded mode", section_id)
+            return RetrievalResult(
+                cards=[], is_degraded=True, warnings=channel_warnings,
+                rounds=round_summaries, queries=used_queries,
+            ), total_usage
+
+        # 补搜轮无新料 → 不空转建卡，以现有材料收尾（避免重复 token 消耗）
+        if round_no > 1 and not new_results:
+            logger.info("Retrieval: section=%s round=%d no new sources, stop",
+                        section_id, round_no)
+            break
+
+        # ④ 建卡 + 充足性评估（补搜轮针对累计材料，同时产出 follow_up_queries）
+        cards, sufficiency, card_usage = await build_knowledge_cards(
+            new_results, section, llm_client, llm_settings,
+            existing_cards=cards if round_no > 1 else None,
+            used_queries=used_queries if round_no > 1 else None,
+        )
+        _add_usage(card_usage)
+
+        round_summaries[-1].update({
+            "card_count": len(cards),
+            "sufficiency_level": sufficiency.get("level"),
+            "sufficiency_reason": sufficiency.get("reason", ""),
+            "follow_up_queries": sufficiency.get("follow_up_queries", []),
+        })
+
+        # ⑤ 注册本轮新增卡片（registry 三元组精确去重，重复内容返回已有编号）
+        for card in cards:
+            if not card.get("ref_number"):
+                card["ref_number"] = registry.register_card(card)
+
+        logger.info(
+            "Section '%s' round %d: %d raw (%d new) → %d cards, sufficiency=%s (%s)",
+            section_id, round_no, len(raw_results), len(new_results), len(cards),
+            sufficiency.get("level"), str(sufficiency.get("reason", ""))[:60],
+        )
+
+        if sufficiency.get("level") == "sufficient":
+            break
+        follow_up = sufficiency.get("follow_up_queries") or []
+        if not follow_up:
+            break
+        queries = follow_up
+        used_queries.extend(follow_up)
+
+    return RetrievalResult(
+        cards=cards,
+        sufficiency=sufficiency,
+        raw_results=all_raw,
+        warnings=channel_warnings,
+        rounds=round_summaries,
+        queries=used_queries,
+    ), total_usage
+
+
+async def _run_retrieval_round(
+    queries: list[str],
+    *,
+    search_tool: KnowledgeSearchTool,
+    project_id: str,
+    base_project_ids: Optional[list[str]],
+    top_k: int,
+    query_parallelism: int,
+    db: Any,
+    data_sources: list[str],
+    tavily_api_key: str,
+    search_depth: str,
+    section_id: str = "unknown",
+) -> tuple[list[dict], dict, list[str], dict]:
+    """执行单轮三通道并行检索（§3.3 迭代循环的单轮）。
+
+    Returns:
+        (raw_results, channel_stats, warnings, usage)：
+          channel_stats 形如 {"knowledge": n, "wiki": n, "internet": n}（未启用通道缺省 0）
+    """
+    raw_results: list[dict] = []
+    channel_warnings: list[str] = []
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    stats: dict[str, int] = {}
+
+    channel_tasks = []
+    task_names = []
 
     if "knowledge" in data_sources:
         channel_tasks.append(
@@ -123,19 +275,23 @@ async def retrieve_for_section(
                 query_parallelism,
             )
         )
+        task_names.append("knowledge")
 
     if "wiki" in data_sources and db is not None:
         channel_tasks.append(
             _search_wiki_channel(queries, db, project_id, top_k)
         )
+        task_names.append("wiki")
 
     if "internet" in data_sources:
         if tavily_api_key:
             channel_tasks.append(
                 _search_internet_channel(
                     queries, tavily_api_key, top_k, query_parallelism,
+                    search_depth=search_depth,
                 )
             )
+            task_names.append("internet")
         else:
             logger.info(
                 "Retrieval: section=%s internet 通道已请求但未配置 tavily_key，跳过",
@@ -150,47 +306,20 @@ async def retrieve_for_section(
     # 并行执行所有通道
     if channel_tasks:
         channel_results = await asyncio.gather(*channel_tasks, return_exceptions=True)
-        for result in channel_results:
+        for name, result in zip(task_names, channel_results):
             if isinstance(result, Exception):
-                logger.warning("Channel execution failed: %s", result)
+                logger.warning("Channel '%s' execution failed: %s", name, result)
+                stats[name] = 0
                 continue
             channel_data, channel_usage, warnings = result
             raw_results.extend(channel_data)
             channel_warnings.extend(warnings)
-            _add_usage(channel_usage)
+            stats[name] = len(channel_data)
+            usage["prompt_tokens"] += channel_usage.get("prompt_tokens", 0)
+            usage["completion_tokens"] += channel_usage.get("completion_tokens", 0)
+            usage["total_tokens"] += channel_usage.get("total_tokens", 0)
 
-    # ③ 降级判断
-    if not raw_results:
-        if section.get("optional"):
-            logger.info("Section '%s': no results, optional=true → skip", section_id)
-            return RetrievalResult(cards=[], skip=True, warnings=channel_warnings), total_usage
-        else:
-            logger.info("Section '%s': no results, optional=false → degraded mode", section_id)
-            return RetrievalResult(cards=[], is_degraded=True, warnings=channel_warnings), total_usage
-
-    # ④ LLM 构建知识卡片
-    cards, sufficiency, card_usage = await build_knowledge_cards(
-        raw_results, section, llm_client, llm_settings,
-    )
-    _add_usage(card_usage)
-
-    # ⑤ 注册到全局 Registry
-    ref_numbers = []
-    for card in cards:
-        num = registry.register_card(card)
-        card["ref_number"] = num
-        ref_numbers.append(num)
-
-    logger.info("Section '%s': %d raw results → %d cards, refs=%s, sufficiency=%s",
-                section_id, len(raw_results), len(cards), ref_numbers,
-                sufficiency.get("level", "unknown"))
-
-    return RetrievalResult(
-        cards=cards,
-        sufficiency=sufficiency,
-        raw_results=raw_results,
-        warnings=channel_warnings,
-    ), total_usage
+    return raw_results, stats, channel_warnings, usage
 
 
 # ── knowledge 通道 ──────────────────────────────────────────
@@ -292,6 +421,7 @@ async def _search_internet_channel(
     tavily_api_key: str,
     top_k: int,
     query_parallelism: int = 4,
+    search_depth: str = "basic",
 ) -> tuple[list[dict], dict, list[str]]:
     """互联网通道：使用 Tavily API 搜索。
     
@@ -320,7 +450,10 @@ async def _search_internet_channel(
             """执行单次搜索并收集结果（含 429 退避）。"""
             async with sem:
                 try:
-                    results = await _tavily_search(query, tavily_api_key, client, max_results=5)
+                    results = await _tavily_search(
+                        query, tavily_api_key, client,
+                        max_results=5, search_depth=search_depth,
+                    )
                     return results
                 except Exception as e:
                     warning = _tavily_failure_warning(e)
@@ -353,21 +486,28 @@ async def _search_internet_channel(
 
 async def _tavily_search(
     query: str, api_key: str, client: httpx.AsyncClient,
-    max_results: int = 5, max_retries: int = 2,
+    max_results: int = 5, search_depth: str = "basic", max_retries: int = 2,
 ) -> list[dict]:
     """直接调用 Tavily API 获取结构化搜索结果。
-    
+
+    认证走 Authorization: Bearer header（官方推荐，Key 不进请求体）；
+    language=zh-cn 中文命中加权（纯加权不丢结果）；search_depth 白名单归一
+    （advanced 2 credits，轮 2+ 补搜经 settings report_tavily_search_depth 传入）。
     内置 429 速率限制退避（指数等待），复用传入的 httpx 客户端连接池。
     """
+    if search_depth not in ("advanced", "basic", "fast", "ultra-fast"):
+        search_depth = "basic"
     for attempt in range(max_retries + 1):
         response = await client.post(
             "https://api.tavily.com/search",
             json={
-                "api_key": api_key,
                 "query": query,
                 "max_results": max_results,
                 "include_answer": True,
+                "language": "zh-cn",
+                "search_depth": search_depth,
             },
+            headers={"Authorization": f"Bearer {api_key}"},
         )
         if response.status_code == 429 and attempt < max_retries:
             wait = 2 ** (attempt + 1)  # 2s, 4s
@@ -454,7 +594,10 @@ async def _search_wiki_channel(
 
     for query in queries:
         try:
-            results = search_wiki(
+            # wiki_search 为同步 CPU 密集调用（关键词+图谱扩展）：to_thread 下放，
+            # 避免 async 通道内阻塞事件循环（与导出链路 to_thread 同纪律）
+            results = await asyncio.to_thread(
+                search_wiki,
                 query=query,
                 project_id=project_id,
                 db=db,

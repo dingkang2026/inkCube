@@ -137,6 +137,65 @@ describe('ReportPreview terminal refetch', () => {
   })
 })
 
+describe('ReportPreview panel defaults (§1.3)', () => {
+  it('expands logs by default while generating and collapses on terminal edge', async () => {
+    // 生成中打开：日志面板默认展开（空日志渲染占位），进度条就位
+    activityState.items = [{ entity_id: 'r1' }]
+    const { rerender } = render(<ReportPreview report={genReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.getByRole('progressbar')).toBeTruthy()
+    expect(screen.getByText('project.report.preview.noLogs')).toBeTruthy()
+
+    // 终态边沿：日志自动收起 + 正文渲染（「生成完内容预览出来，其它收起来」）
+    activityState.items = []
+    rerender(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.queryByText('project.report.preview.noLogs')).toBeNull()
+    expect(screen.getByText('Done body')).toBeTruthy()
+  })
+
+  it('keeps logs collapsed for a report opened after completion', async () => {
+    render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.queryByText('project.report.preview.noLogs')).toBeNull()
+  })
+
+  it('renders sources toggle collapsed by default when registry has entries', async () => {
+    contentSnapshot = {
+      content: '# Done body',
+      registry: { entries: [{ ref_number: 1, source_title: '某研报', content: 'x' }] },
+      report: { id: 'r1', title: 'T', status: 'done' },
+    }
+    render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    // toggle 可见（计数上屏），但来源列表默认收起
+    expect(screen.getByText(/project\.report\.preview\.sources/)).toBeTruthy()
+    expect(screen.queryByText('某研报')).toBeNull()
+  })
+
+  it('renders logs in backend order (ascending timeline)', async () => {
+    // 后端已按时间正序返回（旧上新下）；UI 层透传渲染不得反转
+    activityState.items = [{ entity_id: 'r1' }]
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'reports:getReportContent') return contentSnapshot
+      if (channel === 'reports:getReportLogs') {
+        return { logs: [
+          { id: 'l1', message: '第一条：开始生成', level: 'info', created_at: '2026-01-01T00:00:01' },
+          { id: 'l2', message: '第二条：章节完成', level: 'info', created_at: '2026-01-01T00:00:02' },
+        ] }
+      }
+      return {}
+    })
+    render(<ReportPreview report={genReport} onBack={() => {}} />)
+    await flush()
+    const first = screen.getByText('第一条：开始生成')
+    const second = screen.getByText('第二条：章节完成')
+    expect(
+      first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+})
+
 describe('ReportPreview report-level pause (2.5 §3.1 修订)', () => {
   it('shows pause button while generating and invokes reports:pauseReport on click', async () => {
     render(<ReportPreview report={genReport} onBack={() => {}} />)
@@ -183,5 +242,34 @@ describe('ReportPreview report-level pause (2.5 §3.1 修订)', () => {
     rerender(<ReportPreview report={pausedB} onBack={() => {}} />)
     await flush()
     expect(screen.getByText(/project\.report\.pausedStatus/)).toBeTruthy()
+  })
+})
+
+describe('ReportPreview error recovery (2.5 §3.8.3)', () => {
+  it('renders error state with resume (retry resume) and restart (retry restart) exits', async () => {
+    // 崩溃恢复：error 保留 checkpoint，详情页与 paused 同构提供恢复/重新生成，
+    // 兑现中断日志「可重新生成续跑」承诺（此前详情页无任何按钮，须退回列表）
+    const errorReport: Report = {
+      ...baseReport,
+      status: 'error',
+      error_message: '程序异常中断，请重新生成',
+    }
+    render(<ReportPreview report={errorReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.getByText('程序异常中断，请重新生成')).toBeTruthy()
+    // error 分支短路，正文不渲染 markdown
+    expect(screen.queryByText('Done body')).toBeNull()
+
+    fireEvent.click(screen.getByTitle('project.report.resumeTip'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'resume' })
+
+    // resume 成功即乐观翻转 → restart 全新挂载验证
+    cleanup()
+    render(<ReportPreview report={{ ...errorReport }} onBack={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByText('project.report.restartReport'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'restart' })
   })
 })

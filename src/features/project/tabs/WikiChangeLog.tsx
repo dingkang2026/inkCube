@@ -1,7 +1,8 @@
 /** src/features/project/tabs/WikiChangeLog.tsx — Project-wide changelog timeline */
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Clock, Loader2 } from 'lucide-react'
-import { ACTION_LABELS } from './wikiUtils'
+import { ACTION_LABEL_KEYS } from './wikiUtils'
 import s from './WikiTab.module.css'
 
 interface ChangeLogEntry {
@@ -21,6 +22,7 @@ interface WikiChangeLogProps {
 }
 
 export function WikiChangeLog({ projectId, onNavigateToPage }: WikiChangeLogProps) {
+  const { t, i18n } = useTranslation()
   const [logs, setLogs] = useState<ChangeLogEntry[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -43,17 +45,17 @@ export function WikiChangeLog({ projectId, onNavigateToPage }: WikiChangeLogProp
     return (
       <div className={s.changelogPage}>
         <div className={s.changelogHeader}>
-          <h3>变更日志</h3>
+          <h3>{t('project.wiki.changeLog', { defaultValue: '变更日志' })}</h3>
         </div>
         <div className={s.loadingInline}><Loader2 size={20} className={s.spin} /></div>
       </div>
     )
   }
 
-  // Group logs by date
+  // Group logs by date（日期格式跟随当前语言）
   const grouped = new Map<string, ChangeLogEntry[]>()
   for (const log of logs) {
-    const date = new Date(log.created_at).toLocaleDateString('zh-CN', {
+    const date = new Date(log.created_at).toLocaleDateString(i18n.language, {
       year: 'numeric', month: 'long', day: 'numeric',
     })
     if (!grouped.has(date)) grouped.set(date, [])
@@ -65,13 +67,13 @@ export function WikiChangeLog({ projectId, onNavigateToPage }: WikiChangeLogProp
       <div className={s.changelogHeader}>
         <div className={s.changelogTitleRow}>
           <Clock size={15} className={s.changelogIcon} />
-          <h3>变更日志</h3>
+          <h3>{t('project.wiki.changeLog', { defaultValue: '变更日志' })}</h3>
         </div>
       </div>
 
       <div className={s.changelogBody}>
         {logs.length === 0 ? (
-          <p className={s.homePlaceholder}>暂无变更记录</p>
+          <p className={s.homePlaceholder}>{t('project.wiki.noChangeLog', { defaultValue: '暂无变更记录' })}</p>
         ) : (
           Array.from(grouped.entries()).map(([date, entries]) => (
             <div key={date} className={s.changelogDay}>
@@ -79,20 +81,27 @@ export function WikiChangeLog({ projectId, onNavigateToPage }: WikiChangeLogProp
               {entries.map((log) => (
                 <div key={log.id} className={s.changelogEntry}>
                   <div className={s.changelogEntryHeader}>
-                    <span className={s.changelogAction}>{ACTION_LABELS[log.action] || log.action}</span>
+                    <span className={s.changelogAction}>
+                      {ACTION_LABEL_KEYS[log.action]
+                        ? t(ACTION_LABEL_KEYS[log.action], { defaultValue: log.action })
+                        : log.action}
+                    </span>
                     <span className={s.changelogTime}>
-                      {new Date(log.created_at).toLocaleTimeString('zh-CN', {
+                      {new Date(log.created_at).toLocaleTimeString(i18n.language, {
                         hour: '2-digit', minute: '2-digit',
                       })}
                     </span>
                   </div>
                   {log.summary && <div className={s.changelogSummary}>{log.summary}</div>}
                   {log.source_title && (
-                    <div className={s.changelogSource}>来源: {log.source_title}</div>
+                    <div className={s.changelogSource}>
+                      {t('project.wiki.changelogSource', { defaultValue: '来源' })}: {log.source_title}
+                    </div>
                   )}
                   {log.affected_page_keys?.length > 0 && (
                     <div className={s.changelogAffected}>
-                      影响页面:{' '}
+                      {t('project.wiki.changelogAffected', { defaultValue: '影响页面' })}
+                      {' '}
                       {log.affected_page_keys.map((key: string) => (
                         <span
                           key={key}

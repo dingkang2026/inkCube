@@ -2,7 +2,8 @@
 
 覆盖 Database.recover_stale_generating_reports：
   - 超时（>timeout）的 generating 报告 → 标记 error + error_message + 返回 id
-  - 未超时（≤timeout）的 generating 报告 → 保持 generating 不动
+  - 未超时（≤timeout）的 generating 报告 → 保持 generating 不动（timeout>0 语义，
+    仅测试/特殊场景；启动扫描默认 timeout=0，进程重启后一切 generating 均为孤儿）
   - 非 generating（done/error）报告 → 不受影响
   - updated_at 无法解析 → 保守判定为陈旧，标记 error
   - 无 generating 报告 → 返回空列表
@@ -110,3 +111,15 @@ class TestRecoverStaleGeneratingReports:
         assert db.recover_stale_generating_reports(timeout_minutes=5) == []
         # timeout=2 → 3min 算陈旧
         assert db.recover_stale_generating_reports(timeout_minutes=2) == ["r_3min"]
+
+    def test_zero_timeout_marks_all_orphans(self, db, project_id):
+        """timeout=0（启动扫描默认，§3.8.3）：进程重启后 runner 必然已死，
+        刚更新的 generating 同为孤儿——不设时间阈值，避免「假生成中」窗口
+        （进度永不推进、暂停无人消费）。"""
+        just_now = datetime.now().isoformat()
+        _insert_report(db, project_id, "r_just", "generating", just_now)
+
+        recovered = db.recover_stale_generating_reports()
+
+        assert recovered == ["r_just"]
+        assert db.get_report("r_just")["status"] == "error"

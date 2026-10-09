@@ -12,9 +12,12 @@
 设计参考：docs/2.5report-design.md §3.7 渲染规则
 """
 import logging
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
+from report_generator.loader import get_templates_dir
 from tools.mermaid_bridge import cleanup_temp_dir, preprocess_mermaid
 from tools.tool_resolver import resolve_tool
 
@@ -22,11 +25,36 @@ logger = logging.getLogger(__name__)
 
 _PANDOC_TIMEOUT = 60  # 与 doc_generator 工具链路一致
 
+# 合法页面方向（导出面板 radio，§1.3）；非法值一律回退 portrait
+_ORIENTATIONS = ("portrait", "landscape")
+
+
+def _resolve_reference_doc(orientation: str) -> str | None:
+    """解析导出方向对应的 pandoc reference-doc 样式模板路径（§3.7）。
+
+    模板随包分发（resources/templates/custom-reference_{portrait|landscape}.docx），
+    路径复用 loader.get_templates_dir 解析，打包兼容同一链路；文件意外缺失时
+    返回 None（不带该参数以 pandoc 默认样式导出并记 WARNING——仅兜底，
+    正常路径模板必然随包存在）。
+    """
+    if orientation not in _ORIENTATIONS:
+        orientation = "portrait"
+    path = Path(get_templates_dir()) / f"custom-reference_{orientation}.docx"
+    if not path.exists():
+        logger.warning(
+            "Reference-doc template missing (orientation=%s): %s — "
+            "falling back to pandoc default styles",
+            orientation, path,
+        )
+        return None
+    return str(path)
+
 
 def render_markdown_to_docx(
     markdown_text: str,
     output_path: str,
     title: str = "报告",
+    orientation: str = "portrait",
 ) -> str:
     """将 Markdown 报告渲染为 Word 文档（pandoc）。
 
@@ -35,6 +63,8 @@ def render_markdown_to_docx(
         output_path: 输出 docx 文件路径
         title: 文档标题（仅用于日志观测，pandoc 不注入正文——报告自身
                已含 `# {报告标题}` 一级标题，注入元数据标题会重复）
+        orientation: 页面方向 portrait | landscape（导出面板选择，决定
+                     reference-doc 样式模板；非法值回退 portrait）
 
     Returns:
         输出文件路径
@@ -53,19 +83,41 @@ def render_markdown_to_docx(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    # markdown_text 写临时文件（pandoc CLI 接受文件输入）；
-    # mermaid 块先经公共桥转 SVG（失败保留代码块，不阻断导出）
-    tmp_md = output.with_suffix(".tmp.md")
+    # markdown_text 写随机名临时文件（pandoc CLI 接受文件输入；固定名在并发
+    # 导出下互踩——to_thread 下放后允许并发）。mermaid 块先经公共桥转 PNG
+    # （失败保留代码块，不阻断导出）
+    reference_doc = _resolve_reference_doc(orientation)
+    fd, tmp_md_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp.md", dir=str(output.parent))
+    os.close(fd)
+    tmp_md = Path(tmp_md_name)
     mmd_tmp = None
+    # pandoc 先写 .tmp 隔离产物：超时/失败时 zip 半写必损坏，不能留最终路径
+    final_output = output.with_suffix(output.suffix + ".tmp")
     try:
         tmp_md.write_text(markdown_text, encoding="utf-8")
         actual_md, mmd_tmp = preprocess_mermaid(tmp_md)
+        cmd = [pandoc, str(actual_md), "-o", str(final_output),
+               "--from", "markdown", "--to", "docx"]
+        if reference_doc:
+            cmd += ["--reference-doc", reference_doc]
         result = subprocess.run(
-            [pandoc, str(actual_md), "-o", str(output),
-             "--from", "markdown", "--to", "docx"],
+            cmd,
             capture_output=True, encoding="utf-8", errors="replace",
             timeout=_PANDOC_TIMEOUT,
         )
+        if result.returncode != 0:
+            logger.error("pandoc md→docx failed (title=%s): %s", title, result.stderr.strip())
+            raise RuntimeError(f"pandoc 转换失败: {result.stderr.strip()}")
+        os.replace(final_output, output)
+    except Exception:
+        # 超时（TimeoutExpired，pandoc 已被 kill）或失败：清理半写产物
+        if final_output.exists():
+            try:
+                final_output.unlink()
+            except OSError:
+                pass
+        raise
     finally:
         if tmp_md.exists():
             try:
@@ -73,10 +125,6 @@ def render_markdown_to_docx(
             except OSError:
                 pass
         cleanup_temp_dir(mmd_tmp)
-
-    if result.returncode != 0:
-        logger.error("pandoc md→docx failed (title=%s): %s", title, result.stderr.strip())
-        raise RuntimeError(f"pandoc 转换失败: {result.stderr.strip()}")
 
     logger.info("Rendered docx via pandoc (title=%s): %s", title, output)
     return str(output)

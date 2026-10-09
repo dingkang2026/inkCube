@@ -21,10 +21,10 @@ def db():
     return database
 
 
-def _create_n_tasks(db, n, status="active"):
+def _create_n_tasks(db, n, data_dir, status="active"):
     ids = []
     for i in range(n):
-        t = db.create_task(f"任务-{i}", "/tmp", "", "general")
+        t = db.create_task(f"任务-{i}", data_dir, "", "general")
         ids.append(t["id"])
         if status != "active":
             db.conn.execute(
@@ -35,27 +35,27 @@ def _create_n_tasks(db, n, status="active"):
 
 
 class TestListTasksPagination:
-    def test_no_limit_returns_all_backward_compatible(self, db):
+    def test_no_limit_returns_all_backward_compatible(self, db, tmp_path):
         """limit=0（默认）→ 全量 + has_more=False（create_task 配额检查等既有调用方不受影响）。"""
-        _create_n_tasks(db, 3)
+        _create_n_tasks(db, 3, str(tmp_path))
         tasks, has_more = db.list_tasks()
         assert len(tasks) == 3
         assert has_more is False
 
-    def test_limit_returns_page_and_has_more(self, db):
-        _create_n_tasks(db, 5)
+    def test_limit_returns_page_and_has_more(self, db, tmp_path):
+        _create_n_tasks(db, 5, str(tmp_path))
         tasks, has_more = db.list_tasks(limit=3)
         assert len(tasks) == 3
         assert has_more is True
 
-    def test_limit_beyond_total_no_more(self, db):
-        _create_n_tasks(db, 3)
+    def test_limit_beyond_total_no_more(self, db, tmp_path):
+        _create_n_tasks(db, 3, str(tmp_path))
         tasks, has_more = db.list_tasks(limit=10)
         assert len(tasks) == 3
         assert has_more is False
 
-    def test_offset_skips_rows(self, db):
-        _create_n_tasks(db, 4)
+    def test_offset_skips_rows(self, db, tmp_path):
+        _create_n_tasks(db, 4, str(tmp_path))
         first, _ = db.list_tasks(limit=2)
         rest, has_more = db.list_tasks(limit=2, offset=2)
         assert has_more is False
@@ -64,17 +64,17 @@ class TestListTasksPagination:
         assert first_ids != rest_ids
         assert len(set(first_ids) | set(rest_ids)) == 4  # 两页无重叠、合起来覆盖全部
 
-    def test_status_filter_combined_with_pagination(self, db):
-        _create_n_tasks(db, 3)
-        _create_n_tasks(db, 4, status="archived")
+    def test_status_filter_combined_with_pagination(self, db, tmp_path):
+        _create_n_tasks(db, 3, str(tmp_path))
+        _create_n_tasks(db, 4, str(tmp_path), status="archived")
         tasks, has_more = db.list_tasks(status="archived", limit=2)
         assert len(tasks) == 2
         assert all(t["status"] == "archived" for t in tasks)
         assert has_more is True
 
-    def test_message_count_still_aggregated(self, db):
+    def test_message_count_still_aggregated(self, db, tmp_path):
         """分页不影响 message_count 聚合（LEFT JOIN 计数语义保留）。"""
-        ids = _create_n_tasks(db, 1)
+        ids = _create_n_tasks(db, 1, str(tmp_path))
         db.save_task_message(ids[0], "user", "hello")
         tasks, _ = db.list_tasks(limit=10)
         assert tasks[0]["message_count"] == 1

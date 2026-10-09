@@ -29,20 +29,16 @@ from db.database import Database
 
 
 class TestDeleteTaskScopedCleanup:
-    def _make_db(self, tmp_path, monkeypatch):
-        # Patch venv creation — create_task would otherwise build a real venv
-        import tools.venv_manager as vm
-        monkeypatch.setattr(vm, "create_venv", lambda task_dir: "")
-        monkeypatch.setattr(vm, "get_venv_python", lambda p: p)
-        monkeypatch.setattr(vm, "preinstall_packages", lambda p: None)
+    def _make_db(self, tmp_path):
+        # 懒创建后 create_task 不再碰 venv（仅登记路径），无需 patch venv_manager
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         db = Database(str(data_dir / "inkcube.db"))
         db.initialize()
         return db, str(data_dir)
 
-    def test_auto_task_dir_removed(self, tmp_path, monkeypatch):
-        db, data_dir = self._make_db(tmp_path, monkeypatch)
+    def test_auto_task_dir_removed(self, tmp_path):
+        db, data_dir = self._make_db(tmp_path)
         task = db.create_task("t", data_dir, workspace_path="")
         task_dir = Path(data_dir) / "tasks" / task["id"]
         assert task_dir.is_dir()
@@ -50,10 +46,10 @@ class TestDeleteTaskScopedCleanup:
         db.delete_task(task["id"])
         assert not task_dir.exists()
 
-    def test_external_workspace_parent_preserved(self, tmp_path, monkeypatch):
+    def test_external_workspace_parent_preserved(self, tmp_path):
         # Regression: user-provided workspace → dirname(workspace) is the
         # user's parent dir; delete_task must NOT rmtree it.
-        db, data_dir = self._make_db(tmp_path, monkeypatch)
+        db, data_dir = self._make_db(tmp_path)
         ext_parent = tmp_path / "proj"
         ext_ws = ext_parent / "ws"
         ext_ws.mkdir(parents=True)

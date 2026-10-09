@@ -100,6 +100,38 @@ export function ExternalModelSettings({ form, onUpdate }: ExternalModelSettingsP
       </section>
 
       <section className={styles.section}>
+        <h3 className={styles.heading}>{t('settings.wikiModelRouting')}</h3>
+        <p className={styles.hint}>{t('settings.wikiModelRoutingHint')}</p>
+
+        <label className={styles.label}>{t('settings.wikiIngestModel')}</label>
+        <input
+          className={styles.input}
+          value={form.wiki_ingest_model}
+          onChange={(e) => onUpdate('wiki_ingest_model', e.target.value)}
+          placeholder={t('settings.wikiModelFallback')}
+        />
+        <p className={styles.hint}>{t('settings.wikiIngestModelHint')}</p>
+
+        <label className={styles.label}>{t('settings.wikiLintModel')}</label>
+        <input
+          className={styles.input}
+          value={form.wiki_lint_model}
+          onChange={(e) => onUpdate('wiki_lint_model', e.target.value)}
+          placeholder={t('settings.wikiModelFallback')}
+        />
+        <p className={styles.hint}>{t('settings.wikiLintModelHint')}</p>
+
+        <label className={styles.label}>{t('settings.wikiDedupModel')}</label>
+        <input
+          className={styles.input}
+          value={form.wiki_dedup_model}
+          onChange={(e) => onUpdate('wiki_dedup_model', e.target.value)}
+          placeholder={t('settings.wikiModelFallback')}
+        />
+        <p className={styles.hint}>{t('settings.wikiDedupModelHint')}</p>
+      </section>
+
+      <section className={styles.section}>
         <h3 className={styles.heading}>{t('settings.toolConfig')}</h3>
 
         <label className={styles.label}>{t('settings.tavilyKey')}</label>

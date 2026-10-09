@@ -25,6 +25,8 @@ _DEDUP_CANDIDATE_TYPES = {"entity", "concept"}
 _MAX_DESC_CHARS = 200
 # Max pages per dedup batch
 _MAX_DEDUP_PAGES = 100
+# Max chars per page sent into the LLM content-merge prompt
+_MAX_MERGE_CHARS = 4000
 
 
 def extract_entity_summaries(db: Any, project_id: str) -> list[dict]:
@@ -124,16 +126,25 @@ async def merge_pages(
     - Deletes duplicate pages
     - Records change log
 
-    Returns: {"merged": int, "canonical": str, "rewritten_links": int}
+    Returns:
+        {"merged": int, "canonical": str, "rewritten_links": int,
+         "failed": [{"page_key", "reason"}], "truncated": [page_key]}
+
+    合并失败（LLM 异常/超时）的 dup 页保留不删，通过 failed 上报；
+    超出 _MAX_MERGE_CHARS 截断的页面通过 truncated 上报。
     """
     canonical = db.get_wiki_page(project_id, canonical_key)
     if not canonical:
-        return {"merged": 0, "canonical": canonical_key, "rewritten_links": 0}
+        return {"merged": 0, "canonical": canonical_key, "rewritten_links": 0,
+                "failed": [], "truncated": []}
 
     canonical_content = canonical.get("content", "")
     merged_tags = set(_safe_json_loads(canonical.get("tags", "[]")))
     merged_refs = set(_safe_json_loads(canonical.get("refs", "[]")))
     rewritten = 0
+    merged_keys: list[str] = []
+    failed_merges: list[dict] = []
+    truncated: list[str] = []
 
     for dup_key in duplicate_keys:
         dup_page = db.get_wiki_page(project_id, dup_key)
@@ -142,12 +153,25 @@ async def merge_pages(
 
         dup_content = dup_page.get("content", "")
 
-        # LLM merge content
+        # LLM merge content。合并失败（LLM 异常/超时）时保留 dup 页：删除不可逆，
+        # dup 的独特内容不能因一次瞬时失败而静默丢失。
         merged_content = await _llm_merge_content(
             canonical_content, dup_content, canonical_key, llm_client, llm_settings,
         )
-        if merged_content:
-            canonical_content = merged_content
+        if not merged_content:
+            logger.error(
+                "Dedup: content merge failed for '%s' → '%s', keeping duplicate page",
+                dup_key, canonical_key,
+            )
+            failed_merges.append({"page_key": dup_key, "reason": "llm_merge_failed"})
+            continue
+
+        # 超出上下文的部分不会参与合并——如实上报供 UI 提示
+        if len(canonical_content) > _MAX_MERGE_CHARS or len(dup_content) > _MAX_MERGE_CHARS:
+            truncated.append(dup_key)
+
+        canonical_content = merged_content
+        merged_keys.append(dup_key)
 
         # Union tags and refs
         merged_tags.update(_safe_json_loads(dup_page.get("tags", "[]")))
@@ -167,17 +191,20 @@ async def merge_pages(
         status=canonical.get("status", "compiled"),
     )
 
-    # Record change log
-    db.add_wiki_change_log(
-        project_id=project_id,
-        action="dedup_merge",
-        summary=f"合并 {len(duplicate_keys)} 个重复页面到 {canonical_key}: {', '.join(duplicate_keys)}",
-    )
+    # Record change log (只记录实际发生的合并)
+    if merged_keys:
+        db.add_wiki_change_log(
+            project_id=project_id,
+            action="dedup_merge",
+            summary=f"合并 {len(merged_keys)} 个重复页面到 {canonical_key}: {', '.join(merged_keys)}",
+        )
 
     return {
-        "merged": len(duplicate_keys),
+        "merged": len(merged_keys),
         "canonical": canonical_key,
         "rewritten_links": rewritten,
+        "failed": failed_merges,
+        "truncated": truncated,
     }
 
 
@@ -253,8 +280,8 @@ async def _llm_merge_content(
         {
             "role": "user",
             "content": (
-                f"## 主页面 ({canonical_key})\n{canonical[:4000]}\n\n"
-                f"## 待合并页面\n{duplicate[:4000]}"
+                f"## 主页面 ({canonical_key})\n{canonical[:_MAX_MERGE_CHARS]}\n\n"
+                f"## 待合并页面\n{duplicate[:_MAX_MERGE_CHARS]}"
             ),
         },
     ]

@@ -16,6 +16,12 @@ vi.mock('../src/features/settings/useSettings', () => ({
   useSettings: () => ({ settings: { tavily_key: 'tv-key' } }),
 }))
 
+// ReportWizard 消费 useToast（必填变量校验提示）；无 Provider 会 throw，统一 mock 捕获调用
+const toastMock = vi.hoisted(() => vi.fn())
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => toastMock,
+}))
+
 vi.mock('../src/features/readiness/useReadiness', () => {
   // guard 必须跨渲染引用稳定（真实实现是 useCallback 包装），
   // 否则 handleStartGenerate 每次重建，stale closure 无法复现

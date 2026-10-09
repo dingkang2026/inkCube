@@ -27,6 +27,10 @@ class SettingsModel(BaseModel):
     # Task-specific settings
     task_model: str = ""  # empty = use global model
     task_planner_model: str = ""  # empty = use task_model or global model
+    # Wiki LLM task routing (§12.2.13 of 2.6wiki-design.md)
+    wiki_ingest_model: str = ""  # empty = use global model
+    wiki_lint_model: str = ""  # empty = use global model
+    wiki_dedup_model: str = ""  # empty = use global model
     task_timeout: int = 30  # seconds
     task_max_iterations: int = 25  # FC loop max iterations (TaskSettings UI)
     task_auto_confirm_shell: bool = False  # legacy, kept for backward compat

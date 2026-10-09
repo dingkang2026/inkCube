@@ -1,12 +1,13 @@
 /** src/features/knowledge/FileUploader.tsx */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
+import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight, Pause, Play, ExternalLink } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { FileRecord, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './FileUploader.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useToast } from './Toast'
 
 interface FileUploaderProps {
   projectId: string
@@ -44,6 +45,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
   const ipc = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
+  const toast = useToast()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [menuOpenFileId, setMenuOpenFileId] = useState<string | null>(null)
 
@@ -68,6 +70,30 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
       onDeleteFile?.([fileId])
     } catch (err) {
       console.error('Delete failed:', err)
+    }
+  }
+
+  // 打开原文件（2.2 §10.4）：parsing/error 状态同样可用——文件上传即落盘，
+  // 解析失败不影响原文件存在；成功无 toast（系统程序弹出即反馈）
+  const handleOpenOriginal = async (file: FileRecord) => {
+    setMenuOpenFileId(null)
+    try {
+      const result: any = await window.electronAPI.invoke('file:openOriginal', {
+        projectId,
+        fileId: file.id,
+        filename: file.filename,
+      })
+      if (result && !result.success) {
+        toast(
+          result.reason === 'not_found'
+            ? t('knowledge.originalNotFound', { defaultValue: '原文件不存在，可能已被删除' })
+            : t('knowledge.openFailed', { defaultValue: '打开失败: {{reason}}', reason: result.message || result.reason }),
+          'error',
+        )
+      }
+    } catch (err) {
+      console.error('Open original failed:', err)
+      toast(t('knowledge.openFailed', { defaultValue: '打开失败: {{reason}}', reason: String(err) }), 'error')
     }
   }
 
@@ -219,6 +245,10 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
               <div className={s.menuBtnWrap} onClick={(e) => e.stopPropagation()}>
                 <button className={s.menuBtn} onClick={(e) => { e.stopPropagation(); setMenuOpenFileId(menuOpenFileId === file.id ? null : file.id) }}><MoreVertical size={15} /></button>
                 <div className={`${s.dropdownMenu} ${menuOpenFileId === file.id ? s.dropdownMenuOpen : ''}`}>
+                  <button className={s.menuItem} onClick={(e) => { e.stopPropagation(); void handleOpenOriginal(file) }}>
+                    <ExternalLink size={13} />
+                    {t('knowledge.openOriginal', { defaultValue: '打开原文件' })}
+                  </button>
                   {file.status === 'error' && (
                     <button className={s.menuItem} onClick={(e) => { e.stopPropagation(); handleRetry(file.id) }}>
                       <RefreshCw size={13} />

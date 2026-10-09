@@ -5,6 +5,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+const { toastSpy } = vi.hoisted(() => ({ toastSpy: vi.fn() }))
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }))
@@ -13,11 +15,16 @@ vi.mock('../src/components/ConfirmDialog', () => ({
   useConfirm: () => async () => true,
 }))
 
+// useToast 无 Provider 时会 throw——直接 mock 拿 spy 断言提示文案
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => toastSpy,
+}))
+
 vi.mock('../src/features/knowledge/FileUploader.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { FileUploader } from '../src/features/knowledge/FileUploader'
 import type { FileRecord } from '../src/features/knowledge/types'
 
@@ -98,5 +105,54 @@ describe('FileUploader header count', () => {
   it('never renders the page row count as the header count', () => {
     mount(190)
     expect(screen.queryByText('knowledge.uploadedFiles (20)')).toBeNull()
+  })
+})
+
+describe('FileUploader open original (2.2 §10.4)', () => {
+  beforeEach(() => {
+    toastSpy.mockClear()
+  })
+
+  it('menu first item invokes file:openOriginal with projectId/fileId/filename', async () => {
+    const invoke = vi.fn().mockResolvedValue({ success: true })
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke }
+    const { container } = render(
+      <FileUploader projectId="p1" files={makeFiles(1)} onRefresh={() => {}} fileTotal={1} />,
+    )
+    fireEvent.click(container.querySelector('.menuBtn') as HTMLElement)
+    fireEvent.click(screen.getByText('knowledge.openOriginal'))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('file:openOriginal', {
+        projectId: 'p1',
+        fileId: 'f0',
+        filename: 'doc-0.pdf',
+      }),
+    )
+    // 成功无 toast（系统程序弹出即反馈）
+    expect(toastSpy).not.toHaveBeenCalled()
+  })
+
+  it('shows error toast when the file is missing on disk', async () => {
+    const invoke = vi.fn().mockResolvedValue({ success: false, reason: 'not_found' })
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke }
+    const { container } = render(
+      <FileUploader projectId="p1" files={makeFiles(1)} onRefresh={() => {}} fileTotal={1} />,
+    )
+    fireEvent.click(container.querySelector('.menuBtn') as HTMLElement)
+    fireEvent.click(screen.getByText('knowledge.openOriginal'))
+    await waitFor(() => expect(toastSpy).toHaveBeenCalled())
+    expect(toastSpy).toHaveBeenCalledWith('knowledge.originalNotFound', 'error')
+  })
+
+  it('menu stays available regardless of parse status (原文件上传即落盘)', () => {
+    const files = [
+      { ...makeFiles(1)[0], status: 'parsing' },
+    ] as unknown as FileRecord[]
+    const { container } = render(
+      <FileUploader projectId="p1" files={files} onRefresh={() => {}} fileTotal={1} />,
+    )
+    fireEvent.click(container.querySelector('.menuBtn') as HTMLElement)
+    // parsing 状态下「打开原文件」仍在菜单中（仅「重试」是 error 专属）
+    expect(screen.getByText('knowledge.openOriginal')).toBeTruthy()
   })
 })

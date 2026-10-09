@@ -135,10 +135,13 @@ def _fold_node(node: dict) -> str:
     r = f"须覆盖：{'——'.join(chain)}"
 
     # v2 深层节点的 writing_brief 任务书整段并入（换行压缩为分号，
-    # 保持 writing_requirements 单条单行形态）
+    # 保持 writing_requirements 单条单行形态；行尾已带分号时剥除，
+    # 避免压缩出「；；」，空行过滤）
     brief = (node.get("writing_brief") or "").strip()
     if brief:
-        r += "：" + brief.replace("\r\n", "\n").replace("\n", "；")
+        lines = [ln.strip().rstrip("；;")
+                 for ln in brief.replace("\r\n", "\n").split("\n")]
+        r += "：" + "；".join(ln for ln in lines if ln)
 
     # v2 用 prompt_hint 作为附加说明（替代 v1 的 notes / promote_subhead）
     prompt_hint = node.get("prompt_hint", "")

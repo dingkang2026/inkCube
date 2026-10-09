@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   BookOpen, RefreshCw, AlertCircle, CheckCircle, Clock,
   AlertTriangle, Loader2, Home, Shield, Search, Share2,
-  Maximize2, Minimize2, Square,
+  Maximize2, Minimize2, Square, ListOrdered,
 } from 'lucide-react'
 import type { ProjectType } from '../types'
 import { WikiHomePage } from './WikiHomePage'
@@ -15,7 +15,9 @@ import { WikiSearchView } from './WikiSearchView'
 import { WikiGraphView } from './WikiGraphView'
 import { WikiLintView } from './WikiLintView'
 import { CompilePanel } from './CompilePanel'
+import { WikiSchemaManager } from './WikiSchemaManager'
 import { useFeatureGuard } from '../../readiness/useReadiness'
+import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
 
 interface WikiTabProps {
@@ -79,7 +81,7 @@ interface Review {
   resolved: number
   created_at: string
 }
-type ViewMode = 'home' | 'read' | 'edit' | 'changelog' | 'search' | 'graph' | 'lint'
+type ViewMode = 'home' | 'read' | 'edit' | 'changelog' | 'search' | 'graph' | 'lint' | 'schema'
 
 const PREVIEW_DEFAULT_WIDTH = 720
 const PREVIEW_MIN_WIDTH = 260
@@ -88,6 +90,7 @@ const PREVIEW_MAX_WIDTH = 720
 export function WikiTab({ projectId, projectType: _projectType, expanded, onExpandChange, onPreviewOpenChange, closePreviewSignal, compileData, onCompileDetailChange }: WikiTabProps) {
   const { t } = useTranslation()
   const guard = useFeatureGuard()
+  const showToast = useToast()
   const [pages, setPages] = useState<WikiPage[]>([])
   const [pendingCount, setPendingCount] = useState(0)
   const [purpose, setPurpose] = useState('')
@@ -327,6 +330,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       console.error('Failed to trigger compile:', err)
       setCompiling(false)
       setShowDetailPanel(false)
+      // 409 防重入 / 就绪度结构化报错必须可感知，不能只写 console
+      showToast(t('project.wiki.compileTriggerFailed', {
+        reason: err instanceof Error ? err.message : String(err),
+        defaultValue: `编译触发失败: ${err instanceof Error ? err.message : String(err)}`,
+      }), 'error')
     }
   }
 
@@ -337,20 +345,24 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setCompileTask(null)
     setIsResumed(false)
     setShowDetailPanel(true)
-    // Clear stale page list immediately (backend just wiped all wiki data)
-    setPages([])
-    setReviews([])
-    setSelectedPage(null)
-    setPreviewPageKey(null)
-    setViewMode('home')
     // 状态刷新依赖父组件 #4 轮询（明细面板展开时 2s，0.4 §8.1）
     try {
       await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', force: true })
+      // 触发成功后才清空本地列表（后端此时才 wipe）；失败时保留原数据仅提示
+      setPages([])
+      setReviews([])
+      setSelectedPage(null)
+      setPreviewPageKey(null)
+      setViewMode('home')
       await loadPages()
     } catch (err) {
       console.error('Failed to trigger recompile:', err)
       setCompiling(false)
       setShowDetailPanel(false)
+      showToast(t('project.wiki.compileTriggerFailed', {
+        reason: err instanceof Error ? err.message : String(err),
+        defaultValue: `编译触发失败: ${err instanceof Error ? err.message : String(err)}`,
+      }), 'error')
     }
   }
 
@@ -361,6 +373,10 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       await window.electronAPI.invoke('wiki:stopCompile', { projectId })
     } catch (err) {
       console.error('Failed to stop compile:', err)
+      showToast(t('project.wiki.stopFailed', {
+        reason: err instanceof Error ? err.message : String(err),
+        defaultValue: `停止编译失败: ${err instanceof Error ? err.message : String(err)}`,
+      }), 'error')
     }
   }
 
@@ -446,16 +462,42 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             ) : (
               <CheckCircle size={14} />
             )}
-            <span>
-              {ingestSummaries.some(s => s.error)
-                ? t('project.wiki.compileDoneWithErrors', {
-                    defaultValue: `编译完成: ${ingestSummaries.filter(s => !s.error).length} 成功, ${ingestSummaries.filter(s => s.error).length} 失败`,
-                    success: ingestSummaries.filter(s => !s.error).length,
+            {ingestSummaries.some(s => s.error) ? (
+              <span>
+                {t('project.wiki.compileDoneOk', {
+                  success: ingestSummaries.filter(s => !s.error).length,
+                  defaultValue: `编译完成: ${ingestSummaries.filter(s => !s.error).length} 成功`,
+                })}
+                {/* 失败计数即快速定位入口：点击直达逐文件明细（2.6 §13.3） */}
+                <button
+                  className={s.failCountBtn}
+                  onClick={() => setShowDetailPanel(true)}
+                  title={t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
+                >
+                  {t('project.wiki.compileDoneFailCount', {
                     errors: ingestSummaries.filter(s => s.error).length,
-                  })
-                : t('project.wiki.compileDone', { count: compileTask.pages_completed ?? 0, defaultValue: `编译完成 (${compileTask.pages_completed ?? 0} 个文件)` })
-              }
-            </span>
+                    defaultValue: `${ingestSummaries.filter(s => s.error).length} 个文件失败`,
+                  })}
+                </button>
+              </span>
+            ) : (
+              <span>
+                {t('project.wiki.compileDone', { count: compileTask.pages_completed ?? 0, defaultValue: `编译完成 (${compileTask.pages_completed ?? 0} 个文件)` })}
+              </span>
+            )}
+            {/* 重试失败（2.6 §13.3）：非 force 增量——失败文件无 source_pages 记录天然重跑，
+                已成功文件 skip-if-unchanged 跳过；与 failed/stopped 状态条的重试同一语义 */}
+            {ingestSummaries.some(s => s.error) && (
+              <button
+                className={s.retryBtn}
+                onClick={() => handleCompile()}
+                disabled={compiling}
+                title={t('project.wiki.retryFailedTip')}
+              >
+                <RefreshCw size={13} />
+                {t('project.wiki.retryFailed', { count: ingestSummaries.filter(s => s.error).length, defaultValue: `重试失败 (${ingestSummaries.filter(s => s.error).length})` })}
+              </button>
+            )}
             {/* 查看详情：终态均保留逐文件摘要回看入口，不再仅限有错误时（2.6 §10 修订） */}
             <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
               {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
@@ -571,6 +613,14 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 <span className={s.navBadge}>{reviews.length}</span>
               )}
             </div>
+            <div
+              className={`${s.navItem} ${viewMode === 'schema' ? s.navItemActive : ''}`}
+              onClick={() => setViewMode('schema')}
+              title={t('project.wiki.navTipSchema')}
+            >
+              <ListOrdered size={13} />
+              <span>{t('project.wiki.schemaNav')}</span>
+            </div>
           </div>
 
         </div>
@@ -589,6 +639,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               onNavigate={handleGoChangelog}
               onNavigateToPage={handleNavigateToPage}
               onCompile={() => handleCompile()}
+              onMetaSaved={() => void loadPages()}
             />
           ) : viewMode === 'search' ? (
             /* Search view */
@@ -609,6 +660,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               projectId={projectId}
               onNavigateToPage={handleNavigateToPage}
             />
+          ) : viewMode === 'schema' ? (
+            /* Schema management (structure pages, 2.6 §3.1) */
+            <WikiSchemaManager projectId={projectId} />
           ) : viewMode === 'changelog' ? (
             /* Changelog timeline */
             <WikiChangeLog
@@ -623,6 +677,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           )}
         </div>
       </div>
+
+      {/* Preview backdrop — 知识问答面板同款：展开时点击面板外任意处收起（遮罩不透传点击） */}
+      {previewPageKey && pageDetail && (
+        <div className={s.previewBackdrop} onClick={handleClosePreview} />
+      )}
 
       {/* Preview panel — slides in from right, full page height, resizable */}
       {previewPageKey && pageDetail && (
@@ -647,6 +706,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             <WikiPageReader
               projectId={projectId}
               pageDetail={pageDetail}
+              sourcePages={sourcePages}
               onEdit={handleGoEdit}
               onNavigateToPage={handleNavigateToPage}
             />

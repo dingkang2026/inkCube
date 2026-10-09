@@ -10,6 +10,7 @@ import sys
 import types
 
 import pytest
+import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -45,7 +46,8 @@ def fake_flagembedding(monkeypatch, tmp_path):
 
 class TestBgeM3DeviceSelection:
     def test_cuda_available_uses_fp16_cuda(self, monkeypatch, fake_flagembedding, tmp_path):
-        monkeypatch.setattr(vs.torch, "cuda", types.SimpleNamespace(is_available=lambda: True))
+        # torch 已改为 _get_bge_m3_model 内懒加载，探测点直接 patch torch.cuda
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
         model = vs._get_bge_m3_model(str(tmp_path))
 
@@ -54,7 +56,7 @@ class TestBgeM3DeviceSelection:
         assert model.kwargs["devices"] == ["cuda"]
 
     def test_no_cuda_falls_back_to_cpu_fp32(self, monkeypatch, fake_flagembedding, tmp_path):
-        monkeypatch.setattr(vs.torch, "cuda", types.SimpleNamespace(is_available=lambda: False))
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
         model = vs._get_bge_m3_model(str(tmp_path))
 
@@ -63,7 +65,8 @@ class TestBgeM3DeviceSelection:
         assert "devices" not in model.kwargs  # CPU 回退不传 devices
 
     def test_singleton_loads_once(self, monkeypatch, fake_flagembedding, tmp_path):
-        monkeypatch.setattr(vs.torch, "cuda", types.SimpleNamespace(is_available=lambda: True))
+        # torch 已改为 _get_bge_m3_model 内懒加载，探测点直接 patch torch.cuda
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
         m1 = vs._get_bge_m3_model(str(tmp_path))
         m2 = vs._get_bge_m3_model(str(tmp_path / "irrelevant"))  # 换路径也走单例（首个路径胜出）

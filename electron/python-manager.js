@@ -132,6 +132,10 @@ class PythonManager {
       spawnEnv.INKCUBE_PANDOC_PATH = path.join(toolsDir, `pandoc${ext}`)
       spawnEnv.INKCUBE_PYTHON_PATH = path.join(
         userData, 'python', process.platform === 'win32' ? 'python.exe' : 'python3')
+      // Mermaid renderer script ships in extraResources (outside app.asar —
+      // Python cannot read inside asar); bridge resolves env var first
+      spawnEnv.INKCUBE_MERMAID_RENDERER_SCRIPT = path.join(
+        process.resourcesPath, 'electron-renderer', 'mermaid-renderer.js')
     }
 
     this.process = spawn(command, [...args, '--port', String(this.port)], {
@@ -165,7 +169,11 @@ class PythonManager {
       })
     })
 
-    await this.waitForHealth(15000)
+    // 60s: backend cold start = full import of transformers/torch/docling
+    // chain, measured 8~10s baseline that doubles to 15~20s under evening
+    // / post-boot background IO (Defender rescan, indexing). 15s sat on
+    // that cliff edge and intermittently killed healthy-but-slow startups.
+    await this.waitForHealth(60000)
   }
 
   async waitForHealth(timeout) {

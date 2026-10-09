@@ -7,6 +7,7 @@ import {
   Play, HelpCircle,
 } from 'lucide-react'
 import { Markdown } from '../../../components/Markdown'
+import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
 
 interface WikiPage {
@@ -27,6 +28,8 @@ interface WikiHomePageProps {
   onNavigate: (view: 'changelog') => void
   onNavigateToPage: (pageKey: string) => void
   onCompile: () => void
+  /** purpose/overview 保存成功后回调父级刷新（避免保存后界面回显旧值） */
+  onMetaSaved?: () => void
 }
 
 /** Page type config: icon, label/desc i18n keys, order */
@@ -53,9 +56,10 @@ function extractSummary(content: string | null, maxLen = 80): string {
 
 export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
-  onNavigate, onNavigateToPage, onCompile,
+  onNavigate, onNavigateToPage, onCompile, onMetaSaved,
 }: WikiHomePageProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [editingPurpose, setEditingPurpose] = useState(false)
   const [editingOverview, setEditingOverview] = useState(false)
   const [draftPurpose, setDraftPurpose] = useState(purpose)
@@ -71,8 +75,13 @@ export function WikiHomePage({
     try {
       await window.electronAPI.invoke('wiki:updatePurpose', { projectId, purpose: draftPurpose })
       setEditingPurpose(false)
+      onMetaSaved?.() // 父级刷新 purpose → props 回流，避免保存后仍显示旧值
     } catch (err) {
       console.error('Failed to save purpose:', err)
+      showToast(t('project.wiki.saveMetaFailed', {
+        reason: err instanceof Error ? err.message : String(err),
+        defaultValue: `保存失败: ${err instanceof Error ? err.message : String(err)}`,
+      }), 'error')
     } finally {
       setSaving(false)
     }
@@ -83,8 +92,13 @@ export function WikiHomePage({
     try {
       await window.electronAPI.invoke('wiki:updateOverview', { projectId, overview: draftOverview })
       setEditingOverview(false)
+      onMetaSaved?.() // 父级刷新 overview → props 回流，避免保存后仍显示旧值
     } catch (err) {
       console.error('Failed to save overview:', err)
+      showToast(t('project.wiki.saveMetaFailed', {
+        reason: err instanceof Error ? err.message : String(err),
+        defaultValue: `保存失败: ${err instanceof Error ? err.message : String(err)}`,
+      }), 'error')
     } finally {
       setSaving(false)
     }

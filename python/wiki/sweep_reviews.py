@@ -86,6 +86,10 @@ def _stage1_rule_match(
 
     # Build normalized key set for fast lookup
     normalized_existing = {_normalize_key(k) for k in existing_page_keys}
+    # orphan 分支的入链计数同口径归一化：counts 的 key 是各页 refs 中的原始
+    # page_key，而下方 ref_key 提取后已归一化，不归一会导致 orphan 永远 miss
+    # （全部落入 Stage2 耗 LLM 成本，违反 2.6 §5.3 承诺）
+    normalized_inbound = {_normalize_key(str(k)): v for k, v in page_inbound_counts.items()}
 
     for review in pending_reviews:
         review_id = review["id"]
@@ -109,10 +113,11 @@ def _stage1_rule_match(
 
         elif review_type == "orphan":
             # If the page now has inbound links → auto resolve
-            if ref_key and page_inbound_counts.get(ref_key, 0) > 0:
+            inbound = normalized_inbound.get(ref_key, 0)
+            if ref_key and inbound > 0:
                 auto_resolved = True
                 logger.debug("Stage1 resolved orphan: %s → %s (inbound=%d)",
-                             review_id, ref_key, page_inbound_counts.get(ref_key, 0))
+                             review_id, ref_key, inbound)
 
         if auto_resolved:
             resolved_ids.append(review_id)

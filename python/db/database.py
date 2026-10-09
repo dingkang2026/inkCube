@@ -267,7 +267,7 @@ class Database:
                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 template_id TEXT NOT NULL,
                 title TEXT NOT NULL,
-                output_format TEXT NOT NULL DEFAULT 'Word',
+                output_format TEXT NOT NULL DEFAULT 'docx',
                 status TEXT NOT NULL DEFAULT 'generating',
                 progress INTEGER DEFAULT 0,
                 content_path TEXT,
@@ -285,7 +285,10 @@ class Database:
                 word_count INTEGER DEFAULT 0,
                 compose_mode TEXT DEFAULT 'standard',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                -- 同一章节唯一：restart/resume 重跑重复落库幂等（与 wiki_pages
+                -- UNIQUE(project_id, page_key) 同模式；存量库由迁移重建补齐）
+                UNIQUE(report_id, section_id)
             );
 
             CREATE TABLE IF NOT EXISTS templates (
@@ -319,6 +322,13 @@ class Database:
         self._migrate_add_column("reports", "base_project_ids", "TEXT")
         self._migrate_add_column("reports", "section_internet", "TEXT")
         self._migrate_add_column("reports", "internet_enabled", "INTEGER DEFAULT 0")
+        # 历史行统一 'docx'（历史版本 IPC 曾写 'Word'，与后端/API 默认不一致）
+        self.conn.execute(
+            "UPDATE reports SET output_format = 'docx' WHERE output_format = 'Word'"
+        )
+        self.conn.commit()
+        # report_sections 补 UNIQUE(report_id, section_id)：存量库重建表去重
+        self._migrate_report_sections_unique()
 
         # Report logs table (for progress tracking)
         self.conn.executescript("""
@@ -386,6 +396,7 @@ class Database:
                 title TEXT NOT NULL,
                 description TEXT,
                 affected_page_ids TEXT,
+                evidence TEXT,
                 source_file_id TEXT,
                 resolved INTEGER DEFAULT 0,
                 resolved_action TEXT,
@@ -436,6 +447,10 @@ class Database:
         self._migrate_add_column("wiki_compile_tasks", "ingest_file_summaries", "TEXT")
         self._migrate_add_column("wiki_compile_tasks", "stop_requested", "INTEGER DEFAULT 0")
 
+        # Migrate: wiki_reviews evidence（§3.5/§5.5，E2-2026-10）——矛盾证据结构化
+        # [{page_key, quote}]，摄入产出的 contradiction 附带，供两栏对比裁决
+        self._migrate_add_column("wiki_reviews", "evidence", "TEXT")
+
         # Wiki source pages table (§3.7) — tracks ingested files
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS wiki_source_pages (
@@ -454,6 +469,15 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_wiki_source_pages_project ON wiki_source_pages(project_id);
         """)
+        self.conn.commit()
+
+        # Data fix (E2-2026-10, §4.4): 归档存量 pending confirm——confirm 是
+        # 「材料与百科吻合」类正面结论，不占待处理列表；新代码落库即 resolved=1
+        # (auto_confirmed)，此处一次性清理历史积压。幂等，重复执行无副作用。
+        self.conn.execute(
+            "UPDATE wiki_reviews SET resolved = 1, resolved_action = 'auto_confirmed' "
+            "WHERE type = 'confirm' AND resolved = 0"
+        )
         self.conn.commit()
 
         # Wiki page versions table — stores historical snapshots for version history
@@ -484,6 +508,63 @@ class Database:
                 self.conn.commit()
         except Exception:
             pass  # Table might not exist yet
+
+    def _load_json_list(self, raw) -> list | None:
+        """Safely decode a TEXT(JSON) list column; returns None for empty/invalid."""
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def _migrate_report_sections_unique(self):
+        """report_sections 补 UNIQUE(report_id, section_id)（restart/resume 防重复行）。
+
+        SQLite 不能 ALTER TABLE 加约束：先按 updated_at 保留最新一条去重存量
+        重复行，再重建表；唯一索引已存在则幂等跳过。失败向上抛（DB 迁移失败
+        意味着库文件异常，静默继续会让应用带着脏约束运行）。
+        """
+        for row in self.conn.execute("PRAGMA index_list(report_sections)").fetchall():
+            cols = [
+                c["name"] for c in
+                self.conn.execute(f"PRAGMA index_info({row['name']})").fetchall()
+            ]
+            if row["unique"] and set(cols) == {"report_id", "section_id"}:
+                return  # 已迁移（新库 DDL 自带或上次迁移已建）
+        self.conn.executescript("""
+            CREATE TABLE report_sections_migrated (
+                id TEXT PRIMARY KEY,
+                report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+                section_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                word_count INTEGER DEFAULT 0,
+                compose_mode TEXT DEFAULT 'standard',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(report_id, section_id)
+            );
+            INSERT INTO report_sections_migrated
+                SELECT * FROM report_sections
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (
+                            PARTITION BY report_id, section_id
+                            ORDER BY updated_at DESC, created_at DESC
+                        ) AS rn
+                        FROM report_sections
+                    ) WHERE rn = 1
+                );
+            DROP TABLE report_sections;
+            ALTER TABLE report_sections_migrated RENAME TO report_sections;
+            CREATE INDEX IF NOT EXISTS idx_report_sections_report
+                ON report_sections(report_id);
+        """)
+        self.conn.commit()
+        logger.info("Migrated report_sections: added UNIQUE(report_id, section_id)")
 
     def _now(self) -> str:
         return datetime.now().isoformat()
@@ -588,9 +669,11 @@ class Database:
                        company_name: str = "", credit_code: str = "") -> dict:
         now = self._now()
         proj_id = self._uuid()
+        # Pre-fill Wiki purpose by project type (user-editable later, §4.6)
+        default_purpose = self.DEFAULT_PURPOSES.get(project_type, self.DEFAULT_PURPOSES["general"])
         self.conn.execute(
-            "INSERT INTO projects (id, name, description, type, stage, company_name, credit_code, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'project', ?, ?)",
-            (proj_id, name, description, project_type, stage, company_name, credit_code, now, now),
+            "INSERT INTO projects (id, name, description, type, stage, company_name, credit_code, kind, wiki_purpose, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'project', ?, ?, ?)",
+            (proj_id, name, description, project_type, stage, company_name, credit_code, default_purpose, now, now),
         )
         self.conn.commit()
 
@@ -961,27 +1044,14 @@ class Database:
             workspace_path = os.path.join(task_dir, "workspace")
             os.makedirs(workspace_path, exist_ok=True)
 
-        # Create per-task venv (only for auto-created dirs, not user-provided)
+        # Lazy per-task venv (空间优化): only record the deterministic venv
+        # path; the venv directory itself is created on first code-execution
+        # need (tools.venv_manager.ensure_venv via task_agent) so chat-only
+        # tasks cost zero disk. User-provided workspaces stay venv-free.
         venv_path = ""
-        if task_dir.startswith(data_dir):
-            try:
-                from tools.venv_manager import create_venv, get_venv_python, preinstall_packages
-                venv_python_path = get_venv_python(os.path.join(task_dir, ".venv"))
-                venv_existed = os.path.isfile(venv_python_path)
-                venv_path = create_venv(task_dir)
-                # Only preinstall when venv is newly created (skip if already existed)
-                # Run preinstall in background thread so task creation returns immediately
-                if not venv_existed:
-                    import threading
-                    t = threading.Thread(
-                        target=preinstall_packages,
-                        args=(venv_python_path,),
-                        daemon=True,
-                    )
-                    t.start()
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning("venv creation failed for task %s: %s", task_id, e)
+        if os.path.normcase(os.path.abspath(task_dir)).startswith(
+                os.path.normcase(os.path.abspath(data_dir)) + os.sep):
+            venv_path = os.path.join(task_dir, ".venv")
 
         self.conn.execute(
             "INSERT INTO tasks (id, title, status, workspace_path, venv_path, mode, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?, ?)",
@@ -1273,7 +1343,7 @@ class Database:
         project_id: str,
         template_id: str,
         title: str,
-        output_format: str = "Word",
+        output_format: str = "docx",
         content_path: str | None = None,
     ) -> dict:
         now = self._now()
@@ -1368,12 +1438,15 @@ class Database:
         row = cursor.fetchone()
         return row["cnt"] if row else 0
 
-    def recover_stale_generating_reports(self, timeout_minutes: int = 5) -> list[str]:
-        """崩溃恢复（§3.8.3）：扫描卡在 generating 且超时未更新的报告，标记为 error。
+    def recover_stale_generating_reports(self, timeout_minutes: int = 0) -> list[str]:
+        """崩溃恢复（§3.8.3）：扫描遗留的 generating 报告，标记为 error。
 
-        应用启动时调用。程序异常退出会遗留 status='generating' 的报告；
-        updated_at 距今 > timeout_minutes 判定为中断，标记 error 并保留 checkpoint，
-        等用户在详情页点「重新生成」从 checkpoint 续跑（启动时不自动续跑）。
+        应用启动时调用。runner 跑在本进程 BackgroundTasks 内——进程重启后
+        runner 必然全部不存在，任何 status='generating' 均为孤儿，故默认
+        timeout=0 不设时间阈值。曾用 5 分钟阈值，反而留下「假生成中」窗口：
+        进度永不推进、暂停请求无人消费，须等下次重启满 5 分钟才被救回。
+        标记 error 并保留 checkpoint，等用户在详情页点「恢复生成」从
+        checkpoint 续跑（启动时不自动续跑）；timeout>0 仅测试/特殊场景使用。
 
         Returns:
             被标记为 error 的 report_id 列表。
@@ -1391,7 +1464,9 @@ class Database:
             except (ValueError, TypeError):
                 # 时间戳无法解析 → 保守判定为陈旧，避免永久卡在 generating
                 age_seconds = timeout_minutes * 60 + 1
-            if age_seconds > timeout_minutes * 60:
+            # timeout<=0 = 不设时间阈值（全部孤儿）；显式特判而非 >0 比较——
+            # 同时钟 tick 内的时间戳 age_seconds 精确为 0，比较会漏标
+            if timeout_minutes <= 0 or age_seconds > timeout_minutes * 60:
                 stale_ids.append(row["id"])
         for rid in stale_ids:
             self.conn.execute(
@@ -1430,13 +1505,20 @@ class Database:
         }
 
     def list_report_logs(self, report_id: str, limit: int = 100) -> list[dict]:
-        """获取报告的生成日志（按时间倒序）。"""
+        """获取报告的生成日志（时间正序 = 时间轴视图，取最新 limit 条）。
+
+        详情页日志面板直接渲染（旧上新下，生成中配合自动滚底看最新）：
+        SQL 倒序截取最新 N 条（rowid = 插入序作同 created_at 的稳定次级键），
+        Python 侧反转为正序返回。
+        """
         cursor = self.conn.execute(
             """SELECT * FROM report_logs WHERE report_id = ?
-               ORDER BY created_at DESC LIMIT ?""",
+               ORDER BY created_at DESC, rowid DESC LIMIT ?""",
             (report_id, limit),
         )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        rows.reverse()
+        return rows
 
     # ── Notifications (Activity Hub, 0.4 §3.2) ──
 
@@ -1556,15 +1638,26 @@ class Database:
         compose_mode: str = "standard",
     ) -> dict:
         now = self._now()
-        section_pk = self._uuid()
+        # UPSERT：同 (report_id, section_id) 重复落库幂等（resume 重复事件 /
+        # restart 未清表的纵深防御），冲突时重置为 pending 并刷新标题
         self.conn.execute(
             """INSERT INTO report_sections (id, report_id, section_id, title, status, word_count, compose_mode, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
-            (section_pk, report_id, section_id, title, compose_mode, now, now),
+               VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+               ON CONFLICT(report_id, section_id) DO UPDATE SET
+                   title = excluded.title,
+                   status = 'pending',
+                   word_count = 0,
+                   compose_mode = excluded.compose_mode,
+                   updated_at = excluded.updated_at""",
+            (self._uuid(), report_id, section_id, title, compose_mode, now, now),
         )
+        row = self.conn.execute(
+            "SELECT id, created_at FROM report_sections WHERE report_id = ? AND section_id = ?",
+            (report_id, section_id),
+        ).fetchone()
         self.conn.commit()
         return {
-            "id": section_pk,
+            "id": row["id"],
             "report_id": report_id,
             "section_id": section_id,
             "title": title,
@@ -1572,9 +1665,14 @@ class Database:
             "status": "pending",
             "word_count": 0,
             "compose_mode": compose_mode,
-            "created_at": now,
+            "created_at": row["created_at"],
             "updated_at": now,
         }
+
+    def delete_report_sections(self, report_id: str):
+        """清空报告的章节行（restart 全量重跑前重置，防旧行残留）。"""
+        self.conn.execute("DELETE FROM report_sections WHERE report_id = ?", (report_id,))
+        self.conn.commit()
 
     def list_report_sections(self, report_id: str) -> list[dict]:
         cursor = self.conn.execute(
@@ -1640,6 +1738,24 @@ class Database:
     _AUTO_LINK_MAP = {
         "recruitment": ["bl-recruitment"],
         "investment": ["bl-investment"],
+    }
+
+    # Default Wiki purpose per project type (§4.6 of 2.6wiki-design.md),
+    # pre-filled on create_project; user-editable from the Wiki home page.
+    DEFAULT_PURPOSES = {
+        "recruitment": (
+            "构建招商全周期知识库：前期完成企业画像与政策匹配评估，中期推进项目"
+            "落地实施，投产后持续监测企业经营、政策兑现与履约风险，为招商决策与"
+            "企业服务提供依据。"
+        ),
+        "investment": (
+            "构建投资全周期知识库：覆盖尽职调查、投资决策、投后监控到退出分析，"
+            "持续追踪企业经营、财务健康、条款触发与风险预警。"
+        ),
+        "general": (
+            "构建项目知识库：沉淀项目资料的关键信息、结论与风险，支持检索与"
+            "持续更新。"
+        ),
     }
 
     PRESET_BASE_LIBS = [
@@ -1786,7 +1902,15 @@ class Database:
     # ── Wiki: Schemas ──
 
     def seed_wiki_schemas(self, schemas: list[dict]):
-        """Seed wiki_schemas table (idempotent: INSERT OR REPLACE by id)."""
+        """Seed wiki_schemas table (idempotent: INSERT OR REPLACE by id).
+
+        Also removes retired schema rows (RETIRED_SCHEMA_IDS from wiki_seed,
+        §2.2 Schema 演化) so stale compile hints stop being injected into
+        prompts. User-defined custom schemas (CRUD API) are unaffected.
+        """
+        from db.wiki_seed import RETIRED_SCHEMA_IDS
+        for schema_id in RETIRED_SCHEMA_IDS:
+            self.conn.execute("DELETE FROM wiki_schemas WHERE id = ?", (schema_id,))
         for s in schemas:
             self.conn.execute(
                 """INSERT OR REPLACE INTO wiki_schemas
@@ -1891,6 +2015,10 @@ class Database:
         if schema:
             self._notify_schema_change(schema["project_type"], schema["page_key"], "removed")
         return cursor.rowcount > 0
+
+    def get_wiki_schema(self, project_type: str, page_key: str) -> dict | None:
+        """Get a single wiki schema by (project_type, page_key)."""
+        return self._get_schema_by_id(f"wiki_schema_{project_type}_{page_key}")
 
     def _get_schema_by_id(self, schema_id: str) -> dict | None:
         cursor = self.conn.execute("SELECT * FROM wiki_schemas WHERE id = ?", (schema_id,))
@@ -2125,6 +2253,50 @@ class Database:
         except Exception as e:
             logger.warning("Failed to save page version: %s", e)
 
+    def replace_wiki_page_text(
+        self,
+        project_id: str,
+        page_key: str,
+        old_text: str,
+        new_text: str,
+        change_summary: str = "",
+    ) -> dict:
+        """Precise text replacement on a wiki page (§5.5 adjudicate).
+
+        全量替换 old_text → new_text（确定性，不经 LLM）；落库为
+        status=user_edited（编译保护，用户裁决的说法不被下轮摄入覆盖）+
+        compile_version+1 自动版本快照。任一环节失配返回 success=False
+        且不产生写操作，宁可留待人工不误改。
+        """
+        page = self.get_wiki_page(project_id, page_key)
+        if not page:
+            return {"success": False, "reason": "page_not_found", "page_key": page_key}
+        content = page.get("content") or ""
+        count = content.count(old_text)
+        if count == 0:
+            if new_text and new_text in content:
+                # 重试语义（§5.5）：上一轮部分失败后，已成功侧已替换为目标文本——
+                # 视为达成且不再产生写操作，否则三侧以上矛盾的修复重试将永久 partial
+                return {"success": True, "reason": "already_applied", "page_key": page_key}
+            return {"success": False, "reason": "text_not_found", "page_key": page_key}
+        new_content = content.replace(old_text, new_text)
+        version = (page.get("compile_version") or 0) + 1
+        now = self._now()
+        self.conn.execute(
+            "UPDATE wiki_pages SET content = ?, status = 'user_edited', "
+            "compile_version = ?, last_compiled_at = ?, updated_at = ? WHERE id = ?",
+            (new_content, version, now, now, page["id"]),
+        )
+        self.conn.commit()
+        self._save_page_version(page["id"], new_content, page.get("title"), version, change_summary)
+        return {
+            "success": True,
+            "page_key": page_key,
+            "page_id": page["id"],
+            "replaced_count": count,
+            "version": version,
+        }
+
     def list_wiki_page_versions(self, page_id: str, limit: int = 20) -> list[dict]:
         """List version history for a wiki page."""
         cursor = self.conn.execute(
@@ -2358,16 +2530,29 @@ class Database:
         description: str = "",
         affected_page_ids: list[str] | None = None,
         source_file_id: str | None = None,
+        resolved: int = 0,
+        resolved_action: str | None = None,
+        evidence: list[dict] | None = None,
     ) -> dict:
+        """Create or idempotently update a review (stable ID).
+
+        resolved/resolved_action 仅在首次插入时生效；ON CONFLICT 不改 resolved
+        ——重复摄入重放时保留用户已做的 dismiss 等处理状态（§4.4）。
+        evidence：矛盾证据结构化 [{page_key, quote}]（§3.5），随内容幂等更新；
+        传入 None 时保留旧值（COALESCE）——Lint 重跑落库不传 evidence，
+        不得抹除摄入产出的结构化证据（§4.4）。
+        """
         now = self._now()
         ids_json = json.dumps(affected_page_ids, ensure_ascii=False) if affected_page_ids else None
+        evidence_json = json.dumps(evidence, ensure_ascii=False) if evidence else None
         self.conn.execute(
-            """INSERT INTO wiki_reviews (id, project_id, type, title, description, affected_page_ids, source_file_id, resolved, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """INSERT INTO wiki_reviews (id, project_id, type, title, description, affected_page_ids, evidence, source_file_id, resolved, resolved_action, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    description=excluded.description, affected_page_ids=excluded.affected_page_ids,
+                   evidence=COALESCE(excluded.evidence, wiki_reviews.evidence),
                    source_file_id=excluded.source_file_id""",
-            (review_id, project_id, review_type, title, description, ids_json, source_file_id, now),
+            (review_id, project_id, review_type, title, description, ids_json, evidence_json, source_file_id, resolved, resolved_action, now),
         )
         self.conn.commit()
         return self.get_wiki_review(review_id)
@@ -2377,11 +2562,8 @@ class Database:
         row = cursor.fetchone()
         if row:
             d = dict(row)
-            if d.get("affected_page_ids"):
-                try:
-                    d["affected_page_ids"] = json.loads(d["affected_page_ids"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            d["affected_page_ids"] = self._load_json_list(d.get("affected_page_ids"))
+            d["evidence"] = self._load_json_list(d.get("evidence"))
             return d
         return None
 
@@ -2399,11 +2581,8 @@ class Database:
         rows = []
         for row in cursor.fetchall():
             d = dict(row)
-            if d.get("affected_page_ids"):
-                try:
-                    d["affected_page_ids"] = json.loads(d["affected_page_ids"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            d["affected_page_ids"] = self._load_json_list(d.get("affected_page_ids"))
+            d["evidence"] = self._load_json_list(d.get("evidence"))
             rows.append(d)
         return rows
 
@@ -2569,7 +2748,7 @@ class Database:
             "WHERE project_id = ? AND status = 'done' "
             "AND id NOT IN ("
             "  SELECT file_id FROM wiki_source_pages "
-            "  WHERE project_id = ? AND status = 'ingested'"
+            "  WHERE project_id = ? AND status IN ('ingested', 'skipped')"
             ")"
         )
         params: list = [project_id, project_id]
@@ -2669,8 +2848,13 @@ class Database:
         return None
 
     def list_source_pages(self, project_id: str) -> list[dict]:
+        """List ingestion-tracking rows; LEFT JOIN files brings filename for
+        the frontend "open original file" entry on src pages (2.2 §10.4).
+        LEFT JOIN (not INNER): files row may be gone while tracking remains."""
         cursor = self.conn.execute(
-            "SELECT * FROM wiki_source_pages WHERE project_id = ? ORDER BY ingested_at DESC",
+            "SELECT sp.*, f.filename FROM wiki_source_pages sp "
+            "LEFT JOIN files f ON f.id = sp.file_id "
+            "WHERE sp.project_id = ? ORDER BY sp.ingested_at DESC",
             (project_id,),
         )
         return [self._parse_source_page_json(dict(row)) for row in cursor.fetchall()]

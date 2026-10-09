@@ -156,6 +156,11 @@ class TestNormalizeOutline:
         node = {"title": "规模", "writing_brief": "1. A\r\n2. B\n3. C"}
         assert _fold_node(node) == "须覆盖：规模：1. A；2. B；3. C"
 
+    def test_fold_node_brief_blank_lines_and_trailing_semicolons(self):
+        """行尾分号剥除 + 空行过滤，压缩不产生「；；」（回归：折叠双分号）。"""
+        node = {"title": "规模", "writing_brief": "1. 给出总量；\n\n2. 表格对比\n"}
+        assert _fold_node(node) == "须覆盖：规模：1. 给出总量；2. 表格对比"
+
     def test_normalize_outline_deep_brief_merged(self):
         """三级节点的 brief 随整枝折叠并入二级节的 writing_requirements。"""
         outline = [{"section_id": "ch1", "title": "章", "children": [

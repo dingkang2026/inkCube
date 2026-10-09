@@ -101,6 +101,11 @@ class TestRule2Exemptions:
         out = _benign(1200) + "\n```\n**not bold in code**\n```\n"
         assert 2 not in _rules(out, _STD, "full")
 
+    def test_heading_in_fenced_code_exempt(self):
+        """围栏代码块内的 # 注释行不参与标题判定（与加粗检查共用豁免区）。"""
+        out = _benign(1200) + "\n```\n# not a heading in code\n```\n"
+        assert 2 not in _rules(out, _STD, "full")
+
     def test_bold_outside_table_still_triggers(self):
         """豁免区之外的正文加粗仍触发规则 2。"""
         out = _benign(600) + "**重点**" + _benign(600) + "\n| a | b |\n"

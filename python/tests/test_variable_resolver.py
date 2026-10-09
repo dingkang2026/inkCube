@@ -258,9 +258,13 @@ class TestResolveVariables:
         assert usage["total_tokens"] == 20
 
     def test_downstream_degradation_on_missing_user_dep(self):
-        """声明的 user 变量缺失 → UNRESOLVED；依赖它的 derived 连锁降级，且不触发检索。"""
+        """optional user 变量缺失 → UNRESOLVED；依赖它的 derived 连锁降级，且不触发检索。
+
+        （required 缺失在入口 fast-fail，见 TestRequiredFastFail；此处验证
+        optional 缺失的既有降级链路。）
+        """
         template = {"variables": [
-            {"name": "region", "source": "user"},
+            {"name": "region", "source": "user", "required": False},
             {"name": "city", "source": "derived", "depends_on": ["region"],
              "derive_hint": "分析城市", "cardinality": "scalar", "data_sources": ["knowledge"]},
         ]}
@@ -346,8 +350,8 @@ class TestResolveVariables:
     def test_all_declared_present_in_ctx(self):
         """未提供值的声明变量也须存在于 ctx（instantiate 声明校验依赖完整性）。"""
         template = {"variables": [
-            {"name": "u1", "source": "user"},
-            {"name": "u2", "source": "user"},
+            {"name": "u1", "source": "user", "required": False},
+            {"name": "u2", "source": "user", "required": False},
         ]}
         with patch("report_generator.variable_resolver.retrieve_for_section", _fake_retrieve(None)):
             resolved, _, _ = asyncio.run(resolve_variables(
@@ -357,6 +361,72 @@ class TestResolveVariables:
         assert resolved["u1"] == "v1"
         assert "u2" in resolved
         assert resolved["u2"] is UNRESOLVED
+
+
+# ── required 必填 fast-fail（M4 修复回归）─────
+
+
+class TestRequiredFastFail:
+    """required user 变量缺失/空白 → 进入检索前抛 VariableResolutionError。
+
+    修复前：向导初始值为空串，空串绕过 missing 判定被当作有效输入注入
+    prompt，生成跑题内容，用户无感知。
+    """
+
+    @staticmethod
+    def _template(**extra):
+        v = {"name": "focus", "source": "user", "label": "关注点"}
+        v.update(extra)
+        return {"report_depth": "full", "variables": [v]}
+
+    def test_missing_required_raises_before_retrieval(self):
+        """required 缺失 → 抛错；message 用 label（用户可读），带修正指引；
+        fast-fail 语义：不触发任何检索/抽值。"""
+        llm = FakeLLM()
+        with patch("report_generator.variable_resolver.retrieve_for_section",
+                   _fake_retrieve(None)):
+            with pytest.raises(VariableResolutionError) as ei:
+                asyncio.run(resolve_variables(
+                    self._template(), {}, {},
+                    search_tool=MagicMock(), llm_client=llm, llm_settings={},
+                ))
+        assert "关注点" in str(ei.value)
+        assert "必填" in str(ei.value)
+        assert ei.value.suggestion
+        assert llm.calls == []
+
+    def test_blank_input_treated_as_missing(self):
+        """空串/纯空白（向导初始值）与缺失同判——空串旁路核心回归。"""
+        with pytest.raises(VariableResolutionError):
+            asyncio.run(resolve_variables(
+                self._template(), {}, {"focus": "   "},
+                search_tool=MagicMock(), llm_client=FakeLLM(), llm_settings={},
+            ))
+
+    def test_optional_missing_does_not_raise(self):
+        """required=False 缺失不抛，降级 UNRESOLVED（既有语义保留）。"""
+        resolved, _, _ = asyncio.run(resolve_variables(
+            self._template(required=False), {}, {},
+            search_tool=MagicMock(), llm_client=FakeLLM(), llm_settings={},
+        ))
+        assert resolved["focus"] is UNRESOLVED
+
+    def test_two_missing_listed_together(self):
+        """多个必填缺失一次性列出（用户一次补齐，不来回报错）。"""
+        template = {"variables": [
+            {"name": "a", "source": "user", "label": "甲"},
+            {"name": "b", "source": "user", "label": "乙"},
+        ]}
+        with pytest.raises(VariableResolutionError) as ei:
+            asyncio.run(resolve_variables(
+                template, {}, {},
+                search_tool=MagicMock(), llm_client=FakeLLM(), llm_settings={},
+            ))
+        assert "甲" in str(ei.value) and "乙" in str(ei.value)
+
+    def test_error_code_shared_with_cycle(self):
+        """必填缺失与循环依赖共用错误码（同类模板配置错误，前端呈现路径一致）。"""
+        assert VariableResolutionError().code == "TEMPLATE_VARIABLE_ERROR"
 
 
 # ── 报告级互联网总开关 gating（§1.1）────────────────

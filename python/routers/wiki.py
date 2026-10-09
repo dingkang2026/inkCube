@@ -61,6 +61,10 @@ class ReviewResolveRequest(BaseModel):
     action: str  # "dismiss" / "create_page" / "auto_resolved"
 
 
+class ReviewAdjudicateRequest(BaseModel):
+    chosen: int  # evidence 索引（§5.5 矛盾裁决：以此侧为准，替换其余各侧）
+
+
 class BatchReviewRequest(BaseModel):
     review_ids: list[str]
     action: str  # "dismiss" / "auto_resolved"
@@ -362,49 +366,6 @@ async def get_compile_status(project_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/projects/{project_id}/pages/{page_key}/retry")
-async def retry_page(project_id: str, page_key: str):
-    """Retry compiling a single failed page."""
-    # 事前准入（§7.3 第三层 v3.7）：try 块外调用
-    ensure_ready("wiki_compile")
-    try:
-        db = get_db()
-        page = db.get_wiki_page(project_id, page_key)
-        if not page:
-            raise HTTPException(status_code=404, detail="Wiki page not found")
-
-        # 同项目防重（同 trigger_compile）：已有活跃编译任务时 409 拒绝。
-        # 否则并发 2 下两个 worker 会同时 ingest 同一项目的同一 pending 文件，
-        # 双写页面 + overview/change_log 交错滚动。
-        latest = db.get_latest_compile_task(project_id)
-        if latest and latest["status"] in ("queued", "ingesting", "storing"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"已有编译任务进行中: {latest['status']}",
-            )
-
-        # Create a new compile task for single page
-        task = db.create_wiki_compile_task(
-            project_id=project_id,
-            trigger_type="manual",
-        )
-
-        # Enqueue
-        try:
-            import deps
-            if hasattr(deps, "worker") and deps.worker:
-                await deps.worker.enqueue_compile(task["id"])
-        except Exception as e:
-            logger.warning("Failed to enqueue retry compile: %s", e)
-
-        return {"task": task}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to retry page: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ── Reviews ──
 
 
@@ -437,6 +398,90 @@ async def resolve_review(project_id: str, review_id: str, req: ReviewResolveRequ
         raise
     except Exception as e:
         logger.error("Failed to resolve review: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/reviews/{review_id}/adjudicate")
+async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudicateRequest):
+    """矛盾裁决（§5.5，E2-2026-10）：以 chosen 侧为准，对其余各侧页面执行
+
+    quote → 选中侧 quote 的确定性替换（不经 LLM）；替换侧 status=user_edited
+    （编译保护）+ 版本快照；全部替换成功才归档，任一侧失配保留待处理。
+    """
+    try:
+        db = get_db()
+        review = db.get_wiki_review(review_id)
+        if not review:
+            raise HTTPException(status_code=404, detail="Review not found")
+        if review["project_id"] != project_id:
+            raise HTTPException(status_code=403, detail="Review belongs to different project")
+        if review["type"] != "contradiction":
+            raise HTTPException(status_code=400, detail="仅矛盾类发现项支持裁决")
+        if review.get("resolved"):
+            raise HTTPException(status_code=409, detail="该发现项已处理")
+        # 编译进行中禁止裁决（§5.5）：与并发摄入对同一批页面的写入互斥——
+        # ingest Step 4 已实时重读 user_edited（根因修复），此处提前拒绝给用户
+        # 即时反馈，避免裁决与编译产出交错（与 trigger_compile 同一防重入模式）
+        latest_task = db.get_latest_compile_task(project_id)
+        if latest_task and latest_task["status"] in ("queued", "ingesting", "storing"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"编译进行中({latest_task['status']})，请等待完成后再裁决",
+            )
+        evidence = review.get("evidence")
+        if isinstance(evidence, str):
+            # 旧调用方可能拿原始行；get_wiki_review 已反序列化，此处仅兼容
+            import json as _json
+            try:
+                evidence = _json.loads(evidence)
+            except Exception:
+                evidence = None
+        if not evidence or not isinstance(evidence, list) or len(evidence) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="该发现项缺少结构化证据（旧版产出），请点开相关页面手动核对",
+            )
+        if not 0 <= req.chosen < len(evidence):
+            raise HTTPException(status_code=400, detail="chosen 索引越界")
+
+        chosen_ev = evidence[req.chosen]
+        chosen_quote = (chosen_ev.get("quote") or "").strip()
+        chosen_key = (chosen_ev.get("page_key") or "").strip()
+        if not chosen_quote:
+            raise HTTPException(status_code=400, detail="选中侧证据缺少引用原文")
+
+        details = []
+        all_ok = True
+        for idx, ev in enumerate(evidence):
+            if idx == req.chosen:
+                continue
+            page_key = (ev.get("page_key") or "").strip()
+            quote = (ev.get("quote") or "").strip()
+            if not page_key or not quote:
+                all_ok = False
+                details.append({"page_key": page_key, "success": False, "reason": "invalid_evidence"})
+                continue
+            result = db.replace_wiki_page_text(
+                project_id=project_id,
+                page_key=page_key,
+                old_text=quote,
+                new_text=chosen_quote,
+                change_summary=f"矛盾裁决: 以 [[{chosen_key}]] 为准",
+            )
+            details.append(result)
+            if not result.get("success"):
+                all_ok = False
+
+        if all_ok:
+            db.resolve_wiki_review(review_id, "adjudicated")
+            return {"success": True, "details": details}
+
+        # 部分失配：保留发现项待人工，返回逐侧明细供前端提示（§4.4 宁可留待人工不误归档）
+        return {"success": False, "reason": "partial_or_failed", "details": details}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to adjudicate review: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -617,6 +662,7 @@ async def search_wiki_pages(
             db=db,
             top_k=top_k,
             enable_graph=enable_graph,
+            raise_on_error=True,  # 交互式搜索：故障必须透出，不能伪装成「无结果」
         )
         return {"results": results, "count": len(results)}
     except HTTPException:
@@ -658,6 +704,14 @@ async def create_schema(project_id: str, req: SchemaCreateRequest):
             raise HTTPException(status_code=404, detail="Project not found")
 
         project_type = project.get("type", "general")
+
+        # 重复 page_key → 409（与 archive 端点一致），而不是 IntegrityError 落到 500
+        if db.get_wiki_schema(project_type, req.page_key):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Schema page_key '{req.page_key}' already exists for type '{project_type}'",
+            )
+
         result = db.create_wiki_schema(
             project_type=project_type,
             page_key=req.page_key,

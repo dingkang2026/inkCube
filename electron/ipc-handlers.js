@@ -230,23 +230,51 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 数据目录三态解析（环境变量覆盖 > dev=python/data > 打包=userData/data）——
+  // system:openDataDir 与 file:openOriginal（知识库/Wiki 打开原文件，2.2 §10.4）共用
+  const getDataDir = () => {
+    if (process.env.INKCUBE_DATA_DIR) return process.env.INKCUBE_DATA_DIR
+    if (process.env.NODE_ENV === 'development') {
+      return require('path').join(__dirname, '..', 'python', 'data')
+    }
+    const { app } = require('electron')
+    return require('path').join(app.getPath('userData'), 'data')
+  }
+
   ipcMain.handle('system:openDataDir', async () => {
     const { shell } = require('electron')
     const fs = require('fs')
-    const isDev = process.env.NODE_ENV === 'development'
-    let dataDir
-    if (process.env.INKCUBE_DATA_DIR) {
-      dataDir = process.env.INKCUBE_DATA_DIR
-    } else if (isDev) {
-      dataDir = require('path').join(__dirname, '..', 'python', 'data')
-    } else {
-      const { app } = require('electron')
-      dataDir = require('path').join(app.getPath('userData'), 'data')
-    }
+    const dataDir = getDataDir()
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true })
     }
     await shell.openPath(dataDir)
+    return { success: true }
+  })
+
+  // 打开知识库原文件（2.2 §10.4）：素材列表 / Wiki 来源面板 / src 页三入口共用。
+  // 安全约束（渲染层参数不可信）：filename 取 basename 削平路径成分，
+  // projectId/fileId 仅允许安全字符——可打开路径被锁死在 {dataDir}/files/ 子树内。
+  ipcMain.handle('file:openOriginal', async (_event, { projectId, fileId, filename }) => {
+    const { shell } = require('electron')
+    const fs = require('fs')
+    const path = require('path')
+    const safeSegment = (seg) => (typeof seg === 'string' && /^[A-Za-z0-9_-]+$/.test(seg) ? seg : null)
+    const pid = safeSegment(projectId)
+    const fid = safeSegment(fileId)
+    if (!pid || !fid || typeof filename !== 'string' || !filename) {
+      return { success: false, reason: 'invalid_args' }
+    }
+    const filePath = path.join(getDataDir(), 'files', pid, fid, path.basename(filename))
+    if (!fs.existsSync(filePath)) {
+      return { success: false, reason: 'not_found' }
+    }
+    // openPath 返回非空字符串即失败信息（报告产物打开同模式）
+    const openErr = await shell.openPath(filePath)
+    if (openErr) {
+      logElectron('WARN', `openOriginal failed: ${openErr}`)
+      return { success: false, reason: 'open_failed', message: openErr }
+    }
     return { success: true }
   })
 
@@ -1116,7 +1144,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         title,
         variables: variables || {},
         base_project_ids: baseProjectIds || [],
-        output_format: outputFormat || 'Word',
+        output_format: outputFormat || 'docx',
         supplementary_notes: supplementaryNotes || null,
         section_internet: sectionInternet || {},
         internet_enabled: !!internetEnabled,
@@ -1131,12 +1159,53 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // Phase 4: Report export (Word/docx only)
-  ipcMain.handle('reports:exportReport', async (_event, { reportId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}/export`, {
-      method: 'POST',
-    })
-    return handlePythonResponse(res)
+  // Phase 4: Report export (Word/docx) — 导出面板两形式（2.5 §1.3）：
+  // saveAs=false 直接打开：渲染到产物目录默认位置后 shell.openPath 系统默认程序打开；
+  // saveAs=true 另存为：showSaveDialog 选定路径 → 请求体 target_path 渲染到指定路径。
+  // 两形式共用 orientation（portrait/landscape → pandoc reference-doc 样式模板）
+  ipcMain.handle('reports:exportReport', async (_event, { reportId, title, orientation, saveAs }) => {
+    const { dialog, BrowserWindow, shell } = require('electron')
+    let targetPath
+    if (saveAs) {
+      const win = BrowserWindow.getFocusedWindow()
+      // 默认文件名 {标题}.docx，标题经文件名 sanitize（非法字符/结尾点，与后端 _sanitize_filename 同规则）
+      const safeName = String(title || '报告')
+        .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+        .replace(/[. ]+$/g, '')
+        .slice(0, 80)
+        .replace(/[. ]+$/g, '') || '报告'
+      const { canceled, filePath } = await dialog.showSaveDialog(win || undefined, {
+        title: 'Export Report',
+        defaultPath: `${safeName}.docx`,
+        filters: [{ name: 'Word Document', extensions: ['docx'] }],
+      })
+      if (canceled || !filePath) return { canceled: true }
+      targetPath = filePath
+    }
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/reports/${reportId}/export`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orientation: orientation === 'landscape' ? 'landscape' : 'portrait',
+          ...(targetPath ? { target_path: targetPath } : {}),
+        }),
+      },
+      90000 // pandoc 渲染（含 mermaid 桥）可能慢于默认 15s，放宽至渲染超时之上
+    )
+    const result = await handlePythonResponse(res)
+    if (saveAs) {
+      logElectron('INFO', `Report exported to ${result.path}`)
+      return result // 另存为：path 由前端 toast 展示完整路径
+    }
+    // 直接打开：shell.openPath 返回非空字符串即失败信息
+    const openErr = await shell.openPath(result.path)
+    if (openErr) {
+      logElectron('WARN', `Failed to open exported report ${result.path}: ${openErr}`)
+      return { ...result, openError: openErr }
+    }
+    return { ...result, opened: true }
   })
 
   // Retry failed report
@@ -1220,13 +1289,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('wiki:retryPage', async (_event, { projectId, pageKey }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/retry`, {
-      method: 'POST',
-    })
-    return handlePythonResponse(res)
-  })
-
   ipcMain.handle('wiki:listReviews', async (_event, { projectId, resolved }) => {
     const params = resolved !== undefined ? `?resolved=${resolved}` : ''
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews${params}`)
@@ -1238,6 +1300,16 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 矛盾裁决（§5.5）：以 chosen 侧为准，后端对其余各侧页面做确定性替换+快照+归档
+  ipcMain.handle('wiki:adjudicateReview', async (_event, { projectId, reviewId, chosen }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews/${reviewId}/adjudicate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chosen }),
     })
     return handlePythonResponse(res)
   })

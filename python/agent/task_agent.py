@@ -26,7 +26,7 @@ from tools.repo_map import RepoMapTool
 from tools.skill_runner import SkillRunnerTool
 from tools.git_ops import GitOpsTool
 from tools.lsp_client import LSPClientTool
-from tools.venv_manager import get_venv_python
+from tools.venv_manager import ensure_venv, get_venv_python
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter, SKILL_GUIDE_MAX_CHARS
@@ -131,6 +131,17 @@ KEEP_RECENT = 10
 # via confirm_expired, and the skip is traced in the action's observation.
 SHELL_CONFIRM_TIMEOUT = 120
 SKILL_CONFIRM_TIMEOUT = 180
+
+# Tools carrying a task-venv interpreter config. Lazy venv creation triggers
+# only when one of these actually executes with a venv path set — general-mode
+# tools are created without venv config (see _create_task_tools), so chat-only
+# tasks never materialize a venv on disk.
+_VENV_TOOL_ATTRS = {
+    "code_executor": "venv_python",
+    "shell": "venv_path",
+    "package_manager": "venv_path",
+    "skill_runner": "task_venv_python",
+}
 
 
 class TaskAgent:
@@ -443,6 +454,26 @@ class TaskAgent:
                 except Exception:
                     return None
         return None
+
+    async def _ensure_task_venv(self, venv_path: str) -> str:
+        """懒创建任务 venv：任务创建时仅登记路径，首次执行代码/装包/跑 Skill 时落盘。
+
+        已存在直接返回（零开销，仅一次 isfile）；创建失败返回 ""，后续执行
+        自动回退系统 Python（code_executor/shell 对不存在的 venv 路径自带
+        降级），与旧「创建期失败 → venv_path=''」行为一致。同一任务经
+        try_acquire_task 互斥，无并发创建竞态。
+        """
+        if not venv_path:
+            return ""
+        if os.path.isfile(get_venv_python(venv_path)):
+            return venv_path
+        try:
+            await asyncio.to_thread(ensure_venv, os.path.dirname(venv_path))
+            logger.info("Task venv lazily created: %s", venv_path)
+            return venv_path
+        except Exception as e:
+            logger.warning("Lazy venv creation failed (%s): %s", venv_path, e)
+            return ""
 
     def _create_task_tools(self, workspace_path: str, venv_path: str = "", settings: dict | None = None, mode: str = "coding") -> dict:
         """Create independent tool instances for a single task.
@@ -1573,6 +1604,11 @@ class TaskAgent:
             if result_str is None:
                 tool = tools.get(tool_name)
                 if tool:
+                    # Lazy venv: materialize on first venv-configured tool use
+                    # (失败时 venv_path 置 ""，同轮后续外部 Skill 上下文一并降级)
+                    if tool_name in _VENV_TOOL_ATTRS and getattr(
+                            tool, _VENV_TOOL_ATTRS[tool_name], ""):
+                        venv_path = await self._ensure_task_venv(venv_path)
                     # Log key param details for diagnostics
                     _param_summary = {k: (f"len={len(v)}" if isinstance(v, str) and len(v) > 100 else v)
                                       for k, v in tool_params.items()}
@@ -1647,6 +1683,7 @@ class TaskAgent:
                         # External skill execution via SkillRegistry
                         if result_str is None:
                             try:
+                                venv_path = await self._ensure_task_venv(venv_path)
                                 _venv_py = ""
                                 if venv_path:
                                     _venv_py = get_venv_python(venv_path)

@@ -13,6 +13,7 @@
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -27,7 +28,9 @@ from report_generator.prompts import (
     build_system_prompt, build_standard_prompt, build_post_body_prompt,
     build_digest_prompt, build_extract_numbers_prompt,
 )
-from report_generator.validator import validate_section, format_retry_feedback
+from report_generator.validator import (
+    validate_section, format_retry_feedback, format_violations_brief,
+)
 from report_generator.finalizer import finalize_report
 from report_generator.token_tracker import TokenTracker
 from errors import (
@@ -40,6 +43,15 @@ logger = logging.getLogger(__name__)
 
 # 最大重试次数
 MAX_RETRIES = 3
+
+# 降级终态占位（§3.9）：重试后仍失败不返回空串——空串会在组装时静默消失
+# （成品缺节且 resume 永不补）；占位文本进正文与 checkpoint，配合
+# section_done 的 generation_failed 标志（报告日志 error 级）显式可见。
+# 以「（」开头符合跳过节文案惯例（complete 统计排除同款前缀）
+DEGRADE_PLACEHOLDER = (
+    "（本节生成失败：多次自动重试后仍未成功（内容安全过滤拦截或上下文超限）。"
+    "可调整模板写作要求后重新生成。）"
+)
 
 
 # ── 智能重试分类 ──────────────────────────────────────────
@@ -167,6 +179,10 @@ class ReportRunner:
         self.report_title = ""
         self.resolved_variables: dict = {}
         self.resolution_evidence: dict = {}
+        # 章节生成期产生的用户可见警告缓冲（校验违规明细 / LLM attempt 失败，
+        # §3.6/§3.8）：_generate_with_retry 内部无法 yield，由 run() 在章节
+        # 生成后统一 flush 为 warning 事件（报告日志用户可见）
+        self._pending_warnings: list[str] = []
 
     async def run(self):
         """执行报告生成主流程。
@@ -176,10 +192,14 @@ class ReportRunner:
         """
         try:
             # ── 尝试从 checkpoint 恢复（含 resolved_variables，供 _prepare 短路）──
-            self._load_checkpoint()
+            ckpt_error = self._load_checkpoint()
 
             # ── 准备阶段（解析变量 → 实例化 → 归一化 → 校验）──
             await self._prepare()
+
+            # 断点损坏显式告知（§3.8）：静默全量重跑会让用户以为断点仍有效
+            if ckpt_error:
+                yield ProgressEvent("warning", {"message": ckpt_error})
 
             # 降级显式引导（0.4 §7.3 v3.6）：互联网总开关开启但 Tavily Key 缺失，
             # 全程实际仅用项目内材料——作为 warning 写入报告日志，而非静默降级
@@ -278,6 +298,7 @@ class ReportRunner:
                     global_requirements=self.template.get("global_requirements"),
                     is_degraded=retrieval.is_degraded,
                     sufficiency=retrieval.sufficiency,
+                    report_depth=self.report_depth,
                 )
 
                 # 生成 + 重试（sparse/材料有限时校验放宽，§3.6 规则 3）
@@ -294,6 +315,9 @@ class ReportRunner:
                     is_sparse=is_sparse,
                     word_floor_ratio=word_floor,
                 )
+                # 降级终态（§3.9）：finish_reason=error → 占位文本已落 outputs，
+                # section_done 带标志供路由层写 error 级日志（不允许静默完成）
+                generation_failed = finish_reason == "error"
 
                 # 输出截断用户可见（§3.9：finish_reason=length 不抛错）
                 if finish_reason == "length":
@@ -301,19 +325,33 @@ class ReportRunner:
                         "message": f"章节「{sec.get('title', sid)}」输出因模型长度限制被截断，内容可能不完整",
                     })
 
+                # 校验违规明细 / LLM attempt 失败用户可见（§3.6/§3.8）
+                for w in self._flush_pending_warnings():
+                    yield ProgressEvent("warning", {"message": w})
+
                 self.outputs[sid] = output
                 self.order.append(sid)
 
-                # 生成摘要
-                digest = await self._summarize(output)
+                # 生成摘要；降级占位节不产 digest——后续章节的检索策略不应把
+                # 占位说明当作已有内容引用
+                digest = "" if generation_failed else await self._summarize(output)
                 self.digests[sid] = digest
 
                 yield ProgressEvent("section_done", {
                     "section_id": sid,
                     "title": sec.get("title", ""),
                     "degraded": retrieval.is_degraded,
+                    "generation_failed": generation_failed,
                     "completed": len(self.outputs),
                     "total": total,
+                    # 检索摘要（§3.8：section_done 落报告日志，路由层消费）
+                    "retrieval_summary": {
+                        "query_count": len(retrieval.queries),
+                        "rounds": retrieval.rounds,
+                        "card_count": len(retrieval.cards),
+                        "sufficiency_level": (retrieval.sufficiency or {}).get("level"),
+                        "sufficiency_reason": (retrieval.sufficiency or {}).get("reason", ""),
+                    },
                 })
 
                 self._save_checkpoint()
@@ -357,11 +395,17 @@ class ReportRunner:
                     user_prompt=user_prompt,
                     given_refs=set(self.registry.all_ref_numbers()),
                 )
+                generation_failed = finish_reason == "error"
 
                 if finish_reason == "length":
                     yield ProgressEvent("warning", {
                         "message": f"章节「{sec.get('title', sid)}」输出因模型长度限制被截断，内容可能不完整",
                     })
+
+                # 校验违规明细 / LLM attempt 失败用户可见（post_body 同样经过
+                # _generate_with_retry，§3.6/§3.8）
+                for w in self._flush_pending_warnings():
+                    yield ProgressEvent("warning", {"message": w})
 
                 self.outputs[sid] = output
                 self.order.append(sid)
@@ -369,6 +413,7 @@ class ReportRunner:
                 yield ProgressEvent("section_done", {
                     "section_id": sid,
                     "title": sec.get("title", ""),
+                    "generation_failed": generation_failed,
                     "completed": len(self.outputs),
                     "total": total,
                 })
@@ -396,8 +441,15 @@ class ReportRunner:
 
         except Exception as e:
             logger.exception("Report generation failed: %s", e)
+            # yield error 后正常返回：终态落库由路由层 error 事件分支唯一负责；
+            # 此处若再 raise 会触发路由层 except 分支二次落库/二次失败通知
             yield ProgressEvent("error", {"message": actionable(e)})
-            raise
+            return
+
+    def _flush_pending_warnings(self) -> list[str]:
+        """返回并清空章节生成期缓冲的用户可见警告（run() 每章节后调用）。"""
+        pending, self._pending_warnings = self._pending_warnings, []
+        return pending
 
     def _pause_requested(self) -> bool:
         """报告级暂停请求是否待消费（无探针/探针异常均视为不暂停，不阻断生成）。"""
@@ -480,11 +532,15 @@ class ReportRunner:
             return False
         return any(p.get("status") in ("compiled", "user_edited") for p in pages)
 
-    def _load_checkpoint(self):
-        """从 checkpoint 恢复状态（如果存在）。"""
+    def _load_checkpoint(self) -> Optional[str]:
+        """从 checkpoint 恢复状态（如果存在）。
+
+        Returns:
+            损坏时的用户可见说明文案（run() 落 warning 事件）；正常返回 None。
+        """
         ckpt_path = self.output_dir / "checkpoint.json"
         if not ckpt_path.exists():
-            return
+            return None
 
         try:
             data = json.loads(ckpt_path.read_text(encoding="utf-8"))
@@ -499,11 +555,20 @@ class ReportRunner:
                 self.token_tracker = TokenTracker.from_dict(data["token_tracker"])
             logger.info("Checkpoint loaded: %d sections done, %d refs, %d token records",
                         len(self.outputs), len(self.registry), len(self.token_tracker))
+            return None
         except Exception as e:
             logger.warning("Failed to load checkpoint: %s", e)
+            return (
+                "断点文件损坏，本次将从第 1 节重新生成（已完成章节不保留）；"
+                f"原因: {e}"
+            )
 
     def _save_checkpoint(self):
-        """保存 checkpoint。"""
+        """保存 checkpoint（原子写：临时文件 + os.replace）。
+
+        write_text 直接覆盖在写入中途被杀会留半写 JSON——resume 解析失败
+        静默全量重跑，已消耗的 token 全部作废且无提示（§3.8 断点可靠性）。
+        """
         ckpt_path = self.output_dir / "checkpoint.json"
         data = {
             "outputs": self.outputs,
@@ -514,7 +579,9 @@ class ReportRunner:
             "resolved_variables": self.resolved_variables,
             "resolution_evidence": self.resolution_evidence,
         }
-        ckpt_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path = ckpt_path.with_name(ckpt_path.name + ".tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_path, ckpt_path)
 
     def _write_final_artifacts(self) -> Path:
         """组装全文 → 全局收尾 → 写 content.md + registry.json + token_usage.json。
@@ -542,17 +609,21 @@ class ReportRunner:
         given_refs: set[int],
         is_sparse: bool = False,
         word_floor_ratio: float = 0.8,
+        allow_degrade_retry: bool = True,
     ) -> tuple[str, str]:
         """生成单节内容，智能重试 + 精准 token 追踪。
 
         Args:
             is_sparse: sparse 降级节（零材料 degraded），字数校验不启用（§3.6）
             word_floor_ratio: 字数下限比例（insufficient 材料有限时放宽至 0.6）
+            allow_degrade_retry: content_filter 拦截时是否允许降级模式重试一次
+                （§3.9；仅外层调用为 True，递归重试传 False 防无限递归）
 
         Returns:
             (output, finish_reason)：finish_reason 为最后一次成功调用的
             结束原因；"length" 表示输出被 max_tokens 截断（reasoning 模型
-            思考 token 亦计入输出预算，§3.9），由调用方告警可见。
+            思考 token 亦计入输出预算，§3.9），由调用方告警可见；
+            "error" 表示降级终态（占位文本，调用方据此落失败标志）。
         """
         sid = section.get("section_id", "unknown")
         messages = [
@@ -585,11 +656,17 @@ class ReportRunner:
                 if not violations:
                     return output, finish_reason
 
-                # 有违规，构建重试反馈
+                # 有违规，构建重试反馈；明细（规则号+内容+级别）进 app.log
+                # 与报告日志 warning 事件（§3.6，替代原先只记数量）
+                violation_detail = format_violations_brief(violations)
                 if attempt < MAX_RETRIES - 1:
                     feedback = format_retry_feedback(violations)
-                    logger.info("Section '%s' attempt %d: %d violations, retrying...",
-                                sid, attempt + 1, len(violations))
+                    logger.info("Section '%s' attempt %d: %d violations, retrying. %s",
+                                sid, attempt + 1, len(violations), violation_detail)
+                    self._pending_warnings.append(
+                        f"章节「{section.get('title', sid)}」第 {attempt + 1}/{MAX_RETRIES} 次"
+                        f"生成未通过校验（{len(violations)} 项），重试中：{violation_detail}"
+                    )
                     messages = [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -597,8 +674,12 @@ class ReportRunner:
                         {"role": "user", "content": feedback},
                     ]
                 else:
-                    logger.warning("Section '%s': %d violations after %d retries, accepting",
-                                   sid, len(violations), MAX_RETRIES)
+                    logger.warning("Section '%s': %d violations after %d retries, accepting. %s",
+                                   sid, len(violations), MAX_RETRIES, violation_detail)
+                    self._pending_warnings.append(
+                        f"章节「{section.get('title', sid)}」经 {MAX_RETRIES} 次生成仍有 "
+                        f"{len(violations)} 项校验违规，按最后一次结果接受：{violation_detail}"
+                    )
                     return output, finish_reason
 
             except Exception as e:
@@ -615,7 +696,29 @@ class ReportRunner:
                 if not retryable:
                     logger.error("Section '%s' non-retryable error (%s): %s", sid, action, e)
                     if action == "degrade":
-                        return "", "error"  # 降级：返回空内容
+                        # §3.9：content_filter 拦截 → 降级模式重试一次（sparse
+                        # 口径：仅中性事实陈述，字数校验不启用）；仍失败落占位
+                        # 文本而非空串（静默消失，resume 永不补）
+                        if allow_degrade_retry:
+                            self._pending_warnings.append(
+                                f"章节「{section.get('title', sid)}」输出被内容安全过滤拦截，"
+                                "降级为仅事实陈述模式重试一次"
+                            )
+                            degrade_prompt = (
+                                user_prompt
+                                + "\n\n（重写提示：上一次输出触发了内容安全过滤。请仅基于"
+                                "所给材料做中性、事实性陈述，省略可能触发过滤的细节，"
+                                "将敏感内容转化为风险提示表述，仍保持本节写作任务的完整结构。）"
+                            )
+                            return await self._generate_with_retry(
+                                section=section,
+                                user_prompt=degrade_prompt,
+                                given_refs=given_refs,
+                                is_sparse=True,
+                                word_floor_ratio=word_floor_ratio,
+                                allow_degrade_retry=False,
+                            )
+                        return DEGRADE_PLACEHOLDER, "error"
                     raise ReportGenerationError(f"Section '{sid}' fatal error: {e}") from e
 
                 # 上下文溢出：保尾截断后重试（一次机会）。写作任务与参考资料
@@ -641,6 +744,11 @@ class ReportRunner:
 
                 logger.error("Section '%s' attempt %d failed (%s): %s",
                              sid, attempt + 1, action, e)
+                # attempt 失败用户可见（§3.8/§3.9，替代原先仅 app.log 静默重试）
+                self._pending_warnings.append(
+                    f"章节「{section.get('title', sid)}」第 {attempt + 1}/{MAX_RETRIES} "
+                    f"次生成调用失败（{action}）: {e}"
+                )
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(2 ** attempt)  # 指数退避
                 else:
@@ -648,7 +756,9 @@ class ReportRunner:
                         f"Section '{sid}' generation failed after {MAX_RETRIES} attempts: {e}"
                     ) from e
 
-        return "", "error"  # unreachable
+        # truncate 连续 MAX_RETRIES 次重试后仍上下文超限可达此处（continue
+        # 推进 attempt）：同样落占位而非空串，避免章节静默消失
+        return DEGRADE_PLACEHOLDER, "error"
 
     async def _summarize(self, text: str, max_words: Optional[int] = None) -> str:
         """为生成的文本生成主题纲要（纲要式 digest，长度按 report_depth：
@@ -690,7 +800,13 @@ class ReportRunner:
         return section_id
 
     def _assemble_full_text(self) -> str:
-        """按执行顺序拼接所有章节内容为完整文本。"""
+        """按执行顺序拼接所有章节内容为完整文本。
+
+        章节标题按最终呈现顺序（post_body front 前置 → standard →
+        post_body end 后置）注入十进制序号（`## 1 标题`）：序号写进标题
+        文本作为单一事实源——网页端预览（Markdown 原文渲染）、docx 导出、
+        手写目录三方天然一致，无需模板 numPr 或前端 CSS counter（§3.5）。
+        """
         parts = []
         post_body_front = []
         post_body_end = []
@@ -713,4 +829,12 @@ class ReportRunner:
                 parts.append(f"## {title}\n\n{content}")
 
         full_parts = post_body_front + parts + post_body_end
-        return "\n\n---\n\n".join(full_parts)
+
+        numbered = []
+        for section_text in full_parts:
+            nl = section_text.find("\n")
+            title_line = section_text[3:nl] if nl >= 0 else section_text[3:]
+            numbered.append(
+                f"## {len(numbered) + 1} {title_line}{section_text[nl:] if nl >= 0 else ''}"
+            )
+        return "\n\n---\n\n".join(numbered)

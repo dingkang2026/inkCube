@@ -272,6 +272,7 @@ def search_wiki(
     top_k: int = 20,
     enable_graph: bool = True,
     pages: list[dict] | None = None,
+    raise_on_error: bool = False,
 ) -> list[dict]:
     """Search Wiki pages using hybrid retrieval.
 
@@ -283,6 +284,8 @@ def search_wiki(
             list_wiki_pages(project_id). Callers retrieving multiple queries in a
             batch (e.g. report retrieval) can fetch once and reuse to avoid
             repeated full-page DB loads.
+        raise_on_error: 异常时抛出而非返回 []。RAG/报告管线依赖优雅降级
+            （默认 False）；交互式搜索端点传 True，让前端能区分「无结果」与故障。
     """
     if not query or not query.strip():
         return []
@@ -329,4 +332,6 @@ def search_wiki(
 
     except Exception as e:
         logger.error("Wiki search failed for project %s: %s", project_id, e)
+        if raise_on_error:
+            raise
         return []

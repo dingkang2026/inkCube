@@ -51,42 +51,40 @@ function parseYamlValue(value: string): string | string[] {
   return value.replace(/^["']|["']$/g, '')
 }
 
-/** Page type labels for display */
-export const PAGE_TYPE_LABELS: Record<string, string> = {
-  structure: '结构页',
-  entity: '实体页',
-  concept: '概念页',
-  process: '流程页',
-  reference: '参考页',
+/** Page type label i18n keys（经 t() 翻译，缺失时回退原始 type） */
+export const PAGE_TYPE_LABEL_KEYS: Record<string, string> = {
+  structure: 'project.wiki.pageTypeStructure',
+  entity: 'project.wiki.pageTypeEntity',
+  concept: 'project.wiki.pageTypeConcept',
+  process: 'project.wiki.pageTypeProcess',
+  reference: 'project.wiki.pageTypeReference',
 }
 
-/** Action labels for changelog display */
-export const ACTION_LABELS: Record<string, string> = {
-  created: '创建',
-  updated: '更新',
-  user_edited: '用户编辑',
-  deleted: '删除',
-  archived: '归档',
-  ingest: '摄入',
-  enriched: '链接补全',
-  dedup_merge: '去重合并',
-  overview_updated: '概览更新',
+/** Action label i18n keys for changelog display（经 t() 翻译） */
+export const ACTION_LABEL_KEYS: Record<string, string> = {
+  created: 'project.wiki.actionCreated',
+  updated: 'project.wiki.actionUpdated',
+  user_edited: 'project.wiki.actionUserEdited',
+  deleted: 'project.wiki.actionDeleted',
+  archived: 'project.wiki.actionArchived',
+  ingest: 'project.wiki.actionIngest',
+  enriched: 'project.wiki.actionEnriched',
+  dedup_merge: 'project.wiki.actionDedupMerge',
+  overview_updated: 'project.wiki.actionOverviewUpdated',
 }
 
-/** Format a timestamp for changelog display */
-export function formatChangelogTime(isoStr: string): string {
+/** Format a timestamp for changelog display (locale-aware relative time) */
+export function formatChangelogTime(isoStr: string, lang: string): string {
   try {
     const d = new Date(isoStr)
-    const now = new Date()
-    const diffMs = now.getTime() - d.getTime()
-    const diffMin = Math.floor(diffMs / 60000)
-    if (diffMin < 1) return '刚刚'
-    if (diffMin < 60) return `${diffMin} 分钟前`
+    const diffMin = Math.floor((Date.now() - d.getTime()) / 60000)
+    const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'always' })
+    if (diffMin < 60) return rtf.format(-Math.max(diffMin, 0), 'minute')
     const diffHr = Math.floor(diffMin / 60)
-    if (diffHr < 24) return `${diffHr} 小时前`
+    if (diffHr < 24) return rtf.format(-diffHr, 'hour')
     const diffDay = Math.floor(diffHr / 24)
-    if (diffDay < 7) return `${diffDay} 天前`
-    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+    if (diffDay < 7) return rtf.format(-diffDay, 'day')
+    return d.toLocaleDateString(lang, { month: 'short', day: 'numeric' })
   } catch {
     return isoStr
   }
