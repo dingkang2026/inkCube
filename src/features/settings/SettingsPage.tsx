@@ -7,6 +7,7 @@ import { InternalModelSettings } from './InternalModelSettings'
 import { DataManagement } from './DataManagement'
 import { TaskSettings } from './TaskSettings'
 import { SkillManagement } from './SkillManagement'
+import { WebLogins } from './WebLogins'
 import type { LLMSettings } from '../../types'
 import s from './SettingsPage.module.css'
 
@@ -17,7 +18,7 @@ interface SettingsPageProps {
   sectionSignal?: { name: string; ts: number } | null
 }
 
-const SECTIONS = ['general', 'externalModel', 'internalModel', 'task', 'skills', 'dataManagement'] as const
+const SECTIONS = ['general', 'externalModel', 'internalModel', 'task', 'skills', 'webLogins', 'dataManagement'] as const
 // 自动保存静默期：连续输入/滑块拖动合并为一次落盘（0.3 §3.5 v0.8.0）
 const AUTO_SAVE_DELAY_MS = 800
 
@@ -138,6 +139,7 @@ export function SettingsPage({ settings, onSave, sectionSignal }: SettingsPagePr
           {activeSection === 'internalModel' && <InternalModelSettings />}
           {activeSection === 'task' && <TaskSettings settings={form} onUpdate={update} />}
           {activeSection === 'skills' && <SkillManagement />}
+          {activeSection === 'webLogins' && <WebLogins />}
           {activeSection === 'dataManagement' && <DataManagement />}
 
           {showTest && (

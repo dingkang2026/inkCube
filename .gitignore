@@ -8,9 +8,10 @@ build/
 *.spec.bak
 
 # ── Resources (partial) ──
-# 忽略 resources 下所有内容，但保留 templates/
+# 忽略 resources 下所有内容，但保留 templates/ 与 skills/
 resources/*
 !resources/templates/
+!resources/skills/
 
 # ── Python ──
 __pycache__/

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, X, BookOpen, Folder, FileText, Wrench, Download } from 'lucide-react'
 import type { HealthStatus } from '../../types/error'
@@ -6,6 +6,10 @@ import type { Project } from '../knowledge/types'
 import { useActivity } from '../activity/ActivityContext'
 import { navigateToNotification } from '../activity/ActivityMonitor'
 import type { ActiveItem } from '../activity/types'
+import { TodayTodo, type HomeTab } from './TodayTodo'
+import { UpcomingCalendar } from './UpcomingCalendar'
+import { ProjectCardWall } from './ProjectCardWall'
+import type { DueTask, ProjectHealthSummary } from '../project/affairs/types'
 import s from './HomePage.module.css'
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -37,6 +41,9 @@ interface HomePageProps {
   onNavigate: (nav: string) => void
   onOpenSettings: (section?: string) => void
   onSelectProject: (id: string) => void
+  /** 3.0 三期:今日工作台单一数据快照(App 下发;null/undefined = 未就绪或降级,区块隐藏) */
+  dueData?: { tasks: DueTask[]; reviews_counts: Record<string, number> } | null
+  healthByProject?: Record<string, ProjectHealthSummary>
 }
 
 export function HomePage({
@@ -44,6 +51,8 @@ export function HomePage({
   onNavigate,
   onOpenSettings,
   onSelectProject,
+  dueData,
+  healthByProject,
 }: HomePageProps) {
   const { t } = useTranslation()
   const { status, feed, markRead } = useActivity()
@@ -67,10 +76,31 @@ export function HomePage({
     fetchHealth()
   }, [fetchHealth])
 
-  // Sort projects by created_at desc, take top 5
+  // Sort projects by created_at desc (card wall 顺序;替代旧「最近项目 top5」)
   const recentProjects = [...projects]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-    .slice(0, 5)
+
+  // ── 3.0 三期:今日工作台(§7.1)──
+  const todoTasks = dueData?.tasks ?? []
+
+  /** 卡片墙「下一事务」:该项目 due 最早的日期(listDue 已限逾期+7 日内) */
+  const nextDueByProject = useMemo(() => {
+    const acc: Record<string, string | null> = {}
+    for (const task of todoTasks) {
+      const due = task.due_date?.slice(0, 10)
+      if (!due) continue
+      const cur = acc[task.project_id]
+      if (!cur || due < cur) acc[task.project_id] = due
+    }
+    return acc
+  }, [dueData])
+
+  /** 待办/日历直达:进项目详情对应 Tab(affairs/materials/reports) */
+  const handleOpenProjectTab = (projectId: string, tab: HomeTab) => {
+    window.dispatchEvent(new CustomEvent('app:navigate-project-tab', {
+      detail: { projectId, tab, container: 'project' },
+    }))
+  }
 
   // 红卡可点击 → 直达设置对应区块（0.4 §7.4；绿卡不可点）
   const handleStatusClick = (serviceKey: string) => {
@@ -200,62 +230,29 @@ export function HomePage({
         </>
       )}
 
-      {/* ── Quick start ── */}
-      <div className={s.sectionTitle}>{t('home.quickTitle')}</div>
-      <div className={s.quickGrid}>
-        <div className={s.quickCard} onClick={() => onNavigate('tasks')}>
-          <span className={s.quickIcon}><BookOpen size={24} /></span>
-          <div className={s.quickText}>
-            <span className={s.quickLabel}>{t('home.quickTasks')}</span>
-            <span className={s.quickDesc}>{t('home.quickTasksDesc')}</span>
-          </div>
-        </div>
-        <div className={s.quickCard} onClick={() => onNavigate('projects')}>
-          <span className={s.quickIcon}><Folder size={24} /></span>
-          <div className={s.quickText}>
-            <span className={s.quickLabel}>{t('home.quickProject')}</span>
-            <span className={s.quickDesc}>{t('home.quickProjectDesc')}</span>
-          </div>
-        </div>
-      </div>
+      {/* ── Today todo (3.0 §7.1;空隐藏) ── */}
+      <TodayTodo tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
 
-      {/* ── Bottom: Recent projects + activity feed ── */}
+      {/* ── Upcoming calendar (§6.1.8;空隐藏) ── */}
+      <UpcomingCalendar tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
+
+      {/* ── Project card wall + activity feed ── */}
       <div className={s.sectionTitle}>{t('home.recentTitle')}</div>
       <div className={s.recentGrid}>
-        {/* Recent projects */}
+        {/* Card wall (3.0 §7.1,替代最近项目列表) */}
         <div className={s.recentSection}>
           <div className={s.sectionTitle} style={{ fontSize: 12, marginBottom: 8 }}>
-            {t('home.recentProjects')}
+            {t('homeTodo.cardWallTitle')}
           </div>
-          <div className={s.recentList}>
-            {recentProjects.length === 0 ? (
-              <div className={s.recentEmpty}>{t('home.noProjects')}</div>
-            ) : (
-              <>
-                {recentProjects.map((project) => (
-                  <div
-                    key={project.id}
-                    className={s.recentItem}
-                    onClick={() => {
-                      onSelectProject(project.id)
-                      onNavigate('projects')
-                    }}
-                  >
-                    <span className={s.recentItemIcon}><Folder size={14} /></span>
-                    <span className={s.recentItemText}>{project.name}</span>
-                    <span className={s.recentItemMeta}>
-                      {project.file_count} {t('knowledge.files')}
-                    </span>
-                  </div>
-                ))}
-                {projects.length > 5 && (
-                  <button className={s.recentMore} onClick={() => onNavigate('projects')}>
-                    {t('home.viewAll')}
-                  </button>
-                )}
-              </>
-            )}
-          </div>
+          <ProjectCardWall
+            projects={recentProjects}
+            healthData={healthByProject}
+            nextDueByProject={nextDueByProject}
+            onSelect={(id) => {
+              onSelectProject(id)
+              window.dispatchEvent(new CustomEvent('app:navigate-project-tab', { detail: { projectId: id, container: 'project' } }))
+            }}
+          />
         </div>
 
         {/* Recent activity feed (Activity Hub, 0.4 §5.4) */}
@@ -282,6 +279,25 @@ export function HomePage({
                 </div>
               ))
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Quick start(移至最后,§6.1.8)── */}
+      <div className={s.sectionTitle}>{t('home.quickTitle')}</div>
+      <div className={s.quickGrid}>
+        <div className={s.quickCard} onClick={() => onNavigate('tasks')}>
+          <span className={s.quickIcon}><BookOpen size={24} /></span>
+          <div className={s.quickText}>
+            <span className={s.quickLabel}>{t('home.quickTasks')}</span>
+            <span className={s.quickDesc}>{t('home.quickTasksDesc')}</span>
+          </div>
+        </div>
+        <div className={s.quickCard} onClick={() => onNavigate('projects')}>
+          <span className={s.quickIcon}><Folder size={24} /></span>
+          <div className={s.quickText}>
+            <span className={s.quickLabel}>{t('home.quickProject')}</span>
+            <span className={s.quickDesc}>{t('home.quickProjectDesc')}</span>
           </div>
         </div>
       </div>

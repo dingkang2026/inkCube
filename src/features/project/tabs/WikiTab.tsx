@@ -35,6 +35,12 @@ interface WikiTabProps {
   compileData?: WikiCompileData | null
   /** 编译明细面板展开/收起上报（父组件据此将 #4 轮询降至 2s） */
   onCompileDetailChange?: (open: boolean) => void
+  /** 脉搏带/健康卡直达信号(一期 lint 直达;二期扩 compile 直达编译,裁决 6) */
+  focusSignal?: { view: 'lint' | 'compile'; ts: number } | null
+  /** 直达信号消费完成回调（consume-once：父级置空信号，防重挂载重复触发/跨项目泄漏） */
+  onFocusHandled?: () => void
+  /** 治理动作后通知父级刷新脉搏带计数（0.4 §3.1 操作后刷新，3.0 一期最终 review） */
+  onReviewsChanged?: () => void
 }
 
 export interface CompileTask {
@@ -87,7 +93,7 @@ const PREVIEW_DEFAULT_WIDTH = 720
 const PREVIEW_MIN_WIDTH = 260
 const PREVIEW_MAX_WIDTH = 720
 
-export function WikiTab({ projectId, projectType: _projectType, expanded, onExpandChange, onPreviewOpenChange, closePreviewSignal, compileData, onCompileDetailChange }: WikiTabProps) {
+export function WikiTab({ projectId, projectType: _projectType, expanded, onExpandChange, onPreviewOpenChange, closePreviewSignal, compileData, onCompileDetailChange, focusSignal, onFocusHandled, onReviewsChanged }: WikiTabProps) {
   const { t } = useTranslation()
   const guard = useFeatureGuard()
   const showToast = useToast()
@@ -100,6 +106,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [pageDetail, setPageDetail] = useState<any>(null)
   const [compileTask, setCompileTask] = useState<CompileTask | null>(null)
   const [reviews, setReviews] = useState<Review[]>([])
+  const [schemas, setSchemas] = useState<Array<{ page_key: string; title: string }>>([])
   const [loading, setLoading] = useState(true)
   const [compiling, setCompiling] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('home')
@@ -147,13 +154,24 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     return () => {
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
+      // 拖宽中途卸载(如 Tab 切走)也复位 body 样式,防游标/选区卡死(与 TaskDrawer 同款防护)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
     }
   }, [])
 
+  // 快切项目防乱序：同类型项目切换时 WikiTab 实例存活（父层 key=projectType 不变），
+  // 在途响应晚到会跨项目覆盖 state 且无自愈——捕获 pid，await 后比对不一致即丢弃
+  // （与父层 loadPulseData/checkWikiCompileStatus 的 latestPidRef 同款裁决，3.0 一期 T3+4）
+  const latestPidRef = useRef(projectId)
+  useEffect(() => { latestPidRef.current = projectId }, [projectId])
+
   // Load pages list + purpose/overview/source_pages
   const loadPages = useCallback(async () => {
+    const pid = projectId
     try {
-      const result: any = await window.electronAPI.invoke('wiki:listPages', { projectId })
+      const result: any = await window.electronAPI.invoke('wiki:listPages', { projectId: pid })
+      if (latestPidRef.current !== pid) return
       setPages(result.pages || [])
       setPendingCount(result.pending_compile_count || 0)
       setPurpose(result.wiki_purpose || '')
@@ -168,11 +186,25 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
 
   // Load reviews
   const loadReviews = useCallback(async () => {
+    const pid = projectId
     try {
-      const result: any = await window.electronAPI.invoke('wiki:listReviews', { projectId, resolved: false })
+      const result: any = await window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false })
+      if (latestPidRef.current !== pid) return
       setReviews(result.reviews || [])
     } catch (err) {
       console.error('Failed to load reviews:', err)
+    }
+  }, [projectId])
+
+  // Load schemas（结构页定义，知识首页完成度数据源，3.0 一期 Task 6）
+  const loadSchemas = useCallback(async () => {
+    const pid = projectId
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:getSchemas', { projectId: pid })
+      if (latestPidRef.current !== pid) return
+      setSchemas(result.schemas || [])
+    } catch (err) {
+      console.error('Failed to load schemas:', err)
     }
   }, [projectId])
 
@@ -180,7 +212,27 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   useEffect(() => {
     loadPages()
     loadReviews()
-  }, [loadPages, loadReviews])
+    loadSchemas()
+  }, [loadPages, loadReviews, loadSchemas])
+
+  // 直达信号（consume-once）：脉搏带矛盾/缺口 chip 或健康卡「去处理」→ 治理视图（3.0 §6.1.1；
+  // ts 保证重复点击同型 chip 也能再次触发，语义同 handleGoLint；应用后即回调置空，
+  // 防止 Tab 往返重挂载被残留信号反复拉回 lint，以及项目 A 信号泄漏到项目 B）
+  useEffect(() => {
+    if (!focusSignal?.view) return
+    if (focusSignal.view === 'compile') {
+      // 与点「编译」按钮等价(裁决 6);但编译进行中再触发会 409 并闪断状态条——
+      // 与原顶栏按钮 disabled={compiling} 同语义,仅停留不重触发(Task 13 review M2)。
+      // 用父级 props 快照判断(而非本地 compileTask state):consume effect 先于
+      // compileData 同步 effect 执行,重挂载首轮本地态尚为空,props 已就绪
+      const active = compiling
+        || (compileData?.task != null && ['queued', 'ingesting', 'storing'].includes(compileData.task.status))
+      if (!active) handleCompile()
+    } else {
+      setViewMode(focusSignal.view)
+    }
+    onFocusHandled?.()
+  }, [focusSignal])
 
   // 编译状态同步：父组件 #4 轮询下发 compileData → 本地 state。
   // 不随活跃任务自动展开明细面板（2.6 §10 修订）：面板由用户动作
@@ -202,8 +254,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       setCompiling(false)
       void loadPages()
       void loadReviews()
+      void loadSchemas()
     }
-  }, [compileTask?.status, loadPages, loadReviews])
+  }, [compileTask?.status, loadPages, loadReviews, loadSchemas])
 
   // 明细面板展开/收起上报父组件（#4 轮询据此降至 2s，0.4 §8.1）；
   // unmount 时上报 false，避免父组件在 Tab 切走后仍以 2s 高频轮询
@@ -306,6 +359,12 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setViewMode('lint')
   }, [])
 
+  // 治理动作后：重拉发现项计数 + 上报父级刷新脉搏带（0.4 §3.1「操作后刷新」，3.0 一期最终 review）
+  const handleFindingsChanged = useCallback(() => {
+    void loadReviews()
+    onReviewsChanged?.()
+  }, [loadReviews, onReviewsChanged])
+
   // Trigger compile (V2 per-file ingest, continuous run); entry guard per 0.4 §7.3
   const handleCompile = (force = false) => {
     // Force recompile deletes ALL wiki data — show custom confirmation dialog
@@ -319,6 +378,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   }
 
   const doCompile = async () => {
+    if (compiling) return   // 纵深防御:乐观窗口内任何路径重入直接忽略(M2 同源,防未来新入口绕过)
     setCompiling(true)
     setCompileTask(null) // clear stale task so UI shows transitional state
     setIsResumed(false)
@@ -415,17 +475,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           </div>
         )}
 
-        {pendingCount > 0 && !isCompiling && !isResumed && (
-          <div className={s.pendingNotice}>
-            <AlertTriangle size={14} />
-            <span>{t('project.wiki.pendingCompile', { count: pendingCount, defaultValue: `有 ${pendingCount} 个新文件待编译` })}</span>
-            <button className={s.compileBtn} onClick={() => handleCompile()} disabled={compiling} title={t('project.wiki.compileBtnTip')}>
-              <RefreshCw size={13} />
-              {t('project.wiki.compile', { defaultValue: '编译' })}
-            </button>
-          </div>
-        )}
-
+        {/* 顶栏待编译通知已删(裁决 6):触发编译入口统一为脉搏带待编译 chip,
+            经 focusSignal compile 直达;pendingCount 保留(首页 pendingCta/startCompile 消费) */}
         {isCompiling && (
           <div className={s.compileStatus}>
             <Loader2 size={14} className={s.spin} />
@@ -640,6 +691,13 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               onNavigateToPage={handleNavigateToPage}
               onCompile={() => handleCompile()}
               onMetaSaved={() => void loadPages()}
+              reviewCounts={{
+                contradiction: reviews.filter((r) => r.type === 'contradiction').length,
+                gap: reviews.filter((r) => r.type === 'data-gap' || r.type === 'missing-page').length,
+                deadLink: reviews.filter((r) => r.type === 'broken-link').length,
+              }}
+              onOpenLint={() => setViewMode('lint')}
+              schemas={schemas}
             />
           ) : viewMode === 'search' ? (
             /* Search view */
@@ -659,6 +717,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             <WikiLintView
               projectId={projectId}
               onNavigateToPage={handleNavigateToPage}
+              onFindingsChanged={handleFindingsChanged}
             />
           ) : viewMode === 'schema' ? (
             /* Schema management (structure pages, 2.6 §3.1) */

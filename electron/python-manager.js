@@ -75,7 +75,13 @@ class PythonManager {
     }
   }
 
-  async start() {
+  /**
+   * @param {{ cdpPort?: number|null }} options - cdpPort: Electron's CDP
+   *   debug port for the browser-fetch skill (2.8 §6.1); null/undefined
+   *   (DevToolsActivePort read failed) leaves the env var unset and the
+   *   skill surfaces a clear error instead of failing opaquely.
+   */
+  async start(options = {}) {
     // Dev mode: auto-detect already-running Python (e.g. started manually or from PyCharm)
     if (this.isDev) {
       const detected = await this._detectRunningPython()
@@ -106,6 +112,8 @@ class PythonManager {
         ? path.join(__dirname, '..', 'node_modules', 'electron', 'dist',
             process.platform === 'win32' ? 'electron.exe' : 'electron')
         : process.execPath,
+      // browser-fetch skill attaches to Electron's CDP endpoint (2.8 §6.1)
+      ...(options.cdpPort ? { INKCUBE_CDP_PORT: String(options.cdpPort) } : {}),
     }
 
     if (!this.isDev) {

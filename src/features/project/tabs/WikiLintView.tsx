@@ -22,6 +22,8 @@ import s from './WikiTab.module.css'
 interface WikiLintViewProps {
   projectId: string
   onNavigateToPage: (pageKey: string) => void
+  /** 处置动作后回调(0.4 §3.1 操作后刷新):父级同步脉搏带/健康卡计数(3.0 一期最终 review) */
+  onFindingsChanged?: () => void
 }
 
 interface LintFinding {
@@ -160,7 +162,7 @@ function cleanDescription(desc: string): string {
     .trim()
 }
 
-export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps) {
+export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }: WikiLintViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const [findings, setFindings] = useState<LintFinding[]>([])
@@ -176,11 +178,18 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
   const gapFileInputRef = useRef<HTMLInputElement>(null)
   const gapUploadTargetRef = useRef<string | null>(null)
 
+  // 快切项目防乱序:同类型项目切换时本视图实例存活,在途响应晚到会跨项目覆盖
+  // findings 且无自愈——与 WikiTab 三个 loader 的 latestPidRef 同款守卫(re-review 建议)
+  const latestPidRef = useRef(projectId)
+  useEffect(() => { latestPidRef.current = projectId }, [projectId])
+
   // Load findings (reviews)
   const loadFindings = useCallback(async () => {
+    const pid = projectId
     setLoading(true)
     try {
-      const result: any = await window.electronAPI.invoke('wiki:listReviews', { projectId, resolved: false })
+      const result: any = await window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false })
+      if (latestPidRef.current !== pid) return
       setFindings(result.reviews || [])
     } catch (err) {
       console.error('Failed to load lint findings:', err)
@@ -212,10 +221,14 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
       const result: any = await window.electronAPI.invoke('wiki:lint', { projectId, mode: m })
       if (result.success) {
         await loadFindings()
+        onFindingsChanged?.()
       }
     } catch (err) {
       console.error('Lint scan failed:', err)
       showToast(t('project.wiki.lintFailed', { defaultValue: '检查失败' }), 'error')
+      // full 模式语义层失败时结构层发现项可能已落库,失败路径同样刷新列表与计数(re-review 建议)
+      await loadFindings()
+      onFindingsChanged?.()
     } finally {
       setScanning(false)
     }
@@ -228,6 +241,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
       selectedIds.delete(findingId)
       setSelectedIds(new Set(selectedIds))
       await loadFindings()
+      onFindingsChanged?.()
     } catch (err) {
       console.error('Failed to dismiss finding:', err)
     }
@@ -253,6 +267,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
     } finally {
       setFixingId(null)
       await loadFindings()
+      onFindingsChanged?.()
     }
   }
 
@@ -328,6 +343,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
       })
       setSelectedIds(new Set())
       await loadFindings()
+      onFindingsChanged?.()
     } catch (err) {
       console.error('Failed to batch dismiss:', err)
     }
@@ -359,6 +375,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
         // 无匹配说明发现项已过时（源页面已被修改），提示后刷新列表
         showToast(t('project.wiki.lintFixNoMatch', { defaultValue: '源页面中未找到该死链，发现项可能已过时' }), 'warning')
         await loadFindings()
+        onFindingsChanged?.()
         return
       }
       await window.electronAPI.invoke('wiki:editPage', {
@@ -367,6 +384,7 @@ export function WikiLintView({ projectId, onNavigateToPage }: WikiLintViewProps)
       await window.electronAPI.invoke('wiki:resolveReview', { projectId, reviewId: f.id, action: 'fixed' })
       showToast(t('project.wiki.lintFixSuccess', { defaultValue: '死链已修复' }), 'success')
       await loadFindings()
+      onFindingsChanged?.()
     } catch (err) {
       console.error('Failed to fix broken link:', err)
       const reason = err instanceof Error ? err.message : String(err)

@@ -214,6 +214,10 @@ async def delete_skill(skill_id: str):
     if not skill:
         return {"error": "Skill 不存在"}
 
+    # 内置 skill（2.8 §9.1）：随应用种子安装，卸载无意义且下次启动会被重新种回
+    if skill.get("source_type") == "builtin":
+        return {"error": "内置 Skill 不可卸载，可禁用"}
+
     # Remove files
     install_path = skill.get("install_path", "")
     if install_path and os.path.isdir(install_path):
@@ -251,7 +255,6 @@ BUILTIN_TOOLS = [
     {"name": "shell", "description": "Shell 命令执行", "icon": "⌘"},
     {"name": "file_ops", "description": "文件操作（读写/替换/备份）", "icon": "📁"},
     {"name": "code_search", "description": "代码搜索（正则/文件过滤）", "icon": "🔍"},
-    {"name": "web_fetch", "description": "网页内容获取", "icon": "🌐"},
     {"name": "web_search", "description": "网络搜索（Tavily）", "icon": "🔎"},
     {"name": "code_lint", "description": "代码静态检查", "icon": "🔎"},
     {"name": "code_format", "description": "代码格式化", "icon": "✨"},

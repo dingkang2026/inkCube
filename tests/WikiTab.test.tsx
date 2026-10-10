@@ -41,7 +41,14 @@ vi.mock('../src/features/project/tabs/WikiPageEditor', () => ({ WikiPageEditor: 
 vi.mock('../src/features/project/tabs/WikiChangeLog', () => ({ WikiChangeLog: () => null }))
 vi.mock('../src/features/project/tabs/WikiSearchView', () => ({ WikiSearchView: () => null }))
 vi.mock('../src/features/project/tabs/WikiGraphView', () => ({ WikiGraphView: () => null }))
-vi.mock('../src/features/project/tabs/WikiLintView', () => ({ WikiLintView: () => null }))
+// 捕获 onFindingsChanged 并渲染触发按钮,驱动「治理动作后计数回流」用例(0.4 §3.1 操作后刷新)
+let lintViewProps: { onFindingsChanged?: () => void } = {}
+vi.mock('../src/features/project/tabs/WikiLintView', () => ({
+  WikiLintView: (props: { onFindingsChanged?: () => void }) => {
+    lintViewProps = props
+    return <button data-testid="lint-view" onClick={() => props.onFindingsChanged?.()} />
+  },
+}))
 vi.mock('../src/features/project/tabs/CompilePanel', () => ({
   CompilePanel: () => <div data-testid="compile-panel" />,
 }))
@@ -85,6 +92,7 @@ const renderTab = (status: string, onCompileDetailChange?: (open: boolean) => vo
 beforeEach(() => {
   toastMock.mockReset()
   homePageProps = {}
+  lintViewProps = {}
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
     if (channel === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
@@ -120,6 +128,32 @@ describe('WikiTab compile detail entry', () => {
       expect(onDetail).toHaveBeenLastCalledWith(true)
     },
   )
+})
+
+describe('WikiTab focusSignal compile (3.0 二期 Task 13,裁决 6)', () => {
+  it('triggers compile when idle and compile signal arrives', async () => {
+    render(
+      <WikiTab projectId="p1" projectType="general" focusSignal={{ view: 'compile', ts: 1 }} />,
+    )
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('wiki:compile', {
+      projectId: 'p1', mode: 'incremental', force: false,
+    })
+  })
+
+  it('does not re-trigger compile while a compile is already active (M2)', async () => {
+    render(
+      <WikiTab
+        projectId="p1"
+        projectType="general"
+        compileData={{ task: makeTask('ingesting'), ingest_summaries: [], is_resumed: false }}
+        focusSignal={{ view: 'compile', ts: 1 }}
+      />,
+    )
+    await flush()
+    // 编译中信号到达仅停留,不得重复触发(409 + 状态条闪断,原顶栏按钮 disabled 同语义)
+    expect(invokeMock).not.toHaveBeenCalledWith('wiki:compile', expect.anything())
+  })
 })
 
 describe('WikiTab retry-failed entry (2.6 §13.3)', () => {
@@ -204,6 +238,84 @@ describe('WikiTab force recompile failure (P2-1)', () => {
     // 失败时本地页面列表不得清空（清空已移至触发成功之后）
     expect(homePageProps.pages).toHaveLength(1)
     expect(toastMock).toHaveBeenLastCalledWith('编译触发失败: 409 busy', 'error')
+  })
+})
+
+describe('WikiTab focusSignal (3.0 一期:脉搏带直达治理)', () => {
+  it('switches to lint view when focusSignal arrives', async () => {
+    const { rerender, queryByTestId } = render(
+      <WikiTab projectId="p1" projectType="general" focusSignal={null} />
+    )
+    await flush()
+    expect(queryByTestId('lint-view')).toBeNull()
+
+    rerender(
+      <WikiTab projectId="p1" projectType="general"
+        focusSignal={{ view: 'lint', ts: Date.now() }} />
+    )
+    await flush()
+    expect(queryByTestId('lint-view')).toBeTruthy()
+  })
+
+  it('consumes focusSignal once (null-out after handled, re-issue works)', async () => {
+    const onFocusHandled = vi.fn()
+    const { rerender, queryByTestId } = render(
+      <WikiTab projectId="p1" projectType="general" focusSignal={null}
+        onFocusHandled={onFocusHandled} />
+    )
+    await flush()
+    rerender(
+      <WikiTab projectId="p1" projectType="general" focusSignal={{ view: 'lint', ts: 1 }}
+        onFocusHandled={onFocusHandled} />
+    )
+    await flush()
+    expect(queryByTestId('lint-view')).toBeTruthy()
+    expect(onFocusHandled).toHaveBeenCalledTimes(1)
+
+    // 父级置空后：停留 lint 且不重复回调（防 Tab 往返重挂载被残留信号反复拉回 lint）
+    rerender(
+      <WikiTab projectId="p1" projectType="general" focusSignal={null}
+        onFocusHandled={onFocusHandled} />
+    )
+    await flush()
+    expect(queryByTestId('lint-view')).toBeTruthy()
+    expect(onFocusHandled).toHaveBeenCalledTimes(1)
+
+    // 再次下发（新 ts）：仍能触发
+    rerender(
+      <WikiTab projectId="p1" projectType="general" focusSignal={{ view: 'lint', ts: 2 }}
+        onFocusHandled={onFocusHandled} />
+    )
+    await flush()
+    expect(onFocusHandled).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('WikiTab lint findings changed (0.4 §3.1 操作后刷新,3.0 一期最终 review)', () => {
+  it('re-pulls reviews and notifies parent when lint findings change', async () => {
+    const onReviewsChanged = vi.fn()
+    const { rerender, queryByTestId } = render(
+      <WikiTab projectId="p1" projectType="general" focusSignal={null}
+        onReviewsChanged={onReviewsChanged} />
+    )
+    await flush()
+
+    // 直达信号进 lint 视图,桩按钮模拟一次处置动作完成
+    rerender(
+      <WikiTab projectId="p1" projectType="general"
+        focusSignal={{ view: 'lint', ts: Date.now() }}
+        onReviewsChanged={onReviewsChanged} />
+    )
+    await flush()
+    expect(queryByTestId('lint-view')).toBeTruthy()
+
+    const before = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
+    fireEvent.click(queryByTestId('lint-view')!)
+    await flush()
+
+    const after = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
+    expect(after).toBe(before + 1) // WikiTab 自身重拉发现项
+    expect(onReviewsChanged).toHaveBeenCalledTimes(1) // 上报父级刷新脉搏带
   })
 })
 

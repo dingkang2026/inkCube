@@ -1,0 +1,245 @@
+/* src/features/project/affairs/PhaseBoard.module.css — 时期看板(0.3 §4.3 token;
+   行状态色口径 §6.3:--error 逾期 / --warning 临期 / --accent 进行中;
+   --warning 未定义全局 token,沿仓内既定 fallback 形式) */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── 时期进度条(仅展示,点击切换在详情页 stage pills) ── */
+.phaseBar {
+  display: inline-flex;
+  gap: 0;
+}
+
+.phaseSeg {
+  padding: 3px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.phaseSeg:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.phaseSeg:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.phaseSeg + .phaseSeg {
+  border-left: none;
+}
+
+.phaseSegActive {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.headActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skippedToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.addBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.addBtn:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.empty {
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── 时期分组 ── */
+.phaseGroup {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.groupHead {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.groupHead:hover {
+  color: var(--text-primary);
+}
+
+.groupCount {
+  min-width: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+  border-radius: 9px;
+  text-align: center;
+}
+
+.caret {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ── 任务行 ── */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+  min-width: 0;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.rowOpen .dot {
+  background: var(--accent);
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.occ {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.typeBadge {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.due {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态色(§6.3) */
+.rowErr {
+  border-left-color: var(--error);
+}
+
+.rowErr .due {
+  color: var(--error);
+}
+
+.rowWarn {
+  border-left-color: var(--warning, #d97706);
+}
+
+.rowWarn .due {
+  color: var(--warning, #d97706);
+}
+
+.rowDone .rowTitle {
+  color: var(--text-muted);
+}
+
+.rowDone .dot {
+  background: var(--text-muted);
+}
+
+.rowSkipped .rowTitle {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.rowPending {
+  font-style: italic;
+}
+
+.rowPending .rowTitle,
+.rowPending .due {
+  color: var(--text-muted);
+}

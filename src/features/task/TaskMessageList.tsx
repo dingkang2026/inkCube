@@ -26,7 +26,6 @@ const TOOL_META: Record<string, { labelKey: string }> = {
   shell: { labelKey: 'task.tools.shell' },
   file_ops: { labelKey: 'task.tools.file_ops' },
   code_search: { labelKey: 'task.tools.code_search' },
-  web_fetch: { labelKey: 'task.tools.web_fetch' },
   web_search: { labelKey: 'task.tools.web_search' },
   code_lint: { labelKey: 'task.tools.code_lint' },
   code_format: { labelKey: 'task.tools.code_format' },
@@ -45,7 +44,6 @@ const TOOL_ICONS: Record<string, any> = {
   shell: Terminal,
   file_ops: Folder,
   code_search: Search,
-  web_fetch: Globe,
   web_search: Globe,
   code_lint: Search,
   code_format: Sparkles,
@@ -519,6 +517,7 @@ function ToolCard({
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [elapsed, setElapsed] = useState(0)
+  const [loginOpenError, setLoginOpenError] = useState(false)
   const meta = getToolMeta(toolName)
   const summary = formatToolInput(input)
 
@@ -532,6 +531,8 @@ function ToolCard({
   let statusIcon: 'ok' | 'error' | null = null
   let fixSuggestion: string | null = null
   let lintWarning: string | null = null
+  // browser-fetch 撞登录墙（2.8 §4.1）：observation 元数据携带 needs_login/domain
+  let loginDomain: string | null = null
   if (done && output) {
     try {
       const parsed = JSON.parse(output)
@@ -543,8 +544,26 @@ function ToolCard({
         if (parsed.fix_suggestion) fixSuggestion = parsed.fix_suggestion as string
         if (parsed.lint_warning) lintWarning = parsed.lint_warning as string
         if (parsed.auto_fix_hint) fixSuggestion = parsed.auto_fix_hint as string
+        if (parsed.needs_login && parsed.domain) loginDomain = parsed.domain as string
       } else { statusIcon = 'ok' }
     } catch { statusIcon = 'ok' }
+  }
+
+  // 登录主路径在任务卡片内（2.8 §8.3）：幂等自动登记（失败不阻塞弹窗）后弹登录窗口；
+  // 用户手动登录完关闭窗口即完成，回对话说「重试」由 agent 重试抓取。
+  // openLoginWindow 拒开（内网字面量等）时在横幅下方提示，避免「点了没反应」
+  const handleLogin = async () => {
+    if (!loginDomain) return
+    setLoginOpenError(false)
+    try {
+      await window.electronAPI.invoke('weblogin:add', { domain: loginDomain })
+    } catch { /* 登记失败仍可登录 */ }
+    try {
+      const res = await window.electronAPI.invoke('weblogin:open', { domain: loginDomain }) as { error?: string } | undefined
+      if (res?.error) setLoginOpenError(true)
+    } catch {
+      setLoginOpenError(true)
+    }
   }
 
   const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
@@ -567,6 +586,16 @@ function ToolCard({
         {statusIcon && <span className={`${s.statusDot} ${statusIcon === 'ok' ? s.statusOk : s.statusError}`} />}
       </button>
       {diff && <DiffCard diff={diff} filePath={filePath} />}
+      {loginDomain && (
+        <div className={s.loginBanner}>
+          <Globe size={14} className={s.fixIcon} />
+          <span className={s.loginText}>{t('task.loginRequired', { domain: loginDomain })}</span>
+          <button className={s.loginBtn} onClick={handleLogin}>{t('task.loginNow')}</button>
+        </div>
+      )}
+      {loginDomain && loginOpenError && (
+        <div className={s.warnBanner}><AlertTriangle size={14} className={s.warnIcon} /> {t('task.loginOpenFailed', { domain: loginDomain })}</div>
+      )}
       {fixSuggestion && (
         <div className={s.fixBanner}><Lightbulb size={14} className={s.fixIcon} /> {fixSuggestion}</div>
       )}

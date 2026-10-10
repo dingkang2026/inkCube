@@ -2,11 +2,13 @@
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Folder, MoreVertical } from 'lucide-react'
-import type { Project } from './types'
+import type { Project, CreateProjectFn } from './types'
 import type { ProjectType } from '../project/types'
 import { PROJECT_TYPE_CONFIG } from '../project/types'
 import { useActivity } from '../activity/ActivityContext'
 import type { ProjectActivity } from '../activity/types'
+import { HealthDot } from '../project/affairs/HealthDot'
+import type { ProjectHealthSummary } from '../project/affairs/types'
 import s from './ProjectList.module.css'
 
 interface ProjectListProps {
@@ -15,7 +17,9 @@ interface ProjectListProps {
   onSelect: (projectId: string) => void
   onDelete: (projectId: string) => void
   onRename?: (projectId: string, name: string) => void
-  onCreate?: (name: string, description?: string, type?: ProjectType, companyName?: string, creditCode?: string) => void
+  onCreate?: CreateProjectFn
+  /** 3.0 三期:per 项目健康概要(色点),App 级快照下发;未接/降级时不渲染点 */
+  healthData?: Record<string, ProjectHealthSummary>
 }
 
 export function ProjectList({
@@ -25,6 +29,7 @@ export function ProjectList({
   onDelete,
   onRename,
   onCreate,
+  healthData,
 }: ProjectListProps) {
   const { t } = useTranslation()
   const { byProject } = useActivity()
@@ -35,6 +40,11 @@ export function ProjectList({
   const [newCompanyName, setNewCompanyName] = useState('')
   const [newCreditCode, setNewCreditCode] = useState('')
   const [creating, setCreating] = useState(false)
+  // 在途创建代际:Escape/overlay 中途关闭后,晚到的成功结果必须丢弃,否则 confirmInfo 残留,
+  // 下次打开 modal 直接渲染陈旧确认态(误导航到旧项目)(3.0 二期 Task 13 review M1)
+  const createSessionRef = useRef(0)
+  // 裁决 8:创建成功不关 modal,切确认态展示铺入结果(Adjust → 事务 Tab)
+  const [confirmInfo, setConfirmInfo] = useState<{ projectId: string; name: string; type: ProjectType; count: number } | null>(null)
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
@@ -69,28 +79,41 @@ export function ProjectList({
     setEditingProjectId(null)
   }
 
+  const resetAndClose = () => {
+    createSessionRef.current++   // 使在途创建的晚到结果失效(同上 M1)
+    setNewProjectName('')
+    setNewProjectDesc('')
+    setNewProjectType('general')
+    setNewCompanyName('')
+    setNewCreditCode('')
+    setConfirmInfo(null)
+    setShowCreateModal(false)
+  }
+
   const handleCreate = async () => {
     if (!newProjectName.trim() || !onCreate || creating) return
     setCreating(true)
+    const session = ++createSessionRef.current
     try {
-      await onCreate(newProjectName.trim(), newProjectDesc.trim() || undefined, newProjectType, newCompanyName.trim() || undefined, newCreditCode.trim() || undefined)
-      setNewProjectName('')
-      setNewProjectDesc('')
-      setNewProjectType('general')
-      setNewCompanyName('')
-      setNewCreditCode('')
-      setShowCreateModal(false)
+      const result = await onCreate(newProjectName.trim(), newProjectDesc.trim() || undefined, newProjectType, newCompanyName.trim() || undefined, newCreditCode.trim() || undefined)
+      if (session !== createSessionRef.current) return   // 在途期间已被 Escape/overlay 关闭,丢弃陈旧结果(M1)
+      if (result?.id) {
+        // 裁决 8:创建成功不关 modal,切确认态(App 已 auto-select 项目)
+        setConfirmInfo({ projectId: result.id, name: newProjectName.trim(), type: newProjectType, count: result.seeded_tasks_count ?? 0 })
+      } else {
+        resetAndClose()
+      }
     } finally {
       setCreating(false)
     }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && newProjectName.trim()) {
+    if (e.key === 'Enter' && newProjectName.trim() && !confirmInfo) {
       handleCreate()
     }
     if (e.key === 'Escape') {
-      setShowCreateModal(false)
+      resetAndClose()   // 确认态下关闭也清残留
     }
   }
 
@@ -147,6 +170,9 @@ export function ProjectList({
                 ) : (
                   <>
                     <h4 className={s.name}>
+                      {healthData?.[project.id] && (
+                        <HealthDot summary={healthData[project.id]} className={s.healthDotGap} />
+                      )}
                       {project.name}
                       {hasOngoing && pa && (
                         <span
@@ -185,8 +211,33 @@ export function ProjectList({
 
       {/* Create modal */}
       {showCreateModal && (
-        <div className={s.overlay} onClick={() => setShowCreateModal(false)}>
+        <div className={s.overlay} onClick={resetAndClose}>
           <div className={s.modal} onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
+            {confirmInfo ? (
+              <>
+                <h3 className={s.modalTitle}>{t('knowledge.wizardConfirmTitle')}</h3>
+                <p className={s.confirmDesc}>
+                  {t('knowledge.wizardConfirmDesc', {
+                    name: confirmInfo.name,
+                    count: confirmInfo.count,
+                    type: t(PROJECT_TYPE_CONFIG[confirmInfo.type].labelKey),
+                  })}
+                </p>
+                <div className={s.modalActions}>
+                  <button className={s.btnCancel} onClick={resetAndClose}>
+                    {t('knowledge.wizardConfirmEnter')}
+                  </button>
+                  <button className={s.btnCreate} onClick={() => {
+                    const { projectId } = confirmInfo
+                    resetAndClose()
+                    window.dispatchEvent(new CustomEvent('app:navigate-project-tab', { detail: { projectId, tab: 'affairs' } }))
+                  }}>
+                    {t('knowledge.wizardConfirmAdjust')}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
             <h3 className={s.modalTitle}>{t('knowledge.createProject')}</h3>
             <input
               type="text"
@@ -227,7 +278,7 @@ export function ProjectList({
               onChange={(e) => setNewCreditCode(e.target.value)}
             />
             <div className={s.modalActions}>
-              <button className={s.btnCancel} onClick={() => setShowCreateModal(false)}>
+              <button className={s.btnCancel} onClick={resetAndClose}>
                 {t('knowledge.cancel')}
               </button>
               <button
@@ -238,6 +289,8 @@ export function ProjectList({
                 {creating ? t('knowledge.creating') : t('knowledge.create')}
               </button>
             </div>
+              </>
+            )}
           </div>
         </div>
       )}

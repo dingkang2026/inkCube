@@ -2,18 +2,19 @@
 
 覆盖：
   H2. _LockedConnection 并发写串行化（多线程 execute+commit 无异常、无丢失）
-  H3. web_fetch SSRF 防护（协议白名单 + 内网/环回/链路本地/保留地址拦截，
-      不可解析域名视为私网拒绝，公网地址放行）
   H4. TaskAgent.try_acquire_task（空闲获取、同任务互斥、并发上限）
   L2. _create_workspace_zip 排除 node_modules/__pycache__/venv/隐藏目录
   L3. git_ops 入口守卫保留（非 Git 仓库拒绝），_run_git 不再重复检查
   L5. _check_upload_size（base64 长度预检 → 413，data-URI 前缀剥离）
+
+注：原 H3（web_fetch SSRF 防护）随 web_fetch tool 删除而移除（2.8 §7），
+防护逻辑迁移至 resources/skills/browser-fetch/scripts/_fetch_core.py，
+回归用例见 test_browser_fetch_core.py。
 """
 import asyncio
 import base64
 import os
 import shutil
-import socket
 import sys
 import threading
 import zipfile
@@ -23,59 +24,6 @@ import pytest
 
 # Ensure python/ is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-
-# ── H3. SSRF 防护 ─────────────────────────────────────────
-
-
-class TestSsrfValidation:
-    @pytest.mark.parametrize("url", [
-        "file:///etc/passwd",
-        "ftp://example.com/file",
-        "gopher://example.com/",
-        "http:///no-host",
-        "http://localhost/admin",
-        "http://LOCALHOST:8080/",
-        "http://127.0.0.1:8765/",
-        "http://10.0.0.1/",
-        "http://172.16.0.1/",
-        "http://192.168.1.1/",
-        "http://169.254.169.254/latest/meta-data/",  # cloud metadata
-        "http://0.0.0.0/",
-    ])
-    def test_blocked_urls(self, url):
-        from tools.web_fetch import _validate_url
-        assert _validate_url(url) is not None
-
-    def test_public_host_allowed(self, monkeypatch):
-        import tools.web_fetch as wf
-
-        # Resolve every hostname to a public IP — validation must pass
-        monkeypatch.setattr(
-            wf.socket, "getaddrinfo",
-            lambda host, port: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
-        )
-        assert wf._validate_url("http://example.com/") is None
-        assert wf._validate_url("https://example.com:443/x") is None
-
-    def test_unresolvable_host_treated_as_private(self, monkeypatch):
-        import tools.web_fetch as wf
-
-        def raise_gaierror(host, port):
-            raise socket.gaierror("name resolution failed")
-
-        monkeypatch.setattr(wf.socket, "getaddrinfo", raise_gaierror)
-        assert wf._validate_url("http://nonexistent.invalid/") is not None
-
-    def test_public_hostname_resolving_to_private_blocked(self, monkeypatch):
-        import tools.web_fetch as wf
-
-        # DNS rebinding style: public-looking name → private address
-        monkeypatch.setattr(
-            wf.socket, "getaddrinfo",
-            lambda host, port: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.0.10", 0))],
-        )
-        assert wf._validate_url("http://example.com/") is not None
 
 
 # ── H4. try_acquire_task 原子预约 ─────────────────────────

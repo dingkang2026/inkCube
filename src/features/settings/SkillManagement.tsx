@@ -231,7 +231,11 @@ export function SkillManagement() {
                 <div key={skill.id} className={`${styles.card} ${!skill.enabled ? styles.disabled : ''}`}>
                   <div className={styles.cardHeader}>
                     <span className={styles.skillName}>{skill.name}</span>
-                    <span className={styles.sourceBadge}>{skill.source_type}</span>
+                    {skill.source_type === 'builtin' ? (
+                      <span className={styles.builtinBadge}>{t('skills.builtinBadge')}</span>
+                    ) : (
+                      <span className={styles.sourceBadge}>{skill.source_type}</span>
+                    )}
                     {skill.needs_confirm && (
                       <span className={styles.unconfirmedBadge} title={t('skills.confirmHint')}>⚠</span>
                     )}
@@ -265,9 +269,12 @@ export function SkillManagement() {
                       />
                       <span className={styles.toggleSlider}></span>
                     </label>
-                    <button className={styles.deleteBtn} onClick={() => handleDelete(skill.id)} title={t('skills.delete')}>
-                      🗑
-                    </button>
+                    {/* 内置 skill 不可卸载（后端同样拒绝，2.8 §9.1）；仅可启停 */}
+                    {skill.source_type !== 'builtin' && (
+                      <button className={styles.deleteBtn} onClick={() => handleDelete(skill.id)} title={t('skills.delete')}>
+                        🗑
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

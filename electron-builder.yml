@@ -26,6 +26,13 @@ extraResources:
     to: "templates/"
     filter:
       - "**/*"
+  # Built-in skill sources (2.8 §4.2) — seed.py._locate_source() 第一候选是
+  # INKCUBE_RESOURCES_DIR/skills/browser-fetch（= process.resourcesPath/skills），
+  # 与本条 to: 目标对齐；缺这条则安装包内种子源缺失，动态抓取静默失效
+  - from: "resources/skills/"
+    to: "skills/"
+    filter:
+      - "**/*"
   - from: "node_modules/mermaid/dist/mermaid.min.js"
     to: "mermaid/mermaid.min.js"
   # Mermaid renderer script — Python's mermaid bridge spawns it via the Electron

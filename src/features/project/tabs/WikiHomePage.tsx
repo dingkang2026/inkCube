@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, FileText, Clock, Edit3, Check, X, Loader2,
   BookOpen, Users, Lightbulb, Layers, FolderOpen,
-  Play, HelpCircle,
+  Play, HelpCircle, AlertTriangle, ListChecks,
 } from 'lucide-react'
 import { Markdown } from '../../../components/Markdown'
 import { useToast } from '../../knowledge/Toast'
@@ -30,6 +30,12 @@ interface WikiHomePageProps {
   onCompile: () => void
   /** purpose/overview 保存成功后回调父级刷新（避免保存后界面回显旧值） */
   onMetaSaved?: () => void
+  /** 三型审查计数（矛盾/缺口/死链），父级 WikiTab 从 reviews 派生；全 0 时健康卡不渲染（3.0 §6.1.2） */
+  reviewCounts?: { contradiction: number; gap: number; deadLink: number }
+  /** 「去处理」直达治理视图（lint） */
+  onOpenLint?: () => void
+  /** 结构页定义清单（父级 wiki:getSchemas 拉取），用于完成度区块；空/缺省隐藏（3.0 一期 Task 6） */
+  schemas?: Array<{ page_key: string; title: string }>
 }
 
 /** Page type config: icon, label/desc i18n keys, order */
@@ -56,7 +62,7 @@ function extractSummary(content: string | null, maxLen = 80): string {
 
 export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
-  onNavigate, onNavigateToPage, onCompile, onMetaSaved,
+  onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, schemas,
 }: WikiHomePageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
@@ -124,6 +130,14 @@ export function WikiHomePage({
     return sortedEntries
   }, [pages])
 
+  // 结构页完成度：schemas 中 page_key 已存在于已编译 pages 的比例（3.0 一期 Task 6）；total=0 整块隐藏
+  const completion = useMemo(() => {
+    if (!schemas || schemas.length === 0) return null
+    const pageKeys = new Set(pages.map((p) => p.page_key))
+    const generated = schemas.filter((sc) => pageKeys.has(sc.page_key)).length
+    return { total: schemas.length, generated, pageKeys }
+  }, [schemas, pages])
+
   const isFirstTime = pages.length === 0 && sourcePageCount === 0
 
   return (
@@ -167,6 +181,64 @@ export function WikiHomePage({
               {t('project.wiki.homePage.startCompile', { count: pendingCount })}
             </button>
           )}
+        </section>
+      )}
+
+      {/* ── Health card (3.0 §6.1.2)：矛盾/缺口/死链三型计数，全 0 整卡不渲染 ── */}
+      {reviewCounts && (reviewCounts.contradiction > 0 || reviewCounts.gap > 0 || reviewCounts.deadLink > 0) && (
+        <section className={s.healthCard}>
+          <div className={s.healthHeader}>
+            <AlertTriangle size={15} className={s.healthIcon} />
+            <h3 className={s.healthTitle}>{t('project.wiki.homePage.healthTitle')}</h3>
+            <button className={s.healthGo} onClick={onOpenLint}>
+              {t('project.wiki.homePage.healthGo')}
+            </button>
+          </div>
+          <div className={s.healthChips}>
+            {reviewCounts.contradiction > 0 && (
+              <span className={s.healthChipErr}>{t('project.wiki.homePage.healthContradiction')} {reviewCounts.contradiction}</span>
+            )}
+            {reviewCounts.gap > 0 && (
+              <span className={s.healthChipWarn}>{t('project.wiki.homePage.healthGap')} {reviewCounts.gap}</span>
+            )}
+            {reviewCounts.deadLink > 0 && (
+              <span className={s.healthChipErr}>{t('project.wiki.homePage.healthDeadLink')} {reviewCounts.deadLink}</span>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ── Schema completion (3.0 一期 Task 6)：结构页完成度进度条 + 已生成/骨架 chips ── */}
+      {completion && (
+        <section className={s.homeSection}>
+          <div className={s.homeSectionHeader}>
+            <div className={s.homeSectionTitle}>
+              <ListChecks size={15} className={s.homeSectionIcon} />
+              <h3>{t('project.wiki.homePage.completionTitle')}</h3>
+              <span className={s.homeIndexCount}>
+                {t('project.wiki.homePage.completionGenerated')} {completion.generated}/{completion.total}
+              </span>
+            </div>
+          </div>
+          <div className={s.completionBody}>
+            <div className={s.completionBar}>
+              <div
+                className={s.completionBarFill}
+                style={{ width: `${Math.round((completion.generated / completion.total) * 100)}%` }}
+              />
+            </div>
+            <div className={s.completionChips}>
+              {schemas?.map((sc) =>
+                completion.pageKeys.has(sc.page_key) ? (
+                  <span key={sc.page_key} className={s.completionChipDone}>
+                    <Check size={11} /> {sc.title}
+                  </span>
+                ) : (
+                  <span key={sc.page_key} className={s.completionChipMissing}>{sc.title}</span>
+                ),
+              )}
+            </div>
+          </div>
         </section>
       )}
 

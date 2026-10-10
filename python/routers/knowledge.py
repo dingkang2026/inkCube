@@ -297,7 +297,8 @@ async def create_project(project: ProjectCreate):
             "credit_code": result.get("credit_code", ""),
             "file_count": 0,
             "chunk_count": 0,
-            "created_at": result["created_at"]
+            "created_at": result["created_at"],
+            "seeded_tasks_count": result.get("seeded_tasks_count", 0),  # 裁决 8:创建确认态铺入计数(3.0 二期 Task 13)
         }
     
     except Exception as e:
@@ -664,6 +665,11 @@ async def update_project(project_id: str, body: ProjectUpdate):
         db = get_db()
         if body.name is None and body.description is None and body.type is None and body.stage is None:
             raise HTTPException(status_code=400, detail="No fields to update")
+        # 3.0 §5.3: 阶段切换 → 激活该时期 pending_activation 实例(服务层自行兜底异常)
+        _stage_changed = False
+        if body.stage:
+            _old = db.get_project(project_id)
+            _stage_changed = bool(_old) and (_old.get("stage") != body.stage)
         db.update_project(
             project_id,
             name=body.name,
@@ -671,6 +677,9 @@ async def update_project(project_id: str, body: ProjectUpdate):
             type=body.type,
             stage=body.stage,
         )
+        if _stage_changed:
+            import affairs_service
+            affairs_service.activate_phase(db, project_id, body.stage)
         return {"success": True}
     except HTTPException:
         raise

@@ -28,7 +28,13 @@ PREINSTALLED_PACKAGES = [
     "beautifulsoup4",        # HTML parsing
     "openpyxl",              # Excel
     "pillow",                # Image processing
+    "html2text",             # HTML→Markdown（browser-fetch 内置 skill，纯 Python）
 ]
+
+# browser-fetch 专用（2.8 §5.5）：playwright wheel 体积大（~40MB），
+# 独立一条命令安装，失败仅记日志不置 marker 前置条件——避免连累
+# 基础包的失败重试语义（skill 侧 ImportError → retryable 闭环）。
+PLAYWRIGHT_PACKAGE = "playwright"
 
 
 def _find_uv() -> str | None:
@@ -117,6 +123,7 @@ def preinstall_packages(venv_python: str) -> bool:
         )
         if proc.returncode == 0:
             logger.info("Preinstalled packages in %s", venv_python)
+            _preinstall_playwright(venv_python, uv)
             return True
         logger.warning("Package preinstall failed (exit %d): %s",
                        proc.returncode, (proc.stderr or "")[:500])
@@ -124,6 +131,28 @@ def preinstall_packages(venv_python: str) -> bool:
     except Exception as e:
         logger.warning("Package preinstall failed (best-effort): %s", e)
         return False
+
+
+def _preinstall_playwright(venv_python: str, uv: str | None) -> None:
+    """browser-fetch 依赖的独立预装（best-effort，失败不影响 marker）。"""
+    try:
+        if uv:
+            cmd = [uv, "pip", "install", "--python", venv_python, PLAYWRIGHT_PACKAGE]
+        else:
+            cmd = [venv_python, "-m", "pip", "install", "--quiet", PLAYWRIGHT_PACKAGE]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            encoding="utf-8", errors="replace",
+            timeout=300,  # 40MB wheel，冷缓存下载需更长时间
+        )
+        if proc.returncode == 0:
+            logger.info("Preinstalled playwright in %s", venv_python)
+        else:
+            logger.warning("playwright preinstall failed (exit %d): %s",
+                           proc.returncode, (proc.stderr or "")[:300])
+    except Exception as e:
+        logger.warning("playwright preinstall failed (best-effort): %s", e)
 
 
 _PREINSTALL_MARKER = ".inkcube-preinstalled"

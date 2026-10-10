@@ -1,0 +1,11 @@
+/* 3.0 三期 §7.2:项目健康色点(绿/橙/红) */
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.green { background: var(--success); }
+.orange { background: var(--text-warning); }
+.red { background: var(--error); }

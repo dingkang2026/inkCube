@@ -5,7 +5,8 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,22 @@ class _LockedConnection:
     def rollback(self):
         with self._lock:
             return self._conn.rollback()
+
+    @contextmanager
+    def transaction(self):
+        """事务级锁:逻辑事务整体串行,防工作线程在语句间交叉 commit/rollback。
+
+        RLock 可重入,同线程事务体内的 execute/嵌套调用不死锁;
+        其他线程的语句在事务结束前被阻塞(期望行为:不交叉半成品事务)。
+        """
+        with self._lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except BaseException:
+                # BaseException:KeyboardInterrupt/SystemExit 也不残留开事务
+                self._conn.rollback()
+                raise
 
     def close(self):
         with self._lock:
@@ -315,6 +332,17 @@ class Database:
         self._migrate_add_column("skills", "needs_confirm", "INTEGER DEFAULT 1")
         self._migrate_add_column("reports", "token_usage", "TEXT")
         self._migrate_add_column("reports", "error_message", "TEXT")
+
+        # Web logins table (2.8 §3.2)：设置页「网页登录态」管理列表。
+        # 仅存用户主动登记的站点与备注，不存凭据；抓取不依赖此表。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS web_logins (
+                domain TEXT PRIMARY KEY,
+                note TEXT,
+                created_at TEXT NOT NULL
+            );
+        """)
+        self.conn.commit()
         # 报告级暂停请求标志（2.5 §3.1 修订）：pause 端点写入，Runner 在章节边界
         # 消费（当前章节完成→落 checkpoint→status=paused），恢复走 retry 断点续跑
         self._migrate_add_column("reports", "pause_requested", "INTEGER DEFAULT 0")
@@ -498,6 +526,56 @@ class Database:
         """)
         self.conn.commit()
 
+        # ── Affairs: Playbook & Phase Tasks (3.0 §4, phase 2) ──
+        # playbook_templates: 类型 × 时期任务模板(种子化,运行期只读);
+        # phase_tasks: 项目任务实例(脉搏带/事务 Tab/首页待办唯一数据源)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS playbook_templates (
+                id TEXT PRIMARY KEY,
+                project_type TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                due_offset_days INTEGER,
+                due_date_fixed TEXT,
+                recurrence_rule TEXT,
+                auto_complete TEXT,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_playbook_type_phase
+                ON playbook_templates(project_type, phase, position);
+
+            CREATE TABLE IF NOT EXISTS phase_tasks (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                phase TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                template_id TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                occurrence_key TEXT,
+                due_date TEXT,
+                recurrence_rule TEXT,
+                auto_complete TEXT,
+                linked_entity_type TEXT,
+                linked_entity_id TEXT,
+                completed_at DATETIME,
+                completed_by TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(project_id, template_id, occurrence_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_phase_tasks_project
+                ON phase_tasks(project_id, status, due_date);
+            CREATE INDEX IF NOT EXISTS idx_phase_tasks_due
+                ON phase_tasks(status, due_date);
+        """)
+        self.conn.commit()
+
+        # Migrate: projects — playbook 铺入标记(防删光任务后重铺,3.0 §4.3)
+        self._migrate_add_column("projects", "playbook_seeded", "INTEGER DEFAULT 0")
+
     def _migrate_add_column(self, table: str, column: str, col_type: str):
         """Add column to existing table if it doesn't exist yet."""
         try:
@@ -666,16 +744,22 @@ class Database:
     # ── Knowledge Base: Projects ──
 
     def create_project(self, name: str, description: str = "", project_type: str = "general", stage: str = "none",
-                       company_name: str = "", credit_code: str = "") -> dict:
+                       company_name: str = "", credit_code: str = "", seed_playbook: bool = True) -> dict:
         now = self._now()
         proj_id = self._uuid()
         # Pre-fill Wiki purpose by project type (user-editable later, §4.6)
         default_purpose = self.DEFAULT_PURPOSES.get(project_type, self.DEFAULT_PURPOSES["general"])
-        self.conn.execute(
-            "INSERT INTO projects (id, name, description, type, stage, company_name, credit_code, kind, wiki_purpose, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'project', ?, ?, ?)",
-            (proj_id, name, description, project_type, stage, company_name, credit_code, default_purpose, now, now),
-        )
-        self.conn.commit()
+        # 3.0 §5.3: 创建+铺入+置标记同一事务(事务级锁覆盖,
+        # 防工作线程在语句间交叉提交半成品事务或被误回滚;失败由 transaction 回滚并上抛)
+        with self.conn.transaction():
+            self.conn.execute(
+                "INSERT INTO projects (id, name, description, type, stage, company_name, credit_code, kind, wiki_purpose, playbook_seeded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'project', ?, 0, ?, ?)",
+                (proj_id, name, description, project_type, stage, company_name, credit_code, default_purpose, now, now),
+            )
+            seeded = self.insert_playbook_tasks(proj_id, project_type, stage) if seed_playbook else 0
+            if seed_playbook:
+                self.conn.execute(
+                    "UPDATE projects SET playbook_seeded = 1 WHERE id = ?", (proj_id,))
 
         # Auto-link base libraries based on project type
         auto_libs = self.get_auto_linked_base_libs(project_type)
@@ -692,6 +776,7 @@ class Database:
             "credit_code": credit_code,
             "created_at": now,
             "updated_at": now,
+            "seeded_tasks_count": seeded,
         }
 
     def list_projects(self) -> list[dict]:
@@ -1280,6 +1365,36 @@ class Database:
             "UPDATE skills SET needs_confirm = 0 WHERE name = ?",
             (name,),
         )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    # ── Web Logins (2.8 §3.2) ──
+
+    def list_web_logins(self) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT domain, note, created_at FROM web_logins ORDER BY created_at DESC"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def add_web_login(self, domain: str, note: str | None) -> dict:
+        """登记站点（幂等）：已存在时保留原行（note 也不覆盖——避免任务卡片
+        自动登记路径覆盖用户手写备注），返回行与 inserted 标志。"""
+        now = self._now()
+        cursor = self.conn.execute(
+            "INSERT OR IGNORE INTO web_logins (domain, note, created_at) VALUES (?, ?, ?)",
+            (domain, note, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT domain, note, created_at FROM web_logins WHERE domain = ?",
+            (domain,),
+        ).fetchone()
+        result = dict(row) if row else {"domain": domain, "note": note, "created_at": now}
+        result["inserted"] = cursor.rowcount > 0
+        return result
+
+    def delete_web_login(self, domain: str) -> bool:
+        cursor = self.conn.execute("DELETE FROM web_logins WHERE domain = ?", (domain,))
         self.conn.commit()
         return cursor.rowcount > 0
 
@@ -2051,6 +2166,251 @@ class Database:
                 logger.info("Schema %s %s: notified %d projects", action, page_key, len(project_ids))
         except Exception as e:
             logger.warning("Failed to notify schema change: %s", e)
+
+    # ── Affairs: Playbook templates (3.0 §4.1, phase 2) ──
+
+    def seed_playbook_templates(self, templates: list[dict]) -> None:
+        """Seed playbook_templates (idempotent: INSERT OR REPLACE by id).
+
+        对齐 seed_wiki_schemas 模式(§4.1):应用更新可迭代行业最佳实践,
+        运行期只读;已生成实例与模板解耦,重种子不影响存量任务。
+        """
+        for t in templates:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO playbook_templates
+                   (id, project_type, phase, task_type, title, description,
+                    due_offset_days, due_date_fixed, recurrence_rule, auto_complete, position)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    t["id"], t["project_type"], t["phase"], t["task_type"], t["title"],
+                    t.get("description", ""), t.get("due_offset_days"),
+                    t.get("due_date_fixed"),
+                    json.dumps(t["recurrence_rule"], ensure_ascii=False) if t.get("recurrence_rule") else None,
+                    json.dumps(t["auto_complete"], ensure_ascii=False) if t.get("auto_complete") else None,
+                    t.get("position", 0),
+                ),
+            )
+        self.conn.commit()
+
+    def list_playbook_templates(self, project_type: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT * FROM playbook_templates WHERE project_type = ? ORDER BY phase ASC, position ASC",
+            (project_type,),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            for key in ("recurrence_rule", "auto_complete"):
+                if d.get(key):
+                    try:
+                        d[key] = json.loads(d[key])
+                    except (json.JSONDecodeError, TypeError):
+                        d[key] = None
+            rows.append(d)
+        return rows
+
+    # ── Affairs: Phase Tasks (3.0 §4.2, phase 2) ──
+
+    def _phase_of_stage(self, stage: str) -> str:
+        # general 无时期(stage='none')→ 任务归 before 单时期(§3.3)
+        return stage if stage in ("before", "during", "after") else "before"
+
+    def _occurrence_for_now(self, rule: dict) -> tuple[str, str]:
+        """铺入时的「当期」(key, due)。与服务层 affairs_service.current_occurrence
+        同构;DB 层自持一份避免循环依赖,口径以服务层为准(Task 3 测试互证)。"""
+        import calendar as _cal
+        from datetime import date as _date
+        today = _date.today()
+        freq, day = rule.get("freq"), rule.get("due_day")
+        if freq == "monthly":
+            d = min(int(day), _cal.monthrange(today.year, today.month)[1])
+            return (today.strftime("%Y-%m"),
+                    f"{today.year:04d}-{today.month:02d}-{d:02d}")
+        if freq == "quarterly":
+            q = (today.month - 1) // 3 + 1
+            last_month = q * 3
+            due = _date(today.year, last_month, 1).replace(
+                day=_cal.monthrange(today.year, last_month)[1])
+            return f"{today.year}-Q{q}", due.isoformat()
+        mmdd = str(day or "12-31")
+        return today.strftime("%Y"), f"{today.year}-{mmdd}"
+
+    def insert_playbook_tasks(self, project_id: str, project_type: str, stage: str) -> int:
+        from datetime import date as _date, timedelta as _td
+        templates = self.list_playbook_templates(project_type)
+        current_phase = self._phase_of_stage(stage)
+        today = _date.today()
+        count = 0
+        for t in templates:
+            status = "open" if t["phase"] == current_phase else "pending_activation"
+            due = None
+            occ = None
+            if status == "open":
+                # 节奏判定按 recurrence_rule 而非 task_type:report 类可带
+                # recurrence_rule(§3.3 服务报告/投后管理报告),同样铺当期 occurrence
+                if t.get("recurrence_rule"):
+                    occ, due = self._occurrence_for_now(t["recurrence_rule"])
+                elif t.get("due_date_fixed"):
+                    due = t["due_date_fixed"]
+                elif t.get("due_offset_days"):
+                    due = (today + _td(days=int(t["due_offset_days"]))).isoformat()
+            cur = self.conn.execute(
+                """INSERT OR IGNORE INTO phase_tasks
+                   (id, project_id, phase, task_type, title, description, template_id,
+                    status, occurrence_key, due_date, recurrence_rule, auto_complete)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (self._uuid(), project_id, t["phase"], t["task_type"], t["title"],
+                 t.get("description", ""), t["id"], status, occ, due,
+                 json.dumps(t["recurrence_rule"], ensure_ascii=False) if t.get("recurrence_rule") else None,
+                 json.dumps(t["auto_complete"], ensure_ascii=False) if t.get("auto_complete") else None,
+                 ),
+            )
+            count += cur.rowcount  # OR IGNORE 命中冲突时 rowcount=0,计数不虚高
+        return count
+
+    def migrate_backfill_playbooks(self) -> int:
+        rows = self.conn.execute(
+            "SELECT id, type, stage FROM projects WHERE kind='project' AND playbook_seeded = 0"
+        ).fetchall()
+        n = 0
+        for r in rows:
+            try:
+                with self.conn.transaction():
+                    self.insert_playbook_tasks(r["id"], r["type"], r["stage"])
+                    self.conn.execute(
+                        "UPDATE projects SET playbook_seeded = 1 WHERE id = ?", (r["id"],))
+                n += 1
+            except Exception:
+                logger.warning("backfill playbooks failed for %s", r["id"], exc_info=True)
+        return n
+
+    def list_phase_tasks(self, project_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT * FROM phase_tasks WHERE project_id = ? "
+            "ORDER BY phase ASC, task_type ASC, due_date ASC, created_at ASC",
+            (project_id,),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            for key in ("recurrence_rule", "auto_complete"):
+                if d.get(key):
+                    try:
+                        d[key] = json.loads(d[key])
+                    except (json.JSONDecodeError, TypeError):
+                        d[key] = None
+            rows.append(d)
+        return rows
+
+    def get_phase_task(self, task_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM phase_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        # JSON 解码与 list_phase_tasks 对齐(消费方统一拿到 dict 而非原始字符串)
+        for key in ("recurrence_rule", "auto_complete"):
+            if d.get(key):
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    d[key] = None
+        return d
+
+    def create_phase_task(self, project_id, phase, task_type, title, description="",
+                          due_date=None, recurrence_rule=None, auto_complete=None,
+                          template_id=None, status="open", occurrence_key=None) -> dict:
+        # 自建 recurring 无模板:生成共享 template_id='user_<8位>' 供全部期次使用,
+        # 否则 UNIQUE(project_id, template_id, occurrence_key) 对 NULL 不防重(裁决 2)
+        if template_id is None and task_type == "recurring":
+            template_id = "user_" + self._uuid().replace("-", "")[:8]
+        task_id = self._uuid()
+        self.conn.execute(
+            """INSERT INTO phase_tasks
+               (id, project_id, phase, task_type, title, description, template_id,
+                status, occurrence_key, due_date, recurrence_rule, auto_complete)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, project_id, phase, task_type, title, description, template_id,
+             status, occurrence_key, due_date,
+             json.dumps(recurrence_rule, ensure_ascii=False) if recurrence_rule else None,
+             json.dumps(auto_complete, ensure_ascii=False) if auto_complete else None,
+             ),
+        )
+        self.conn.commit()
+        return self.get_phase_task(task_id)
+
+    # HTTP PATCH 可改字段白名单;linked_entity_* 由系统链路(闭环)直接
+    # SQL 维护,不开放给更新通道。phase 自 3.0 二期 Task 10 开放编辑
+    # (TaskFormModal 时期下拉),值域 before/during/after 由路由层校验
+    _PHASE_TASK_FIELDS = ("title", "description", "due_date", "status",
+                          "recurrence_rule", "auto_complete", "phase")
+
+    def update_phase_task(self, task_id: str, fields: dict) -> dict | None:
+        allowed = {k: v for k, v in fields.items() if k in self._PHASE_TASK_FIELDS}
+        if not allowed:
+            return self.get_phase_task(task_id)
+        for key in ("recurrence_rule", "auto_complete"):
+            if key in allowed and allowed[key] is not None and not isinstance(allowed[key], str):
+                allowed[key] = json.dumps(allowed[key], ensure_ascii=False)
+        sets, params = [], []
+        if "status" in allowed:
+            status = allowed["status"]
+            if status == "done":
+                # completed_* 不在白名单:不接受外部注入(防 PATCH 伪造完成者),
+                # 自动完成链路走原生 SQL 维护不经此通道(评审 C-6)
+                sets += ["completed_at = ?", "completed_by = ?"]
+                params += [self._now(), "manual"]
+            else:
+                sets += ["completed_at = NULL", "completed_by = NULL"]
+        for k, v in allowed.items():
+            sets.append(f"{k} = ?")
+            params.append(v)
+        params.append(task_id)
+        self.conn.execute(
+            f"UPDATE phase_tasks SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+        return self.get_phase_task(task_id)
+
+    def delete_phase_task(self, task_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM phase_tasks WHERE id = ?", (task_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_due_phase_tasks(self, horizon_days: int = 7) -> list[dict]:
+        """跨项目 open 且有截止日的任务(逾期 + horizon 日内),due ASC(3.0 三期 §7.2)。
+
+        逾期判定(due_date < today)交由前端纯函数 isOverdue;后端只按
+        due_date <= today+horizon 过滤(含今日与逾期),用本地日期避免 UTC 分叉。
+        """
+        limit = (date.today() + timedelta(days=horizon_days)).isoformat()
+        cursor = self.conn.execute(
+            """SELECT pt.*, p.name AS project_name, p.stage AS project_stage
+               FROM phase_tasks pt
+               JOIN projects p ON p.id = pt.project_id
+               WHERE p.kind = 'project' AND pt.status = 'open'
+                 AND pt.due_date IS NOT NULL AND pt.due_date <= ?
+               ORDER BY pt.due_date ASC, pt.created_at ASC""",
+            (limit,),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            # JSON 解码与 list_phase_tasks 对齐(消费方统一拿到 dict 而非原始字符串)
+            for key in ("recurrence_rule", "auto_complete"):
+                if d.get(key):
+                    try:
+                        d[key] = json.loads(d[key])
+                    except (json.JSONDecodeError, TypeError):
+                        d[key] = None
+            rows.append(d)
+        return rows
+
+    def count_pending_reviews_by_project(self) -> dict[str, int]:
+        """per 项目待处理发现项计数(resolved=0),供卡片墙/侧栏健康色点(3.0 §7.2)。"""
+        cursor = self.conn.execute(
+            "SELECT project_id, COUNT(*) AS cnt FROM wiki_reviews "
+            "WHERE resolved = 0 GROUP BY project_id")
+        return {row["project_id"]: row["cnt"] for row in cursor.fetchall()}
 
     # ── Wiki: Pages ──
 

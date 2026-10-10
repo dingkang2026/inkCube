@@ -1,0 +1,135 @@
+/* src/features/project/affairs/CalendarView.module.css — 日历视图(0.3 §4.3 token;
+   计划口径:cellToday 外框 --accent / cellOut 灰+半透明 / evErr 浅底红字(--bg-danger
+   全局 token 已核存在)/ evDone 灰+删除线;格 hover --bg-hover 提示可点) */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.calHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calTitle {
+  min-width: 110px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.navBtn,
+.todayBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.navBtn:hover,
+.todayBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.todayBtn {
+  margin-left: auto;
+}
+
+.calGrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+}
+
+.dow {
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 64px;
+  padding: 4px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.cell:hover {
+  background: var(--bg-hover);
+}
+
+.cellOut {
+  opacity: 0.5;
+}
+
+.cellOut .dayNum {
+  color: var(--text-muted);
+}
+
+.cellToday {
+  border-color: var(--accent);
+}
+
+.dayNum {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.evBtn {
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evBtn:hover {
+  background: var(--bg-hover);
+}
+
+.evDone {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.evErr {
+  color: var(--error);
+  background: var(--bg-danger);
+}
+
+.evMore {
+  font-size: 10px;
+  color: var(--text-muted);
+}

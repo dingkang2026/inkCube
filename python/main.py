@@ -78,7 +78,7 @@ from db.database import Database
 from agent.task_agent import TaskAgent
 from knowledge.model_manager import ModelManager
 from watchdog import start_watchdog
-from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki
+from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs
 
 
 @asynccontextmanager
@@ -94,6 +94,23 @@ async def lifespan(app: FastAPI):
     # Seed Wiki schemas on startup (idempotent)
     from db.wiki_seed import get_all_wiki_schemas
     deps.db.seed_wiki_schemas(get_all_wiki_schemas())
+
+    # Seed Playbook templates on startup (idempotent, 3.0 §4.1):
+    # 顺序裁决(§5.4): 建表迁移 → seed_wiki_schemas → seed_playbook_templates
+    # → migrate_backfill_playbooks(Task 2 接入,依赖模板已就位) → 其余启动流程
+    from db.playbook_seed import get_all_playbook_templates
+    deps.db.seed_playbook_templates(get_all_playbook_templates())
+
+    # 存量项目回填(3.0 §5.3):seed 之后、其余启动流程之前;幂等由 playbook_seeded 防重入
+    _backfilled = deps.db.migrate_backfill_playbooks()
+    if _backfilled:
+        logging.getLogger(__name__).info(
+            "Backfilled playbooks for %d existing projects", _backfilled)
+
+    # Seed builtin skills on startup (idempotent, 2.8 §4.2)：
+    # 拷 resources/skills → data/skills + skills 表 upsert (source_type='builtin')
+    from skills.seed import seed_builtin_skills
+    seed_builtin_skills(deps.db, data_dir)
 
     # Load report templates once at cold start (single entry point):
     # preset files are the source of truth (unconditional reload overwrites DB cache);
@@ -272,8 +289,10 @@ app.include_router(health.router)
 app.include_router(system.router)
 app.include_router(tasks.router)
 app.include_router(skills.router)
+app.include_router(web_logins.router)
 app.include_router(reports.router)
 app.include_router(wiki.router)
+app.include_router(affairs.router)
 
 
 # ── Global Exception Handlers ──

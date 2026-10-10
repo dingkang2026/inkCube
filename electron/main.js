@@ -7,10 +7,40 @@ if (process.env.INKCUBE_MERMAID_RENDERER === '1') {
 
 const { app, BrowserWindow, ipcMain, protocol, net, shell } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const { PythonManager } = require('./python-manager')
 const { registerIpcHandlers } = require('./ipc-handlers')
 const { logElectron } = require('./log-utils')
 const { ensureToolsInitialized } = require('./tool-initializer')
+const fetchPool = require('./fetch-pool')
+
+// ── CDP port for browser-fetch (2.8 §6.1) ──
+// port=0 → Chromium picks a random port (localhost-only) and writes it to
+// <userData>/DevToolsActivePort once the DevTools HTTP server is up; we read
+// that file after ready (with a /json/version liveness probe) and inject it
+// into the Python backend env. Zero TOCTOU vs. pre-probing a port.
+app.commandLine.appendSwitch('remote-debugging-port', '0')
+
+/** Poll DevToolsActivePort until Chromium's CDP server is actually listening.
+ *  Returns the port, or null on timeout (browser-fetch will surface a
+ *  clear error instead of failing opaquely at connect time). */
+async function readCdpPort(maxWaitMs = 10000) {
+  const file = path.join(app.getPath('userData'), 'DevToolsActivePort')
+  const start = Date.now()
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const port = parseInt(fs.readFileSync(file, 'utf-8').split('\n')[0].trim(), 10)
+      if (port > 0) {
+        const res = await fetch(`http://127.0.0.1:${port}/json/version`,
+          { signal: AbortSignal.timeout(1000) })
+        if (res.ok) return port
+      }
+    } catch { /* file not written yet / server not up */ }
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  logElectron('WARN', '[fetch-pool] DevToolsActivePort not available within timeout, CDP disabled')
+  return null
+}
 
 const isDev = process.env.NODE_ENV === 'development'
 let mainWindow = null
@@ -70,8 +100,11 @@ async function createWindow() {
     shell.openExternal(url)
   })
 
+  // Explicit quit on main-window close: the hidden fetch-pool window (2.8)
+  // stays alive by design, so window-all-closed never fires — quit here.
   mainWindow.on('closed', () => {
     mainWindow = null
+    if (process.platform !== 'darwin') app.quit()
   })
 
   mainWindow.on('maximize', () => {
@@ -151,11 +184,16 @@ app.whenReady().then(async () => {
     return net.fetch('file://' + filePath)
   })
 
+  // Fetch-pool: partition-level SSRF interceptor + resident pool window (2.8 §6.2)
+  fetchPool.installSsrfInterceptor()
+  fetchPool.ensurePoolWindow()
+
   try {
     // Ensure bundled tools are initialized (first run / version update)
     await ensureToolsInitialized((msg) => logElectron('INFO', `[tool-init] ${msg}`))
 
-    await pythonManager.start()
+    const cdpPort = await readCdpPort()
+    await pythonManager.start({ cdpPort })
     registerIpcHandlers(ipcMain, pythonManager)
     await createWindow()
     logElectron('INFO', 'Application ready')
@@ -166,6 +204,9 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', (event) => {
+  // Fetch-pool windows must die before the close-chain settles: the pool
+  // window's close is preventDefault-ed, it would block window-all-closed.
+  fetchPool.shutdown()
   if (pythonManager.isRunning()) {
     event.preventDefault()
     pythonManager.stop().finally(() => app.quit())
@@ -179,7 +220,10 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', async () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  // Count the MAIN window only: the hidden fetch-pool window is always alive,
+  // so getAllWindows().length would never reach 0 and macOS activate would
+  // never recreate the main window after close.
+  if (!mainWindow || mainWindow.isDestroyed()) {
     if (!pythonManager.isRunning()) {
       await pythonManager.start()
     }

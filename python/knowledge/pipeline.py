@@ -132,6 +132,10 @@ class ProcessingPipeline:
             # 解析降级说明（如 Office 转换不可用）随通知 detail 显式呈现（0.4 §7.3 v3.6）
             parse_warnings = parse_result.metadata.get("warnings") or []
             activity_events.complete_file(self.db, file_id, "; ".join(parse_warnings) or None)
+            # 3.0 二期完成闭环(§5.4):终态声明点旁直调;服务层自身
+            # try/except 仅记日志不阻塞解析——闭环是增强不是依赖
+            import affairs_service
+            affairs_service.on_file_parsed(self.db, project_id, filename, file_id)
             self._set_progress(file_id, 100)
             
             return {

@@ -222,65 +222,11 @@
   gap: 2px;
 }
 
-.recentItem {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background 0.1s;
-}
-
-.recentItem:hover {
-  background: var(--bg-hover);
-}
-
-.recentItemIcon {
-  font-size: 16px;
-  opacity: 0.6;
-  flex-shrink: 0;
-}
-
-.recentItemText {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.recentItemMeta {
-  font-size: 11px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
 .recentEmpty {
   padding: 24px 12px;
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
-}
-
-.recentMore {
-  padding: 8px 12px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--accent);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: background 0.1s;
-  border: none;
-  background: none;
-  width: 100%;
-}
-
-.recentMore:hover {
-  background: rgba(37, 99, 235, 0.06);
 }
 
 /* ── Activity feed (Activity Hub, 0.4 §3.6) ── */

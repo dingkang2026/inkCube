@@ -1,4 +1,5 @@
 const { logElectron, readLogFile, getLogPath, getLogInfo } = require('./log-utils')
+const fetchPool = require('./fetch-pool')
 
 /**
  * Unified Python response handler — bridges InkCubeError to frontend.
@@ -1502,6 +1503,95 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page_key: pageKey }),
     })
+    return handlePythonResponse(res)
+  })
+
+  // ── Affairs: 时期任务(3.0 二期;前缀裁决 tasks:* 已被 TaskAgent 占用)──
+  ipcMain.handle('affairs:listByProject', async (_event, { projectId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks`)
+    return handlePythonResponse(res)
+  })
+
+  // 首页今日工作台 + 侧栏色点数据源(3.0 三期 §7.2)
+  ipcMain.handle('affairs:listDue', async (_event, { horizonDays } = {}) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/due?horizon_days=${Number(horizonDays) || 7}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('affairs:createTask', async (_event, { projectId, ...fields }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: fields.title,
+        task_type: fields.taskType,
+        description: fields.description || '',
+        due_date: fields.dueDate || null,
+        recurrence_rule: fields.recurrenceRule || null,
+        auto_complete: fields.autoComplete || null,
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('affairs:updateTask', async (_event, { projectId, taskId, ...fields }) => {
+    const body = {}
+    if (fields.title !== undefined) body.title = fields.title
+    if (fields.description !== undefined) body.description = fields.description
+    if (fields.dueDate !== undefined) body.due_date = fields.dueDate
+    if (fields.status !== undefined) body.status = fields.status
+    if (fields.recurrenceRule !== undefined) body.recurrence_rule = fields.recurrenceRule
+    if (fields.autoComplete !== undefined) body.auto_complete = fields.autoComplete
+    if (fields.phase !== undefined) body.phase = fields.phase
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('affairs:deleteTask', async (_event, { projectId, taskId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks/${taskId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // ── Web logins (2.8 §9.2)：登录窗口与 partition cookie 清理 ──
+
+  // 创建/复用登录窗口并导航至 domain；用户关闭窗口即完成（无 done 通道）。
+  // 前端调 DELETE /web-logins/{domain} 之前需先发本组 remove-cookies。
+  ipcMain.handle('weblogin:open', (_event, payload) => {
+    return fetchPool.openLoginWindow(payload?.domain)
+  })
+
+  ipcMain.handle('weblogin:remove-cookies', (_event, payload) => {
+    return fetchPool.removeCookiesForDomain(payload?.domain)
+  })
+
+  // 登记列表与增删转发 Python REST（2.8 §9.1）。无效域名等业务错误由后端以
+  // HTTP 200 + {error} 返回（非异常路径），由前端自行展示；网络/5xx 走 throw。
+  ipcMain.handle('weblogin:list', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/web-logins`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('weblogin:add', async (_event, payload) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/web-logins`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: payload?.domain ?? '', note: payload?.note ?? null }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('weblogin:remove', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/web-logins/${encodeURIComponent(payload?.domain ?? '')}`,
+      { method: 'DELETE' }
+    )
     return handlePythonResponse(res)
   })
 }

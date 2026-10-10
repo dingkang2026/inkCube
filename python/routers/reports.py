@@ -1061,6 +1061,10 @@ async def _run_report_generation(
                 # 收尾期到达的暂停请求随完成清除（终态统一清标志不变量）
                 db.set_report_pause_requested(report_id, False)
                 activity_events.complete_report(db, report_id)  # 终态事件显式声明（E2，顺序 4）
+                # 3.0 二期完成闭环(§5.4):终态声明点旁直调;服务层自身
+                # try/except 仅记日志不阻塞报告流
+                import affairs_service
+                affairs_service.on_report_completed(db, report_id)
                 # 保存 token 统计
                 token_usage = event.data.get("token_usage")
                 if token_usage:

@@ -167,6 +167,11 @@ async def activities_status():
     """全局活动状态聚合（0.4 §8.1 #0 / §2.2）：active（注册表快照）+ notifications + summary。"""
     db = deps.db
 
+    # 3.0 §5.4 滚动生成器裁决:心跳入口 check-date roll(跨日即滚,同日零开销;
+    # 复用既有心跳,不新增轮询端点;服务层自行兜底异常)
+    import affairs_service
+    affairs_service.maybe_roll_daily(db)
+
     active = registry.snapshot()
 
     def _count(entity_type: str) -> int:

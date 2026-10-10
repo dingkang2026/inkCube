@@ -1,7 +1,7 @@
-/** src/features/project/ProjectDetailPage.tsx — Main project detail page with 4-tab structure */
-import { useState, useCallback, useEffect } from 'react'
+/** src/features/project/ProjectDetailPage.tsx — 项目详情页：knowledge-first tabs + 事务 Tab + PulseBar（3.0 一期+二期） */
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderOpen, BookOpen, FileText, ClipboardList } from 'lucide-react'
+import { FolderOpen, Library, FileText, ClipboardList, CalendarDays } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import { useToast } from '../knowledge/Toast'
 import { useActivity } from '../activity/ActivityContext'
@@ -11,6 +11,10 @@ import type { WikiCompileData } from './tabs/WikiTab'
 import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import { FormsTab } from './tabs/FormsTab'
+import { AffairsTab } from './affairs/AffairsTab'
+import { summarizeDueTasks } from './affairs/types'
+import type { PulseDueSummary } from './affairs/types'
+import { PulseBar } from './PulseBar'
 import { ProjectChatPanel } from './ProjectChatPanel'
 import type { Project } from '../knowledge/types'
 import type { ProjectType, ProjectStage } from './types'
@@ -25,11 +29,13 @@ interface ProjectDetailPageProps {
   onProjectDataChanged?: () => void
 }
 
-type TabKey = 'materials' | 'wiki' | 'reports' | 'forms'
+type TabKey = 'materials' | 'wiki' | 'affairs' | 'reports' | 'forms'
 
+// 事务第二位(3.0 §2.1:知识置首、事务次之)
 const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
+  { key: 'wiki', labelKey: 'project.tab.wiki', Icon: Library },
+  { key: 'affairs', labelKey: 'project.tab.affairs', Icon: CalendarDays },
   { key: 'materials', labelKey: 'project.tab.materials', Icon: FolderOpen },
-  { key: 'wiki', labelKey: 'project.tab.wiki', Icon: BookOpen },
   { key: 'reports', labelKey: 'project.tab.reports', Icon: FileText },
   { key: 'forms', labelKey: 'project.tab.forms', Icon: ClipboardList },
 ]
@@ -39,7 +45,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const showToast = useToast()
   const { byProject } = useActivity()
   const { items: compileItems } = useActivity('wiki_compile')
-  const [activeTab, setActiveTab] = useState<TabKey>('materials')
+  const [activeTab, setActiveTab] = useState<TabKey>('wiki')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
   const [wikiExpanded, setWikiExpanded] = useState(false)
@@ -64,16 +70,72 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const [compileDetailOpen, setCompileDetailOpen] = useState(false)
   const wikiCompileActive = compileItems.some(a => a.project_id === project.id)
 
-  // Activity Hub 通知导航信号：切到目标 Tab（materials/wiki/reports）
+  // ── 事务 Tab 边沿刷新信号（3.0 二期）：文件解析终态（心跳 byProject.files true→false）
+  // 时 +1，AffairsTab 变化即重拉，零新增轮询（0.4 §3.1）──
+  const filesActive = (byProject.get(project.id)?.files ?? 0) > 0
+  const [affairsRefresh, setAffairsRefresh] = useState(0)
+  useEdgeRefetch(filesActive, () => { setAffairsRefresh((x) => x + 1) })
+
+  // ── 脉搏带数据（3.0 §2 一期）：挂载 + 编译终态边沿各拉一次，零新增轮询 ──
+  // pendingCompile 直读后端 listPages 的 pending_compile_count（P11：单一事实源，不前端复算）
+  const [reviewsCounts, setReviewsCounts] = useState({ contradiction: 0, gap: 0 })
+  const [pendingCompile, setPendingCompile] = useState(0)
+  const [wikiFocus, setWikiFocus] = useState<{ view: 'lint' | 'compile'; ts: number } | null>(null)
+  // 首拉/刷新失败标记:失败态下脉搏带句子显示失败文案,不得呈现假「一切正常」(最终 review minor②)
+  const [pulseLoadFailed, setPulseLoadFailed] = useState(false)
+  // 快切项目防乱序：in-flight 响应晚到不得覆盖新项目计数（与 checkWikiCompileStatus 同款守卫）
+  const latestPidRef = useRef(project.id)
+  useEffect(() => { latestPidRef.current = project.id }, [project.id])
+  // 应办概要(3.0 二期 Task 12):overdue+7 日内,由 affairs:listByProject 派生;
+  // 拉取失败置 null(chip 隐藏),不拖垮知识侧失败态(两数据源独立兑底)
+  const [dueTasks, setDueTasks] = useState<PulseDueSummary | null>(null)
+  const loadPulseData = useCallback(async () => {
+    const pid = project.id
+    // 三路并行独立兑底(allSettled):知识侧失败 → 脉搏带失败态;应办失败 → chip 隐藏,
+    // 两数据源互不拖垮;仍只挂在载 + 终态边沿各一次,零新增轮询(0.4 §3.1)
+    const [rvR, pgR, afR] = await Promise.allSettled([
+      window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false }),
+      window.electronAPI.invoke('wiki:listPages', { projectId: pid }),
+      window.electronAPI.invoke('affairs:listByProject', { projectId: pid }),
+    ])
+    if (latestPidRef.current !== pid) return
+    if (rvR.status === 'rejected' || pgR.status === 'rejected') {
+      console.error('Failed to load pulse data:',
+        rvR.status === 'rejected' ? rvR.reason
+          : pgR.status === 'rejected' ? pgR.reason : null)
+      setPulseLoadFailed(true)
+    } else {
+      setPulseLoadFailed(false)
+      const rv = rvR.value as any
+      const pg = pgR.value as any
+      const items: Array<{ type: string }> = rv?.reviews ?? rv?.items ?? []
+      setReviewsCounts({
+        contradiction: items.filter((r) => r.type === 'contradiction').length,
+        gap: items.filter((r) => r.type === 'data-gap' || r.type === 'missing-page' || r.type === 'broken-link').length,
+      })
+      setPendingCompile(pg?.pending_compile_count ?? 0)
+    }
+    if (afR.status === 'fulfilled') {
+      const af = afR.value as any
+      setDueTasks(summarizeDueTasks(af?.tasks ?? []))
+    } else {
+      console.error('Failed to load due tasks:', afR.reason)
+      setDueTasks(null)
+    }
+  }, [project.id])
+
+  // Activity Hub 通知导航信号：切到目标 Tab（wiki/affairs/materials/reports/forms）
   useEffect(() => {
-    if (tabSignal?.tab && ['materials', 'wiki', 'reports', 'forms'].includes(tabSignal.tab)) {
+    if (tabSignal?.tab && ['materials', 'wiki', 'affairs', 'reports', 'forms'].includes(tabSignal.tab)) {
       setActiveTab(tabSignal.tab as TabKey)
     }
   }, [tabSignal])
 
   const checkWikiCompileStatus = useCallback(async () => {
+    const pid = project.id
     // 抛错由 usePolling 计入连续失败并指数退避（0.4 §5.8）
-    const result: any = await window.electronAPI.invoke('wiki:compileStatus', { projectId: project.id })
+    const result: any = await window.electronAPI.invoke('wiki:compileStatus', { projectId: pid })
+    if (latestPidRef.current !== pid) return // 快切项目：旧响应晚到丢弃
     setWikiCompileData({
       task: result?.task ?? null,
       ingest_summaries: result?.ingest_summaries ?? [],
@@ -96,16 +158,26 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   // 终态边沿补拉（0.4 §6.3）：心跳翻假可早于最后一个轮询 tick（活跃心跳与轮询同为 5s
   // 粒度，终态写入后 δ<5s 翻假时快照停在中间态）→ 边沿拉终态快照，驱动 WikiTab
   // 副作用链（终态刷 pages/reviews + compiling 复位）
-  useEdgeRefetch(wikiCompileActive, () => { void checkWikiCompileStatus() })
+  // 终态边沿同时补拉脉搏带数据（reviews/pending），与快照同时机，零新增轮询
+  useEdgeRefetch(wikiCompileActive, () => {
+    void checkWikiCompileStatus()
+    void loadPulseData()
+  })
 
   // 挂载 / 项目切换时拉一次快照（0.4 §5.6 切回「一次性拉取」：项目切换后旧快照
   // 防陈旧；停轮期间终态已发生后切入本页也能立即拿到终态）
   useEffect(() => {
     void checkWikiCompileStatus()
   }, [checkWikiCompileStatus])
+  useEffect(() => { void loadPulseData() }, [loadPulseData])
 
-  // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）
+  // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）。
+  // 默认 Tab 即 wiki（3.0 一期知识置首）：挂载首跑由上方「挂载拉快照」覆盖，
+  // 此处仅响应「切到」动作，否则挂载即双重 IPC（P10 裁决）。
+  const prevTabRef = useRef<TabKey>(activeTab)
   useEffect(() => {
+    if (prevTabRef.current === activeTab) return
+    prevTabRef.current = activeTab
     if (activeTab === 'wiki') void checkWikiCompileStatus()
   }, [activeTab])
 
@@ -161,6 +233,8 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   }, [project.id, projectType, currentStage, onProjectDataChanged, showToast, t])
 
   const typeConfig = PROJECT_TYPE_CONFIG[projectType]
+  // 阶段显示名（脉搏带状态句前缀）；general 无时期 → 空串，组件自行省略前缀
+  const stageLabel = t(STAGE_MAP[projectType].find((x) => x.key === currentStage)?.labelKey ?? '')
 
   // Mutual exclusion: when preview opens, close chat; when chat opens, close preview
   const handlePreviewOpenChange = useCallback((isPreviewOpen: boolean) => {
@@ -232,6 +306,21 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
         )}
       </div>
 
+      {/* 脉搏带（3.0 §2）：状态感知层；矛盾/缺口 chip 点击直达知识治理视图 */}
+      <PulseBar
+        projectId={project.id}
+        stageLabel={stageLabel}
+        reviews={reviewsCounts}
+        pendingCompile={pendingCompile}
+        loadFailed={pulseLoadFailed}
+        dueTasks={dueTasks}
+        onOpenAffairs={() => setActiveTab('affairs')}
+        onOpenWiki={(view) => {
+          setActiveTab('wiki')
+          if (view) setWikiFocus({ view, ts: Date.now() })
+        }}
+      />
+
       {/* Tab bar */}
       <div className={s.tabBar}>
         {TABS.map(({ key, labelKey, Icon }) => (
@@ -284,6 +373,20 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
               closePreviewSignal={closePreviewSignal}
               compileData={wikiCompileData}
               onCompileDetailChange={setCompileDetailOpen}
+              focusSignal={wikiFocus}
+              onFocusHandled={() => setWikiFocus(null)}
+              onReviewsChanged={loadPulseData}
+            />
+          )}
+          {activeTab === 'affairs' && (
+            <AffairsTab
+              key={project.id}
+              projectId={project.id}
+              projectType={projectType}
+              stage={currentStage}
+              refreshSignal={affairsRefresh}
+              onPanelOpenChange={(open) => { if (open) setChatOpen(false) }}
+              onOpenReports={() => setActiveTab('reports')}
             />
           )}
           {activeTab === 'reports' && (

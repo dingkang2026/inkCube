@@ -1,0 +1,151 @@
+/* PulseBar.module.css — 项目脉搏带 v1(3.0 §2/§6.1.1;配色用 0.3 §4.3 既有 token,
+   warning 态用既有 --text-warning/--bg-warning 对,不新增 token。
+   圆点色:常态灰点(--text-muted,§6.1.1 明文)/活跃橙点(--text-warning,对齐原型);
+   呼吸动画为增强,原型无;chip 边框/hover 为浅色字面量(#fecaca 等,固定浅底配色,
+   与仓库既有 chip 写法一致)。 */
+
+.pulse {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sent {
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sent b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotOk {
+  background: var(--text-muted);
+}
+
+.dotWarn {
+  background: var(--text-warning);
+  animation: pulseDot 2s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px;
+  border-radius: 99px;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.chipErr {
+  border-color: #fecaca;
+  background: var(--bg-danger);
+  color: var(--text-danger);
+}
+
+.chipErr:hover {
+  background: #fee2e2;
+}
+
+.chipWarn {
+  border-color: #fde68a;
+  background: var(--bg-warning);
+  color: var(--text-warning);
+}
+
+.chipAcc {
+  border-color: #bfdbfe;
+  background: var(--bg-selected);
+  color: var(--accent);
+}
+
+.collapseBtn {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 2px 6px;
+}
+
+.collapseBtn:hover {
+  color: var(--text-secondary);
+}
+
+.folded {
+  padding: 6px 14px;
+}
+
+.foldedRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 0;
+  text-align: left;
+}
+
+.foldedRow .chip {
+  cursor: default;
+}
+
+.expandHint {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.spin {
+  animation: pulseSpin 1s linear infinite;
+}
+
+@keyframes pulseSpin {
+  to { transform: rotate(360deg); }
+}

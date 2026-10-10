@@ -9,6 +9,8 @@
  *  E2-2026-10 §5.5 治理工作台：分型统计 chips（点击筛选）、矛盾两栏裁决卡
  *  （adjudicateReview 成功/部分失配）、存量矛盾降级提示、死链分型徽章
  *  （src_/结构页/异名）、缺口补料上传（knowledge:uploadFile）。
+ *  3.0 一期最终 review 修复轮追加：lint 失败路径仍刷新（结构层已落库）、
+ *  处置动作 onFindingsChanged 回调（计数回流链内环）、快切项目 latestPidRef 守卫。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -40,6 +42,10 @@ const brokenFinding = {
   resolved: 0,
   created_at: '2026-10-08T00:00:00Z',
 }
+
+const makeFinding = (id: string, title: string) => ({
+  id, type: 'data-gap', title, description: 'gap', resolved: 0, created_at: '2026-10-08T00:00:00Z',
+})
 
 /** 排空 microtask（loadFindings 异步拉取 + 修复链路多次 await） */
 const flush = async () => {
@@ -384,5 +390,76 @@ describe('WikiLintView governance workbench (E2-2026-10 §5.5)', () => {
 
     // 后端失败走 HTTPException → invoke reject → catch 分支（t mock 返回 defaultValue 原文）
     expect(toastMock).toHaveBeenLastCalledWith('上传失败: {{reason}}', 'error')
+  })
+})
+
+describe('WikiLintView 治理动作刷新(3.0 一期最终 review 修复)', () => {
+  it('refreshes findings and notifies parent even when lint scan fails', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [makeFinding('r1', 'gap-A')] }
+      if (channel === 'wiki:lint') throw new Error('semantic boom')
+      return {}
+    })
+    const onFindingsChanged = vi.fn()
+    const { getByText } = render(
+      <WikiLintView projectId="p1" onNavigateToPage={() => {}} onFindingsChanged={onFindingsChanged} />,
+    )
+    await flush()
+
+    const before = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
+    fireEvent.click(getByText('重新扫描'))
+    await flush()
+
+    const after = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
+    expect(after).toBe(before + 1) // 失败路径同样刷新:full 模式结构层发现项可能已落库
+    expect(onFindingsChanged).toHaveBeenCalled() // 父级链路同步回流
+  })
+
+  it('notifies onFindingsChanged after a successful dismiss', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [makeFinding('r1', 'gap-A')] }
+      if (channel === 'wiki:resolveReview') return { success: true }
+      return {}
+    })
+    const onFindingsChanged = vi.fn()
+    const { container } = render(
+      <WikiLintView projectId="p1" onNavigateToPage={() => {}} onFindingsChanged={onFindingsChanged} />,
+    )
+    await flush()
+
+    fireEvent.click(container.querySelector('.lintDismissBtn') as HTMLElement)
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('wiki:resolveReview', {
+      projectId: 'p1', reviewId: 'r1', action: 'dismiss',
+    })
+    expect(onFindingsChanged).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('WikiLintView 快切项目守卫(re-review 建议)', () => {
+  it('drops stale cross-project response arriving after project switch', async () => {
+    let resolveStale: (v: unknown) => void = () => {}
+    const stale = new Promise((res) => { resolveStale = res })
+    invokeMock.mockImplementation(async (channel: string, args: { projectId?: string }) => {
+      if (channel === 'wiki:listReviews') {
+        if (args.projectId === 'p1') return stale
+        return { reviews: [makeFinding('r2', 'NEW-B')] }
+      }
+      return {}
+    })
+    const { rerender, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    await flush()
+
+    // 快切到 p2:p2 响应先行落定
+    rerender(<WikiLintView projectId="p2" onNavigateToPage={() => {}} />)
+    await flush()
+    expect(container.textContent).toContain('NEW-B')
+
+    // p1 旧响应晚到:守卫丢弃,不得覆盖 p2 列表
+    resolveStale({ reviews: [makeFinding('r0', 'STALE-A')] })
+    await flush()
+    expect(container.textContent).toContain('NEW-B')
+    expect(container.textContent).not.toContain('STALE-A')
   })
 })

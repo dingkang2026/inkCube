@@ -1,0 +1,158 @@
+/* src/features/project/affairs/RhythmCards.module.css — 周期节奏卡(0.3 §4.3 token;
+   期次状态色口径 §6.3:--error 逾期 / --warning 临期 / --accent 进行中;
+   --warning 未定义全局 token,沿仓内既定 fallback 形式) */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.empty {
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.cardTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.freqBadge {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  padding: 2px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.editBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.editBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 期次横排(近 6 期) */
+.occRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.occCell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.occCell:hover {
+  background: var(--bg-hover);
+}
+
+.occKey {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.occDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* 期次状态色(§6.3) */
+.occPending .occDot {
+  background: var(--text-muted);
+}
+
+.occPending .occKey {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.occErr .occDot {
+  background: var(--error);
+}
+
+.occErr .occKey {
+  color: var(--error);
+}
+
+.occWarn .occDot {
+  background: var(--warning, #d97706);
+}
+
+.occOpen .occDot {
+  background: var(--accent);
+}
+
+.occDone .occDot {
+  background: var(--text-muted);
+}
+
+.occDone .occKey {
+  color: var(--text-muted);
+}
+
+.occSkipped {
+  opacity: 0.5;
+}
+
+.occSkipped .occKey {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}

@@ -15,7 +15,6 @@ from tools.code_executor import CodeExecutorTool
 from tools.shell_tool import ShellTool, check_safe_command, check_domain_whitelist
 from tools.file_ops import FileOpsTool
 from tools.code_search import CodeSearchTool
-from tools.web_fetch import WebFetchTool
 from tools.code_lint import CodeLintTool
 from tools.code_format import CodeFormatTool
 from tools.package_manager import PackageManagerTool
@@ -174,7 +173,6 @@ class TaskAgent:
             "shell": ShellTool(),
             "file_ops": FileOpsTool(),
             "code_search": CodeSearchTool(),
-            "web_fetch": WebFetchTool(),
             "web_search": TavilySearchTool(),
             "code_lint": CodeLintTool(),
             "code_format": CodeFormatTool(),
@@ -330,7 +328,7 @@ class TaskAgent:
         """Generate rich tool descriptions for the system prompt."""
         # In general mode, show file_ops + shell + web/knowledge/doc tools
         if mode == "general":
-            general_tools = ["file_ops", "shell", "web_fetch", "web_search", "knowledge_search", "doc_generator", "repo_map", "skill_runner", "git_ops", "lsp_client"]
+            general_tools = ["file_ops", "shell", "web_search", "knowledge_search", "doc_generator", "repo_map", "skill_runner", "git_ops", "lsp_client"]
             sections = []
             for name in general_tools:
                 if name in self._tools:
@@ -489,13 +487,14 @@ class TaskAgent:
         """Create independent tool instances for a single task.
         
         Each concurrent task gets its own tools to avoid workspace/venv conflicts.
-        In 'general' mode, returns only web_fetch, knowledge_search, doc_generator.
+        In 'general' mode, returns the general tool subset (file_ops, shell,
+        web_search, knowledge_search, doc_generator, repo_map, skill_runner,
+        git_ops, lsp_client); coding mode returns the full set.
         """
         doc_generator = DocGeneratorTool()
         doc_generator.set_workspace(workspace_path)
 
         # Create independent instances for web/knowledge tools (safe for concurrent use)
-        web_fetch = WebFetchTool()
         web_search = TavilySearchTool(api_key=settings.get("tavily_key", "") if settings else "")
         knowledge_search = TaskKnowledgeSearchTool()
         if self.knowledge_search.db:
@@ -533,7 +532,6 @@ class TaskAgent:
             return {
                 "file_ops": file_ops,
                 "shell": shell,
-                "web_fetch": web_fetch,
                 "web_search": web_search,
                 "knowledge_search": knowledge_search,
                 "doc_generator": doc_generator,
@@ -580,7 +578,6 @@ class TaskAgent:
             "shell": shell,
             "file_ops": file_ops,
             "code_search": code_search,
-            "web_fetch": web_fetch,
             "web_search": web_search,
             "code_lint": code_lint,
             "code_format": code_format,

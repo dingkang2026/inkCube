@@ -1,0 +1,12 @@
+/* 3.0 三期 §6.1.8:首页近期日历 */
+.section { margin-bottom: 20px; }
+.title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
+.dayRow { display: flex; gap: 10px; padding: 4px 0; align-items: baseline; }
+.dayLabel { font-size: 12px; color: var(--text-muted); white-space: nowrap; min-width: 64px; }
+.dayItems { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.item {
+  font-size: 13px; color: var(--text-primary); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.item:hover { color: var(--accent); }
+.item b { font-weight: 600; }

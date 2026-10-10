@@ -14,6 +14,15 @@ export interface Project {
   created_at: string
 }
 
+/** 创建项目回调(3.0 二期裁决 8):成功返回 id + 铺入任务数(创建确认态展示),失败/取消返回 undefined */
+export type CreateProjectFn = (
+  name: string,
+  description?: string,
+  type?: ProjectType,
+  companyName?: string,
+  creditCode?: string,
+) => Promise<{ id: string; seeded_tasks_count?: number } | undefined | void> | void
+
 export interface FileRecord {
   id: string
   filename: string

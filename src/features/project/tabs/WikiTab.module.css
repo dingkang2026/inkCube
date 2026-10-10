@@ -42,18 +42,6 @@
   flex-wrap: wrap;
 }
 
-.pendingNotice {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  font-size: 12px;
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
-  border-radius: var(--radius-sm, 6px);
-}
-
 .recoveryNotice {
   display: flex;
   align-items: center;
@@ -65,24 +53,6 @@
   border: 1px solid color-mix(in srgb, var(--warning, #d97706) 20%, var(--border));
   border-radius: var(--radius-sm, 6px);
 }
-
-.compileBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius-sm, 6px);
-  cursor: pointer;
-  transition: opacity 0.15s;
-}
-
-.compileBtn:hover { opacity: 0.9; }
-.compileBtn:disabled { opacity: 0.5; cursor: default; }
 
 .compileStatus {
   display: flex;
@@ -655,6 +625,125 @@
 .homeStatLabel {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* ── Home: health card (3.0 §6.1.2 知识健康) ── */
+
+.healthCard {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-primary);
+  padding: 10px 14px;
+}
+
+.healthHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.healthIcon {
+  color: var(--text-warning);
+  flex-shrink: 0;
+}
+
+.healthTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.healthGo {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--text-danger);
+  background: var(--bg-danger);
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.healthGo:hover {
+  opacity: 0.85;
+}
+
+.healthChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.healthChipErr,
+.healthChipWarn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+
+.healthChipErr {
+  color: var(--text-danger);
+  background: var(--bg-danger);
+}
+
+.healthChipWarn {
+  color: var(--text-warning);
+  background: var(--bg-warning);
+}
+
+/* ── Home: schema completion (3.0 一期 Task 6) ── */
+
+.completionBody {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.completionBar {
+  height: 6px;
+  background: var(--bg-secondary);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.completionBarFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s;
+}
+
+.completionChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.completionChipDone {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.completionChipMissing {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
 }
 
 /* ── Home: overview toggle hint ── */

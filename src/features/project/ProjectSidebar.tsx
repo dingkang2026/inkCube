@@ -1,7 +1,7 @@
 /** src/features/project/ProjectSidebar.tsx — Sidebar wrapper: ProjectList (base lib moved to permanent footer) */
 import { ProjectList } from '../knowledge/ProjectList'
-import type { Project } from '../knowledge/types'
-import type { ProjectType } from './types'
+import type { Project, CreateProjectFn } from '../knowledge/types'
+import type { ProjectHealthSummary } from './affairs/types'
 import s from './ProjectSidebar.module.css'
 
 interface ProjectSidebarProps {
@@ -10,7 +10,9 @@ interface ProjectSidebarProps {
   onSelectProject: (projectId: string) => void
   onDeleteProject: (projectId: string) => void
   onRenameProject: (projectId: string, name: string) => void
-  onCreateProject: (name: string, description?: string, type?: ProjectType, companyName?: string, creditCode?: string) => void
+  onCreateProject: CreateProjectFn
+  /** 3.0 三期:per 项目健康概要(透传 ProjectList 色点) */
+  healthData?: Record<string, ProjectHealthSummary>
 }
 
 export function ProjectSidebar({
@@ -20,6 +22,7 @@ export function ProjectSidebar({
   onDeleteProject,
   onRenameProject,
   onCreateProject,
+  healthData,
 }: ProjectSidebarProps) {
   return (
     <div className={s.container}>
@@ -31,6 +34,7 @@ export function ProjectSidebar({
         onDelete={onDeleteProject}
         onRename={onRenameProject}
         onCreate={onCreateProject}
+        healthData={healthData}
       />
     </div>
   )

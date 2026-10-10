@@ -85,7 +85,8 @@ def test_encode_runs_under_global_lock(monkeypatch):
     seen = {}
 
     class _FakeModel:
-        def encode(self, texts, return_dense=True):
+        # 签名对齐生产调用(2026-10-09 TDR 修复后 encode 固定传 batch_size/max_length)
+        def encode(self, texts, return_dense=True, batch_size=8, max_length=1024):
             seen["held"] = vs._bge_encode_lock.locked()
             # Lock 不可重入：已在锁内则再次 acquire(blocking=False) 必失败
             seen["non_reentrant"] = not vs._bge_encode_lock.acquire(blocking=False)

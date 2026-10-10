@@ -1,0 +1,20 @@
+/* 3.0 三期 §7.1:首页今日待办 */
+.section { margin-bottom: 20px; }
+.title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
+.list { display: flex; flex-direction: column; gap: 4px; }
+.row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: var(--radius-sm);
+  background: var(--bg-secondary); cursor: pointer;
+}
+.row:hover { background: var(--bg-hover); }
+.due { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.dueOverdue { color: var(--error); font-weight: 600; }
+.text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-primary); }
+.text b { font-weight: 600; }
+.action {
+  border: none; background: transparent; color: var(--accent);
+  font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+  display: inline-flex; align-items: center;
+}
+.action:hover { background: var(--bg-hover); }

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { TitleBar } from './components/layout/TitleBar'
 import { AboutDialog } from './components/layout/AboutDialog'
@@ -29,6 +29,8 @@ import type { Project } from './features/knowledge/types'
 import type { ProjectType } from './features/project/types'
 import { getInitialStage } from './features/project/types'
 import { MODELS_IPC } from './types'
+import { summarizeDueByProject } from './features/project/affairs/types'
+import type { DueTask } from './features/project/affairs/types'
 
 export default function App() {
   const { t } = useTranslation()
@@ -97,6 +99,37 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedBaseLibId, setSelectedBaseLibId] = useState<string | null>(null)
   const [showTemplateManagement, setShowTemplateManagement] = useState(false)
+
+  // ── 3.0 三期：首页今日工作台 + 侧栏色点单一数据快照（§7.2）──
+  const [dueData, setDueData] = useState<{ tasks: DueTask[]; reviews_counts: Record<string, number> } | null>(null)
+  const dueReqRef = useRef(0)
+
+  const loadDueSummary = useCallback(async () => {
+    const seq = ++dueReqRef.current
+    try {
+      const result: any = await window.electronAPI.invoke('affairs:listDue')
+      if (seq !== dueReqRef.current) return  // 已有更新的请求在途，丢弃陈旧响应（同 AffairsTab latestPidRef 惯例，CodeReview W1）
+      setDueData({ tasks: result?.tasks ?? [], reviews_counts: result?.reviews_counts ?? {} })
+    } catch {
+      // 后端未就绪/失败：待办与日历隐藏、色点不渲染——展示层对 null 已降级
+      if (seq === dueReqRef.current) setDueData(null)
+    }
+  }, [])
+
+  // 打开时拉取 + 导航边沿重拉（侧栏色点常驻，任何 nav 切换都可能改变项目数据）；非轮询（0.4 §3.1）
+  useEffect(() => { void loadDueSummary() }, [activeNav, loadDueSummary])
+
+  // 任务写操作边沿（AffairsTab 写操作 / 首页打勾后 dispatch）
+  useEffect(() => {
+    const h = () => { void loadDueSummary() }
+    window.addEventListener('app:tasks-changed', h)
+    return () => window.removeEventListener('app:tasks-changed', h)
+  }, [loadDueSummary])
+
+  const healthByProject = useMemo(
+    () => summarizeDueByProject(dueData?.tasks ?? [], dueData?.reviews_counts),
+    [dueData],
+  )
 
   const loadProjects = useCallback(async () => {
     try {
@@ -217,9 +250,11 @@ export default function App() {
       if (result?.id) {
         setSelectedProjectId(result.id)
       }
+      return result as { id: string; seeded_tasks_count?: number } | undefined   // 裁决 8:回传向导确认态
     } catch (err) {
       console.error('Failed to create project:', err)
       showToast(t('knowledge.createProjectFailed'), 'error')
+      return undefined
     }
   }
 
@@ -417,6 +452,7 @@ export default function App() {
                   onDeleteProject={handleDeleteProject}
                   onRenameProject={handleRenameProject}
                   onCreateProject={handleCreateProject}
+                  healthData={healthByProject}
                 />
               )}
               {!peerPageOpen && activeNav === 'tasks' && (
@@ -469,6 +505,8 @@ export default function App() {
             onSelectProject={(id) => {
               setSelectedProjectId(id)
             }}
+            dueData={dueData}
+            healthByProject={healthByProject}
           />
         ) : activeNav === 'projects' ? (
           selectedProject ? (

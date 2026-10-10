@@ -135,6 +135,11 @@
 }
 
 /* ── Activity Hub L2 活跃点（0.4 §3.5）：进行中呼吸点 / 待审阅静态点 ── */
+/* 3.0 三期:健康色点与项目名间距 */
+.healthDotGap {
+  margin-right: 6px;
+}
+
 .activityDot {
   display: inline-block;
   width: 7px;
@@ -340,4 +345,11 @@
 .btnCreate:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 创建向导确认态描述(裁决 8,Task 13):铺入结果摘要 */
+.confirmDesc {
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0 0 16px;
 }

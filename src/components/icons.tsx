@@ -15,6 +15,8 @@ export {
   BookOpen,
   Wrench,
   BarChart3,
+  Library,
+  CalendarDays,
 
   // Files & folders
   FolderOpen,
@@ -30,6 +32,7 @@ export {
   Square,
   Pause,
   Play,
+  Plus,
 
   // Status
   Check,
@@ -52,4 +55,8 @@ export {
   Map,
   Puzzle,
   Code,
+
+  // Panels
+  Activity,
+  ListChecks,
 } from 'lucide-react'
