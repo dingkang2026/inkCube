@@ -107,6 +107,11 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).info(
             "Backfilled playbooks for %d existing projects", _backfilled)
 
+    # 节奏滚动启动补滚(3.0 §5.4;整体 review S3):停机跨天后不等首个心跳;
+    # maybe_roll_daily 同日幂等,与心跳入口互不重复滚
+    from affairs_service import maybe_roll_daily
+    maybe_roll_daily(deps.db)
+
     # Seed builtin skills on startup (idempotent, 2.8 §4.2)：
     # 拷 resources/skills → data/skills + skills 表 upsert (source_type='builtin')
     from skills.seed import seed_builtin_skills

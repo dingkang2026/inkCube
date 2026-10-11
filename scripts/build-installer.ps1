@@ -1,4 +1,4 @@
-# build-installer.ps1 — 一键构建 InkCube 安装包
+﻿# build-installer.ps1 — 一键构建 InkCube 安装包
 #
 # 用法：powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 # 流程：

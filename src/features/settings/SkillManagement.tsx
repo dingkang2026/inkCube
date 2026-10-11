@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import styles from './SkillManagement.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 
 interface Skill {
   id: string
@@ -25,6 +26,7 @@ interface BuiltinTool {
 export function SkillManagement() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
+  const handleError = useErrorHandler()
   const [skills, setSkills] = useState<Skill[]>([])
   const [builtinTools, setBuiltinTools] = useState<BuiltinTool[]>([])
   const [loading, setLoading] = useState(true)
@@ -38,21 +40,21 @@ export function SkillManagement() {
     try {
       const res = await window.electronAPI.invoke('skills:list') as { skills: Skill[] }
       setSkills(res.skills || [])
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [handleError])
 
   const loadBuiltinTools = useCallback(async () => {
     try {
       const res = await window.electronAPI.invoke('skills:builtinTools') as { tools: BuiltinTool[] }
       setBuiltinTools(res.tools || [])
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     }
-  }, [])
+  }, [handleError])
 
   useEffect(() => {
     loadSkills()
@@ -91,8 +93,8 @@ export function SkillManagement() {
     try {
       await window.electronAPI.invoke('skills:delete', skillId)
       await loadSkills()
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     }
   }
 
@@ -103,8 +105,8 @@ export function SkillManagement() {
         enabled: !skill.enabled,
       })
       await loadSkills()
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     }
   }
 
@@ -112,8 +114,8 @@ export function SkillManagement() {
     try {
       await window.electronAPI.invoke('skills:confirm', skillId)
       await loadSkills()
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     }
   }
 

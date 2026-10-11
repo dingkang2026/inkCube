@@ -11,8 +11,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // 可变活动条目（闭包惰性求值：工厂执行时不读取，渲染时才取）
 const activityState = { items: [] as Array<{ entity_id: string }> }
 
+const { handleErrorMock } = vi.hoisted(() => ({ handleErrorMock: vi.fn() }))
+
 vi.mock('../src/features/activity/ActivityContext', () => ({
   useActivity: () => activityState,
+}))
+
+vi.mock('../src/hooks/useErrorHandler', () => ({
+  useErrorHandler: () => handleErrorMock,
 }))
 
 vi.mock('react-i18next', () => ({
@@ -23,7 +29,7 @@ vi.mock('../src/features/settings/InternalModelSettings.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
 import { InternalModelSettings } from '../src/features/settings/InternalModelSettings'
 import { MODELS_IPC } from '../src/types'
 
@@ -57,6 +63,7 @@ beforeEach(() => {
   statusSnapshot = { rapidocr: downloadingModel }
   activityState.items = [{ entity_id: 'rapidocr' }]
   invokeMock.mockReset()
+  handleErrorMock.mockClear()
   invokeMock.mockImplementation(async (channel: string) => {
     if (channel === MODELS_IPC.status) return statusSnapshot
     if (channel === MODELS_IPC.libreofficeStatus)
@@ -100,5 +107,56 @@ describe('InternalModelSettings terminal refetch', () => {
     expect(statusInvokeCount()).toBe(afterEdge) // 轮询已自停，无额外拉取
     expect(screen.queryByText('0%')).toBeNull()
     expect(screen.getByText('settings.internalModel.downloaded')).toBeTruthy()
+  })
+})
+
+describe('InternalModelSettings download failure handling', () => {
+  it('resets downloadingAll and surfaces error when download-all fails', async () => {
+    // 回归背景：invoke reject 无 catch → downloadingAll 永久卡 true，
+    // 按钮永久禁用且无恢复轮询（无活动时轮询自停）、无任何错误反馈
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === MODELS_IPC.status) return statusSnapshot
+      if (channel === MODELS_IPC.downloadAll) throw new Error('backend unreachable')
+      if (channel === MODELS_IPC.libreofficeStatus)
+        return { available: true, tool: 'ms-office', path: null }
+      return null
+    })
+    render(<InternalModelSettings />)
+    await flush()
+
+    const btn = screen.getByText('settings.internalModel.downloadAll') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    await act(async () => {
+      fireEvent.click(btn)
+    })
+    await flush()
+
+    expect(handleErrorMock).toHaveBeenCalledTimes(1)
+    expect(handleErrorMock).toHaveBeenCalledWith(expect.any(Error))
+    expect((screen.getByText('settings.internalModel.downloadAll') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('surfaces error when single model download fails', async () => {
+    // 未下载模型 → 渲染下载按钮；点击后 invoke reject 应被 catch 并反馈
+    statusSnapshot = { rapidocr: { ...downloadingModel, downloading: false, downloaded: false, progress: 0 } }
+    activityState.items = []
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === MODELS_IPC.status) return statusSnapshot
+      if (channel === MODELS_IPC.download) throw new Error('backend unreachable')
+      if (channel === MODELS_IPC.libreofficeStatus)
+        return { available: true, tool: 'ms-office', path: null }
+      return null
+    })
+    render(<InternalModelSettings />)
+    await flush()
+
+    const btn = screen.getByText('settings.internalModel.download') as HTMLButtonElement
+    await act(async () => {
+      fireEvent.click(btn)
+    })
+    await flush()
+
+    expect(handleErrorMock).toHaveBeenCalledTimes(1)
+    expect(handleErrorMock).toHaveBeenCalledWith(expect.any(Error))
   })
 })

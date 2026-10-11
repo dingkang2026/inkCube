@@ -623,6 +623,7 @@ function setKind(k){
  const showMatch=rec||!!(t&&t.rule&&t.rule.indexOf('文件名')===0);
  document.getElementById('fMatchRow').classList.toggle('hidden',!showMatch);
  if(t&&t.rule){const m=/「(.+?)」/.exec(t.rule);document.getElementById('fMatch').value=m?m[1]:'';}
+ else document.getElementById('fMatch').value='';   /* 无规则或新建:清空残留,避免上个任务的匹配词带进新表单 */
 }
 function openTaskForm(target){
  const fm=document.getElementById('formMask');

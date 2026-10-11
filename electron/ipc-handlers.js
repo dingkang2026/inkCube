@@ -249,7 +249,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true })
     }
-    await shell.openPath(dataDir)
+    // openPath 返回非空字符串即失败信息（同 file:openOriginal 模式），
+    // 丢弃返回值会让渲染层误以为打开成功
+    const openErr = await shell.openPath(dataDir)
+    if (openErr) {
+      logElectron('WARN', `openDataDir failed: ${openErr}`)
+      return { success: false, message: openErr }
+    }
     return { success: true }
   })
 
@@ -1530,7 +1536,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   // Wiki schema CRUD
-  ipcMain.handle('wiki:createSchema', async (_event, { projectId, pageKey, title, compileHint, baseLibSearchHints, position }) => {
+  ipcMain.handle('wiki:createSchema', async (_event, { projectId, pageKey, title, compileHint, baseLibSearchHints, position, isLedger }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1540,17 +1546,19 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         compile_hint: compileHint || '',
         base_lib_search_hints: baseLibSearchHints || [],
         position: position ?? undefined,
+        is_ledger: Boolean(isLedger),   // 3.1 §3 台账页开关
       }),
     })
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('wiki:updateSchema', async (_event, { projectId, schemaId, title, compileHint, baseLibSearchHints, position }) => {
+  ipcMain.handle('wiki:updateSchema', async (_event, { projectId, schemaId, title, compileHint, baseLibSearchHints, position, isLedger }) => {
     const body = {}
     if (title !== undefined) body.title = title
     if (compileHint !== undefined) body.compile_hint = compileHint
     if (baseLibSearchHints !== undefined) body.base_lib_search_hints = baseLibSearchHints
     if (position !== undefined) body.position = position
+    if (isLedger !== undefined) body.is_ledger = Boolean(isLedger)  // undefined=不改
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/schemas/${schemaId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1603,6 +1611,18 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // ── Ledger: 台账条目(3.0 四期;知识首页时间轴卡 + 首页卡片墙摘要行)──
+  ipcMain.handle('wiki:listLedgerEntries', async (_event, { projectId, limit } = {}) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/ledger/entries?limit=${Number(limit) || 20}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ledger:listLatest', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/ledger/latest`)
+    return handlePythonResponse(res)
+  })
+
   // ── Affairs: 时期任务(3.0 二期;前缀裁决 tasks:* 已被 TaskAgent 占用)──
   ipcMain.handle('affairs:listByProject', async (_event, { projectId }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks`)
@@ -1652,6 +1672,29 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   ipcMain.handle('affairs:deleteTask', async (_event, { projectId, taskId }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks/${taskId}`, {
       method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // ── Affairs: 事件驱动任务建议(3.0 四期;采纳/忽略是人类裁决口)──
+  ipcMain.handle('affairs:listSuggestions', async (_event, { projectId, status } = {}) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${projectId}/suggestions?status=${encodeURIComponent(status || 'pending')}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('affairs:acceptSuggestion', async (_event, { projectId, suggestionId }) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${projectId}/suggestions/${encodeURIComponent(suggestionId)}/accept`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('affairs:dismissSuggestion', async (_event, { projectId, suggestionId }) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${projectId}/suggestions/${encodeURIComponent(suggestionId)}/dismiss`, {
+      method: 'POST',
     })
     return handlePythonResponse(res)
   })

@@ -36,7 +36,7 @@ export default function App() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const showToast = useToast()
-  const { settings, settingsLoaded, handleSaveSettings } = useSettings()
+  const { settings, settingsLoaded, loadFailed, handleSaveSettings, reloadSettings } = useSettings()
   const sidebar = useResizeHandle(260, 200, 480)
 
   // ── Task state ──
@@ -491,6 +491,8 @@ export default function App() {
           <SettingsPage
             settings={settings}
             onSave={handleSaveSettings}
+            loadFailed={loadFailed}
+            onRetryLoad={reloadSettings}
             sectionSignal={settingsSectionSignal}
           />
         ) : showTemplateManagement ? (

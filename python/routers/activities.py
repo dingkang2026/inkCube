@@ -151,6 +151,12 @@ def _active_model_downloads() -> list[dict]:
         return []
 
 
+def _active_ledger_parses() -> list[dict]:
+    """台账解析中(3.1 §4.2:编译后直调,进程内存态源;0.4 §8.5 新增 kind)。"""
+    from wiki.ledger_service import fetch_running
+    return fetch_running()
+
+
 # ── 统一活动注册表（0.4 §2.2）：聚合端点的唯一活跃数据源 ──
 # fetch 均以 lambda 引用模块级函数（运行时名字查找），
 # 保证测试 monkeypatch _active_* 后注册表取到替换实现。
@@ -160,6 +166,7 @@ registry.register(registry.FunctionSource("wiki_compile", lambda: _active_compil
 registry.register(registry.FunctionSource("report", lambda: _active_reports(deps.db)))
 registry.register(registry.FunctionSource("task", lambda: _active_tasks(deps.db)))
 registry.register(registry.FunctionSource("model_download", lambda: _active_model_downloads()))
+registry.register(registry.FunctionSource("ledger_parse", lambda: _active_ledger_parses()))
 
 
 @router.get("/activities/status")

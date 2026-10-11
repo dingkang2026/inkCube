@@ -30,6 +30,22 @@
   color: var(--error);
 }
 
+/* 设置加载失败横幅（D8）：默认值回显 + 禁编辑，重试恢复 */
+.loadFailed {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #fef2f2;
+  color: var(--error);
+  border-bottom: 1px solid var(--error);
+  font-size: 12px;
+}
+
+.loadFailed button {
+  margin-left: auto;
+}
+
 .body {
   flex: 1;
   display: flex;

@@ -9,6 +9,8 @@ export interface Project {
   stage?: ProjectStage
   company_name?: string
   credit_code?: string
+  /** AI 状态句(3.0 四期):编译时点快照,空串/未生成 = 回落规则句 */
+  pulse_ai_status?: string | null
   file_count: number
   chunk_count: number
   created_at: string

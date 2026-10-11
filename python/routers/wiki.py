@@ -87,6 +87,7 @@ class SchemaCreateRequest(BaseModel):
     compile_hint: str = ""
     base_lib_search_hints: Optional[list[str]] = None
     position: Optional[int] = None
+    is_ledger: bool = False           # 3.1 §3 台账页(监控式,只追加,解析源)开关
 
 
 class SchemaUpdateRequest(BaseModel):
@@ -94,6 +95,7 @@ class SchemaUpdateRequest(BaseModel):
     compile_hint: Optional[str] = None
     base_lib_search_hints: Optional[list[str]] = None
     position: Optional[int] = None
+    is_ledger: Optional[bool] = None  # None=不改(区分「切换为 False」与「不传」)
 
 
 class DedupMergeRequest(BaseModel):
@@ -117,6 +119,40 @@ def _compute_review_id(review_type: str, title: str) -> str:
         h ^= byte
         h = (h * 0x01000193) & 0xFFFFFFFF
     return f"review_{h:08x}"
+
+
+# ── Intelligence: Ledger entries (3.1 §4.3, phase 4) ──
+#
+# /ledger/latest 声明在 /projects/{project_id}/... 之前(affairs.py /due 同款防遮蔽惯例)。
+
+
+@router.get("/ledger/latest")
+async def list_latest_ledger_entries():
+    """跨项目每项目最新 1 条台账条目(首页卡片墙摘要行,JOIN 项目名防 N+1)。"""
+    try:
+        return {"latest": get_db().latest_ledger_entries()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list latest ledger entries: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/ledger/entries")
+async def list_ledger_entries(project_id: str, limit: int = 20):
+    """单项目台账条目时间轴(知识首页时间轴卡,3.1 §5.3);limit 1-100。"""
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be 1-100")
+    try:
+        db = get_db()
+        if not db.get_project(project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {"entries": db.list_ledger_entries(project_id, limit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list ledger entries: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Wiki Pages ──
@@ -719,6 +755,7 @@ async def create_schema(project_id: str, req: SchemaCreateRequest):
             compile_hint=req.compile_hint,
             base_lib_search_hints=req.base_lib_search_hints,
             position=req.position,
+            is_ledger=req.is_ledger,
         )
         return {"success": True, "schema": result}
     except HTTPException:
@@ -739,6 +776,7 @@ async def update_schema(project_id: str, schema_id: str, req: SchemaUpdateReques
             compile_hint=req.compile_hint,
             base_lib_search_hints=req.base_lib_search_hints,
             position=req.position,
+            is_ledger=req.is_ledger,
         )
         if not result:
             raise HTTPException(status_code=404, detail="Schema not found")

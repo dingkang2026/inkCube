@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { usePolling } from '../../hooks/usePolling'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './LogViewer.module.css'
 
 type LogLevel = 'ALL' | 'ERROR' | 'WARN' | 'INFO'
@@ -29,6 +30,7 @@ interface LogViewerProps {
 
 export function LogViewer({ onClose }: LogViewerProps) {
   const { t } = useTranslation()
+  const handleError = useErrorHandler()
   const [logContent, setLogContent] = useState('')
   const [logInfo, setLogInfo] = useState<LogInfo | null>(null)
   const [filter, setFilter] = useState<LogLevel>('ALL')
@@ -90,15 +92,19 @@ export function LogViewer({ onClose }: LogViewerProps) {
   const actualLines = filteredLines.filter(l => !isSeparator(l))
   const totalActualLines = lines.filter(l => !isSeparator(l))
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(filteredLines.join('\n'))
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(filteredLines.join('\n'))
+    } catch (err) {
+      handleError(err)
+    }
   }
 
   const handleExport = async () => {
     try {
       await window.electronAPI.invoke('system:exportLogs')
     } catch (err) {
-      console.error('Export failed:', err)
+      handleError(err)
     }
   }
 
@@ -150,7 +156,8 @@ export function LogViewer({ onClose }: LogViewerProps) {
               </div>
             ))}
             <div className={s.infoFooter}>
-              {t('log.maxSize')}: 5 MB · {t('log.backupCount')}: {logInfo.backupCount}
+              {/* 上限跟随 log-utils 实际配置（maxBytes），不硬编码，防漂移 */}
+              {t('log.maxSize')}: {(logInfo.maxBytes / 1024 / 1024).toFixed(0)} MB · {t('log.backupCount')}: {logInfo.backupCount}
             </div>
           </div>
         )}

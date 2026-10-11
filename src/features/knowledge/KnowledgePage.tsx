@@ -172,7 +172,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
             data: base64,
           }) as { success?: boolean; message?: string; error?: string }
           if (result && !result.success) {
-            showToast(`${file.name}: ${result.message || result.error || 'Upload failed'}`, 'error')
+            showToast(`${file.name}: ${result.message || result.error || t('knowledge.uploadFailed')}`, 'error')
           }
           // Refresh file list after each upload so the new file appears immediately
           loadFiles(selectedProject.id, 1, filenameSearchRef.current)

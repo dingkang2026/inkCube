@@ -22,6 +22,7 @@ interface SchemaRow {
   compile_hint: string
   base_lib_search_hints: string[]
   position: number
+  is_ledger?: number | boolean   // 3.1 §3 台账页(监控式,只追加,解析源)
 }
 
 interface SchemaForm {
@@ -30,9 +31,10 @@ interface SchemaForm {
   compile_hint: string
   hintsText: string
   position: string
+  isLedger: boolean
 }
 
-const EMPTY_FORM: SchemaForm = { page_key: '', title: '', compile_hint: '', hintsText: '', position: '' }
+const EMPTY_FORM: SchemaForm = { page_key: '', title: '', compile_hint: '', hintsText: '', position: '', isLedger: false }
 // page_key 同时用于 [[page_key]] 链接语法与 schema_id,限制为安全字符集
 const PAGE_KEY_RE = /^[A-Za-z0-9_]+$/
 
@@ -82,6 +84,7 @@ export function WikiSchemaManager({ projectId }: { projectId: string }) {
       compile_hint: schema.compile_hint || '',
       hintsText: (schema.base_lib_search_hints || []).join(', '),
       position: String(schema.position ?? ''),
+      isLedger: Boolean(schema.is_ledger),
     })
     setFormError('')
   }
@@ -119,6 +122,7 @@ export function WikiSchemaManager({ projectId }: { projectId: string }) {
           compileHint: form.compile_hint,
           baseLibSearchHints: parseHints(form.hintsText),
           position,
+          isLedger: form.isLedger,
         })
       } else {
         await window.electronAPI.invoke('wiki:updateSchema', {
@@ -128,6 +132,7 @@ export function WikiSchemaManager({ projectId }: { projectId: string }) {
           compileHint: form.compile_hint,
           baseLibSearchHints: parseHints(form.hintsText),
           position,
+          isLedger: form.isLedger,
         })
       }
       setEditing(null)
@@ -255,6 +260,15 @@ export function WikiSchemaManager({ projectId }: { projectId: string }) {
                   placeholder={t('project.wiki.schemaBaseLibHintsPlaceholder')}
                 />
               </label>
+              <label className={s.schemaCheckRow}>
+                <input
+                  type="checkbox"
+                  checked={form.isLedger}
+                  onChange={(e) => setForm({ ...form, isLedger: e.target.checked })}
+                />
+                <span className={s.schemaFormLabel}>{t('project.wiki.schemaIsLedger')}</span>
+                <span className={s.schemaFieldHint}>{t('project.wiki.schemaIsLedgerHint')}</span>
+              </label>
               <label className={`${s.schemaField} ${s.schemaFieldWide}`}>
                 <span className={s.schemaFormLabel}>{t('project.wiki.schemaCompileHint')}</span>
                 <textarea
@@ -309,6 +323,9 @@ export function WikiSchemaManager({ projectId }: { projectId: string }) {
                       <span className={s.schemaPos}>#{schema.position}</span>
                       <span className={s.schemaItemTitle}>{schema.title}</span>
                       <code className={s.schemaKey}>{schema.page_key}</code>
+                      {Boolean(schema.is_ledger) && (
+                        <span className={s.schemaLedgerBadge}>{t('project.wiki.schemaLedgerBadge')}</span>
+                      )}
                       <div className={s.schemaItemActions}>
                         <button
                           className={s.editBtn}

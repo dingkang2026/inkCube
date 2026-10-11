@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, X, BookOpen, Folder, FileText, Wrench, Download } from 'lucide-react'
 import type { HealthStatus } from '../../types/error'
@@ -8,7 +8,7 @@ import { navigateToNotification } from '../activity/ActivityMonitor'
 import type { ActiveItem } from '../activity/types'
 import { TodayTodo, type HomeTab } from './TodayTodo'
 import { UpcomingCalendar } from './UpcomingCalendar'
-import { ProjectCardWall } from './ProjectCardWall'
+import { ProjectCardWall, type LatestEntry } from './ProjectCardWall'
 import type { DueTask, ProjectHealthSummary } from '../project/affairs/types'
 import s from './HomePage.module.css'
 
@@ -34,6 +34,7 @@ const ONGOING_ICONS = {
   report: FileText,
   task: Wrench,
   model_download: Download,
+  ledger_parse: BookOpen,
 } as const
 
 interface HomePageProps {
@@ -56,6 +57,9 @@ export function HomePage({
 }: HomePageProps) {
   const { t } = useTranslation()
   const { status, feed, markRead } = useActivity()
+  // 台账解析心跳(3.0 四期 T9):活跃→终态边沿重拉最新条目快照(零新增轮询)
+  const { items: ledgerParseItems } = useActivity('ledger_parse')
+  const ledgerParsing = ledgerParseItems.length > 0
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [healthLoading, setHealthLoading] = useState(true)
 
@@ -83,17 +87,37 @@ export function HomePage({
   // ── 3.0 三期:今日工作台(§7.1)──
   const todoTasks = dueData?.tasks ?? []
 
-  /** 卡片墙「下一事务」:该项目 due 最早的日期(listDue 已限逾期+7 日内) */
+  /** 卡片墙「下一事务」:该项目 due 最早的任务(日期+事务名;listDue 已限逾期+7 日内) */
   const nextDueByProject = useMemo(() => {
-    const acc: Record<string, string | null> = {}
+    const acc: Record<string, { date: string; title: string | null }> = {}
     for (const task of todoTasks) {
       const due = task.due_date?.slice(0, 10)
       if (!due) continue
       const cur = acc[task.project_id]
-      if (!cur || due < cur) acc[task.project_id] = due
+      if (!cur || due < cur.date) acc[task.project_id] = { date: due, title: task.title }
     }
     return acc
   }, [dueData])
+
+  // 台账最新条目快照(3.0 四期 T9):挂载拉一次 + ledger_parse 活动从有到无边沿重拉
+  // (零新增轮询;拉取失败静默——摘要行是增强信息,不阻断卡片墙主体)
+  const [latestEntryByProject, setLatestEntryByProject] = useState<Record<string, LatestEntry>>({})
+  const loadLatestEntries = useCallback(async () => {
+    try {
+      const r: any = await window.electronAPI.invoke('ledger:listLatest')
+      setLatestEntryByProject(
+        Object.fromEntries((r?.latest ?? []).map((e: any) => [e.project_id, e])),
+      )
+    } catch (err) {
+      console.error('Failed to load latest ledger entries:', err)
+    }
+  }, [])
+  useEffect(() => { void loadLatestEntries() }, [loadLatestEntries])
+  const prevLedgerParsingRef = useRef(ledgerParsing)
+  useEffect(() => {
+    if (prevLedgerParsingRef.current && !ledgerParsing) void loadLatestEntries()
+    prevLedgerParsingRef.current = ledgerParsing
+  }, [ledgerParsing, loadLatestEntries])
 
   /** 待办/日历直达:进项目详情对应 Tab(affairs/materials/reports);
    *  taskId=待办行点击携带 → 事务 Tab + 自动打开执行抽屉(§6.1.8 直达执行动线) */
@@ -116,7 +140,9 @@ export function HomePage({
     } else if (item.entity_type === 'model_download') {
       window.dispatchEvent(new CustomEvent('app:navigate-settings', { detail: { section: 'internalModel' } }))
     } else if (item.project_id) {
-      const tab = item.entity_type === 'file' ? 'materials' : item.entity_type === 'wiki_compile' ? 'wiki' : 'reports'
+      // ledger_parse 是编译下游(台账解析),点击同样归 wiki Tab(3.0 四期)
+      const tab = item.entity_type === 'file' ? 'materials'
+        : item.entity_type === 'wiki_compile' || item.entity_type === 'ledger_parse' ? 'wiki' : 'reports'
       window.dispatchEvent(new CustomEvent('app:navigate-project-tab', {
         detail: { projectId: item.project_id, tab, container: item.container ?? 'project' },
       }))
@@ -141,6 +167,8 @@ export function HomePage({
         })
       case 'task':
         return t('activity.ongoing.task', { title: item.entity_title })
+      case 'ledger_parse':
+        return t('activity.ongoing.ledger_parse', { project: item.project_name })
       default:
         return t('activity.ongoing.model_download', { title: item.entity_title, progress: item.progress ?? 0 })
     }
@@ -249,6 +277,7 @@ export function HomePage({
             projects={recentProjects}
             healthData={healthByProject}
             nextDueByProject={nextDueByProject}
+            latestEntryByProject={latestEntryByProject}
             onSelect={(id) => {
               onSelectProject(id)
               window.dispatchEvent(new CustomEvent('app:navigate-project-tab', { detail: { projectId: id, container: 'project' } }))

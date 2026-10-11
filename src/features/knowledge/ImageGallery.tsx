@@ -239,9 +239,9 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
       ))
       setCategoryMenuId(null)
     } catch (err) {
-      console.error('Update category failed:', err)
+      handleError(err)
     }
-  }, [projectId])
+  }, [projectId, handleError])
 
   const handleArchive = useCallback(async (img: ImageItem) => {
     if (!(await confirmDialog({ title: t('knowledge.archiveImage'), message: t('knowledge.confirmArchive'), danger: false }))) return
@@ -254,9 +254,9 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
         i.id === img.id ? { ...i, status: 'archived' as const, vlm_description: null, error_message: '手动归档' } : i
       ))
     } catch (err) {
-      console.error('Archive failed:', err)
+      handleError(err)
     }
-  }, [projectId, t, confirmDialog])
+  }, [projectId, t, confirmDialog, handleError])
 
   if (loading && images.length === 0) {
     return (

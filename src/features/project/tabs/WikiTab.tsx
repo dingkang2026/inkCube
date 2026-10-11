@@ -7,7 +7,7 @@ import {
   Maximize2, Minimize2, Square, ListOrdered,
 } from 'lucide-react'
 import type { ProjectType } from '../types'
-import { WikiHomePage } from './WikiHomePage'
+import { WikiHomePage, type LedgerEntry } from './WikiHomePage'
 import { WikiPageReader } from './WikiPageReader'
 import { WikiPageEditor } from './WikiPageEditor'
 import { WikiChangeLog } from './WikiChangeLog'
@@ -16,6 +16,7 @@ import { WikiGraphView } from './WikiGraphView'
 import { WikiLintView } from './WikiLintView'
 import { CompilePanel } from './CompilePanel'
 import { WikiSchemaManager } from './WikiSchemaManager'
+import { useActivity } from '../../activity/ActivityContext'
 import { useFeatureGuard } from '../../readiness/useReadiness'
 import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
@@ -107,6 +108,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [compileTask, setCompileTask] = useState<CompileTask | null>(null)
   const [reviews, setReviews] = useState<Review[]>([])
   const [schemas, setSchemas] = useState<Array<{ page_key: string; title: string }>>([])
+  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [compiling, setCompiling] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('home')
@@ -208,12 +210,28 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     }
   }, [projectId])
 
+  // Load ledger entries（台账条目，知识首页时间轴数据源，3.0 四期 T7；limit 20 同设计 §5.2）
+  const loadLedgerEntries = useCallback(async () => {
+    const pid = projectId
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:listLedgerEntries', { projectId: pid, limit: 20 })
+      if (latestPidRef.current !== pid) return
+      setLedgerEntries(result.entries || [])
+    } catch (err) {
+      console.error('Failed to load ledger entries:', err)
+    }
+  }, [projectId])
+
+  // 台账解析心跳（3.0 四期）：本项目 ledger_parse 活跃 → 时间轴卡头「解析中」提示（旧条目照常可读）
+  const ledgerParsing = useActivity('ledger_parse').items.some((a) => a.project_id === projectId)
+
   // Initial load（编译状态不再自行拉取，改由父组件 #4 轮询下发，v1.7 迁移自原 #3 独立轮询，0.4 §8.1）
   useEffect(() => {
     loadPages()
     loadReviews()
     loadSchemas()
-  }, [loadPages, loadReviews, loadSchemas])
+    loadLedgerEntries()
+  }, [loadPages, loadReviews, loadSchemas, loadLedgerEntries])
 
   // 直达信号（consume-once）：脉搏带矛盾/缺口 chip 或健康卡「去处理」→ 治理视图（3.0 §6.1.1；
   // ts 保证重复点击同型 chip 也能再次触发，语义同 handleGoLint；应用后即回调置空，
@@ -255,8 +273,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       void loadPages()
       void loadReviews()
       void loadSchemas()
+      void loadLedgerEntries()
     }
-  }, [compileTask?.status, loadPages, loadReviews, loadSchemas])
+  }, [compileTask?.status, loadPages, loadReviews, loadSchemas, loadLedgerEntries])
 
   // 明细面板展开/收起上报父组件（#4 轮询据此降至 2s，0.4 §8.1）；
   // unmount 时上报 false，避免父组件在 Tab 切走后仍以 2s 高频轮询
@@ -698,6 +717,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               }}
               onOpenLint={() => setViewMode('lint')}
               schemas={schemas}
+              ledgerEntries={ledgerEntries}
+              ledgerParsing={ledgerParsing}
             />
           ) : viewMode === 'search' ? (
             /* Search view */

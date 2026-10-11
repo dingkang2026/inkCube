@@ -18,6 +18,11 @@ vi.mock('react-i18next', () => ({
     i18n: { language: 'zh-CN' },
   }),
 }))
+// 四期 T8 起 AffairsTab 直接受挂 SuggestionCard(消费 useToast);本文件不测建议交互
+// (SuggestionCard.test.tsx 专测),统一 mock 捕获防无 Provider throw
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => vi.fn(),
+}))
 vi.mock('../src/features/project/affairs/AffairsTab.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
@@ -51,6 +56,27 @@ const flush = async () => {
   }
 }
 
+/** listByProject 通道调用数(四期 T8 起 SuggestionCard 共享 invoke mock,总计数会翻倍) */
+const listCalls = () =>
+  invokeMock.mock.calls.filter((c) => c[0] === 'affairs:listByProject').length
+
+/** 通道感知的一次性桩:下一次 listByProject 调用走 impl,此后 listByProject 返回空。
+ *  不用 mockImplementationOnce——Once 队列按调用序消费,四期 T8 起 SuggestionCard
+ *  (子组件 effect 先于父组件)的 listSuggestions 调用会抢走名额,必须用 armed 标记分流。 */
+const onceForList = (impl: () => unknown) => {
+  let armed = true
+  invokeMock.mockImplementation((ch: string) => {
+    if (ch === 'affairs:listByProject') {
+      if (armed) {
+        armed = false
+        return impl()
+      }
+      return { tasks: [] }
+    }
+    return {}
+  })
+}
+
 beforeEach(() => {
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (ch: string) =>
@@ -81,15 +107,15 @@ describe('AffairsTab container', () => {
   it('refetches when refreshSignal bumps', async () => {
     const { rerender } = render(<AffairsTab {...base} refreshSignal={0} />)
     await flush()
-    expect(invokeMock).toHaveBeenCalledTimes(1)
+    expect(listCalls()).toBe(1)
     rerender(<AffairsTab {...base} refreshSignal={1} />)
     await flush()
-    expect(invokeMock).toHaveBeenCalledTimes(2)
+    expect(listCalls()).toBe(2)
   })
 
   it('drops stale responses when switching projects fast', async () => {
     let resolveA: (v: unknown) => void
-    invokeMock.mockImplementationOnce(() => new Promise((r) => { resolveA = r }))
+    onceForList(() => new Promise((r) => { resolveA = r }))
     const { rerender, container } = render(<AffairsTab {...base} />)
     rerender(<AffairsTab {...base} projectId="p2" />)
     await flush()
@@ -103,7 +129,7 @@ describe('AffairsTab container', () => {
     await flush()
     expect(container.textContent).toContain('上传BP')
     let resolveB: (v: unknown) => void
-    invokeMock.mockImplementationOnce(() => new Promise((r) => { resolveB = r }))
+    onceForList(() => new Promise((r) => { resolveB = r }))
     rerender(<AffairsTab {...base} projectId="p2" />)
     // 切项目即清残留(评审 minor①):新项目响应未回前不得显示上一项目任务
     expect(container.textContent).not.toContain('上传BP')
@@ -114,7 +140,7 @@ describe('AffairsTab container', () => {
   })
 
   it('shows load-failed state instead of fake-empty when fetch rejects', async () => {
-    invokeMock.mockRejectedValueOnce(new Error('boom'))
+    onceForList(() => Promise.reject(new Error('boom')))
     const { getByText, queryByText } = render(<AffairsTab {...base} />)
     await flush()
     // 失败不得伪装成空态(对齐一期 PulseBar pulseLoadFailed 原则)
@@ -172,7 +198,7 @@ describe('AffairsTab focusTask (拉齐补丁:首页待办直达抽屉,§6.1.8)',
   })
 
   it('gives up and reports handled when list load fails (信号不悬挂)', async () => {
-    invokeMock.mockRejectedValueOnce(new Error('boom'))
+    onceForList(() => Promise.reject(new Error('boom')))
     const onHandled = vi.fn()
     const { container } = render(
       <AffairsTab {...base} focusTask={{ taskId: 't1', ts: 3 }} onFocusHandled={onHandled} />)

@@ -132,15 +132,18 @@ class ChatRequest(BaseModel):
     fileId: Optional[str] = None
 
 
-async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, worker):
-    """Core upload logic for base library files (shared across base lib routes)."""
-    # Reject oversized uploads before decoding (L5)
-    _check_upload_size(upload)
+async def _upload_core(project_id: str, upload: FileUpload, db, data_dir, worker):
+    """上传核心逻辑（项目侧与基础库侧路由共用）：落盘 → 去重 → 建档 → 入队。
+
+    体内含 _check_upload_size（413）；调用方若在 try 块内调用，须先于
+    except Exception 声明 except HTTPException: raise，避免 413 被吞成 500。"""
     import uuid
     import hashlib
+    # Reject oversized uploads before decoding (L5)
+    _check_upload_size(upload)
     file_id = f"file_{uuid.uuid4().hex[:8]}"
 
-    files_dir = Path(data_dir) / "files" / lib_id / file_id
+    files_dir = Path(data_dir) / "files" / project_id / file_id
     files_dir.mkdir(parents=True, exist_ok=True)
     filename = _safe_filename(upload.filename, f"{file_id}.bin")
     file_path = files_dir / filename
@@ -157,7 +160,7 @@ async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, w
 
     file_size = len(file_data)
 
-    existing = db.find_duplicate_file(lib_id, file_hash)
+    existing = db.find_duplicate_file(project_id, file_hash)
     if existing:
         import shutil
         shutil.rmtree(files_dir, ignore_errors=True)
@@ -165,20 +168,21 @@ async def _base_lib_upload_core(lib_id: str, upload: FileUpload, db, data_dir, w
             "success": True, "file_id": existing["id"],
             "chunks_count": existing.get("chunk_count", 0),
             "images_count": existing.get("image_count", 0),
+            "error": None,
             "duplicate": True, "message": f"文件已存在: {existing['filename']}",
         }
 
     db.create_file(
-        project_id=lib_id, filename=filename,
+        project_id=project_id, filename=filename,
         file_type=upload.fileType, file_size=file_size,
         file_hash=file_hash, file_id=file_id,
     )
 
     if worker:
-        logger.info("Enqueuing base lib file %s for processing", file_id)
+        logger.info("Enqueuing file %s for processing", file_id)
         await worker.enqueue_file(file_id)
     else:
-        logger.warning("Worker not available! Base lib file %s will be picked up by queue scanner", file_id)
+        logger.warning("Worker not available! File %s will be picked up by queue scanner", file_id)
 
     return {
         "success": True, "file_id": file_id,
@@ -305,6 +309,14 @@ async def create_project(project: ProjectCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _escape_like(text: str) -> str:
+    """转义 LIKE 通配符（配合 SQL 中 ESCAPE '\\' 使用）。
+
+    用户可控输入（filename_search / search / file_id）进入 LIKE 模式前必须转义，
+    避免 % / _ 改变匹配语义——与 fts_store.py 用户搜索场景同一约定。"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _file_status_clause(status: Optional[str]) -> tuple[str, list]:
     """文件状态筛选子句（状态筛选服务端下沉，项目/基础库两端点共用）。
     processing = 排队+解析中（pending/parsing），其余为字面状态；空值/all 不过滤。"""
@@ -368,10 +380,10 @@ async def get_project_files(
             counts_params.extend(type_params)
 
         if filename_search:
-            where_clauses.append("f.filename LIKE ?")
-            like = f"%{filename_search}%"
+            where_clauses.append("f.filename LIKE ? ESCAPE '\\'")
+            like = f"%{_escape_like(filename_search)}%"
             params.append(like)
-            counts_clauses.append("f.filename LIKE ?")
+            counts_clauses.append("f.filename LIKE ? ESCAPE '\\'")
             counts_params.append(like)
 
         where_sql = " AND ".join(where_clauses)
@@ -402,7 +414,7 @@ async def get_project_files(
         # Get total count（与主查询同口径，含状态筛选）
         total_params: list = [project_id] + status_params + type_params
         if filename_search:
-            total_params.append(f"%{filename_search}%")
+            total_params.append(f"%{_escape_like(filename_search)}%")
         total = db.conn.execute(
             f"SELECT COUNT(*) as cnt FROM files f WHERE {where_sql}",
             total_params,
@@ -461,75 +473,12 @@ async def upload_file(project_id: str, upload: FileUpload):
     """Upload a file and enqueue for async processing."""
     # 准入前置校验（0.4 §7.3）：缺解析/嵌入模型时结构化报错，避免逐文件 error
     ensure_ready("file_parsing")
-    # Reject oversized uploads before decoding (L5)
-    _check_upload_size(upload)
     try:
         import deps
         db = get_db()
-        data_dir = get_data_dir()
-
-        import uuid
-        file_id = f"file_{uuid.uuid4().hex[:8]}"
-
-        # Save file to disk: data/files/{project_id}/{file_id}/
-        files_dir = Path(data_dir) / "files" / project_id / file_id
-        files_dir.mkdir(parents=True, exist_ok=True)
-        filename = _safe_filename(upload.filename, f"{file_id}.bin")
-        file_path = files_dir / filename
-
-        # Decode, hash and save — off the event loop (H1/L5)
-        import hashlib
-
-        def _decode_and_save():
-            raw = base64.b64decode(
-                upload.data.split(",")[1] if "," in upload.data else upload.data
-            )
-            file_path.write_bytes(raw)
-            return raw, hashlib.md5(raw).hexdigest()
-
-        file_data, file_hash = await asyncio.to_thread(_decode_and_save)
-        file_size = len(file_data)
-
-        # Check for duplicate
-        existing = db.find_duplicate_file(project_id, file_hash)
-        if existing:
-            import shutil
-            shutil.rmtree(files_dir, ignore_errors=True)
-            return {
-                "success": True,
-                "file_id": existing["id"],
-                "chunks_count": existing.get("chunk_count", 0),
-                "images_count": existing.get("image_count", 0),
-                "error": None,
-                "duplicate": True,
-                "message": f"文件已存在: {existing['filename']}",
-            }
-
-        # Insert file record (status=pending)
-        db.create_file(
-            project_id=project_id,
-            filename=filename,
-            file_type=upload.fileType,
-            file_size=file_size,
-            file_hash=file_hash,
-            file_id=file_id,
-        )
-
-        # Enqueue for async processing
-        if deps.worker:
-            logger.info("Enqueuing file %s for processing", file_id)
-            await deps.worker.enqueue_file(file_id)
-        else:
-            logger.warning("Worker not available! File %s will be picked up by queue scanner", file_id)
-
-        return {
-            "success": True,
-            "file_id": file_id,
-            "chunks_count": 0,
-            "images_count": 0,
-            "error": None,
-            "queued": True,
-        }
+        return await _upload_core(project_id, upload, db, get_data_dir(), deps.worker)
+    except HTTPException:
+        raise  # 413（超限）/ core 内结构化错误不被吞成 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -562,8 +511,9 @@ async def get_recent_chunks(project_id: str, limit: int = 20, file_id: Optional[
         where_clauses = ["project_id = ?"]
         params = [project_id]
         if file_id:
-            where_clauses.append("(chunk_id LIKE ? OR chunk_id LIKE ?)")
-            params.extend([f"chunk_{file_id}_%", f"img_{file_id}%"])
+            safe_id = _escape_like(file_id)
+            where_clauses.append("(chunk_id LIKE ? ESCAPE '\\' OR chunk_id LIKE ? ESCAPE '\\')")
+            params.extend([f"chunk_{safe_id}%", f"img_{safe_id}%"])
         where_sql = " AND ".join(where_clauses)
         cursor = db.conn.execute(
             f"""SELECT chunk_id, content, filename, content_type
@@ -902,8 +852,8 @@ async def get_project_images(
             base_clauses.append("i.file_id = ?")
             base_params.append(file_id)
         if search and search.strip():
-            q = f"%{search.strip()}%"
-            base_clauses.append("(i.vlm_description LIKE ? OR i.caption LIKE ? OR f.filename LIKE ?)")
+            q = f"%{_escape_like(search.strip())}%"
+            base_clauses.append("(i.vlm_description LIKE ? ESCAPE '\\' OR i.caption LIKE ? ESCAPE '\\' OR f.filename LIKE ? ESCAPE '\\')")
             base_params.extend([q, q, q])
 
         # Category filter clauses (for status_counts: base + category + size)
@@ -1343,10 +1293,10 @@ async def get_base_lib_files(
             counts_clauses.append(type_clause)
             counts_params.extend(type_params)
         if filename_search:
-            where_clauses.append("f.filename LIKE ?")
-            like = f"%{filename_search}%"
+            where_clauses.append("f.filename LIKE ? ESCAPE '\\'")
+            like = f"%{_escape_like(filename_search)}%"
             params.append(like)
-            counts_clauses.append("f.filename LIKE ?")
+            counts_clauses.append("f.filename LIKE ? ESCAPE '\\'")
             counts_params.append(like)
         where_sql = " AND ".join(where_clauses)
         counts_where_sql = " AND ".join(counts_clauses)
@@ -1372,7 +1322,7 @@ async def get_base_lib_files(
         # Total count（筛选同口径，供分页器计算总页数）
         total_params: list = [lib_id] + status_params + type_params
         if filename_search:
-            total_params.append(f"%{filename_search}%")
+            total_params.append(f"%{_escape_like(filename_search)}%")
         total = db.conn.execute(
             f"SELECT COUNT(*) AS cnt FROM files f WHERE {where_sql}", total_params
         ).fetchone()["cnt"]
@@ -1414,7 +1364,7 @@ async def upload_base_lib_file(lib_id: str, upload: FileUpload):
         import deps
         db = get_db()
         await _validate_base_lib_exists(db, lib_id)
-        return await _base_lib_upload_core(lib_id, upload, db, get_data_dir(), deps.worker)
+        return await _upload_core(lib_id, upload, db, get_data_dir(), deps.worker)
     except HTTPException:
         raise
     except Exception as e:
@@ -1498,8 +1448,9 @@ async def get_base_lib_recent_chunks(lib_id: str, limit: int = 20, file_id: Opti
         where_clauses = ["project_id = ?"]
         params = [lib_id]
         if file_id:
-            where_clauses.append("(chunk_id LIKE ? OR chunk_id LIKE ?)")
-            params.extend([f"chunk_{file_id}_%", f"img_{file_id}_%"])
+            safe_id = _escape_like(file_id)
+            where_clauses.append("(chunk_id LIKE ? ESCAPE '\\' OR chunk_id LIKE ? ESCAPE '\\')")
+            params.extend([f"chunk_{safe_id}%", f"img_{safe_id}%"])
         where_sql = " AND ".join(where_clauses)
         cursor = db.conn.execute(
             f"""SELECT chunk_id, content, filename, content_type
@@ -1678,8 +1629,8 @@ async def get_base_lib_images(
             base_clauses.append("i.file_id = ?")
             base_params.append(file_id)
         if search and search.strip():
-            q = f"%{search.strip()}%"
-            base_clauses.append("(i.vlm_description LIKE ? OR i.caption LIKE ? OR f.filename LIKE ?)")
+            q = f"%{_escape_like(search.strip())}%"
+            base_clauses.append("(i.vlm_description LIKE ? ESCAPE '\\' OR i.caption LIKE ? ESCAPE '\\' OR f.filename LIKE ? ESCAPE '\\')")
             base_params.extend([q, q, q])
 
         # Category filter clauses (for status_counts: base + category + size)

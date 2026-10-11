@@ -134,7 +134,14 @@ foreach ($name in $tools.Keys) {
     if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
 
     if ($tool.type -eq "zip") {
-        Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+        try {
+            Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+        } catch {
+            # 解压失败通常是缓存归档损坏（上次下载中断留下半截文件）；
+            # 删除坏档，避免下次运行因 Download-File 的存在性跳过而复用同一坏档反复失败
+            Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
+            throw "zip 解压失败: $($_.Exception.Message) — 已删除缓存归档 $archivePath，请重新运行本脚本"
+        }
     }
 
     # 复制到 tools 目录
@@ -147,13 +154,14 @@ foreach ($name in $tools.Keys) {
     foreach ($file in $tool.files) {
         $src = Join-Path $srcDir $file
         $dst = Join-Path $toolsDir $file
-        if (Test-Path $src) {
-            New-Item -ItemType Directory -Path (Split-Path -Parent $dst) -Force | Out-Null
-            Copy-Item $src $dst -Force
-            Write-Host "  已放置: $file" -ForegroundColor Green
-        } else {
-            Write-Host "  警告: 未找到 $file (预期路径: $src)" -ForegroundColor Yellow
+        if (-not (Test-Path $src)) {
+            # fail fast：缺件会静默打进安装包（build-installer 只复查 uv/python，
+            # rg/ruff/pandoc 缺失要到用户机器上任务执行时才暴露）
+            throw "解压结果中未找到 $file (预期路径: $src) — 归档可能不完整，请删除缓存后重新运行本脚本"
         }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $dst) -Force | Out-Null
+        Copy-Item $src $dst -Force
+        Write-Host "  已放置: $file" -ForegroundColor Green
     }
 }
 
@@ -170,16 +178,22 @@ if ($pythonStandalone.type -eq "tar.gz") {
     # 使用 tar 命令解压 .tar.gz（PowerShell 5+ 内置 tar 支持）
     Write-Host "  解压 tar.gz..."
     tar -xzf $pyArchive -C $tempDir
+    if ($LASTEXITCODE -ne 0) {
+        # tar 是外部命令，不受 $ErrorActionPreference 约束，须显式检查退出码；
+        # 失败通常是缓存归档损坏，删除坏档避免下次复用
+        Remove-Item $pyArchive -Force -ErrorAction SilentlyContinue
+        throw "tar 解压失败 (exit $LASTEXITCODE) — 已删除缓存归档 $pyArchive，请重新运行本脚本"
+    }
     # 解压后的目录名通常是 python/
     $extractedPython = Join-Path $tempDir "python"
-    if (Test-Path $extractedPython) {
-        $dstDir = Join-Path $toolsDir $pythonStandalone.targetDir
-        if (Test-Path $dstDir) { Remove-Item $dstDir -Recurse -Force }
-        Move-Item $extractedPython $dstDir -Force
-        Write-Host "  已放置: python-build-standalone/" -ForegroundColor Green
-    } else {
-        Write-Host "  警告: 未找到解压的 python 目录" -ForegroundColor Yellow
+    if (-not (Test-Path $extractedPython)) {
+        # fail fast：解释器缺件 = 安装包完全没有运行时后端
+        throw "tar 解压完成但未找到 python 目录 (预期: $extractedPython) — 归档结构可能与预期不符"
     }
+    $dstDir = Join-Path $toolsDir $pythonStandalone.targetDir
+    if (Test-Path $dstDir) { Remove-Item $dstDir -Recurse -Force }
+    Move-Item $extractedPython $dstDir -Force
+    Write-Host "  已放置: python-build-standalone/" -ForegroundColor Green
 }
 
 # ─── 生成版本信息 ───────────────────────────────────────────

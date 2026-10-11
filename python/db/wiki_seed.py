@@ -12,6 +12,9 @@ Page semantics (v2, E2-2026-10):
   monthly reports, quarterly reports, policy payments and risk alerts are
   ingested file-by-file and appended to these pages without rewriting
   history (writing rule enforced in wiki/prompts.py).
+- is_ledger flag (3.1 §3.4): 1 = 监控页,四期智能层解析范围(ledger_entries
+  的来源页);画像页/复合页动态部分也标注,单一语义源(wiki_pages.page_type
+  由 LLM 摄入自由给值,不可靠)。
 """
 
 # Schema ids removed in v1→v2 (page_key renames: recruitment
@@ -30,6 +33,7 @@ def _recruitment_schemas() -> list[dict]:
     pages = [
         {
             "page_key": "enterprise_profile",
+            "is_ledger": 0,
             "title": "目标企业画像",
             "compile_hint": (
                 "画像页。提取企业基本信息（注册资本、成立时间、实控人与股权结构）、"
@@ -42,6 +46,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "policy_ledger",
+            "is_ledger": 1,
             "title": "政策匹配与兑现台账",
             "compile_hint": (
                 "监控页（台账式）。两部分：①政策匹配——结合企业特征列出适用政策"
@@ -54,6 +59,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "park_analysis",
+            "is_ledger": 0,
             "title": "园区配套分析",
             "compile_hint": (
                 "画像页。分析园区与企业的匹配度：产业定位一致性、配套设施完善度、"
@@ -64,6 +70,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "industry_chain",
+            "is_ledger": 0,
             "title": "产业链分析",
             "compile_hint": (
                 "画像页。分析企业在产业链中的位置、上下游关系、集群效应、产业链完整性，"
@@ -74,6 +81,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "competitor_comparison",
+            "is_ledger": 0,
             "title": "竞品园区对比",
             "compile_hint": (
                 "画像页。对比同类园区的优劣势，突出本园区差异化优势：政策、区位、"
@@ -84,6 +92,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "landing_plan",
+            "is_ledger": 0,
             "title": "落地方案建议",
             "compile_hint": (
                 "画像页。综合分析给出落地方案建议：选址推荐、政策支持方案、时间规划、"
@@ -94,6 +103,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "milestones",
+            "is_ledger": 1,
             "title": "项目里程碑台账",
             "compile_hint": (
                 "监控页（台账式）。按时间线记录项目关键节点：注册、拿地、立项、环评、"
@@ -105,6 +115,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "operation_monitor",
+            "is_ledger": 1,
             "title": "企业经营监测",
             "compile_hint": (
                 "监控页（台账式）。按期间（月/季/年）记录企业经营指标：产值、营收、"
@@ -116,6 +127,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "risk_watchlist",
+            "is_ledger": 1,
             "title": "风险预警台账",
             "compile_hint": (
                 "监控页（台账式）。按时间线记录风险事件与预警信号：停产减产、欠税"
@@ -127,6 +139,7 @@ def _recruitment_schemas() -> list[dict]:
         },
         {
             "page_key": "service_log",
+            "is_ledger": 1,
             "title": "服务协调纪要",
             "compile_hint": (
                 "监控页（台账式）。按时间线记录企业诉求与政府/园区协调事项：诉求内容、"
@@ -144,6 +157,7 @@ def _investment_schemas() -> list[dict]:
     pages = [
         {
             "page_key": "company_overview",
+            "is_ledger": 0,
             "title": "公司概况",
             "compile_hint": (
                 "画像页。提取公司基本信息、发展历程、股权结构、战略定位、核心业务板块等。"
@@ -155,6 +169,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "core_team",
+            "is_ledger": 0,
             "title": "核心团队",
             "compile_hint": (
                 "画像页。提取核心管理层背景、经验、持股情况、团队稳定性评估。"
@@ -165,6 +180,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "financial_monitor",
+            "is_ledger": 1,
             "title": "财务监控",
             "compile_hint": (
                 "监控页（台账式）。按期间记录关键财务指标（营收/毛利/净利/负债/现金流），"
@@ -176,6 +192,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "legal_risk",
+            "is_ledger": 1,   # 画像+监控复合页,动态台账部分入解析(3.1 §3.4)
             "title": "法律风险",
             "compile_hint": (
                 "画像+监控页。①静态画像：诉讼、合规、知识产权等风险现状与等级评估；"
@@ -187,6 +204,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "valuation_ref",
+            "is_ledger": 0,
             "title": "估值参考",
             "compile_hint": (
                 "画像页。结合行业基准、可比公司、历史融资给出估值参考区间和依据。"
@@ -197,6 +215,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "deal_terms",
+            "is_ledger": 1,
             "title": "交易档案",
             "compile_hint": (
                 "监控页（台账式）。记录交易结构关键条款：投资金额与估值、股权比例、"
@@ -209,6 +228,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "milestone_tracker",
+            "is_ledger": 1,
             "title": "里程碑与对赌跟踪",
             "compile_hint": (
                 "监控页（台账式）。按时间线跟踪投后里程碑与对赌条款触发情况：业绩承诺"
@@ -220,6 +240,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "risk_summary",
+            "is_ledger": 1,   # 画像+监控复合页,动态台账部分入解析(3.1 §3.4)
             "title": "风险清单",
             "compile_hint": (
                 "画像+监控页。①静态清单：综合财务、法律、市场、技术、团队维度形成"
@@ -231,6 +252,7 @@ def _investment_schemas() -> list[dict]:
         },
         {
             "page_key": "exit_path",
+            "is_ledger": 1,
             "title": "退出路径跟踪",
             "compile_hint": (
                 "监控页（台账式）。按时间线跟踪退出相关进展：IPO 辅导与申报节点、"
@@ -249,6 +271,7 @@ def _general_schemas() -> list[dict]:
     pages = [
         {
             "page_key": "project_overview",
+            "is_ledger": 0,
             "title": "项目概况",
             "compile_hint": "提取项目基本信息、目标、范围、关键利益方、当前状态等。",
             "base_lib_search_hints": [],
@@ -256,6 +279,7 @@ def _general_schemas() -> list[dict]:
         },
         {
             "page_key": "key_findings",
+            "is_ledger": 0,
             "title": "关键发现",
             "compile_hint": "汇总文档中的关键数据、结论、洞察，按主题分类整理。",
             "base_lib_search_hints": [],
@@ -263,6 +287,7 @@ def _general_schemas() -> list[dict]:
         },
         {
             "page_key": "risk_analysis",
+            "is_ledger": 0,
             "title": "风险分析",
             "compile_hint": "识别和汇总项目相关风险，评估影响和可能性，提出应对建议。",
             "base_lib_search_hints": [],
@@ -280,6 +305,7 @@ def _build_schemas(project_type: str, pages: list[dict]) -> list[dict]:
             "id": f"wiki_schema_{project_type}_{p['page_key']}",
             "project_type": project_type,
             "page_key": p["page_key"],
+            "is_ledger": p["is_ledger"],   # 台账页标注(3.1 §3.4):解析范围 = is_ledger=1
             "title": p["title"],
             "compile_hint": p["compile_hint"],
             "base_lib_search_hints": p["base_lib_search_hints"],

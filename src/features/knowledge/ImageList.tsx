@@ -84,7 +84,7 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
       await window.electronAPI.invoke(ipc.updateImageCategory, { projectId, imageId, category })
       setImages(prev => prev.map(i => i.id === imageId ? { ...i, category } : i))
     } catch (err) {
-      console.error('Update category failed:', err)
+      handleError(err)
     }
   }
 
@@ -96,7 +96,7 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
         i.id === imageId ? { ...i, status: 'archived' as const, vlm_description: null, error_message: '手动归档' } : i
       ))
     } catch (err) {
-      console.error('Archive failed:', err)
+      handleError(err)
     }
   }
 

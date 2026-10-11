@@ -5,8 +5,12 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, o?: Record<string, unknown>) =>
     (o ? `${k}:${JSON.stringify(o)}` : k) as string }),
 }))
+const ledgerItems: Array<{ project_id?: string }> = []
 vi.mock('../src/features/activity/ActivityContext', () => ({
-  useActivity: () => ({ status: null, feed: [], markRead: vi.fn() }),
+  useActivity: (kind?: string) =>
+    kind === 'ledger_parse'
+      ? { items: ledgerItems }        // 四期 T9:台账解析心跳(终态边沿重拉 latest)
+      : { status: null, feed: [], markRead: vi.fn() },
 }))
 const cssMock = vi.hoisted(() => ({ default: new Proxy({}, { get: (_t: unknown, k: unknown) => String(k) }) }))
 vi.mock('../src/features/home/HomePage.module.css', () => cssMock)
@@ -38,6 +42,7 @@ const projects = [{ id: 'p1', name: '招聘项目', description: '', type: 'gene
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   vi.setSystemTime(new Date('2026-10-10T10:00:00'))
+  ledgerItems.length = 0
   ;(window as any).electronAPI = { invoke: vi.fn(async (channel: string) =>
     channel === 'system:getHealth'
       ? { status: 'ok', services: { llm: { status: 'ok' }, vlm: { status: 'ok' }, embedding: { status: 'ok' }, parsing: { status: 'ok' } } }
@@ -80,5 +85,23 @@ describe('HomePage workbench assembly (3.0 三期 Task 5)', () => {
     expect(ev).toBeTruthy()
     expect((ev as CustomEvent).detail).toEqual({ projectId: 'p1', container: 'project' })
     expect(onSelectProject).toHaveBeenCalledWith('p1')
+  })
+
+  it('wires latest ledger entry + due title into card wall (3.0 四期 T9)', async () => {
+    ;(window as any).electronAPI = { invoke: vi.fn(async (channel: string) => {
+      if (channel === 'system:getHealth')
+        return { status: 'ok', services: { llm: { status: 'ok' }, vlm: { status: 'ok' }, embedding: { status: 'ok' }, parsing: { status: 'ok' } } }
+      if (channel === 'ledger:listLatest')
+        return { latest: [{ project_id: 'p1', page_key: 'risk_watchlist', entry_date: '2026-09', entry_type: 'risk', content: '企业被列入经营异常名录' }] }
+      return {}
+    }) }
+    const { container } = render(
+      <HomePage {...base} projects={projects}
+        dueData={{ tasks: [mk('t1', '2026-10-08')], reviews_counts: {} }} />)
+    await flush()
+    const text = container.textContent!
+    expect(text).toContain('企业被列入经营异常名录')   // 台账摘要行透传卡片墙
+    expect(text).toContain('10/08')                   // 下一事务日期(卡片墙 nextDue 行)
+    expect(text).toContain('任务t1')                   // 下一事务名(dueData 派生)
   })
 })

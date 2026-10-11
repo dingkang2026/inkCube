@@ -21,6 +21,7 @@ _TASK_MODEL_KEYS: dict[str, str] = {
     "ingest": "wiki_ingest_model",
     "lint": "wiki_lint_model",
     "dedup": "wiki_dedup_model",
+    "ledger_parse": "wiki_ledger_parse_model",   # 3.1 §4.2:台账解析(轻模型即可,JSON 输出)
 }
 
 

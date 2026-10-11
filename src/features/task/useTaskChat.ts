@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 
 export interface ShellConfirmData {
@@ -12,6 +13,7 @@ export interface SkillConfirmData {
 }
 
 export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
+  const { t } = useTranslation()
   const [messages, setMessages] = useState<TaskMessage[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [streamContent, setStreamContent] = useState('')
@@ -413,37 +415,24 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         console.error('Task chat error:', err)
         setIsGenerating(false)
         const errMsg = err instanceof Error ? err.message : String(err)
-        if (errMsg.includes('TASK_LIMIT_REACHED') || errMsg.includes('并发')) {
-          const limitMsg: TaskMessage = {
-            id: crypto.randomUUID(),
-            task_id: activeTaskId,
-            role: 'assistant',
-            content: '已达到最大并发任务数限制，请等待当前任务完成后再试。',
-            created_at: new Date().toISOString(),
-          }
-          setMessages((prev) => [...prev, limitMsg])
-        } else if (errMsg.includes('TASK_RUNNING') || errMsg.includes('执行中')) {
-          const runningMsg: TaskMessage = {
-            id: crypto.randomUUID(),
-            task_id: activeTaskId,
-            role: 'assistant',
-            content: '该任务正在执行中，请等待完成或先停止。',
-            created_at: new Date().toISOString(),
-          }
-          setMessages((prev) => [...prev, runningMsg])
-        } else {
-          const errorMsg: TaskMessage = {
-            id: crypto.randomUUID(),
-            task_id: activeTaskId,
-            role: 'assistant',
-            content: `任务启动失败：${errMsg}`,
-            created_at: new Date().toISOString(),
-          }
-          setMessages((prev) => [...prev, errorMsg])
+        const errCode = (err as { errorCode?: string })?.errorCode
+        const text =
+          errCode === 'TASK_LIMIT_REACHED' || errMsg.includes('并发')
+            ? t('task.limitReached')
+            : errCode === 'TASK_RUNNING' || errMsg.includes('执行中')
+              ? t('task.alreadyRunning')
+              : `${t('task.startFailed')}${errMsg}`
+        const infoMsg: TaskMessage = {
+          id: crypto.randomUUID(),
+          task_id: activeTaskId,
+          role: 'assistant',
+          content: text,
+          created_at: new Date().toISOString(),
         }
+        setMessages((prev) => [...prev, infoMsg])
       }
     },
-    [activeTaskId, isGenerating, clearStreamState],
+    [activeTaskId, isGenerating, clearStreamState, t],
   )
 
   const handleStopGenerate = useCallback(() => {
@@ -457,6 +446,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     if (!activeTaskId) return
     try {
       await window.electronAPI.invoke('tasks:pause', { taskId: activeTaskId })
+      // 暂停成功后丢弃残留的确认弹窗：后端已把暂停后的「允许」视为拒绝，
+      // 前端同步清理避免误导（弹窗看似还能放行）
+      setPendingShellConfirm(null)
+      setPendingSkillConfirm(null)
       setIsGenerating(false)
     } catch (err) {
       console.error('Pause task error:', err)
@@ -485,14 +478,14 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           id: crypto.randomUUID(),
           task_id: activeTaskId,
           role: 'assistant',
-          content: '⚠️ 该确认已超时失效，任务已跳过此 Skill。如需使用请重新发起请求。',
+          content: t('task.skillConfirmExpired'),
           created_at: new Date().toISOString(),
         }])
       }
     } catch (err) {
       console.error('Skill confirm error:', err)
     }
-  }, [activeTaskId])
+  }, [activeTaskId, t])
 
   /** Resume a task from saved state (crash recovery or pause). */
   const handleResumeTask = useCallback(async () => {

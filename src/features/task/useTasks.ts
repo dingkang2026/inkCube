@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useToast } from '../knowledge/Toast'
 import type { Task } from '../../types'
 
 export type TaskTab = 'active' | 'archived'
@@ -7,6 +9,8 @@ export type TaskTab = 'active' | 'archived'
 const PAGE_SIZE = 50
 
 export function useTasks(defaultTaskTitle = 'New Task') {
+  const { t } = useTranslation()
+  const showToast = useToast()
   const [tasks, setTasks] = useState<Task[]>([])
   const [archivedTasks, setArchivedTasks] = useState<Task[]>([])
   const [activeTab, setActiveTab] = useState<TaskTab>('active')
@@ -57,7 +61,8 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     try {
       const res = await window.electronAPI.invoke('tasks:create', { title: defaultTaskTitle, mode }) as Task & { error?: string }
       if (res.error) {
-        console.error('Create task error:', res.error)
+        // 兼容 200 + error dict 的旧形态；配额错误现走 catch 分支的 409 结构化错误
+        showToast(t('task.createFailed') + '：' + res.error, 'error')
         return
       }
       setTasks((prev) => [res, ...prev])
@@ -65,10 +70,15 @@ export function useTasks(defaultTaskTitle = 'New Task') {
       setActiveTab('active')
     } catch (err) {
       console.error('Create task failed:', err)
+      const code = (err as { errorCode?: string })?.errorCode
+      showToast(
+        code === 'TASK_QUOTA_REACHED' ? t('task.quotaReached') : t('task.createFailed'),
+        'error',
+      )
     } finally {
       setCreating(false)
     }
-  }, [creating, defaultTaskTitle])
+  }, [creating, defaultTaskTitle, showToast, t])
 
   const handleCreateTaskWithDir = useCallback(async (dirPath: string, mode: 'coding' | 'general' = 'coding') => {
     if (creating) return
@@ -79,7 +89,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     try {
       const res = await window.electronAPI.invoke('tasks:create', { title: folderName, workspacePath: dirPath, mode }) as Task & { error?: string }
       if (res.error) {
-        console.error('Create task with dir error:', res.error)
+        showToast(t('task.createFailed') + '：' + res.error, 'error')
         return
       }
       setTasks((prev) => [res, ...prev])
@@ -87,10 +97,15 @@ export function useTasks(defaultTaskTitle = 'New Task') {
       setActiveTab('active')
     } catch (err) {
       console.error('Create task with dir failed:', err)
+      const code = (err as { errorCode?: string })?.errorCode
+      showToast(
+        code === 'TASK_QUOTA_REACHED' ? t('task.quotaReached') : t('task.createFailed'),
+        'error',
+      )
     } finally {
       setCreating(false)
     }
-  }, [creating, defaultTaskTitle])
+  }, [creating, defaultTaskTitle, showToast, t])
 
   const handleDeleteTask = useCallback(
     async (id: string) => {
@@ -106,7 +121,15 @@ export function useTasks(defaultTaskTitle = 'New Task') {
 
   const handleRenameTask = useCallback(
     async (id: string, title: string) => {
-      await window.electronAPI.invoke('tasks:rename', { taskId: id, title })
+      try {
+        await window.electronAPI.invoke('tasks:rename', { taskId: id, title })
+      } catch (err) {
+        // 后端 404（任务已删）/ 400（空标题）走 handlePythonResponse 抛错通道；
+        // 失败时不更新本地状态，避免 UI 与 DB 不一致
+        console.error('Rename task failed:', err)
+        showToast(t('task.renameFailed'), 'error')
+        return
+      }
       setTasks((prev) =>
         prev.map((t) => (t.id === id ? { ...t, title } : t)),
       )
@@ -114,7 +137,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
         prev.map((t) => (t.id === id ? { ...t, title } : t)),
       )
     },
-    [],
+    [showToast, t],
   )
 
   const handleArchiveTask = useCallback(

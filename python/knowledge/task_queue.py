@@ -578,6 +578,13 @@ class KnowledgeWorker:
                     pages_total=files_processed, pages_completed=files_processed,
                 )
                 activity_events.complete_compile(self.db, task_id)
+                # 3.1 §4.2:编译完成后直调台账解析 —— run_in_executor 后台线程,
+                # 不阻塞 worker 事件循环;整体吞异常在 ledger_service 内,
+                # 解析失败绝不影响编译主流程
+                from wiki.ledger_service import on_compile_complete_sync
+                asyncio.get_running_loop().run_in_executor(
+                    None, lambda: on_compile_complete_sync(
+                        self.db, project_id, llm_settings))
                 return
 
             # Process the next pending file

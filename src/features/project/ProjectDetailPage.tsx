@@ -46,6 +46,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const showToast = useToast()
   const { byProject } = useActivity()
   const { items: compileItems } = useActivity('wiki_compile')
+  const { items: ledgerParseItems } = useActivity('ledger_parse')
   const [activeTab, setActiveTab] = useState<TabKey>('wiki')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
@@ -90,14 +91,17 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   // 应办概要(3.0 二期 Task 12):overdue+7 日内,由 affairs:listByProject 派生;
   // 拉取失败置 null(chip 隐藏),不拖垮知识侧失败态(两数据源独立兑底)
   const [dueTasks, setDueTasks] = useState<PulseDueSummary | null>(null)
+  // 待裁决建议数(3.0 四期):affairs:listSuggestions 第四路;拉取失败置 0(chip 隐藏)
+  const [suggestionCount, setSuggestionCount] = useState(0)
   const loadPulseData = useCallback(async () => {
     const pid = project.id
-    // 三路并行独立兑底(allSettled):知识侧失败 → 脉搏带失败态;应办失败 → chip 隐藏,
-    // 两数据源互不拖垮;仍只挂在载 + 终态边沿各一次,零新增轮询(0.4 §3.1)
-    const [rvR, pgR, afR] = await Promise.allSettled([
+    // 四路并行独立兑底(allSettled):知识侧失败 → 脉搏带失败态;应办失败 → chip 隐藏;
+    // 建议失败 → chip 隐藏,各数据源互不拖垮;仍只挂在载 + 终态边沿各一次,零新增轮询(0.4 §3.1)
+    const [rvR, pgR, afR, sgR] = await Promise.allSettled([
       window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false }),
       window.electronAPI.invoke('wiki:listPages', { projectId: pid }),
       window.electronAPI.invoke('affairs:listByProject', { projectId: pid }),
+      window.electronAPI.invoke('affairs:listSuggestions', { projectId: pid }),
     ])
     if (latestPidRef.current !== pid) return
     if (rvR.status === 'rejected' || pgR.status === 'rejected') {
@@ -122,6 +126,12 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     } else {
       console.error('Failed to load due tasks:', afR.reason)
       setDueTasks(null)
+    }
+    if (sgR.status === 'fulfilled') {
+      setSuggestionCount((sgR.value as any)?.suggestions?.length ?? 0)
+    } else {
+      console.error('Failed to load suggestions:', sgR.reason)
+      setSuggestionCount(0)
     }
   }, [project.id])
 
@@ -187,6 +197,12 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     window.addEventListener('app:tasks-changed', h)
     return () => window.removeEventListener('app:tasks-changed', h)
   }, [loadPulseData])
+
+  // 台账解析终态边沿（3.0 四期）：ledger_parse 活动从有到无 → 通知 App 刷新 projects
+  // （新 AI 状态句从 projects 行浮现，3.1 §4.3）；建议/条目随 onProjectDataChanged →
+  // loadProjects → project prop 更新自然刷新
+  const ledgerParsing = ledgerParseItems.some((a) => a.project_id === project.id)
+  useEdgeRefetch(ledgerParsing, () => { onProjectDataChanged?.() })
 
   // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）。
   // 默认 Tab 即 wiki（3.0 一期知识置首）：挂载首跑由上方「挂载拉快照」覆盖，
@@ -331,6 +347,8 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
         pendingCompile={pendingCompile}
         loadFailed={pulseLoadFailed}
         dueTasks={dueTasks}
+        aiStatus={project.pulse_ai_status ?? ''}
+        suggestionCount={suggestionCount}
         onOpenAffairs={() => setActiveTab('affairs')}
         onOpenWiki={(view) => {
           setActiveTab('wiki')

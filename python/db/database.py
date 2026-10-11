@@ -573,8 +573,88 @@ class Database:
         """)
         self.conn.commit()
 
+        # ── Intelligence: ledger & suggestions (3.0 §8 phase 4, 3.1 §3) ──
+        # ledger_entries: 台账结构化解析产物（时间轴卡/卡片墙摘要/AI 状态句数据源);
+        #   wiki_pages.content 是唯一事实源,本表可随时全量重建(3.1 不变量 1)
+        # task_suggestions: 事件驱动任务建议(③建议新建/④建议标记完成);
+        #   (entry_fingerprint, kind) 幂等,忽略过不再提(3.1 不变量 3)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS ledger_entries (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                page_key TEXT NOT NULL,          -- 来源台账页:milestones / risk_watchlist / policy_ledger / ...
+                entry_date TEXT,                 -- 条目日期,尽力规范:YYYY-MM-DD 或 YYYY-MM;解析不出为 NULL
+                entry_type TEXT NOT NULL,        -- milestone / risk / policy / finance / service / ...(自由语义标注)
+                content TEXT NOT NULL,           -- 条目原文(一行)
+                source_file_id TEXT,             -- 来源文件(可追溯到哪份月报)
+                fingerprint TEXT NOT NULL,       -- 内容指纹(hash):幂等去重的锚
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, page_key, fingerprint)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ledger_entries_project
+                ON ledger_entries(project_id, page_key, entry_date);
+
+            CREATE TABLE IF NOT EXISTS task_suggestions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,              -- create_task(③建议新建) / complete_task(④建议标记完成)
+                title TEXT NOT NULL,             -- 建议的任务标题 / 目标任务标题
+                description TEXT DEFAULT '',
+                rationale TEXT,                  -- 一句人话:为什么建议(引用台账条目)
+                entry_fingerprint TEXT,          -- 触发条目指纹(⚠ 不存 entry id,见不变量 2)
+                target_task_id TEXT,             -- kind=complete_task 时的目标任务(phase_tasks.id)
+                suggested_phase TEXT,            -- create_task:建议放入的时期(before/during/after)
+                suggested_task_type TEXT,        -- create_task:建议的任务类型,默认 milestone(§7 决策 4)
+                status TEXT NOT NULL DEFAULT 'pending',  -- pending / accepted / dismissed
+                accepted_task_id TEXT,           -- 采纳后生成的任务 id(审计可溯)
+                created_at TEXT NOT NULL,
+                decided_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_suggestions_project
+                ON task_suggestions(project_id, status);
+        """)
+        self.conn.commit()
+
         # Migrate: projects — playbook 铺入标记(防删光任务后重铺,3.0 §4.3)
         self._migrate_add_column("projects", "playbook_seeded", "INTEGER DEFAULT 0")
+
+        # Migrate: intelligence layer (3.0 phase 4, 3.1 §3.3/§3.4) —
+        # AI 状态句(编译时点快照,wiki_overview 同款列迁移先例)+ 台账页标注
+        self._migrate_add_column("projects", "pulse_ai_status", "TEXT DEFAULT ''")
+        self._migrate_add_column("projects", "pulse_ai_status_at", "TEXT")
+        self._migrate_add_column("wiki_schemas", "is_ledger", "INTEGER DEFAULT 0")
+
+        # Migrate: suggestions 幂等约束补项目作用域(整体 review C1)
+        self._migrate_task_suggestions_unique()
+
+    def _migrate_task_suggestions_unique(self):
+        """task_suggestions 补 UNIQUE(project_id, entry_fingerprint, kind)（整体
+        review C1:应用层幂等查询需配套真实唯一索引兑底,且必须项目作用域——
+        否则 A 项目 dismissed 会抑制 B 项目同文本建议）。
+
+        SQLite 不能 ALTER 加约束：先按 created_at 保留最新去重存量重复行
+        （仅限有 fingerprint 的行，无 fp 行不参与幂等），再建唯一索引；
+        索引已存在则幂等跳过。失败向上抛（约束缺失会让「忽略过不再提」静默失效）。
+        """
+        for row in self.conn.execute("PRAGMA index_list(task_suggestions)").fetchall():
+            if row["name"] == "uq_task_suggestions_fp":
+                return  # 已迁移（上次启动已建）
+        self.conn.execute(
+            """DELETE FROM task_suggestions
+               WHERE entry_fingerprint IS NOT NULL AND id NOT IN (
+                   SELECT id FROM (
+                       SELECT id, ROW_NUMBER() OVER (
+                           PARTITION BY project_id, entry_fingerprint, kind
+                           ORDER BY created_at DESC) AS rn
+                       FROM task_suggestions
+                       WHERE entry_fingerprint IS NOT NULL
+                   ) WHERE rn = 1)""")
+        self.conn.execute(
+            "CREATE UNIQUE INDEX uq_task_suggestions_fp "
+            "ON task_suggestions(project_id, entry_fingerprint, kind)")
+        self.conn.commit()
+        logger.info("Migrated task_suggestions: added UNIQUE(project_id, entry_fingerprint, kind)")
 
     def _migrate_add_column(self, table: str, column: str, col_type: str):
         """Add column to existing table if it doesn't exist yet."""
@@ -690,19 +770,20 @@ class Database:
             "task_max_count": 50,
             "task_auto_archive_days": 30,
             # Report-specific settings
-            "report_max_concurrent": 2,  # 最大并发生成报告数
-            "report_channel_parallelism": 4,  # 通道内多 query 并行数
+            "report_max_concurrent": 2,  # model-exempt: 预留位暂无 UI，后端消费（reports.py）；最大并发生成报告数
+            "report_channel_parallelism": 4,  # model-exempt: 预留位暂无 UI，后端消费（runner.py）；通道内多 query 并行数
             # Wiki LLM task routing (§12.2.13)
             "wiki_ingest_model": "",  # empty = use global model
             "wiki_lint_model": "",
             "wiki_dedup_model": "",
+            "wiki_ledger_parse_model": "",  # 3.1 §4.2 台账解析(轻模型;empty = 全局默认)
             # 队列暂停开关（0.4 §队列暂停）：持久化于 settings，重启保持；
             # 经 POST /knowledge/queue/pause 写入（set_flag），运行时由 worker 闸门消费。
             # wiki 编译无队列暂停（0.4 §6.7 修订）：任务级「停止」+ 断点续传已覆盖；
             # 报告生成亦无队列暂停（2.5 §3.1 修订）：报告级「暂停」（章节边界协作生效
             # + checkpoint 续跑）与「重新生成」双出口已覆盖全部价值
-            "parsing_paused": False,
-            "describe_paused": False,
+            "parsing_paused": False,  # model-exempt: set_flag 直写（queue/pause 端点），入 Model 会被设置页全量保存误翻转
+            "describe_paused": False,  # model-exempt: set_flag 直写（queue/pause 端点），入 Model 会被设置页全量保存误翻转
         }
         cursor = self.conn.execute("SELECT key, value FROM settings")
         for row in cursor.fetchall():
@@ -1183,6 +1264,16 @@ class Database:
             return rows[:limit], has_more
         return rows, False
 
+    def count_tasks(self) -> int:
+        """Count non-deleted tasks (same visibility as list_tasks(status=None)).
+
+        供 create_task 配额检查使用：SELECT COUNT(*) 代替全表载入
+        （配额只需计数，反序列化全部行随任务量线性劣化）。"""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM tasks WHERE status != 'deleted'"
+        )
+        return cursor.fetchone()["cnt"]
+
     def get_task(self, task_id: str) -> dict | None:
         cursor = self.conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = cursor.fetchone()
@@ -1256,12 +1347,13 @@ class Database:
             )
             self.conn.commit()
 
-    def rename_task(self, task_id: str, title: str):
-        self.conn.execute(
+    def rename_task(self, task_id: str, title: str) -> bool:
+        cursor = self.conn.execute(
             "UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?",
             (title, self._now(), task_id),
         )
         self.conn.commit()
+        return cursor.rowcount > 0
 
     def set_task_mode(self, task_id: str, mode: str) -> bool:
         """Set task mode to 'coding' or 'general'."""
@@ -2029,12 +2121,13 @@ class Database:
         for s in schemas:
             self.conn.execute(
                 """INSERT OR REPLACE INTO wiki_schemas
-                   (id, project_type, page_key, title, compile_hint, base_lib_search_hints, position)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (id, project_type, page_key, title, compile_hint, base_lib_search_hints, position, is_ledger)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (s["id"], s["project_type"], s["page_key"], s["title"],
                  s.get("compile_hint", ""),
                  json.dumps(s.get("base_lib_search_hints", []), ensure_ascii=False),
-                 s.get("position", 0)),
+                 s.get("position", 0),
+                 s.get("is_ledger", 0)),
             )
         self.conn.commit()
 
@@ -2062,6 +2155,7 @@ class Database:
         compile_hint: str = "",
         base_lib_search_hints: list[str] | None = None,
         position: int | None = None,
+        is_ledger: bool = False,
     ) -> dict:
         """Create a new wiki schema entry."""
         schema_id = f"wiki_schema_{project_type}_{page_key}"
@@ -2075,9 +2169,9 @@ class Database:
 
         hints_json = json.dumps(base_lib_search_hints or [], ensure_ascii=False)
         self.conn.execute(
-            """INSERT INTO wiki_schemas (id, project_type, page_key, title, compile_hint, base_lib_search_hints, position)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (schema_id, project_type, page_key, title, compile_hint, hints_json, position),
+            """INSERT INTO wiki_schemas (id, project_type, page_key, title, compile_hint, base_lib_search_hints, position, is_ledger)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (schema_id, project_type, page_key, title, compile_hint, hints_json, position, 1 if is_ledger else 0),
         )
         self.conn.commit()
         # Notify affected projects
@@ -2091,6 +2185,7 @@ class Database:
         compile_hint: str | None = None,
         base_lib_search_hints: list[str] | None = None,
         position: int | None = None,
+        is_ledger: bool | None = None,
     ) -> dict | None:
         """Update an existing wiki schema entry."""
         updates = []
@@ -2107,6 +2202,9 @@ class Database:
         if position is not None:
             updates.append("position = ?")
             params.append(position)
+        if is_ledger is not None:
+            updates.append("is_ledger = ?")
+            params.append(1 if is_ledger else 0)
         if not updates:
             return self._get_schema_by_id(schema_id)
 
@@ -2411,6 +2509,184 @@ class Database:
             "SELECT project_id, COUNT(*) AS cnt FROM wiki_reviews "
             "WHERE resolved = 0 GROUP BY project_id")
         return {row["project_id"]: row["cnt"] for row in cursor.fetchall()}
+
+    # ── Intelligence: Ledger entries (3.1 §3.1, phase 4) ──
+
+    def list_ledger_entries(self, project_id: str, limit: int = 20) -> list[dict]:
+        """台账条目时间轴(3.1 §4.3):entry_date 倒序,NULL 日期置尾。"""
+        cursor = self.conn.execute(
+            """SELECT * FROM ledger_entries WHERE project_id = ?
+               ORDER BY (entry_date IS NULL), entry_date DESC, created_at DESC
+               LIMIT ?""",
+            (project_id, limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def latest_ledger_entries(self) -> list[dict]:
+        """跨项目每项目最新 1 条(首页卡片墙摘要行,3.1 §5.4);JOIN 项目名防 N+1。"""
+        cursor = self.conn.execute(
+            """SELECT le.*, p.name AS project_name FROM ledger_entries le
+               JOIN projects p ON p.id = le.project_id
+               WHERE le.id IN (
+                   SELECT id FROM (
+                       SELECT id, ROW_NUMBER() OVER (
+                           PARTITION BY project_id
+                           ORDER BY (entry_date IS NULL), entry_date DESC,
+                                    created_at DESC) AS rn
+                       FROM ledger_entries) WHERE rn = 1)
+               ORDER BY (le.entry_date IS NULL), le.entry_date DESC""")
+        return [dict(row) for row in cursor.fetchall()]
+
+    # ── Intelligence: Task suggestions (3.1 §3.2, phase 4) ──
+
+    def list_suggestions(self, project_id: str, status: str = "pending") -> list[dict]:
+        cursor = self.conn.execute(
+            """SELECT * FROM task_suggestions WHERE project_id = ? AND status = ?
+               ORDER BY created_at ASC""",
+            (project_id, status),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_suggestion(self, suggestion_id: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM task_suggestions WHERE id = ?", (suggestion_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def create_suggestion(
+        self, project_id: str, kind: str, title: str, description: str = "",
+        rationale: str | None = None, entry_fingerprint: str | None = None,
+        target_task_id: str | None = None, suggested_phase: str | None = None,
+        suggested_task_type: str | None = None,
+    ) -> dict | None:
+        """INSERT 一条建议;UNIQUE(project_id, entry_fingerprint, kind) 撞车返回 None
+        (并发/重放安全,3.1 不变量 3;整体 review C1:唯一索引为项目作用域,
+        跨项目同文本互不抑制)。"""
+        try:
+            self.conn.execute(
+                """INSERT INTO task_suggestions
+                   (id, project_id, kind, title, description, rationale,
+                    entry_fingerprint, target_task_id, suggested_phase,
+                    suggested_task_type, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (self._uuid(), project_id, kind, title, description, rationale,
+                 entry_fingerprint, target_task_id, suggested_phase,
+                 suggested_task_type, self._now()))
+            self.conn.commit()
+        except sqlite3.IntegrityError:
+            return None
+        return self.get_suggestion(
+            self._last_suggestion_id(project_id, entry_fingerprint, kind))
+
+    def _last_suggestion_id(self, project_id: str,
+                            fingerprint: str | None, kind: str) -> str | None:
+        cursor = self.conn.execute(
+            """SELECT id FROM task_suggestions
+               WHERE project_id = ? AND entry_fingerprint IS ? AND kind = ?
+               ORDER BY created_at DESC LIMIT 1""", (project_id, fingerprint, kind))
+        row = cursor.fetchone()
+        return row["id"] if row else None
+
+    def decide_suggestion(self, suggestion_id: str, status: str,
+                          accepted_task_id: str | None = None,
+                          only_pending: bool = False) -> dict | None:
+        """采纳/忽略(置 decided_at);调用方负责 status 合法性(pending 之外不可再改)。
+        only_pending=True 时条件更新,已决状态不可覆盖(rowcount=0 返回 None,
+        整体 review W2:dismiss 与 accept 并发时后到者不得覆盖已决状态)。"""
+        sql = ("""UPDATE task_suggestions
+                   SET status = ?, accepted_task_id = COALESCE(?, accepted_task_id),
+                       decided_at = ?
+                   WHERE id = ?""")
+        if only_pending:
+            sql += " AND status = 'pending'"
+        cur = self.conn.execute(
+            sql, (status, accepted_task_id, self._now(), suggestion_id))
+        self.conn.commit()
+        if only_pending and cur.rowcount == 0:
+            return None
+        return self.get_suggestion(suggestion_id)
+
+    def accept_suggestion_atomic(self, suggestion_id: str) -> dict | None:
+        """原子采纳(整体 review W2:路由层 check-then-act 有竞态窗口——
+        accept×dismiss 并发可产生「任务已建但建议显示 dismissed」悬挂,
+        create 与 decide 间断进可致重复建任务)。
+
+        单事务内:pending 守卫(条件 UPDATE 占位,rowcount=0 → 不存在/已被决策)
+        → 按 kind 执行 create/complete 动作 → 回填 accepted_task_id。
+        全程裸 SQL(不经 create_phase_task/update_phase_task,其内层 commit
+        会提前终结事务破坏原子性)。
+
+        返回:
+        - {"suggestion": …, "task": …}  成功(task 已建/已置 done)
+        - {"suggestion": …dismissed, "task": None, "reason": "target_missing"}
+                                         目标失效(建议已转 dismissed,永不再提)
+        - None                           不存在/已被决策(路由转 409)
+        """
+        with self.conn.transaction():
+            cur = self.conn.execute(
+                """UPDATE task_suggestions SET status = 'accepted', decided_at = ?
+                   WHERE id = ? AND status = 'pending'""",
+                (self._now(), suggestion_id))
+            if cur.rowcount == 0:
+                return None
+            sug = self.get_suggestion(suggestion_id)
+            if sug["kind"] == "create_task":
+                task_id = self._uuid()
+                self.conn.execute(
+                    """INSERT INTO phase_tasks
+                       (id, project_id, phase, task_type, title, description,
+                        template_id, status, occurrence_key, due_date,
+                        recurrence_rule, auto_complete)
+                       VALUES (?, ?, ?, ?, ?, ?, NULL, 'open', NULL, NULL,
+                               NULL, NULL)""",
+                    (task_id, sug["project_id"],
+                     sug["suggested_phase"] or "during",
+                     sug["suggested_task_type"] or "milestone",
+                     sug["title"], sug["description"] or ""))
+                self.conn.execute(
+                    "UPDATE task_suggestions SET accepted_task_id = ? WHERE id = ?",
+                    (task_id, suggestion_id))
+                return {"suggestion": self.get_suggestion(suggestion_id),
+                        "task": self.get_phase_task(task_id)}
+            # complete_task:目标校验 + 置 done(completed_by='manual':人是
+            # 决策者,与 PATCH 通道同口径;completed_* 不接受外部注入的规则不变)
+            target = self.get_phase_task(sug["target_task_id"] or "")
+            if (not target or target["project_id"] != sug["project_id"]
+                    or target["status"] != "open"):
+                self.conn.execute(
+                    "UPDATE task_suggestions SET status = 'dismissed' WHERE id = ?",
+                    (suggestion_id,))
+                return {"suggestion": self.get_suggestion(suggestion_id),
+                        "task": None, "reason": "target_missing"}
+            self.conn.execute(
+                """UPDATE phase_tasks SET status = 'done', completed_at = ?,
+                   completed_by = 'manual' WHERE id = ?""",
+                (self._now(), target["id"]))
+            self.conn.execute(
+                "UPDATE task_suggestions SET accepted_task_id = ? WHERE id = ?",
+                (target["id"], suggestion_id))
+            return {"suggestion": self.get_suggestion(suggestion_id),
+                    "task": self.get_phase_task(target["id"])}
+
+    def suggestion_exists(self, project_id: str, fingerprint: str, kind: str,
+                          statuses: tuple = ("pending", "accepted", "dismissed")) -> bool:
+        """生成幂等查询:(project_id, fingerprint, kind) 在任一给定状态已有记录 →
+        不再生成(3.1 §3.2:忽略过不再提;整体 review C1:项目作用域,
+        跨项目同文本互不抑制)。"""
+        placeholders = ",".join("?" for _ in statuses)
+        cursor = self.conn.execute(
+            f"""SELECT 1 FROM task_suggestions
+                WHERE project_id = ? AND entry_fingerprint = ? AND kind = ?
+                  AND status IN ({placeholders}) LIMIT 1""",
+            (project_id, fingerprint, kind, *statuses))
+        return cursor.fetchone() is not None
+
+    def set_pulse_ai_status(self, project_id: str, status: str) -> None:
+        """AI 状态句写入(编译时点快照,3.1 §3.3);空串=清除,前端回落规则句。"""
+        self.conn.execute(
+            "UPDATE projects SET pulse_ai_status = ?, pulse_ai_status_at = ? WHERE id = ?",
+            (status, self._now(), project_id))
+        self.conn.commit()
 
     # ── Wiki: Pages ──
 

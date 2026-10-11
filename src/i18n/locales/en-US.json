@@ -10,7 +10,9 @@
     "close": "Close",
     "confirm": "Confirm",
     "cancel": "Cancel",
-    "confirmDelete": "Delete?"
+    "confirmDelete": "Delete?",
+    "viewDetails": "View Details",
+    "collapseDetails": "Collapse Details"
   },
   "menu": {
     "file": "File",
@@ -82,6 +84,8 @@
     "wikiLintModelHint": "Semantic lint (lightweight analysis, fast response)",
     "wikiDedupModel": "Dedup Model",
     "wikiDedupModelHint": "Duplicate page detection (JSON output; mid-tier capability suffices)",
+    "wikiLedgerParseModel": "Ledger Parsing Model",
+    "wikiLedgerParseModelHint": "Extracts ledger entries from compile material (lightweight structured output suffices). Leave empty to use global model",
     "wikiModelFallback": "Leave empty to use global model",
     "toolConfig": "Tool Configuration",
     "tavilyKey": "Tavily API Key",
@@ -98,6 +102,8 @@
       "saved": "Changes saved automatically",
       "failed": "Auto-save failed: {{error}}"
     },
+    "loadFailed": "Failed to load settings. Defaults are shown; editing is paused to protect your configuration.",
+    "retryLoad": "Reload",
     "vlmConfig": "VLM Vision Model Configuration",
     "vlmApiUrl": "VLM API URL",
     "vlmApiKey": "VLM API Key",
@@ -339,6 +345,21 @@
   "about": {
     "tagline": "Intelligent Industry Insights & Knowledge Platform"
   },
+  "errors": {
+    "configFallback": "Configuration missing",
+    "configSuggestion": "Please configure in Settings",
+    "goSettings": "Go to Settings",
+    "networkFallback": "Network error",
+    "networkSuggestion": "Check your network connection",
+    "resourceFallback": "Resource missing",
+    "resourceSuggestion": "Please check the related resource",
+    "internalFallback": "Internal error",
+    "internalSuggestion": "Check the logs or submit an issue",
+    "viewDetails": "View details",
+    "processFallback": "Service error",
+    "processSuggestion": "Please restart the app",
+    "pythonErrorSuggestion": "Check the logs for more details"
+  },
   "task": {
     "newTask": "New Task",
     "creating": "Creating...",
@@ -436,9 +457,20 @@
     "depDetected": "Detected",
     "depNotDetected": "Not detected",
     "depRefresh": "Refresh Detection",
+    "depDescPandoc": "Document format conversion (docx ↔ md ↔ html)",
+    "depDescLibreoffice": "Office document conversion (pptx → pdf)",
+    "depDescGit": "Version control & Skill install",
+    "depDescFfmpeg": "Audio & video processing",
     "skillPermissions": "Permissions",
     "skillPermissionsHint": "Permissions declared by this Skill",
     "defaultTitle": "New Task",
+    "createFailed": "Failed to create task",
+    "renameFailed": "Failed to rename task",
+    "quotaReached": "Task limit reached. Delete or archive old tasks first.",
+    "limitReached": "Max concurrent tasks reached. Wait for a running task to finish.",
+    "alreadyRunning": "This task is already running. Wait for it to finish or stop it first.",
+    "startFailed": "Failed to start task: ",
+    "skillConfirmExpired": "⚠️ This confirmation has expired and the skill was skipped. Re-initiate the request if needed.",
     "confirmWorkspace": "Use this directory as workspace?\n\n{{path}}\n\nFiles in this directory may be modified by the task.",
     "diffChanges": "Changes",
     "executionPlan": "Execution Plan",
@@ -486,7 +518,10 @@
     "viewAll": "View all →",
     "ongoingTitle": "Ongoing",
     "recentFeedTitle": "Activity Feed",
-    "noFeed": "No activity yet"
+    "noFeed": "No activity yet",
+    "entry": {
+      "overdue": " ({{count}}d overdue)"
+    }
   },
   "homeTodo": {
     "title": "Today",
@@ -533,7 +568,8 @@
       "wiki_compile": "{{project}}: wiki compiling{{progress}}",
       "report": "{{project}}: report \"{{title}}\" generating {{progress}}%",
       "task": "Task \"{{title}}\" running",
-      "model_download": "{{title}} downloading {{progress}}%"
+      "model_download": "{{title}} downloading {{progress}}%",
+      "ledger_parse": "{{project}}: parsing ledger"
     },
     "time": {
       "justNow": "just now",
@@ -624,6 +660,7 @@
     "loading": "Loading...",
     "loadFailed": "Failed to load",
     "openDir": "Open Folder",
+    "openDirFailed": "Failed to open data folder",
     "refresh": "Refresh",
     "totalUsage": "Total Usage",
     "category_logs": "Log Files",
@@ -724,6 +761,7 @@
     "chipPendingCompile": "Pending compile",
     "chipReports": "Report generating",
     "chipDue": "Due",
+    "chipSuggestions": "Suggestions",
     "sentenceOverdue": "{{count}} tasks overdue",
     "sentenceContradiction": "{{count}} contradictions need review",
     "sentenceGap": "{{count}} knowledge gaps to fill",
@@ -811,6 +849,14 @@
       "deleteTitle": "Delete Task",
       "deleteConfirm": "Delete \"{{title}}\"? This cannot be undone.",
       "actionFailed": "Action failed. Please try again."
+    },
+    "suggestion": {
+      "title": "AI Suggestions",
+      "accept": "Accept",
+      "dismiss": "Dismiss",
+      "invalidated": "Task no longer exists; suggestion invalidated",
+      "acceptedToast": "Accepted; affairs updated",
+      "actionFailed": "Action failed: {{reason}}"
     }
   },
   "project": {
@@ -1023,6 +1069,10 @@
       "changeLog": "Change Log",
       "purpose": "Wiki Purpose",
       "overview": "Overview",
+      "timeline": {
+        "title": "Ledger Timeline",
+        "parsing": "Parsing…"
+      },
       "editOverviewPlaceholder": "Wiki global overview...",
       "noPurpose": "No Wiki purpose defined. Click edit to define the scope and goals.",
       "wikiPages": "Wiki Pages",
@@ -1093,6 +1143,9 @@
       "schemaCompileHintPlaceholder": "Describe what to extract and how to organize this page. For ledger pages declare: 'Monitoring page (ledger-style): append new events, never rewrite history'",
       "schemaBaseLibHints": "Base-Library Search Terms",
       "schemaBaseLibHintsPlaceholder": "e.g. investment policy, tax incentives (comma-separated, optional)",
+      "schemaIsLedger": "Ledger page (monitor-style, append-only)",
+      "schemaIsLedgerHint": "Parsed as ledger source during compiles",
+      "schemaLedgerBadge": "Ledger",
       "schemaPosition": "Order",
       "schemaPositionAuto": "Leave empty to append at the end",
       "schemaDeleteConfirm": "Delete structure page \"{{title}}\"? Existing Wiki pages with the same key are kept but no longer updated by compiles.",

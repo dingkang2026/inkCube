@@ -18,6 +18,12 @@ vi.mock('../src/components/ConfirmDialog', () => ({
   useConfirm: () => confirmMock,
 }))
 
+// 稳定引用（返回新 vi.fn() 会因 useCallback 依赖失效触发无限重渲染）
+const handleErrorMock = vi.hoisted(() => vi.fn())
+vi.mock('../src/hooks/useErrorHandler', () => ({
+  useErrorHandler: () => handleErrorMock,
+}))
+
 import { SkillManagement } from '../src/features/settings/SkillManagement'
 
 const invokeMock = vi.fn()

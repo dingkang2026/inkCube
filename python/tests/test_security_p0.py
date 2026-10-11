@@ -6,7 +6,7 @@
   C2. CORS 白名单收敛：外部 Origin 的 preflight 被拒（400），
       Vite dev Origin 放行
   C3. knowledge 上传 filename 路径遍历防护（_safe_filename +
-      _base_lib_upload_core 落盘路径）
+      _upload_core 落盘路径）
   H2. pause_task 标记 _paused_tasks（error 退出时保留 state 的依据）
 """
 import asyncio
@@ -112,7 +112,7 @@ class TestSafeFilename:
 
 class TestBaseLibUploadTraversal:
     def test_traversal_filename_lands_inside_file_dir(self, tmp_path):
-        from routers.knowledge import FileUpload, _base_lib_upload_core
+        from routers.knowledge import FileUpload, _upload_core
 
         calls = {}
 
@@ -128,7 +128,7 @@ class TestBaseLibUploadTraversal:
             fileType=".txt", data=base64.b64encode(b"data").decode(),
         )
         result = asyncio.run(
-            _base_lib_upload_core("lib1", upload, StubDB(), str(tmp_path), None)
+            _upload_core("lib1", upload, StubDB(), str(tmp_path), None)
         )
         assert result["success"] is True
 

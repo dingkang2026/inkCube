@@ -1,11 +1,11 @@
 /** src/features/activity/types.ts — Activity Hub 类型定义
  *  与后端 routers/activities.py 聚合端点返回结构对齐（0.4lifecycle-design.md §8.1 #0）。
  *  通知与活跃侧 entity_type 统一用后端写入值（0.4 §6.5）：
- *  file / wiki_compile / report / task / model_download（v1.7 修复：不再用领域别名 wiki/model）。
+ *  file / wiki_compile / report / task / model_download / ledger_parse（v1.7 修复：不再用领域别名 wiki/model）。
  */
 
 /** 活跃/通知实体类型（后端写入值，通知与活跃侧一致） */
-export type ActiveEntityType = 'file' | 'wiki_compile' | 'report' | 'task' | 'model_download'
+export type ActiveEntityType = 'file' | 'wiki_compile' | 'report' | 'task' | 'model_download' | 'ledger_parse'
 
 /** 通知条目类型（notifications 表 entity_type 取值，同上） */
 export type NotificationEntityType = ActiveEntityType

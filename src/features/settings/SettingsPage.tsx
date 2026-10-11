@@ -14,6 +14,10 @@ import s from './SettingsPage.module.css'
 interface SettingsPageProps {
   settings: LLMSettings
   onSave: (settings: LLMSettings) => Promise<void> | void
+  /** 设置加载失败：form 为默认值回显基底，禁编辑防止默认值覆盖真实配置（D8） */
+  loadFailed?: boolean
+  /** 失败横幅上的重试回调（重新拉取 settings:get） */
+  onRetryLoad?: () => Promise<void> | void
   /** 外部导航信号（含锚点 section；设置页条件渲染重挂载时用 name 初始化，同 section 重复导航靠引用变化生效） */
   sectionSignal?: { name: string; ts: number } | null
 }
@@ -24,7 +28,7 @@ const AUTO_SAVE_DELAY_MS = 800
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
 
-export function SettingsPage({ settings, onSave, sectionSignal }: SettingsPageProps) {
+export function SettingsPage({ settings, onSave, loadFailed = false, onRetryLoad, sectionSignal }: SettingsPageProps) {
   const { t } = useTranslation()
   const [activeSection, setActiveSection] = useState(sectionSignal?.name ?? 'general')
   const [form, setForm] = useState<LLMSettings>({ ...settings })
@@ -81,6 +85,9 @@ export function SettingsPage({ settings, onSave, sectionSignal }: SettingsPagePr
   }, [])
 
   const update = <K extends keyof LLMSettings>(key: K, value: LLMSettings[K]) => {
+    // 加载失败态禁编辑：此时 form 是默认值基底，改动会经自动保存覆盖真实配置（D8）。
+    // 失败态下 update 从未生效，不存在 pending timer，卸载 flush 无需另行防御。
+    if (loadFailed) return
     setForm((prev) => ({ ...prev, [key]: value }))
     // 自动保存：改动后静默期全量落盘，连续改动合并为一次
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -128,6 +135,15 @@ export function SettingsPage({ settings, onSave, sectionSignal }: SettingsPagePr
         )}
       </div>
 
+      {loadFailed && (
+        <div className={s.loadFailed} role="alert">
+          <span>{t('settings.loadFailed')}</span>
+          <button className="btn btn-secondary" onClick={() => void onRetryLoad?.()}>
+            {t('settings.retryLoad')}
+          </button>
+        </div>
+      )}
+
       <div className={s.body}>
         <SettingsNav active={activeSection} onChange={setActiveSection} items={navItems} />
 
@@ -169,7 +185,7 @@ export function SettingsPage({ settings, onSave, sectionSignal }: SettingsPagePr
                   })}
                 </div>
               )}
-              <button className="btn btn-secondary" onClick={handleTest} disabled={testing}>
+              <button className="btn btn-secondary" onClick={handleTest} disabled={testing || loadFailed}>
                 {testing ? t('settings.testing') : t('settings.testConnection')}
               </button>
             </div>

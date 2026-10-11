@@ -206,6 +206,12 @@ class TaskAgent:
         """
         pending = self._pending_confirms.get(task_id)
         if pending:
+            # 暂停已请求（cancel_event set）：用户意图是停止，此后的「允许」
+            # 一律视为拒绝——否则暂停后残留的确认弹窗仍会放行命令执行。
+            cancel_event = self._cancel_events.get(task_id)
+            if cancel_event is not None and cancel_event.is_set():
+                confirmed = False
+                allow_session = False
             pending["confirmed"] = confirmed
             if confirmed and allow_session:
                 self._session_auto_allow.add(task_id)
@@ -223,6 +229,10 @@ class TaskAgent:
         pending = self._pending_skill_confirms.get(task_id)
         if not pending:
             return False
+        # 暂停已请求：同 respond_confirm，此后的「允许」一律视为拒绝
+        cancel_event = self._cancel_events.get(task_id)
+        if cancel_event is not None and cancel_event.is_set():
+            confirmed = False
         pending["confirmed"] = confirmed
         if confirmed:
             try:
@@ -234,10 +244,43 @@ class TaskAgent:
         pending["event"].set()
         return True
 
+    @staticmethod
+    def _prune_unpaired_tool_messages(messages: list[dict]) -> list[dict]:
+        """移除未配对的 tool_calls 消息段，保证保存的状态可安全恢复。
+
+        暂停可能落在工具执行中途：快照尾部是 assistant(tool_calls) 而其
+        tool result 缺失或不全。直接保存后，恢复时该消息序列会被
+        OpenAI 兼容 API 以 400 拒绝（tool_calls 必须与 tool 消息一一配对），
+        任务恢复必然失败。此处按段校验：assistant(tool_calls) 之后直到
+        下一条非 tool 消息前的 tool result 覆盖全部 tool_call_id 才保留，
+        否则整段丢弃（回到上一条完整迭代边界，代价是重做当轮工具调用）。
+        """
+        pruned: list[dict] = []
+        i = 0
+        n = len(messages)
+        while i < n:
+            msg = messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                expected = {tc.get("id") for tc in msg["tool_calls"] if tc.get("id")}
+                j = i + 1
+                got: set = set()
+                while j < n and messages[j].get("role") == "tool":
+                    got.add(messages[j].get("tool_call_id"))
+                    j += 1
+                if expected and expected <= got:
+                    pruned.append(msg)
+                    pruned.extend(messages[i + 1:j])
+                # 未配对（或缺 tool_call_id）：整段丢弃，不保留
+                i = j
+            else:
+                pruned.append(msg)
+                i += 1
+        return pruned
+
     def pause_task(self, task_id: str, messages: list[dict], iteration: int, recent_errors: list[str]) -> bool:
         """Pause a running task: save state and request cancellation."""
         state = {
-            "messages": messages,
+            "messages": self._prune_unpaired_tool_messages(messages),
             "iteration": iteration,
             "recent_errors": recent_errors,
             "auto_saved": True,  # Mark as pausable; also enables startup detection

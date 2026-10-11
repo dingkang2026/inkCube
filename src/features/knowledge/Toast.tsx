@@ -1,5 +1,6 @@
 /** src/features/knowledge/Toast.tsx */
 import { useState, useEffect, useCallback, useContext, useMemo, createContext } from 'react'
+import { useTranslation } from 'react-i18next'
 import s from './Toast.module.css'
 
 type ToastType = 'success' | 'error' | 'info' | 'warning'
@@ -59,6 +60,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 }
 
 function ToastItemView({ toast, onRemove }: { toast: ToastItem; onRemove: (id: number) => void }) {
+  const { t } = useTranslation()
   const [exiting, setExiting] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
 
@@ -108,7 +110,7 @@ function ToastItemView({ toast, onRemove }: { toast: ToastItem; onRemove: (id: n
                 className={s.detailToggle}
                 onClick={() => setShowDetail(!showDetail)}
               >
-                {showDetail ? '收起详情' : '查看详情'}
+                {showDetail ? t('common.collapseDetails') : t('common.viewDetails')}
               </button>
             )}
           </div>

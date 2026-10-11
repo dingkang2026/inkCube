@@ -23,10 +23,11 @@ export interface LLMSettings {
   // Task-specific settings
   task_model: string
   task_planner_model: string
-  // Wiki LLM task routing (ingest/lint/dedup; empty = use global model)
+  // Wiki LLM task routing (ingest/lint/dedup/ledger_parse; empty = use global model)
   wiki_ingest_model: string
   wiki_lint_model: string
   wiki_dedup_model: string
+  wiki_ledger_parse_model: string
   task_timeout: number
   task_max_iterations: number
   task_auto_confirm_shell: boolean

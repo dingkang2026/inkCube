@@ -135,3 +135,23 @@ export function summarizeDueByProject(
   }
   return acc
 }
+
+// ── 3.0 四期:AI 任务建议(3.1 §4.3,task_suggestions 表行;kind 与后端 affairs.py 同白名单)──
+
+export type SuggestionKind = 'create_task' | 'complete_task'
+export type SuggestionStatus = 'pending' | 'accepted' | 'dismissed'
+
+export interface TaskSuggestion {
+  id: string
+  project_id: string
+  kind: SuggestionKind
+  title: string
+  description: string
+  suggested_phase: PhaseKey | null
+  suggested_task_type: PhaseTaskType | null
+  target_task_id: string | null
+  accepted_task_id: string | null
+  status: SuggestionStatus
+  created_at: string
+  decided_at: string | null
+}

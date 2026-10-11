@@ -8,6 +8,7 @@ import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import s from './FileUploader.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useToast } from './Toast'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 
 interface FileUploaderProps {
   projectId: string
@@ -46,6 +47,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const toast = useToast()
+  const handleError = useErrorHandler()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [menuOpenFileId, setMenuOpenFileId] = useState<string | null>(null)
 
@@ -69,7 +71,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
       onRefresh()
       onDeleteFile?.([fileId])
     } catch (err) {
-      console.error('Delete failed:', err)
+      handleError(err)
     }
   }
 
@@ -102,7 +104,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
       await window.electronAPI.invoke(ipc.retryFile, { projectId, fileId })
       onRefresh()
     } catch (err) {
-      console.error('Retry failed:', err)
+      handleError(err)
     }
   }
 
@@ -111,7 +113,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
       await window.electronAPI.invoke(ipc.retryFailedFiles, projectId)
       onRefresh()
     } catch (err) {
-      console.error('Retry all failed:', err)
+      handleError(err)
     }
   }
 
@@ -146,7 +148,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
       onRefresh()
       onDeleteFile?.(deleted)
     } catch (err) {
-      console.error('Batch delete failed:', err)
+      handleError(err)
     }
   }
 
@@ -160,7 +162,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
       setSelectedIds(new Set())
       onRefresh()
     } catch (err) {
-      console.error('Batch reprocess failed:', err)
+      handleError(err)
     }
   }
 

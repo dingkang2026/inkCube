@@ -36,11 +36,14 @@ async def create_task(req: TaskCreateRequest):
     settings = deps.db.get_settings()
     max_count = settings.get("task_max_count", 50)
     if max_count > 0:
-        all_tasks = deps.db.list_tasks()[0]
-        active_count = sum(1 for t in all_tasks if t.get("status") != "deleted")
+        active_count = deps.db.count_tasks()
         if active_count >= max_count:
             logger.warning("Task creation blocked: quota reached (%d/%d)", active_count, max_count)
-            return {"error": f"任务数量已达上限 ({max_count})，请删除或归档旧任务后再创建。"}
+            # 结构化错误（409 + code）：前端据此 i18n 渲染，不静默
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"任务数量已达上限 ({max_count})，请删除或归档旧任务后再创建。", "code": "TASK_QUOTA_REACHED"},
+            )
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None, deps.db.create_task, req.title, data_dir, req.workspace_path, req.mode,
@@ -106,7 +109,18 @@ async def delete_task(task_id: str):
 
 @router.patch("/tasks/{task_id}")
 async def rename_task(task_id: str, body: dict):
-    deps.db.rename_task(task_id, body["title"])
+    title = (body.get("title") or "").strip()
+    if not title:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "标题不能为空", "code": "INVALID_TITLE"},
+        )
+    ok = deps.db.rename_task(task_id, title)
+    if not ok:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "任务不存在", "code": "TASK_NOT_FOUND"},
+        )
     return {"ok": True}
 
 
@@ -229,16 +243,26 @@ async def cancel_task_chat(task_id: str):
 async def pause_task_chat(task_id: str):
     """Pause a running task: save state and cancel execution."""
     logger.info("Pausing task: %s", task_id)
+    # 只允许暂停运行中的任务：对非运行任务保存 state 会生成一份
+    # 无 system prompt / 无工具上下文的退化快照，污染「恢复」入口。
+    if not deps.task_agent.is_task_running(task_id):
+        logger.warning("Pause rejected: task %s is not running", task_id)
+        return JSONResponse(
+            status_code=409,
+            content={"error": "任务未在运行中，无需暂停", "code": "TASK_NOT_RUNNING"},
+        )
     current_iteration = deps.task_agent.get_iteration(task_id)
     # Use in-memory messages (include tool_calls/tool_call_id) for correct resume context.
-    # Fall back to DB messages only if agent runtime doesn't have them.
+    # 任务在运行集内但消息尚未就绪（system prompt 构建窗口）时拒绝暂停——
+    # 从 DB 重建的 user/assistant 纯文本快照恢复会丢失 system prompt，
+    # 属于损坏状态，不可作为断点。
     messages = deps.task_agent.get_messages(task_id)
     if messages is None:
-        msgs = deps.db.get_task_messages(task_id)
-        messages = [
-            {"role": m["role"], "content": m["content"]}
-            for m in msgs if m["role"] in ("user", "assistant")
-        ]
+        logger.warning("Pause rejected: task %s has no in-memory messages yet", task_id)
+        return JSONResponse(
+            status_code=409,
+            content={"error": "任务尚未进入可暂停的执行阶段，请稍后重试", "code": "TASK_NOT_PAUSABLE"},
+        )
     ok = deps.task_agent.pause_task(task_id, messages, current_iteration, [])
     if not ok:
         logger.warning("Pause failed: task %s", task_id)

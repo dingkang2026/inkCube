@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import styles from './WebLogins.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 
 interface WebLogin {
   domain: string
@@ -14,6 +15,7 @@ interface WebLogin {
 export function WebLogins() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
+  const handleError = useErrorHandler()
   const [logins, setLogins] = useState<WebLogin[]>([])
   const [loading, setLoading] = useState(true)
   const [domain, setDomain] = useState('')
@@ -25,12 +27,12 @@ export function WebLogins() {
     try {
       const res = await window.electronAPI.invoke('weblogin:list') as { logins: WebLogin[] }
       setLogins(res.logins || [])
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [handleError])
 
   useEffect(() => {
     void load()
@@ -62,8 +64,12 @@ export function WebLogins() {
   // 重新登录 = 打开登录窗口（同任务卡片主路径的 IPC，§8.3）；
   // openLoginWindow 拒开（内网字面量/非法域名）时向用户展示，避免「点了没反应」
   const handleRelogin = async (d: string) => {
-    const res = await window.electronAPI.invoke('weblogin:open', { domain: d }) as { error?: string } | undefined
-    if (res?.error) setError(t('webLogins.openFailed', { domain: d }))
+    try {
+      const res = await window.electronAPI.invoke('weblogin:open', { domain: d }) as { error?: string } | undefined
+      if (res?.error) setError(t('webLogins.openFailed', { domain: d }))
+    } catch (err) {
+      handleError(err)
+    }
   }
 
   const handleRemove = async (d: string) => {
@@ -80,8 +86,8 @@ export function WebLogins() {
     try {
       await window.electronAPI.invoke('weblogin:remove', { domain: d })
       await load()
-    } catch {
-      // ignore
+    } catch (err) {
+      handleError(err)
     }
   }
 

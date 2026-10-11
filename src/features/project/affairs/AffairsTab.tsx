@@ -13,6 +13,7 @@ import type { AffairsView, PhaseTask } from './types'
 import { PhaseBoard } from './PhaseBoard'
 import { RhythmCards } from './RhythmCards'
 import { CalendarView } from './CalendarView'
+import { SuggestionCard } from './SuggestionCard'
 import { TaskDrawer } from './TaskDrawer'
 import { TaskFormModal } from './TaskFormModal'
 import s from './AffairsTab.module.css'
@@ -121,6 +122,10 @@ export function AffairsTab({ projectId, projectType, stage, refreshSignal, focus
         ))}
       </div>
       {loadFailed && <div className={s.loadFailed}>{t('affairs.loadFailed')}</div>}
+      {/* AI 建议卡(3.0 四期 T8):三视图共享顶部,自包含数据域(refreshSignal 边沿重拉,零新增轮询);
+          onAccepted → 重拉看板(整体 review W1:采纳后本组件 tasks state 不在事件刷新链内) */}
+      <SuggestionCard projectId={projectId} refreshSignal={refreshSignal}
+        onAccepted={() => void load()} />
       {view === 'board' && (
         <PhaseBoard tasks={tasks} stage={stage} projectType={projectType}
           onCreateTask={() => { setFormPrefill(null); setFormTask(null) }}

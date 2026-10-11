@@ -14,3 +14,14 @@
 }
 .nextDue { font-size: 11px; color: var(--text-muted); }
 .empty { font-size: 12px; color: var(--text-muted); padding: 8px 0; }
+
+/* 最新台账摘要行(3.0 四期 T9):日期灰字 + 内容一行截断 */
+.entryLine {
+  display: flex; gap: 6px; margin-top: 4px; min-width: 0;
+  font-size: 11px; color: var(--text-secondary);
+}
+.entryDate {
+  flex-shrink: 0; color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+.entryContent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

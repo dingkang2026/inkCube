@@ -28,9 +28,13 @@ export interface PulseBarProps {
   dueTasks?: PulseDueSummary | null
   /** 应办 chip 点击 → 事务 Tab */
   onOpenAffairs?: () => void
+  /** AI 状态句(3.0 四期):编译时点快照,projects 行随 loadProjects 流出;空 = 无素材/未生成,回落规则句 */
+  aiStatus?: string
+  /** 待裁决建议数(3.0 四期);0/undefined 隐藏 chip */
+  suggestionCount?: number
 }
 
-export function PulseBar({ projectId, stageLabel, reviews, pendingCompile, loadFailed, dueTasks, onOpenAffairs, onOpenWiki }: PulseBarProps) {
+export function PulseBar({ projectId, stageLabel, reviews, pendingCompile, loadFailed, dueTasks, onOpenAffairs, onOpenWiki, aiStatus, suggestionCount }: PulseBarProps) {
   const { t } = useTranslation()
   const { byProject } = useActivity()
   // 防御性双查:byProject.compiles 与 wiki_compile items 同源(心跳 active),
@@ -56,16 +60,20 @@ export function PulseBar({ projectId, stageLabel, reviews, pendingCompile, loadF
 
   const chips: Array<{ key: string; label: string; count?: number; cls: string; view?: 'lint' | 'compile' }> = []
   const dueTotal = (dueTasks?.overdue ?? 0) + (dueTasks?.weekDue ?? 0)
+  if ((suggestionCount ?? 0) > 0) chips.push({ key: 'suggestions', label: t('pulse.chipSuggestions'), count: suggestionCount, cls: s.chipWarn })
   if (dueTotal > 0) chips.push({ key: 'due', label: t('pulse.chipDue'), count: dueTotal, cls: s.chipErr })
   if (reviews.contradiction > 0) chips.push({ key: 'contradiction', label: t('pulse.chipContradiction'), count: reviews.contradiction, cls: s.chipErr, view: 'lint' })
   if (reviews.gap > 0) chips.push({ key: 'gap', label: t('pulse.chipGap'), count: reviews.gap, cls: s.chipErr, view: 'lint' })
   if (pendingCompile > 0) chips.push({ key: 'pending', label: t('pulse.chipPendingCompile'), count: pendingCompile, cls: s.chipWarn, view: 'compile' })
   if (reportsActive) chips.push({ key: 'reports', label: t('pulse.chipReports'), cls: s.chipAcc })
 
-  // 状态句:优先级 拉取失败 > 逾期 > 矛盾 > 缺口 > 报告生成中 > 一切正常(3.0 §2 规则拼接 v1;
+  // 状态句:AI 句最前(3.0 四期,最新鲜的编译时点快照;空/未生成回落规则链)>
+  // 拉取失败 > 逾期 > 矛盾 > 缺口 > 报告生成中 > 一切正常(3.0 §2 规则拼接 v1;
   // 失败态最高优先——首拉失败时计数全 0,不得落入「一切正常」假象;
   // 行动项(逾期)比知识问题更即时,插在失败之后,二期 Task 12)
-  const sentence = loadFailed
+  const sentence = aiStatus
+    ? aiStatus
+    : loadFailed
     ? t('pulse.loadFailed')
     : dueTasks != null && dueTasks.overdue > 0
       ? t('pulse.sentenceOverdue', { count: dueTasks.overdue })
@@ -113,7 +121,7 @@ export function PulseBar({ projectId, stageLabel, reviews, pendingCompile, loadF
         <div className={s.chips}>
           {chips.map((c) => (
             <button key={c.key} className={`${s.chip} ${c.cls}`}
-              onClick={() => { if (c.key === 'due') onOpenAffairs?.(); else onOpenWiki(c.view) }}>
+              onClick={() => { if (c.key === 'due' || c.key === 'suggestions') onOpenAffairs?.(); else onOpenWiki(c.view) }}>
               {c.key === 'reports' && <Loader2 size={12} className={s.spin} />}
               {c.label}{c.count != null ? ` ${c.count}` : ''}
             </button>

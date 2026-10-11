@@ -4,6 +4,7 @@
  * and shows an appropriate toast with action buttons.
  */
 import { useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useToast } from '../features/knowledge/Toast'
 import type { ErrorCategory } from '../types/error'
 
@@ -25,6 +26,7 @@ const CODE_SETTINGS_SECTION: Record<string, string> = {
 
 export function useErrorHandler() {
   const showToast = useToast()
+  const { t } = useTranslation()
 
   return useCallback(
     (error: unknown) => {
@@ -36,10 +38,10 @@ export function useErrorHandler() {
           case 'CONFIG':
           case 'CREDENTIAL': {
             const section = CODE_SETTINGS_SECTION[err.errorCode ?? '']
-            showToast(err.message || '配置缺失', 'error', {
-              suggestion: err.errorSuggestion || '请前往设置页配置',
+            showToast(err.message || t('errors.configFallback'), 'error', {
+              suggestion: err.errorSuggestion || t('errors.configSuggestion'),
               action: {
-                label: '前往设置',
+                label: t('errors.goSettings'),
                 onClick: () => {
                   // Dispatch custom event — App.tsx listens and navigates (detail.section = 锚点)
                   window.dispatchEvent(
@@ -52,8 +54,8 @@ export function useErrorHandler() {
             break
           }
           case 'NETWORK':
-            showToast(err.message || '网络错误', 'error', {
-              suggestion: '请检查网络连接',
+            showToast(err.message || t('errors.networkFallback'), 'error', {
+              suggestion: t('errors.networkSuggestion'),
               detail: err.errorDetail,
             })
             break
@@ -61,12 +63,12 @@ export function useErrorHandler() {
           case 'RESOURCE': {
             // 模型缺失类（ensure_ready 第三层拦截）→ 跳设置对应锚点（0.4 §7.3）
             const section = CODE_SETTINGS_SECTION[err.errorCode ?? '']
-            showToast(err.message || '资源缺失', 'error', {
-              suggestion: err.errorSuggestion || '请检查相关资源',
+            showToast(err.message || t('errors.resourceFallback'), 'error', {
+              suggestion: err.errorSuggestion || t('errors.resourceSuggestion'),
               ...(section
                 ? {
                     action: {
-                      label: '前往设置',
+                      label: t('errors.goSettings'),
                       onClick: () => {
                         window.dispatchEvent(
                           new CustomEvent('app:navigate-settings', { detail: { section } }),
@@ -81,10 +83,10 @@ export function useErrorHandler() {
           }
 
           case 'INTERNAL':
-            showToast(err.message || '程序内部错误', 'error', {
-              suggestion: '请查看日志或提交 Issue',
+            showToast(err.message || t('errors.internalFallback'), 'error', {
+              suggestion: t('errors.internalSuggestion'),
               action: {
-                label: '查看详情',
+                label: t('errors.viewDetails'),
                 onClick: () => {
                   window.dispatchEvent(
                     new CustomEvent('app:show-logs', { detail: err.errorDetail })
@@ -96,8 +98,8 @@ export function useErrorHandler() {
             break
 
           case 'PROCESS':
-            showToast(err.message || '服务异常', 'error', {
-              suggestion: err.errorSuggestion || '请重启应用',
+            showToast(err.message || t('errors.processFallback'), 'error', {
+              suggestion: err.errorSuggestion || t('errors.processSuggestion'),
             })
             break
 
@@ -110,13 +112,13 @@ export function useErrorHandler() {
         // Check if it's a Python backend error in the response body
         if (msg.includes('Python backend error')) {
           showToast(msg, 'error', {
-            suggestion: '请查看日志获取更多信息',
+            suggestion: t('errors.pythonErrorSuggestion'),
           })
         } else {
           showToast(msg, 'error')
         }
       }
     },
-    [showToast],
+    [showToast, t],
   )
 }

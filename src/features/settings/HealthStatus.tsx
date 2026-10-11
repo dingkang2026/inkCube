@@ -1,7 +1,8 @@
 /** src/features/settings/HealthStatus.tsx — Service health status panel. */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { HealthStatus as HealthStatusType } from '../../types/error'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './HealthStatus.module.css'
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -13,24 +14,27 @@ const SERVICE_LABELS: Record<string, string> = {
 
 export function HealthStatus() {
   const { t } = useTranslation()
+  const handleError = useErrorHandler()
   const [health, setHealth] = useState<HealthStatusType | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const fetchHealth = async () => {
+  const fetchHealth = useCallback(async () => {
     setLoading(true)
     try {
       const result = await window.electronAPI.invoke('system:getHealth') as HealthStatusType
       setHealth(result)
     } catch (err) {
-      console.error('Health check failed:', err)
+      // invoke 层异常（多数「Python 未就绪」场景走 electron 侧结构化返回，
+      // 不进此 catch）：toast 反馈后仍保留失败态 UI
+      handleError(err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [handleError])
 
   useEffect(() => {
     fetchHealth()
-  }, [])
+  }, [fetchHealth])
 
   if (loading) {
     return (

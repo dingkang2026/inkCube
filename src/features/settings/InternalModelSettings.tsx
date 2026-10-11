@@ -5,6 +5,7 @@ import { MODELS_IPC } from '../../types'
 import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import { useActivity } from '../activity/ActivityContext'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 import styles from './InternalModelSettings.module.css'
 
 const CATEGORY_ORDER = ['embedding', 'document_parsing', 'ocr'] as const
@@ -18,6 +19,7 @@ interface LibreOfficeStatus {
 
 export function InternalModelSettings() {
   const { t } = useTranslation()
+  const handleError = useErrorHandler()
   const [models, setModels] = useState<Record<string, ModelStatusInfo>>({})
   const [loading, setLoading] = useState(true)
   const [downloadingAll, setDownloadingAll] = useState(false)
@@ -48,9 +50,12 @@ export function InternalModelSettings() {
   }, [])
 
   useEffect(() => {
-    fetchStatus().catch(() => { setLoading(false) })
+    fetchStatus().catch((err) => {
+      setLoading(false)
+      handleError(err)
+    })
     fetchLibreOfficeStatus()
-  }, [fetchStatus, fetchLibreOfficeStatus])
+  }, [fetchStatus, fetchLibreOfficeStatus, handleError])
 
   usePolling({
     name: 'internal-model-status',
@@ -64,15 +69,26 @@ export function InternalModelSettings() {
   useEdgeRefetch(modelsActive, () => { void fetchStatus().catch(() => {}) })
 
   const handleDownload = async (name: string) => {
-    await window.electronAPI.invoke(MODELS_IPC.download, name)
+    try {
+      await window.electronAPI.invoke(MODELS_IPC.download, name)
+    } catch (err) {
+      handleError(err)
+    }
     // 后台线程已同步置 downloading，立即拉一次接上启动间隙（全局心跳 ≤5/15s 后接管谓词）
     await fetchStatus().catch(() => {})
   }
 
   const handleDownloadAll = async () => {
     setDownloadingAll(true)
-    await window.electronAPI.invoke(MODELS_IPC.downloadAll)
-    await fetchStatus().catch(() => {})
+    try {
+      await window.electronAPI.invoke(MODELS_IPC.downloadAll)
+      await fetchStatus().catch(() => {})
+    } catch (err) {
+      handleError(err)
+      // 失败路径复位按钮（无活动时轮询自停，不复位则永久禁用）；
+      // 成功路径由 fetchStatus 依 downloading 终态复位
+      setDownloadingAll(false)
+    }
   }
 
   // 类别分组：已知顺序优先；后端新增的未知类别追加到尾部不静默丢弃（0.4 §8.1 #6），

@@ -31,6 +31,7 @@ class SettingsModel(BaseModel):
     wiki_ingest_model: str = ""  # empty = use global model
     wiki_lint_model: str = ""  # empty = use global model
     wiki_dedup_model: str = ""  # empty = use global model
+    wiki_ledger_parse_model: str = ""  # 3.1 §4.2 台账解析(轻模型;empty = 全局默认)
     task_timeout: int = 30  # seconds
     task_max_iterations: int = 25  # FC loop max iterations (TaskSettings UI)
     task_auto_confirm_shell: bool = False  # legacy, kept for backward compat

@@ -113,3 +113,43 @@ async def delete_phase_task(project_id: str, task_id: str):
         raise HTTPException(status_code=404, detail="task not found")
     db.delete_phase_task(task_id)
     return {"ok": True}
+
+
+# ── 3.0 四期:事件驱动任务建议(3.1 §4.3;采纳/忽略是人类裁决口)──
+
+
+@router.get("/{project_id}/suggestions")
+async def list_suggestions(project_id: str, status: str = "pending"):
+    db = _db()
+    return {"suggestions": db.list_suggestions(project_id, status)}
+
+
+@router.post("/{project_id}/suggestions/{suggestion_id}/accept")
+async def accept_suggestion(project_id: str, suggestion_id: str):
+    """采纳:create_task → 建任务回填;complete_task → 目标打 done。
+    目标失效 → 404 且建议转 dismissed(失效永不再提,3.1 §4.4)。
+    原子性(整体 review W2):pending 守卫 + 动作 + 回填在 db 层单事务,
+    accept×dismiss 并发/双击由行级守卫串行化,后到者 409。"""
+    db = _db()
+    sug = db.get_suggestion(suggestion_id)
+    if not sug or sug["project_id"] != project_id or sug["status"] != "pending":
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    result = db.accept_suggestion_atomic(suggestion_id)
+    if result is None:
+        raise HTTPException(status_code=409, detail="suggestion already decided")
+    if result.get("reason") == "target_missing":
+        raise HTTPException(status_code=404, detail="target_task_missing")
+    return {"task": result["task"]}
+
+
+@router.post("/{project_id}/suggestions/{suggestion_id}/dismiss")
+async def dismiss_suggestion(project_id: str, suggestion_id: str):
+    db = _db()
+    sug = db.get_suggestion(suggestion_id)
+    if not sug or sug["project_id"] != project_id or sug["status"] != "pending":
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    # only_pending 条件更新(整体 review W2):与 accept 并发时后到者不得覆盖已决状态
+    decided = db.decide_suggestion(suggestion_id, "dismissed", only_pending=True)
+    if decided is None:
+        raise HTTPException(status_code=409, detail="suggestion already decided")
+    return {"suggestion": decided}

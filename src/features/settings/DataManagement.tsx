@@ -7,6 +7,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import s from './DataManagement.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { useToast } from '../knowledge/Toast'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 
 interface CategoryUsage {
   size: number
@@ -39,6 +41,8 @@ function formatBytes(bytes: number): string {
 export function DataManagement() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
+  const showToast = useToast()
+  const handleError = useErrorHandler()
   const [usage, setUsage] = useState<DataUsage | null>(null)
   const [loading, setLoading] = useState(true)
   const [cleaning, setCleaning] = useState<string | null>(null)
@@ -48,11 +52,11 @@ export function DataManagement() {
       const result = await window.electronAPI.invoke('system:getDataUsage') as DataUsage
       setUsage(result)
     } catch (err) {
-      console.error('Failed to fetch data usage:', err)
+      handleError(err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [handleError])
 
   useEffect(() => {
     fetchUsage()
@@ -72,18 +76,14 @@ export function DataManagement() {
     try {
       const result = await window.electronAPI.invoke('system:cleanData', category) as { success?: boolean; partial?: boolean; message?: string }
       if (!result.success) {
-        // Log technical details to console, show user-friendly message
-        console.warn(`Failed to clean ${category}:`, result.message)
-        alert(t('data.cleanFailed'))
+        showToast(t('data.cleanFailed'), 'error', { detail: result.message })
       } else if (result.partial) {
         // Some files couldn't be deleted (e.g., locked on Windows)
-        console.warn(`Partial clean for ${category}:`, result.message)
-        alert(t('data.cleanPartial'))
+        showToast(t('data.cleanPartial'), 'warning')
       }
       await fetchUsage()
     } catch (err) {
-      console.error(`Failed to clean ${category}:`, err)
-      alert(t('data.cleanFailed'))
+      handleError(err)
     } finally {
       setCleaning(null)
     }
@@ -99,16 +99,14 @@ export function DataManagement() {
       for (const cat of ['knowledge', 'settings', 'models', 'logs']) {
         const result = await window.electronAPI.invoke('system:cleanData', cat) as { success?: boolean; message?: string }
         if (!result.success) {
-          console.warn(`Failed to clean ${cat}:`, result.message)
           // Show user-friendly message with category name
-          alert(`${t('data.cleanFailed')}: ${t(`data.category_${cat}`)}`)
+          showToast(`${t('data.cleanFailed')}: ${t(`data.category_${cat}`)}`, 'error', { detail: result.message })
           break
         }
       }
       await fetchUsage()
     } catch (err) {
-      console.error('Failed to reset all:', err)
-      alert(t('data.cleanFailed'))
+      handleError(err)
     } finally {
       setCleaning(null)
     }
@@ -116,9 +114,13 @@ export function DataManagement() {
 
   const handleOpenDir = async () => {
     try {
-      await window.electronAPI.invoke('system:openDataDir')
+      const result = await window.electronAPI.invoke('system:openDataDir') as { success?: boolean; message?: string }
+      // openPath 失败（路径无效/无权限）返回错误字符串（electron 侧转 success:false）
+      if (result && result.success === false) {
+        showToast(t('data.openDirFailed'), 'error', { detail: result.message })
+      }
     } catch (err) {
-      console.error('Failed to open data dir:', err)
+      handleError(err)
     }
   }
 

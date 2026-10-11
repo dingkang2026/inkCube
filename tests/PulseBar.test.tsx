@@ -153,3 +153,34 @@ describe('PulseBar due tasks (3.0 二期 Task 12)', () => {
     expect(onOpenWiki).toHaveBeenCalledWith('compile')
   })
 })
+
+describe('PulseBar ai status + suggestions (3.0 四期)', () => {
+  it('renders ai sentence when present, chips unchanged', () => {
+    const { container } = render(<PulseBar {...base} aiStatus="已投产 3 个月,建议确认整改。"
+      reviews={{ contradiction: 1, gap: 0 }} />)
+    const text = container.textContent!
+    expect(text).toContain('已投产 3 个月')
+    expect(text).not.toContain('pulse.sentenceContradiction') // AI 句优先于规则句
+  })
+
+  it('falls back to rule sentence when aiStatus empty', () => {
+    const { container } = render(
+      <PulseBar {...base} aiStatus="" reviews={{ contradiction: 2, gap: 0 }} />)
+    expect(container.textContent).toContain('pulse.sentenceContradiction')
+  })
+
+  it('shows suggestion chip with count and opens affairs', () => {
+    const onOpenAffairs = vi.fn()
+    const { getByText } = render(
+      <PulseBar {...base} suggestionCount={2} onOpenAffairs={onOpenAffairs}
+        reviews={{ contradiction: 0, gap: 0 }} />)
+    fireEvent.click(getByText(/pulse\.chipSuggestions/).closest('button')!)
+    expect(onOpenAffairs).toHaveBeenCalled()
+  })
+
+  it('hides suggestion chip when zero', () => {
+    const { container } = render(
+      <PulseBar {...base} suggestionCount={0} reviews={{ contradiction: 0, gap: 0 }} />)
+    expect(container.textContent).not.toContain('pulse.chipSuggestions')
+  })
+})

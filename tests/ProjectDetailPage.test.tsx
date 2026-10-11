@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const compileItems: Array<{ project_id?: string }> = []
+const ledgerItems: Array<{ project_id?: string }> = []
 const byProject = new Map<
   string,
   { files: number; imageDescribing: number; compiles: number; reports: number }
@@ -17,15 +18,17 @@ vi.mock('../src/features/activity/ActivityContext', () => ({
   useActivity: (kind?: string) =>
     kind === 'wiki_compile'
       ? { kind, items: compileItems, isActive: compileItems.length > 0 }
-      : {
-          status: null,
-          summary: {},
-          byProject,
-          activeProjectIds: new Set(),
-          feed: [],
-          applyStatus: () => {},
-          markRead: async () => {},
-        },
+      : kind === 'ledger_parse'
+        ? { items: ledgerItems }
+        : {
+            status: null,
+            summary: {},
+            byProject,
+            activeProjectIds: new Set(),
+            feed: [],
+            applyStatus: () => {},
+            markRead: async () => {},
+          },
 }))
 
 vi.mock('react-i18next', () => ({
@@ -47,9 +50,11 @@ vi.mock('../src/features/project/tabs/FormsTab', () => ({ FormsTab: () => null }
 vi.mock('../src/features/project/affairs/AffairsTab', () => ({ AffairsTab: () => null }))
 vi.mock('../src/features/project/ProjectChatPanel', () => ({ ProjectChatPanel: () => null }))
 vi.mock('../src/features/project/PulseBar', () => ({
-  PulseBar: (props: { reviews?: { contradiction: number }; pendingCompile?: number }) => (
+  PulseBar: (props: { reviews?: { contradiction: number }; pendingCompile?: number;
+    aiStatus?: string; suggestionCount?: number }) => (
     <div data-testid="pulsebar" data-contradiction={props.reviews?.contradiction}
-      data-pending={props.pendingCompile} />
+      data-pending={props.pendingCompile} data-ai={props.aiStatus}
+      data-suggestions={props.suggestionCount} />
   ),
 }))
 
@@ -76,6 +81,7 @@ const flush = async () => {
 beforeEach(() => {
   vi.useFakeTimers()
   compileItems.length = 0
+  ledgerItems.length = 0
   byProject.clear()
   invokeMock.mockReset()
   invokeMock.mockImplementation(async () => ({ task: null, ingest_summaries: [] }))
@@ -200,5 +206,33 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     await flush()
     const reviewCalls = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
     expect(reviewCalls).toBe(2)
+  })
+
+  it('wires ai status + suggestion count, refires project refresh on ledger_parse edge (3.0 P4)', async () => {
+    invokeMock.mockImplementation(async (ch: string) => {
+      if (ch === 'wiki:listReviews') return { reviews: [] }
+      if (ch === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
+      if (ch === 'affairs:listSuggestions') return { suggestions: [{ id: 's1' }, { id: 's2' }] }
+      return { task: null, ingest_summaries: [] }
+    })
+    const onDataChanged = vi.fn()
+    const withAi: Project = { ...project, pulse_ai_status: '投产 3 个月,建议确认整改。' }
+    const { rerender, container } = render(
+      <ProjectDetailPage project={withAi} onProjectDataChanged={onDataChanged} />)
+    await flush()
+    const bar = container.querySelector('[data-testid="pulsebar"]')!
+    expect(bar.getAttribute('data-ai')).toContain('投产 3 个月')       // projects 行直传
+    expect(bar.getAttribute('data-suggestions')).toBe('2')            // 挂载拉建议计数
+    expect(onDataChanged).not.toHaveBeenCalled()
+
+    // ledger_parse 活动从有到无边沿 → onProjectDataChanged(新 AI 句浮现,3.1 §4.3)
+    ledgerItems.push({ project_id: 'p1' })
+    rerender(<ProjectDetailPage project={withAi} onProjectDataChanged={onDataChanged} />)
+    await flush()
+    expect(onDataChanged).not.toHaveBeenCalled()                      // 活跃中不触发
+    ledgerItems.length = 0
+    rerender(<ProjectDetailPage project={withAi} onProjectDataChanged={onDataChanged} />)
+    await flush()
+    expect(onDataChanged).toHaveBeenCalledTimes(1)                    // 终态恰一次
   })
 })

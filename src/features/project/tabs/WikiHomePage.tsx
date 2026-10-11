@@ -18,6 +18,15 @@ interface WikiPage {
   status: string
 }
 
+/** 台账条目(wiki:listLedgerEntries 返回行,3.0 四期 T7) */
+export interface LedgerEntry {
+  id: string
+  page_key: string
+  entry_date: string | null
+  entry_type: string
+  content: string
+}
+
 interface WikiHomePageProps {
   projectId: string
   purpose: string
@@ -36,6 +45,10 @@ interface WikiHomePageProps {
   onOpenLint?: () => void
   /** 结构页定义清单（父级 wiki:getSchemas 拉取），用于完成度区块；空/缺省隐藏（3.0 一期 Task 6） */
   schemas?: Array<{ page_key: string; title: string }>
+  /** 台账条目时间轴（3.0 四期：父级 wiki:listLedgerEntries 拉取）；空/undefined 整卡不渲染 */
+  ledgerEntries?: LedgerEntry[]
+  /** 台账解析进行中（心跳 ledger_parse 含本项目）：卡头灰字提示，旧条目照常可读 */
+  ledgerParsing?: boolean
 }
 
 /** Page type config: icon, label/desc i18n keys, order */
@@ -63,6 +76,7 @@ function extractSummary(content: string | null, maxLen = 80): string {
 export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
   onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, schemas,
+  ledgerEntries, ledgerParsing,
 }: WikiHomePageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
@@ -138,6 +152,19 @@ export function WikiHomePage({
     return { total: schemas.length, generated, pageKeys }
   }, [schemas, pages])
 
+  // 台账时间轴分组（3.0 四期 T7）：按 entry_date 归并（后端已倒序,NULL 组自然置尾）;组内保持倒序
+  const ledgerGroups = useMemo(() => {
+    if (!ledgerEntries || ledgerEntries.length === 0) return null
+    const groups: Record<string, LedgerEntry[]> = {}
+    for (const e of ledgerEntries) {
+      const key = e.entry_date ?? '—'
+      ;(groups[key] ??= []).push(e)
+    }
+    return Object.entries(groups)
+  }, [ledgerEntries])
+  /** 条目行标题:pages 中按 page_key 找页标题,找不到显示 page_key 本身(计划 T7 实现要点) */
+  const ledgerPageTitle = (key: string) => pages.find((p) => p.page_key === key)?.title || key
+
   const isFirstTime = pages.length === 0 && sourcePageCount === 0
 
   return (
@@ -204,6 +231,39 @@ export function WikiHomePage({
             {reviewCounts.deadLink > 0 && (
               <span className={s.healthChipErr}>{t('project.wiki.homePage.healthDeadLink')} {reviewCounts.deadLink}</span>
             )}
+          </div>
+        </section>
+      )}
+
+      {/* ── Ledger timeline card (3.0 四期 T7)：台账条目按日期分组,点击行直达台账页;空不渲染 ── */}
+      {ledgerGroups && (
+        <section className={s.homeSection}>
+          <div className={s.homeSectionHeader}>
+            <div className={s.homeSectionTitle}>
+              <Clock size={15} className={s.homeSectionIcon} />
+              <h3>{t('project.wiki.timeline.title')}</h3>
+              {ledgerParsing && (
+                <span className={s.homeToggleHint}>{t('project.wiki.timeline.parsing')}</span>
+              )}
+            </div>
+          </div>
+          <div className={s.homeSectionContent}>
+            <div className={s.timelineWrap}>
+              {ledgerGroups.map(([date, items]) => (
+                <div key={date} className={s.timelineGroup}>
+                  <div className={s.timelineDate}>{date}</div>
+                  <div className={s.timelineList}>
+                    {items.map((e) => (
+                      <button key={e.id} className={s.timelineItem}
+                        onClick={() => onNavigateToPage(e.page_key)}>
+                        <span className={s.timelinePageTitle}>{ledgerPageTitle(e.page_key)}</span>
+                        <span className={s.timelineContent}>{e.content}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
       )}

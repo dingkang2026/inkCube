@@ -10,7 +10,9 @@
     "close": "关闭",
     "confirm": "确认",
     "cancel": "取消",
-    "confirmDelete": "确认删除？"
+    "confirmDelete": "确认删除？",
+    "viewDetails": "查看详情",
+    "collapseDetails": "收起详情"
   },
   "menu": {
     "file": "文件",
@@ -82,6 +84,8 @@
     "wikiLintModelHint": "语义层 Lint（轻量分析，快速响应）",
     "wikiDedupModel": "去重模型",
     "wikiDedupModelHint": "重复页面检测（JSON 输出，中等能力即可）",
+    "wikiLedgerParseModel": "台账解析模型",
+    "wikiLedgerParseModelHint": "从编译素材抽取台账条目（轻量结构化输出即可），留空使用全局模型",
     "wikiModelFallback": "留空使用全局模型",
     "toolConfig": "工具配置",
     "tavilyKey": "Tavily API Key",
@@ -98,6 +102,8 @@
       "saved": "更改已自动保存",
       "failed": "自动保存失败：{{error}}"
     },
+    "loadFailed": "设置加载失败，当前显示默认值，已暂停编辑以保护现有配置",
+    "retryLoad": "重新加载",
     "vlmConfig": "VLM 视觉模型配置",
     "vlmApiUrl": "VLM API 地址",
     "vlmApiKey": "VLM API Key",
@@ -339,6 +345,21 @@
   "about": {
     "tagline": "智能产业洞察与知识平台"
   },
+  "errors": {
+    "configFallback": "配置缺失",
+    "configSuggestion": "请前往设置页配置",
+    "goSettings": "前往设置",
+    "networkFallback": "网络错误",
+    "networkSuggestion": "请检查网络连接",
+    "resourceFallback": "资源缺失",
+    "resourceSuggestion": "请检查相关资源",
+    "internalFallback": "程序内部错误",
+    "internalSuggestion": "请查看日志或提交 Issue",
+    "viewDetails": "查看详情",
+    "processFallback": "服务异常",
+    "processSuggestion": "请重启应用",
+    "pythonErrorSuggestion": "请查看日志获取更多信息"
+  },
   "task": {
     "newTask": "新建任务",
     "creating": "创建中...",
@@ -436,9 +457,20 @@
     "depDetected": "已检测到",
     "depNotDetected": "未检测到",
     "depRefresh": "刷新检测",
+    "depDescPandoc": "文档格式转换 (docx ↔ md ↔ html)",
+    "depDescLibreoffice": "Office 文档转换 (pptx → pdf)",
+    "depDescGit": "版本控制 & Skill 安装",
+    "depDescFfmpeg": "音视频处理",
     "skillPermissions": "权限声明",
     "skillPermissionsHint": "此 Skill 声明的权限范围",
     "defaultTitle": "新任务",
+    "createFailed": "创建任务失败",
+    "renameFailed": "重命名任务失败",
+    "quotaReached": "任务数量已达上限，请删除或归档旧任务后再创建",
+    "limitReached": "已达到最大并发任务数限制，请等待当前任务完成后再试。",
+    "alreadyRunning": "该任务正在执行中，请等待完成或先停止。",
+    "startFailed": "任务启动失败：",
+    "skillConfirmExpired": "⚠️ 该确认已超时失效，任务已跳过此 Skill。如需使用请重新发起请求。",
     "confirmWorkspace": "确认使用此目录作为工作区？\n\n{{path}}\n\n目录中的文件可能会被任务修改。",
     "diffChanges": "变更",
     "executionPlan": "执行计划",
@@ -486,7 +518,10 @@
     "viewAll": "查看全部 →",
     "ongoingTitle": "进行中",
     "recentFeedTitle": "最近动态",
-    "noFeed": "暂无动态"
+    "noFeed": "暂无动态",
+    "entry": {
+      "overdue": "（逾期 {{count}} 天）"
+    }
   },
   "homeTodo": {
     "title": "今日待办",
@@ -533,7 +568,8 @@
       "wiki_compile": "{{project}}：Wiki 编译中{{progress}}",
       "report": "{{project}}：报告《{{title}}》生成中 {{progress}}%",
       "task": "任务《{{title}}》运行中",
-      "model_download": "{{title}} 下载中 {{progress}}%"
+      "model_download": "{{title}} 下载中 {{progress}}%",
+      "ledger_parse": "{{project}}：台账解析中"
     },
     "time": {
       "justNow": "刚刚",
@@ -624,6 +660,7 @@
     "loading": "加载中...",
     "loadFailed": "加载失败",
     "openDir": "打开目录",
+    "openDirFailed": "打开数据目录失败",
     "refresh": "刷新",
     "totalUsage": "总占用空间",
     "category_logs": "日志文件",
@@ -724,6 +761,7 @@
     "chipPendingCompile": "待编译",
     "chipReports": "报告生成中",
     "chipDue": "应办",
+    "chipSuggestions": "建议",
     "sentenceOverdue": "{{count}} 项任务已逾期",
     "sentenceContradiction": "{{count}} 个矛盾待裁决",
     "sentenceGap": "{{count}} 项知识缺口待补",
@@ -811,6 +849,14 @@
       "deleteTitle": "删除任务",
       "deleteConfirm": "确认删除「{{title}}」？该操作不可撤销。",
       "actionFailed": "操作失败，请重试"
+    },
+    "suggestion": {
+      "title": "AI 建议",
+      "accept": "采纳",
+      "dismiss": "忽略",
+      "invalidated": "任务已不存在，建议已失效",
+      "acceptedToast": "已采纳，任务已更新",
+      "actionFailed": "操作失败: {{reason}}"
     }
   },
   "project": {
@@ -1023,6 +1069,10 @@
       "changeLog": "变更日志",
       "purpose": "Wiki 目标",
       "overview": "全局摘要",
+      "timeline": {
+        "title": "台账时间线",
+        "parsing": "解析中…"
+      },
       "editOverviewPlaceholder": "Wiki 全局摘要...",
       "noPurpose": "未定义 Wiki 目标。点击编辑来定义这个 Wiki 的目标和范围。",
       "wikiPages": "Wiki 页面",
@@ -1093,6 +1143,9 @@
       "schemaCompileHintPlaceholder": "描述 AI 编译此页面时应提取什么、如何组织。台账类页面请声明「监控页（台账式）：新事件追加，禁止改写历史」",
       "schemaBaseLibHints": "基础库检索词",
       "schemaBaseLibHintsPlaceholder": "如：招商政策, 税收优惠（逗号分隔，可留空）",
+      "schemaIsLedger": "台账页（监控式，只追加）",
+      "schemaIsLedgerHint": "编译时作为台账解析源，生成 ledger 条目",
+      "schemaLedgerBadge": "台账",
       "schemaPosition": "顺序",
       "schemaPositionAuto": "留空自动排在末尾",
       "schemaDeleteConfirm": "确认删除结构页「{{title}}」？已有同名 Wiki 页面将保留，但不再被编译更新。",

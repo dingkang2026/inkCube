@@ -102,3 +102,41 @@ describe('WikiHomePage schema completion (3.0 一期 Task 6)', () => {
     expect(container.textContent).not.toContain('project.wiki.homePage.completionTitle')
   })
 })
+
+describe('WikiHomePage ledger timeline card (3.0 四期)', () => {
+  const entries = [
+    { id: 'e1', page_key: 'milestones', entry_date: '2026-10', entry_type: 'milestone', content: '一期设备全部进场' },
+    { id: 'e2', page_key: 'risk_watchlist', entry_date: '2026-09', entry_type: 'risk', content: '企业被列入经营异常名录' },
+    { id: 'e3', page_key: 'milestones', entry_date: null, entry_type: 'milestone', content: '无日期条目' },
+  ]
+
+  it('hides card when entries empty or prop absent', () => {
+    const { container: c1 } = render(<WikiHomePage {...minimal} ledgerEntries={[]} />)
+    expect(c1.textContent).not.toContain('project.wiki.timeline.title')
+    const { container: c2 } = render(<WikiHomePage {...minimal} />)
+    expect(c2.textContent).not.toContain('project.wiki.timeline.title')
+  })
+
+  it('renders date-grouped entries and navigates on click', () => {
+    const onNavigateToPage = vi.fn()
+    const { getByText, container } = render(
+      <WikiHomePage {...minimal} ledgerEntries={entries} onNavigateToPage={onNavigateToPage} />)
+    const text = container.textContent!
+    expect(text).toContain('project.wiki.timeline.title')
+    expect(text).toContain('2026-10')
+    expect(text).toContain('一期设备全部进场')
+    expect(text).toContain('企业被列入经营异常名录')
+    expect(text).toContain('—')                                   // NULL 日期置尾组
+    // 条目行点击 → 直达台账页(标题找不到时显示 page_key 本身)
+    fireEvent.click(getByText('一期设备全部进场').closest('button')!)
+    expect(onNavigateToPage).toHaveBeenCalledWith('milestones')
+  })
+
+  it('shows parsing hint while keeping old entries visible', () => {
+    const { container } = render(
+      <WikiHomePage {...minimal} ledgerEntries={entries.slice(0, 1)} ledgerParsing />)
+    const text = container.textContent!
+    expect(text).toContain('project.wiki.timeline.parsing')
+    expect(text).toContain('一期设备全部进场')                       // 旧条目照常可读
+  })
+})

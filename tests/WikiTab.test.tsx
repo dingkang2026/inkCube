@@ -16,6 +16,12 @@ vi.mock('../src/features/project/tabs/WikiTab.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
+// 台账解析心跳（3.0 四期 T7）：WikiTab 消费 useActivity('ledger_parse') 派生「解析中」提示；
+// 本文件不测该派生（时间轴 UI 由 WikiHomePage.test 覆盖），空 items 即可
+vi.mock('../src/features/activity/ActivityContext', () => ({
+  useActivity: (kind?: string) => ({ kind, items: [] }),
+}))
+
 vi.mock('../src/features/readiness/useReadiness', () => ({
   useFeatureGuard: () => async (_key: string, fn: () => void) => {
     fn()

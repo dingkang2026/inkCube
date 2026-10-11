@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import styles from './ExternalDepsSettings.module.css'
+import { useErrorHandler } from '../../hooks/useErrorHandler'
 
 interface DepStatus {
   available: boolean
@@ -10,6 +11,7 @@ interface DepStatus {
 
 export function ExternalDepsSettings() {
   const { t } = useTranslation()
+  const handleError = useErrorHandler()
   const [deps, setDeps] = useState<Record<string, DepStatus>>({})
   const [loading, setLoading] = useState(true)
 
@@ -18,22 +20,23 @@ export function ExternalDepsSettings() {
     try {
       const res = await window.electronAPI.invoke('system:checkDeps') as { deps: Record<string, DepStatus> }
       setDeps(res.deps || {})
-    } catch {
-      // ignore
+    } catch (err) {
+      // 检测失败 ≠ 未安装：静默会把所有依赖误标为「未检测到」
+      handleError(err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [handleError])
 
   useEffect(() => {
     fetchDeps()
   }, [fetchDeps])
 
   const depNames: { key: string; label: string; description: string }[] = [
-    { key: 'pandoc', label: 'Pandoc', description: '文档格式转换 (docx ↔ md ↔ html)' },
-    { key: 'libreoffice', label: 'LibreOffice', description: 'Office 文档转换 (pptx → pdf)' },
-    { key: 'git', label: 'Git', description: '版本控制 & Skill 安装' },
-    { key: 'ffmpeg', label: 'FFmpeg', description: '音视频处理' },
+    { key: 'pandoc', label: 'Pandoc', description: t('task.depDescPandoc') },
+    { key: 'libreoffice', label: 'LibreOffice', description: t('task.depDescLibreoffice') },
+    { key: 'git', label: 'Git', description: t('task.depDescGit') },
+    { key: 'ffmpeg', label: 'FFmpeg', description: t('task.depDescFfmpeg') },
   ]
 
   return (

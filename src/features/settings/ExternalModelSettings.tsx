@@ -129,6 +129,15 @@ export function ExternalModelSettings({ form, onUpdate }: ExternalModelSettingsP
           placeholder={t('settings.wikiModelFallback')}
         />
         <p className={styles.hint}>{t('settings.wikiDedupModelHint')}</p>
+
+        <label className={styles.label}>{t('settings.wikiLedgerParseModel')}</label>
+        <input
+          className={styles.input}
+          value={form.wiki_ledger_parse_model}
+          onChange={(e) => onUpdate('wiki_ledger_parse_model', e.target.value)}
+          placeholder={t('settings.wikiModelFallback')}
+        />
+        <p className={styles.hint}>{t('settings.wikiLedgerParseModelHint')}</p>
       </section>
 
       <section className={styles.section}>
