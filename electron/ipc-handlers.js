@@ -253,6 +253,103 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return { success: true }
   })
 
+  // ── 一键加白名单（2.8 §12 F3）：杀软实时防护阻断 uv 缓存改名的根因处置 ──
+  // 信号端点：uv-cache .tmp 残留（阻断/中断的持久物证，Python 侧零状态维护）。
+  // 阻断是 Windows 杀软特性，非 win32 直接短路，前端零平台逻辑。
+  ipcMain.handle('system:getUvCacheBlocked', async () => {
+    if (process.platform !== 'win32') {
+      return { blocked: false, tmp_count: 0 }
+    }
+    try {
+      const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/uv-cache-blocked`)
+      return handlePythonResponse(res)
+    } catch (e) {
+      logElectron('WARN', `uv-cache-blocked check failed: ${e.message}`)
+      return { blocked: false, tmp_count: 0 }
+    }
+  })
+
+  // 加白：提权 Add-MpPreference（UAC 由系统弹窗，用户一次确认即完成）。
+  // 成功与否以 Get-MpPreference 回读验证为准（exit code 不可靠：防篡改
+  // 拦截时提权子进程也会退出，但排除项列表不会变化）。验证失败 →
+  // 深链直达 Defender 排除项页 + 剪贴板路径，降级为手动引导。
+  // 两次 PowerShell 均异步 spawn：UAC 等待最长 2 分钟，同步 spawnSync
+  // 会冻结主进程事件循环（全应用「未响应」，所有 IPC/轮询停摆）。
+  ipcMain.handle('system:addUvCacheExclusion', async () => {
+    if (process.platform !== 'win32') {
+      return { added: false, notApplicable: true }
+    }
+    const path = require('path')
+    const { spawn } = require('child_process')
+    const { shell, clipboard } = require('electron')
+    const cacheDir = path.join(getDataDir(), 'uv-cache')
+    // 单引号形式（'' 转义），与回读命令对称：路径段含 $ 时双引号会被
+    // PowerShell 插值，静默写错排除路径（回读 False → 误入 fallback）
+    const psPath = cacheDir.replace(/'/g, "''")
+    // EncodedCommand（Base64 UTF-16LE）完全避开引号嵌套地狱
+    const inner = Buffer.from(
+      `Add-MpPreference -ExclusionPath '${psPath}'`, 'utf16le').toString('base64')
+    const elevate = (
+      `$p = Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -PassThru ` +
+      `-EncodedCommand ${inner}; exit $p.ExitCode`
+    )
+    // 异步包 Promise：'error'（spawn 失败）与 'close'（含 timeout 强杀）
+    // 双路 resolve，永不 reject——成败统一交由回读验证裁决
+    const runPS = (args, timeout) => new Promise((resolve) => {
+      const p = spawn('powershell.exe', args, { timeout })
+      let out = ''
+      p.stdout.on('data', (d) => { out += d })
+      p.on('error', (e) => {
+        logElectron('WARN', `uv-cache powershell spawn failed: ${e.message}`)
+        resolve({ code: null, stdout: out })
+      })
+      p.on('close', (code) => resolve({ code, stdout: out }))
+    })
+
+    await runPS(['-NoProfile', '-NonInteractive', '-Command', elevate], 120000)
+
+    // 回读验证（读不需提权；防篡改拦截下 Add 会静默失败，只有回读能发现）
+    const check = await runPS(
+      ['-NoProfile', '-NonInteractive', '-Command',
+        `(Get-MpPreference).ExclusionPath -contains '${psPath}'`],
+      30000)
+    if (check.code === 0 && check.stdout.trim() === 'True') {
+      logElectron('INFO', `uv-cache exclusion added: ${cacheDir}`)
+      // 信号闭环：历史残骸会让信号持续为真，重启后横幅反复弹出；加白成功
+      // 后残骸不再有产生原因，顺手清零。只删陈旧条目（与 Python 端
+      // get_uv_cache_tmp_residue 的计数阈值同一 10 分钟值，2.8 §12 F3）：
+      // 在途解压的 .tmp 可能正被 uv 占用，误删会白烧一级重试；逐条捕获，
+      // 单条被占用不中断其余清理
+      const staleMs = 10 * 60_000
+      try {
+        const fs = require('fs')
+        for (const name of fs.readdirSync(cacheDir)) {
+          if (!name.startsWith('.tmp')) continue
+          try {
+            const st = fs.statSync(path.join(cacheDir, name))
+            if (Date.now() - st.mtimeMs <= staleMs) continue
+            fs.rmSync(path.join(cacheDir, name), { recursive: true, force: true })
+          } catch (e) {
+            logElectron('WARN', `uv-cache tmp cleanup skip ${name}: ${e.message}`)
+          }
+        }
+      } catch (e) {
+        logElectron('WARN', `uv-cache tmp cleanup failed: ${e.message}`)
+      }
+      return { added: true, fallback: false }
+    }
+    logElectron('WARN', `uv-cache exclusion verify failed: code=${check.code}`)
+
+    // 兜底：深链直达排除项页，路径进剪贴板供粘贴
+    try {
+      clipboard.writeText(cacheDir)
+      await shell.openExternal('windowsdefender://exclusions')
+    } catch (e) {
+      logElectron('WARN', `uv-cache fallback deep-link failed: ${e.message}`)
+    }
+    return { added: false, fallback: true, cacheDir }
+  })
+
   // 打开知识库原文件（2.2 §10.4）：素材列表 / Wiki 来源面板 / src 页三入口共用。
   // 安全约束（渲染层参数不可信）：filename 取 basename 削平路径成分，
   // projectId/fileId 仅允许安全字符——可打开路径被锁死在 {dataDir}/files/ 子树内。

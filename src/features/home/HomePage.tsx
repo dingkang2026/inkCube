@@ -95,10 +95,11 @@ export function HomePage({
     return acc
   }, [dueData])
 
-  /** 待办/日历直达:进项目详情对应 Tab(affairs/materials/reports) */
-  const handleOpenProjectTab = (projectId: string, tab: HomeTab) => {
+  /** 待办/日历直达:进项目详情对应 Tab(affairs/materials/reports);
+   *  taskId=待办行点击携带 → 事务 Tab + 自动打开执行抽屉(§6.1.8 直达执行动线) */
+  const handleOpenProjectTab = (projectId: string, tab: HomeTab, taskId?: string) => {
     window.dispatchEvent(new CustomEvent('app:navigate-project-tab', {
-      detail: { projectId, tab, container: 'project' },
+      detail: { projectId, tab, container: 'project', taskId },
     }))
   }
 

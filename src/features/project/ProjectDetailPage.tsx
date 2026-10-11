@@ -23,8 +23,9 @@ import s from './ProjectDetailPage.module.css'
 
 interface ProjectDetailPageProps {
   project: Project
-  /** 通知导航信号（App 层 Activity Hub tab 导航）：收到后切换到目标 Tab */
-  tabSignal?: { tab: string; ts: number } | null
+  /** 通知导航信号（App 层 Activity Hub tab 导航）：收到后切换到目标 Tab；
+   *  taskId 可选（首页待办行直达）：affairs Tab 下自动打开该任务执行抽屉（§6.1.8） */
+  tabSignal?: { tab: string; ts: number; taskId?: string } | null
   onOpenSettings?: () => void
   onProjectDataChanged?: () => void
 }
@@ -124,10 +125,17 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     }
   }, [project.id])
 
+  // 首页待办直达抽屉（§6.1.8）：tabSignal 携带 taskId 且目标为 affairs Tab 时
+  // 下发焦点信号，AffairsTab 在任务列表就绪后打开执行抽屉
+  const [affairsFocus, setAffairsFocus] = useState<{ taskId: string; ts: number } | null>(null)
+
   // Activity Hub 通知导航信号：切到目标 Tab（wiki/affairs/materials/reports/forms）
   useEffect(() => {
     if (tabSignal?.tab && ['materials', 'wiki', 'affairs', 'reports', 'forms'].includes(tabSignal.tab)) {
       setActiveTab(tabSignal.tab as TabKey)
+    }
+    if (tabSignal?.taskId && tabSignal.tab === 'affairs') {
+      setAffairsFocus({ taskId: tabSignal.taskId, ts: tabSignal.ts })
     }
   }, [tabSignal])
 
@@ -170,6 +178,15 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     void checkWikiCompileStatus()
   }, [checkWikiCompileStatus])
   useEffect(() => { void loadPulseData() }, [loadPulseData])
+
+  // 任务写操作边沿（3.0 三期铺线）：事务 Tab 打勾/编辑后脉搏带应办 chip 即时刷新；
+  // 写操作经 AffairsTab.handleChanged / 首页打勾 dispatch 全局事件（事件边沿非轮询，0.4 §3.1）；
+  // loadPulseData 内部已有 latestPidRef 乱序守卫
+  useEffect(() => {
+    const h = () => { void loadPulseData() }
+    window.addEventListener('app:tasks-changed', h)
+    return () => window.removeEventListener('app:tasks-changed', h)
+  }, [loadPulseData])
 
   // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）。
   // 默认 Tab 即 wiki（3.0 一期知识置首）：挂载首跑由上方「挂载拉快照」覆盖，
@@ -385,6 +402,8 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
               projectType={projectType}
               stage={currentStage}
               refreshSignal={affairsRefresh}
+              focusTask={affairsFocus}
+              onFocusHandled={() => setAffairsFocus(null)}
               onPanelOpenChange={(open) => { if (open) setChatOpen(false) }}
               onOpenReports={() => setActiveTab('reports')}
             />

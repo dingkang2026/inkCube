@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FolderOpen, Wrench, Paperclip, Pause, Square, SendHorizonal, AlertTriangle, Check, SkipForward, X, Puzzle, Play } from 'lucide-react'
 import { TaskMessageList } from './TaskMessageList'
+import { AntivirusBanner } from './AntivirusBanner'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import type { ShellConfirmData, SkillConfirmData } from './useTaskChat'
 import { useFeatureGuard } from '../readiness/useReadiness'
@@ -257,6 +258,8 @@ export function TaskChatView({
           <div className={styles.dropText}>{t('task.dropHint')}</div>
         </div>
       )}
+      {/* 一键加白名单横幅（2.8 §12 F3）：杀软阻断信号全局提示，组件内自管理 */}
+      <AntivirusBanner />
       {isEmpty ? (
         <div className={styles.emptyState}>
           <div className={styles.emptyLogo}><Wrench size={36} /></div>

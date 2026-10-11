@@ -1,5 +1,6 @@
 /** src/features/home/TodayTodo.tsx — 首页今日待办(3.0 §7.1:跨项目,逾期置顶;
- *  §10 裁决 10:只读 + 直达,打勾为快捷完成,不做字段编辑) */
+ *  §10 裁决 10:只读 + 直达,打勾为快捷完成,不做字段编辑。
+ *  行点击携带 taskId 直达执行抽屉(§6.1.8);行内按钮按类型分流至 Tab 级 */
 import { useTranslation } from 'react-i18next'
 import { Check } from 'lucide-react'
 import { isOverdue, daysOverdue, type DueTask } from '../project/affairs/types'
@@ -10,7 +11,8 @@ export type HomeTab = 'affairs' | 'materials' | 'reports'
 
 interface TodayTodoProps {
   tasks: DueTask[]
-  onOpenProject: (projectId: string, tab: HomeTab) => void
+  /** taskId 可选:整行点击携带 → 事务 Tab + 自动打开执行抽屉;行内按钮仅 Tab 级 */
+  onOpenProject: (projectId: string, tab: HomeTab, taskId?: string) => void
 }
 
 function localISO(d: Date): string {
@@ -49,7 +51,7 @@ export function TodayTodo({ tasks, onOpenProject }: TodayTodoProps) {
       <div className={s.title}>{t('homeTodo.title')}</div>
       <div className={s.list}>
         {tasks.map((task) => (
-          <div key={task.id} className={s.row} onClick={() => onOpenProject(task.project_id, 'affairs')}>
+          <div key={task.id} className={s.row} onClick={() => onOpenProject(task.project_id, 'affairs', task.id)}>
             <span className={`${s.due} ${isOverdue(task) ? s.dueOverdue : ''}`}>{dueText(task)}</span>
             <span className={s.text}><b>{task.project_name}</b> · {task.title}</span>
             {task.task_type === 'material' && (

@@ -1,8 +1,9 @@
-/** src/features/project/affairs/TaskFormModal.tsx — 任务新建/编辑表单(3.0 §6.1.6)
+/** src/features/project/affairs/TaskFormModal.tsx — 任务新建/编辑表单(3.0 §6.1.6/6.1.7)
  *  新建:归当前时期(服务端 POST 按项目 stage 推导,表单不出现时期字段);
  *  编辑:时期可改(PATCH 白名单 phase),类型禁改(白名单无 task_type)。
  *  recurring 类型切换为节奏字段(频率 + due_day:1-31|end|MM-DD),隐藏截止日;
- *  模板带入的 auto_complete 原样保留回传(实例与模板解耦,§6.4-1)。
+ *  完成匹配词(§6.1.7):新建 recurring/编辑 file_parsed 实例可设,清空=移除自动完成;
+ *  模板带入的 auto_complete 不可改场景原样保留回传(实例与模板解耦,§6.4-1)。
  */
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -37,6 +38,10 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
   const [freq, setFreq] = useState<RecurrenceRule['freq']>(initial?.recurrence_rule?.freq ?? 'monthly')
   const [dueDay, setDueDay] = useState<string>(
     initial?.recurrence_rule ? String(initial.recurrence_rule.due_day) : '15')
+  // 完成匹配词(§6.1.7):新建 recurring 或编辑 file_parsed 实例可设;清空保存 =
+  // 移除自动完成规则(null,退回手动完成);report_completed 实例不显示原样透传
+  const showMatch = isRecurring || initial?.auto_complete?.on === 'file_parsed'
+  const [matchInput, setMatchInput] = useState(initial?.auto_complete?.match ?? '')
   const [dueDayError, setDueDayError] = useState(false)
   const [saveError, setSaveError] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -64,6 +69,12 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
     if (!title.trim() || saving) return
     let recurrenceRule: RecurrenceRule | null = null
     let due: string | null = dueDate || null
+    // 自动完成规则(§6.1.7):可改场景按输入落 file_parsed(清空=移除);
+    // 新建仅 recurring 生效(切类型残留输入不生效,与字段隐藏一致)
+    const match = matchInput.trim()
+    const autoComplete: PhaseTask['auto_complete'] = initial
+      ? (showMatch ? (match ? { on: 'file_parsed', match } : null) : initial.auto_complete)
+      : (isRecurring && match ? { on: 'file_parsed', match } : null)
     if (isRecurring) {
       const day = parseDueDay(freq, dueDay)
       if (day == null) { setDueDayError(true); return }
@@ -86,12 +97,12 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
           // 节奏的唯一在线编辑入口)原样透传,与 auto_complete 同策略(§6.4-1);
           // 回传 null 会抹规则致周期任务永久停止滚动
           recurrenceRule: isRecurring ? recurrenceRule : initial.recurrence_rule,
-          autoComplete: initial.auto_complete,
+          autoComplete,
         })
       } else {
         await window.electronAPI.invoke('affairs:createTask', {
           projectId, title: title.trim(), taskType, description,
-          dueDate: due, recurrenceRule,
+          dueDate: due, recurrenceRule, autoComplete,
         })
       }
       onSaved()
@@ -115,7 +126,7 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
         <div className={s.fieldRow}>
           <label className={s.label}>{t('affairs.form.typeLabel')}</label>
           <select className={s.input} value={taskType} disabled={!!initial}
-            onChange={(e) => { setTaskType(e.target.value as PhaseTaskType); setDueDayError(false) }}>
+            onChange={(e) => { setTaskType(e.target.value as PhaseTaskType); setDueDayError(false); setMatchInput('') }}>
             {TASK_TYPES.map((tt) => <option key={tt} value={tt}>{t(`affairs.type.${tt}`)}</option>)}
           </select>
         </div>
@@ -144,6 +155,14 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
             <label className={s.label}>{t('affairs.form.dueLabel')}</label>
             <input type="date" className={s.input} value={dueDate}
               onChange={(e) => setDueDate(e.target.value)} />
+          </div>
+        )}
+        {showMatch && (
+          <div className={s.fieldRow}>
+            <label className={s.label}>{t('affairs.form.matchLabel')}</label>
+            <input className={s.input} value={matchInput}
+              onChange={(e) => setMatchInput(e.target.value)}
+              placeholder={t('affairs.form.matchPlaceholder')} />
           </div>
         )}
         {dueDayError && <p className={s.error}>{t('affairs.form.dueDayInvalid')}</p>}

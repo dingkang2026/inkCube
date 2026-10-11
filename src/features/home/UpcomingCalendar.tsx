@@ -7,7 +7,8 @@ import s from './UpcomingCalendar.module.css'
 
 interface UpcomingCalendarProps {
   tasks: DueTask[]
-  onOpenProject: (projectId: string, tab: HomeTab) => void
+  /** 与 TodayTodo 同签名(taskId 可选);日历条目仅 Tab 级,不携带 taskId */
+  onOpenProject: (projectId: string, tab: HomeTab, taskId?: string) => void
 }
 
 function localISO(d: Date): string {

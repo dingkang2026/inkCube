@@ -1,4 +1,6 @@
-/** tests/TaskFormModal.test.tsx — 3.0 二期 Task 10:新建/节奏字段/编辑预填/预填截止日 */
+/** tests/TaskFormModal.test.tsx — 3.0 二期 Task 10:新建/节奏字段/编辑预填/预填截止日
+ *  拉齐补丁增:完成匹配词字段(§6.1.7 新建 recurring 可设/file_parsed 可改/清空=移除规则)。
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const invokeMock = vi.fn()
@@ -164,5 +166,97 @@ describe('TaskFormModal', () => {
     await flush()
     expect(container.textContent).toContain('affairs.form.saveFailed')
     expect(base.onClose).not.toHaveBeenCalled()
+  })
+
+  it('creates recurring with match word as file_parsed auto-complete', async () => {
+    const { getByPlaceholderText, getByText, queryByPlaceholderText } = render(
+      <TaskFormModal {...base} initial={null} />)
+    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).toBeNull()  // 默认 material 不显示
+    fireEvent.change(getByPlaceholderText('affairs.form.titleLabel'),
+      { target: { value: '企业月报' } })
+    fireEvent.change(getByText('affairs.type.material').closest('select')!,
+      { target: { value: 'recurring' } })
+    fireEvent.change(getByPlaceholderText('affairs.form.matchPlaceholder'),
+      { target: { value: ' 月报 ' } })
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:createTask', expect.objectContaining({
+      taskType: 'recurring', autoComplete: { on: 'file_parsed', match: '月报' },   // trim
+    }))
+  })
+
+  it('creates recurring with empty match as null (manual completion)', async () => {
+    const { getByPlaceholderText, getByText } = render(
+      <TaskFormModal {...base} initial={null} />)
+    fireEvent.change(getByPlaceholderText('affairs.form.titleLabel'),
+      { target: { value: '企业月报' } })
+    fireEvent.change(getByText('affairs.type.material').closest('select')!,
+      { target: { value: 'recurring' } })
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:createTask', expect.objectContaining({
+      taskType: 'recurring', autoComplete: null,
+    }))
+  })
+
+  it('does not send stale match typed before switching type away from recurring', async () => {
+    // 切类型即清空输入:先 recurring 填词再切回 material,字段隐藏且提交不带规则
+    const { getByPlaceholderText, getByText, queryByPlaceholderText } = render(
+      <TaskFormModal {...base} initial={null} />)
+    fireEvent.change(getByPlaceholderText('affairs.form.titleLabel'),
+      { target: { value: '拜访客户' } })
+    const typeSelect = getByText('affairs.type.material').closest('select')!
+    fireEvent.change(typeSelect, { target: { value: 'recurring' } })
+    fireEvent.change(getByPlaceholderText('affairs.form.matchPlaceholder'),
+      { target: { value: '月报' } })
+    fireEvent.change(typeSelect, { target: { value: 'material' } })
+    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).toBeNull()
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:createTask', expect.objectContaining({
+      taskType: 'material', autoComplete: null,
+    }))
+  })
+
+  it('edits file_parsed instance: prefills and rewords the match', async () => {
+    const { getByPlaceholderText, getByText } = render(
+      <TaskFormModal {...base} initial={task({
+        task_type: 'material', auto_complete: { on: 'file_parsed', match: '月报' },
+      })} />)
+    const match = getByPlaceholderText('affairs.form.matchPlaceholder') as HTMLInputElement
+    expect(match.value).toBe('月报')   // 预填
+    fireEvent.change(match, { target: { value: '季报' } })
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:updateTask', expect.objectContaining({
+      taskId: 't1', autoComplete: { on: 'file_parsed', match: '季报' },
+    }))
+  })
+
+  it('clearing the match on edit removes the auto-complete rule', async () => {
+    const { getByPlaceholderText, getByText } = render(
+      <TaskFormModal {...base} initial={task({
+        task_type: 'material', auto_complete: { on: 'file_parsed', match: '月报' },
+      })} />)
+    fireEvent.change(getByPlaceholderText('affairs.form.matchPlaceholder'),
+      { target: { value: '' } })
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:updateTask', expect.objectContaining({
+      taskId: 't1', autoComplete: null,
+    }))
+  })
+
+  it('hides match field for report_completed instance and passes it through untouched', async () => {
+    const { queryByPlaceholderText, getByText } = render(
+      <TaskFormModal {...base} initial={task({
+        task_type: 'report', auto_complete: { on: 'report_completed' },
+      })} />)
+    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).toBeNull()
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:updateTask', expect.objectContaining({
+      taskId: 't1', autoComplete: { on: 'report_completed' },   // 原样透传不被抹(§6.4-1)
+    }))
   })
 })

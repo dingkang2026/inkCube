@@ -15,6 +15,11 @@ from typing import Any
 from skills.context import SkillContext
 from skills.protocol import BaseSkill
 from tools.base import BaseTool
+from tools.venv_manager import (
+    ensure_venv_blocking,
+    get_venv_path_from_python,
+    is_preinstall_done,
+)
 
 # L2 guide budget (progressive disclosure): SKILL.md body chars attached to
 # the first execution result / slash hint. 8000 chars covers the full body
@@ -251,7 +256,15 @@ class AgentSkillAdapter(BaseSkill):
         command = params.get("command", "")
 
         # Entry-script contract: only CLI-mode skills are auto-executed.
+        # 首用同步预装（2.8 §5.5）：marker 缺失（后台预装未完成或曾失败）时
+        # 在此「缺就装、装完继续」，不把预装竞态的错误抛给 LLM。
         if self._entry_script and context.venv_python:
+            ready = await self._ensure_venv_ready(context.venv_python)
+            if not ready:
+                return json.dumps({
+                    "error": "任务依赖自动安装失败，请重试（反复失败请检查网络或重启应用）",
+                    "retryable": True,
+                }, ensure_ascii=False)
             return await self._run_script(self._entry_script, command, context)
 
         # No scripts or no venv — return instructions for the agent
@@ -264,6 +277,19 @@ class AgentSkillAdapter(BaseSkill):
         }
         self._attach_guide(result_obj)
         return json.dumps(result_obj, ensure_ascii=False)
+
+    @staticmethod
+    async def _ensure_venv_ready(venv_python: str) -> bool:
+        """CLI 模式 skill 首用依赖就绪：marker 在位即快路径，缺失同步补装。
+
+        预装命令本身有 subprocess timeout（venv_manager）兜底，且经
+        to_thread 执行不阻塞事件循环；失败返回 False 由 execute 转为
+        retryable JSON 交还 LLM（最后防线，正常路径在此自愈）。
+        """
+        venv_path = get_venv_path_from_python(venv_python)
+        if is_preinstall_done(venv_path):
+            return True
+        return await asyncio.to_thread(ensure_venv_blocking, venv_path)
 
     def _find_primary_script(self, scripts_dir: str) -> str | None:
         """Find the primary script to execute (explicit CLI contract only).

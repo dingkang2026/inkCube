@@ -83,7 +83,8 @@ export default function App() {
   const [canStartTask, setCanStartTask] = useState(true)
   const [runningTaskIds, setRunningTaskIds] = useState<Set<string>>(new Set())
   /** 通知导航到项目 Tab 的信号（tab + 时间戳，ProjectDetailPage 消费后切换 Tab） */
-  const [projectTabSignal, setProjectTabSignal] = useState<{ tab: string; ts: number } | null>(null)
+  // taskId 可选:首页待办行点击携带 → 事务 Tab + 自动打开执行抽屉(3.0 §6.1.8)
+  const [projectTabSignal, setProjectTabSignal] = useState<{ tab: string; ts: number; taskId?: string } | null>(null)
 
   // ── First-run onboarding (0.4 §7.3): 一次性判定所需状态 ──
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -303,7 +304,7 @@ export default function App() {
   // Listen for navigate-project-tab (Activity Hub toast/home feed action) and navigate-tasks
   useEffect(() => {
     const tabHandler = (e: Event) => {
-      const { projectId, tab, container } = (e as CustomEvent).detail
+      const { projectId, tab, container, taskId } = (e as CustomEvent).detail
       setSettingsOpen(false)
       setShowTemplateManagement(false)
       // 基础库容器（0.4 §3.6 导航分流）：projectId 即 baseLibId，与项目详情互斥；
@@ -316,7 +317,7 @@ export default function App() {
         setSelectedProjectId(projectId)
       }
       setActiveNav('projects')
-      if (tab) setProjectTabSignal({ tab, ts: Date.now() })
+      if (tab) setProjectTabSignal({ tab, ts: Date.now(), taskId })
     }
     const tasksHandler = () => handleNavChange('tasks')
     window.addEventListener('app:navigate-project-tab', tabHandler)

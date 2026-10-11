@@ -329,6 +329,21 @@ async def check_external_deps():
     return {"deps": deps_status}
 
 
+@router.get("/uv-cache-blocked")
+async def get_uv_cache_blocked():
+    """Whether antivirus blocking has slowed down dependency installs (2.8 §12 F3).
+
+    Signal = .tmp* residue in the uv cache: every rename blocked by
+    realtime antivirus scanning (or an interrupted install) leaves one
+    such directory behind, persistently and without any state to maintain.
+    Frontend shows a one-click antivirus-exclusion banner when blocked.
+    """
+    from tools.venv_manager import get_uv_cache_tmp_residue
+
+    tmp_count = await asyncio.to_thread(get_uv_cache_tmp_residue)
+    return {"blocked": tmp_count > 0, "tmp_count": tmp_count}
+
+
 @router.get("/tools/status")
 async def get_tools_status():
     """Return status of all bundled tools resolved by the unified tool resolver.

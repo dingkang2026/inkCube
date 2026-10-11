@@ -417,9 +417,8 @@ main{flex:1;overflow:auto;padding:20px 24px;position:relative}
               <button class="btn sm" onclick="openTaskForm()"><span class="ic" data-icon="plus"></span> 添加任务</button>
             </div>
             <div class="muted" style="font-size:12px;margin:-6px 0 10px">周期事务在「周期节奏」视图管理，不进本看板（避免双入口）</div>
-            <div class="task-g"><h4>资料（3）</h4><div id="g-material"></div></div>
-            <div class="task-g"><h4>报告（2）</h4><div id="g-report"></div></div>
-            <div class="task-g"><h4>节点（2）</h4><div id="g-milestone"></div></div>
+            <!-- §6.1.3:任务按时期分组(当前期展开、其余折叠回看),由 renderBoard 渲染 -->
+            <div id="boardGroups"></div>
           </div>
           <div id="affairs-rhythm" hidden>
             <div class="rhythm-card">
@@ -439,7 +438,7 @@ main{flex:1;overflow:auto;padding:20px 24px;position:relative}
           <div id="affairs-cal" hidden>
             <div class="board-head">
               <span class="sec"><b>2026 年 10 月</b></span>
-              <span style="margin-left:auto"><button class="btn sm on">月历</button> <button class="btn sm">周历</button> <button class="btn sm" onclick="openTaskForm()"><span class="ic" data-icon="plus"></span> 添加</button></span>
+              <span style="margin-left:auto"><button class="btn sm on">月历</button> <button class="btn sm" onclick="openTaskForm()"><span class="ic" data-icon="plus"></span> 添加</button></span>
             </div>
             <div class="cal" id="cal"></div>
           </div>
@@ -469,7 +468,7 @@ main{flex:1;overflow:auto;padding:20px 24px;position:relative}
     <h3 id="fmTitle">新建任务</h3>
     <div class="form-row"><label>标题</label><input id="fTitle" placeholder="如：收集企业征信报告"></div>
     <div class="form-row"><label>类型</label>
-      <select id="fKind" onchange="document.getElementById('fOnce').classList.toggle('hidden',this.value==='recurring');document.getElementById('fRec').classList.toggle('hidden',this.value!=='recurring')">
+      <select id="fKind" onchange="setKind(this.value)">
         <option value="material">资料</option><option value="report">报告</option><option value="milestone">节点</option><option value="recurring">周期事务</option>
       </select></div>
     <div id="fOnce">
@@ -478,8 +477,9 @@ main{flex:1;overflow:auto;padding:20px 24px;position:relative}
     <div id="fRec" class="hidden">
       <div class="form-row"><label>频率</label><select><option>每月</option><option>每季</option><option>每年</option></select>
         <label style="width:60px">每期截止</label><select><option>15 日</option><option>季末</option><option>4 月 30 日</option></select></div>
-      <div class="form-row"><label>完成匹配</label><input placeholder="文件名含「月报」"></div>
     </div>
+    <!-- §6.1.7:完成匹配词(新建「周期事务」/编辑 file_parsed 实例可改;清空=移除规则) -->
+    <div class="form-row hidden" id="fMatchRow"><label>完成匹配</label><input id="fMatch" placeholder="文件名含「月报」"></div>
     <div class="acts"><button class="btn" onclick="closeForm()">取消</button><button class="btn primary" onclick="saveTask()">创建</button></div>
   </div>
 </div>
@@ -520,38 +520,47 @@ const P={
 function ic(n,s=15){return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${P[n]||''}</svg>`}
 document.querySelectorAll('[data-icon]').forEach(el=>{el.innerHTML=ic(el.dataset.icon)});
 
-/* ── mock：推进中任务（时期看板；kind 决定抽屉动作区，§6.1.6） ── */
-const TASKS={
- material:[
-  {id:'t1',kind:'material',title:'收集尽调材料清单',due:'截止 10-12',state:'err',dueTxt:'逾期 3 天',rule:'文件名含「尽调」'},
-  {id:'t2',kind:'material',title:'收集政策申报材料',due:'无截止',state:'norm',dueTxt:'',rule:'文件名含「申报」'},
-  {id:'t8',kind:'material',title:'收集企业征信/信用报告',due:'—',state:'skip',dueTxt:'',rule:'文件名含「征信」'},
-  {id:'t3',kind:'material',title:'收集投资/合作协议文本',due:'完成 10-08',state:'done',dueTxt:''}
- ],
- report:[
-  {id:'t4',kind:'report',title:'产出项目尽调/评估报告',due:'截止 10-20',state:'warn',dueTxt:'剩余 5 天',rule:'标题含「尽调」'},
-  {id:'t5',kind:'report',title:'产出落地方案（选址/政策/时间表）',due:'完成 10-09',state:'done',dueTxt:''}
- ],
- milestone:[
-  {id:'t6',kind:'milestone',title:'完成项目签约',due:'定日期',state:'norm',dueTxt:''},
-  {id:'t7',kind:'milestone',title:'完成公司注册落地',due:'定日期',state:'norm',dueTxt:''}
- ]
-};
+/* ── mock:推进中项目任务（§6.1.3 时期看板:按时期分组,当前期展开、其余折叠回看;
+   kind 决定抽屉动作区,§6.1.6） ── */
+let TASKS=[
+ // 招商前(历史回看,默认折叠)
+ {id:'h1',kind:'material',phase:'before',title:'收集企业基础资料',due:'完成 09-20',state:'done',dueTxt:'',rule:'文件名含「基础」'},
+ {id:'h2',kind:'milestone',phase:'before',title:'完成立项评审',due:'完成 09-28',state:'done',dueTxt:'',rule:null},
+ // 招商中(当前期,默认展开)
+ {id:'t1',kind:'material',phase:'during',title:'收集尽调材料清单',due:'截止 10-12',state:'err',dueTxt:'逾期 3 天',rule:'文件名含「尽调」'},
+ {id:'t2',kind:'material',phase:'during',title:'收集政策申报材料',due:'无截止',state:'norm',dueTxt:'',rule:'文件名含「申报」'},
+ {id:'t8',kind:'material',phase:'during',title:'收集企业征信/信用报告',due:'—',state:'skip',dueTxt:'',rule:'文件名含「征信」'},
+ {id:'t3',kind:'material',phase:'during',title:'收集投资/合作协议文本',due:'完成 10-08',state:'done',dueTxt:'',rule:null},
+ {id:'t4',kind:'report',phase:'during',title:'产出项目尽调/评估报告',due:'截止 10-20',state:'warn',dueTxt:'剩余 5 天',rule:'标题含「尽调」'},
+ {id:'t5',kind:'report',phase:'during',title:'产出落地方案（选址/政策/时间表）',due:'完成 10-09',state:'done',dueTxt:'',rule:null},
+ {id:'t6',kind:'milestone',phase:'during',title:'完成项目签约',due:'定日期',state:'norm',dueTxt:'',rule:null},
+ {id:'t7',kind:'milestone',phase:'during',title:'完成公司注册落地',due:'定日期',state:'norm',dueTxt:'',rule:null}
+];
+const PHASE_LABEL={before:'招商前',during:'招商中',after:'已落地'};
+const KIND_LABEL={material:'资料',report:'报告',milestone:'节点'};
+const openPhases=new Set(['during']);   // 当前期展开,历史时期折叠回看(§6.4-3)
 const RING={err:'<span class="ring err"></span>',warn:'<span class="ring warn"></span>',norm:'<span class="ring"></span>',skip:'<span class="ring" style="border-style:dashed"></span>',done:'<span class="ring-done">'+ic('check',10)+'</span>'};
-function findTask(id){for(const g in TASKS){const f=TASKS[g].find(x=>x.id===id);if(f)return f;}return null;}
+const findTask=(id)=>TASKS.find((x)=>x.id===id)||null;
+function togglePhase(p){openPhases.has(p)?openPhases.delete(p):openPhases.add(p);renderBoard();}
 function renderBoard(){
  const showSkip=document.querySelector('#skipToggle input').checked;
- let total=0;
- for(const g of ['material','report','milestone']){
-  const list=TASKS[g].filter(t=>showSkip||t.state!=='skip');
-  total+=list.length;
-  document.getElementById('g-'+g).innerHTML=list.map(t=>`
+ /* 跳过开关条件显示:仅存在 skipped 实例时(§6.1.7) */
+ document.getElementById('skipToggle').style.display=TASKS.some(t=>t.state==='skip')?'':'none';
+ let total=0,html='';
+ for(const p of ['before','during','after']){
+  const list=TASKS.filter(t=>t.phase===p&&(showSkip||t.state!=='skip'));
+  if(p==='during')total=list.length;   /* 头部计数 = 当前期(非跳过,含已完成) */
+  const open=openPhases.has(p);
+  const rows=list.map(t=>`
    <div class="task-row ${t.state==='done'?'done':''}" onclick="openDrawer('${t.id}')">
     ${RING[t.state]}<span class="t">${t.title}${t.state==='skip'?' <span class="muted">（已跳过）</span>':''}</span>
+    <span class="muted" style="font-size:11px">${KIND_LABEL[t.kind]}</span>
     <span class="due ${t.state==='err'?'t-err':t.state==='warn'?'t-warn':'muted'}">${t.due}</span>
     ${t.dueTxt?`<span class="due ${t.state==='err'?'t-err':'t-warn'}">${t.dueTxt}</span>`:''}
    </div>`).join('');
+  html+=`<div class="task-g"><h4 style="cursor:pointer;user-select:none" onclick="togglePhase('${p}')">${open?'▾':'▸'} ${PHASE_LABEL[p]}（${list.length}）</h4>${open?rows:''}</div>`;
  }
+ document.getElementById('boardGroups').innerHTML=html;
  document.getElementById('boardCount').textContent=total+' 项任务 · 2 项本周到期';
 }
 /* ── 日历（2026-10，今天 10-15） ── */
@@ -566,15 +575,14 @@ function renderCal(){
  }
  document.getElementById('cal').innerHTML=h;
 }
-/* ── 抽屉：动作区按任务类型分化（§6.1.6：material=上传 / report=发起报告 / milestone=无上传区） ── */
+/* ── 抽屉:动作区按任务类型分化（§6.1.6:material=上传引导文案(裁决 9) / report=发起报告 / milestone=无上传区） ── */
 let drawerTask=null;
 function openDrawer(id){
  const t=findTask(id);if(!t)return;drawerTask=t;
  let act='';
  if(t.state==='skip')act='';
  else if(t.kind==='material')act=`
-  <div class="sec-block"><button class="btn primary">上传材料</button>
-   <div class="muted" style="font-size:12px;margin-top:6px">挂本项目知识库，自动进解析队列（0.4 长时活动）</div></div>`;
+  <div class="sec-block"><div class="muted" style="font-size:13px">到「资料」Tab 上传命中关键名的文件,解析完成后本任务自动完成(裁决 9:抽屉不内嵌上传,动线收口在资料 Tab)</div></div>`;
  else if(t.kind==='report')act=`
   <div class="sec-block"><button class="btn primary">发起报告</button>
    <div class="muted" style="font-size:12px;margin-top:6px">进入报告向导（预选本项目与推荐模板）</div></div>`;
@@ -606,13 +614,23 @@ function restoreTask(){if(!drawerTask)return;drawerTask.state='norm';renderBoard
 /* ── 任务表单弹窗（新建/编辑共用，§6.1.7）── */
 let editId=null,delId=null,toastTimer=null;
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),2000);}
-function setKind(k){const s=document.getElementById('fKind');s.value=k;s.onchange();}
+function setKind(k){
+ const rec=k==='recurring';
+ document.getElementById('fOnce').classList.toggle('hidden',rec);
+ document.getElementById('fRec').classList.toggle('hidden',!rec);
+ /* §6.1.7:完成匹配词 = 新建/编辑 recurring,或编辑带 file_parsed 规则的实例 */
+ const t=editId?findTask(editId):null;
+ const showMatch=rec||!!(t&&t.rule&&t.rule.indexOf('文件名')===0);
+ document.getElementById('fMatchRow').classList.toggle('hidden',!showMatch);
+ if(t&&t.rule){const m=/「(.+?)」/.exec(t.rule);document.getElementById('fMatch').value=m?m[1]:'';}
+}
 function openTaskForm(target){
  const fm=document.getElementById('formMask');
  if(target==='rhythm'){
   editId=null;
   document.getElementById('fmTitle').textContent='编辑节奏：企业月报';
   document.getElementById('fTitle').value='企业月报';setKind('recurring');
+  document.getElementById('fMatch').value='月报';
  }else if(target){
   const t=findTask(target);if(!t)return;editId=target;
   document.getElementById('fmTitle').textContent='编辑任务';
@@ -635,7 +653,7 @@ function saveTask(){
  const dueV=document.getElementById('fDue').value;
  const due=dueV?'截止 '+dueV.slice(5).replace('-','月')+'日':'无截止';
  if(editId){const t=findTask(editId);t.title=title;t.kind=kind;t.due=due;toast('已保存');}
- else{TASKS[kind].push({id:'n'+Date.now(),kind,title,due,state:'norm',dueTxt:'',rule:'手动'});toast('已创建任务');}
+ else{TASKS.push({id:'n'+Date.now(),kind,phase:'during',title,due,state:'norm',dueTxt:'',rule:'手动'});toast('已创建任务');}
  renderBoard();closeForm();
 }
 function askDelete(){
@@ -644,8 +662,8 @@ function askDelete(){
  document.getElementById('delMask').classList.remove('hidden');
 }
 function doDelete(){
- const t=findTask(delId);
- if(t)TASKS[t.kind]=TASKS[t.kind].filter(x=>x.id!==delId);
+ const i=TASKS.findIndex(x=>x.id===delId);
+ if(i>=0)TASKS.splice(i,1);
  document.getElementById('delMask').classList.add('hidden');
  renderBoard();closeDrawer();toast('已删除');
 }

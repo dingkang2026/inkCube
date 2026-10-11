@@ -12,6 +12,7 @@ import asyncio
 import os
 import subprocess as _real_subprocess
 import sys
+import threading
 import time
 import types
 
@@ -162,6 +163,275 @@ class TestEnsureVenv:
 
         assert vm.ensure_venv(str(tmp_path)) == venv_path
         assert called == []
+
+
+# ── 2b. ensure_venv_blocking：skill CLI 首用同步补装 ────────
+
+
+class TestEnsureVenvBlocking:
+    def test_playwright_in_main_package_list(self):
+        """防回归：playwright 必须在主预装清单（一条命令一个 marker 一套重试），
+        禁止再次拆成独立旁路（旁路曾被主命令失败级联跳过、失败无重试）。"""
+        assert "playwright" in vm.PREINSTALLED_PACKAGES
+
+    def test_missing_marker_installs_and_writes_marker(self, tmp_path, monkeypatch):
+        """marker 缺失 → 同步预装 → 写 marker → True（缺就装、装完继续）。"""
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+        installs = []
+        monkeypatch.setattr(
+            vm, "preinstall_packages", lambda py: installs.append(py) or True)
+
+        assert vm.ensure_venv_blocking(venv_path) is True
+        assert len(installs) == 1
+        assert os.path.isfile(os.path.join(venv_path, vm._PREINSTALL_MARKER))
+
+    def test_marker_present_is_zero_cost_fast_path(self, tmp_path, monkeypatch):
+        """marker 在位 → 直接 True，不触发预装（每次 skill 执行的常态路径）。"""
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+        with open(os.path.join(venv_path, vm._PREINSTALL_MARKER), "w",
+                  encoding="utf-8") as f:
+            f.write("ok")
+        called = []
+        monkeypatch.setattr(
+            vm, "preinstall_packages", lambda py: called.append(py) or True)
+
+        assert vm.ensure_venv_blocking(venv_path) is True
+        assert called == []
+
+    def test_install_failure_returns_false_without_marker(self, tmp_path, monkeypatch):
+        """预装失败 → False 且不写 marker（调用方转 retryable，下次调用重试）。"""
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+        monkeypatch.setattr(vm, "preinstall_packages", lambda py: False)
+
+        assert vm.ensure_venv_blocking(venv_path) is False
+        assert not os.path.isfile(os.path.join(venv_path, vm._PREINSTALL_MARKER))
+
+    def test_waits_for_inflight_background_preinstall(self, tmp_path, monkeypatch):
+        """后台预装线程持锁进行中 → blocking 等待后双检 marker 受益，不重复装
+        （互斥语义：后台线程与执行侧并发时只有一方真正跑安装命令）。"""
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+        calls = []
+        lock = vm._get_preinstall_lock(venv_path)
+
+        def bg():
+            with lock:
+                time.sleep(0.2)
+                vm._write_preinstall_marker(venv_path)
+
+        t = threading.Thread(target=bg)
+        t.start()
+        time.sleep(0.05)  # 确保 bg 先持锁，进入等待分支
+        monkeypatch.setattr(
+            vm, "preinstall_packages", lambda py: calls.append(py) or True)
+
+        assert vm.ensure_venv_blocking(venv_path) is True
+        t.join()
+        assert calls == []  # 双检发现 marker，未重复安装
+        assert os.path.isfile(os.path.join(venv_path, vm._PREINSTALL_MARKER))
+
+    def test_get_venv_path_from_python(self):
+        """解释器路径反推 venv 根目录（win: Scripts/.. 与 posix: bin/.. 同构）。"""
+        assert vm.get_venv_path_from_python(
+            os.path.join("d", "x", "Scripts", "python.exe")) == os.path.join("d", "x")
+        assert vm.get_venv_path_from_python(
+            os.path.join("d", "x", "bin", "python")) == os.path.join("d", "x")
+
+
+# ── 2c. preinstall_packages 自愈重试编排 ─────────────────
+
+
+class TestPreinstallFallback:
+    """预装自愈编排：cached → 修复 archive 改名 + 重试 → --no-cache 绕行
+    → 镜像 + --no-cache（官方源不可达/极慢时的可达性兑底）。
+
+    背景：Windows 上 uv 缓存的解压→archive-v0 改名可被实时防护稳定阻断
+    （os error 5，与 uv 版本无关，2.8 §12 F2），瞬态网络失败与官方源慢网
+    也会导致预装退出；单次尝试的 preinstall 在这类环境下永远无法自愈。
+    """
+
+    def _patch_uv(self, monkeypatch, results, sleeps):
+        """mock uv 存在、_run_preinstall 按序返回 results、time.sleep 记录。
+
+        results 元素可为 bool（默认错误文案）或 (ok, err) 元组。
+        返回 (cmds, repairs)：cmds 为各次安装命令，repairs 为每轮修复拿到的错误全文。
+        """
+        monkeypatch.setattr(vm, "resolve_tool",
+                            lambda name: "uv.exe" if name == "uv" else None)
+        repairs: list[str] = []
+        monkeypatch.setattr(
+            vm, "_repair_uv_archive_rename",
+            lambda err: repairs.append(err) or 0)
+        cmds = []
+
+        def fake_run(cmd):
+            cmds.append(cmd)
+            idx = len(cmds) - 1
+            r = results[idx] if idx < len(results) else False
+            if isinstance(r, tuple):
+                return r
+            return (r, "" if r else "exit 1: boom")
+
+        monkeypatch.setattr(vm, "_run_preinstall", fake_run)
+        monkeypatch.setattr(vm.time, "sleep", lambda s: sleeps.append(s))
+        return cmds, repairs
+
+    def test_first_attempt_success_no_retry(self, monkeypatch):
+        """首次即成功 → 只调 1 次、无等待、无修复（常态零开销）。"""
+        sleeps: list = []
+        cmds, repairs = self._patch_uv(monkeypatch, [True], sleeps)
+
+        assert vm.preinstall_packages("fake/py") is True
+        assert len(cmds) == 1
+        assert "--no-cache" not in cmds[0]
+        assert sleeps == []
+        assert repairs == []
+
+    def test_transient_failure_repaired_then_retry_succeeds(self, monkeypatch):
+        """首次失败 → 等待后修复 archive 再重试成功（零系统操作自愈）。"""
+        sleeps: list = []
+        cmds, repairs = self._patch_uv(monkeypatch, [False, True], sleeps)
+
+        assert vm.preinstall_packages("fake/py") is True
+        assert len(cmds) == 2
+        assert all("--no-cache" not in c for c in cmds)
+        assert sleeps == [vm._PREINSTALL_RETRY_DELAY]
+        assert len(repairs) == 1
+        assert "exit 1: boom" in repairs[0]  # 修复拿到上轮错误全文供解析
+
+    def test_repair_blocked_rename_from_stderr(self, tmp_path):
+        """从 uv stderr 提取改名对并亲手完成：tmp 存在且 dest 不存在 → rename。"""
+        tmp_dir = tmp_path / ".tmpUQVz67"
+        tmp_dir.mkdir()
+        (tmp_dir / "marker.txt").write_text("x", encoding="utf-8")
+        dest_dir = tmp_path / "archive-v0" / "WKFokGJGUE5kmkb-lsKZH"
+        stderr = (f"error: Failed to write to the distribution cache\n"
+                  f"  cause: failed to rename file from {tmp_dir} to "
+                  f"{dest_dir}: 拒绝访问。\u0028os error 5\u0029")
+
+        assert vm._repair_uv_archive_rename(stderr) == 1
+        assert dest_dir.is_dir()  # 真实 rename 发生，内容随目录迁移
+        assert (dest_dir / "marker.txt").is_file()
+        assert not tmp_dir.exists()
+
+    def test_repair_skips_missing_tmp_and_existing_dest(self, tmp_path):
+        """tmp 已被清理 / dest 已有同名条目 → 跳过该对，不报错。"""
+        gone = tmp_path / ".tmpGONE"
+        dest_exist = tmp_path / "destA"
+        dest_exist.mkdir()
+        stderr = (f"failed to rename file from {gone} to {tmp_path / 'destB'}: x\n"
+                  f"failed to rename file from {tmp_path / '.tmpOK'} to {dest_exist}: x")
+
+        assert vm._repair_uv_archive_rename(stderr) == 0
+        assert not (tmp_path / "destB").exists()
+
+    def test_repair_parses_word_wrapped_stderr(self, tmp_path):
+        """uv 管道输出按固定宽度折行（路径在「from」后断到下一行）→
+        折叠空白后仍能解析（2026-10-11 实测踩坑：不折叠则零匹配静默空转）。"""
+        tmp_dir = tmp_path / ".tmpWRAPPED"
+        tmp_dir.mkdir()
+        dest_dir = tmp_path / "archive-v0" / "FtA9Z7Awz3ITXJow"
+        # 模拟 uv 80 列 word-wrap：from 后直接换行，路径在下一行
+        wrapped = (f"error: Failed to write to the distribution cache\n"
+                   f"  cause: failed to rename file from\n"
+                   f"{tmp_dir} to\n"
+                   f"{dest_dir}: \u62d2\u7edd\u8bbf\u95ee\u3002(os error 5)\n")
+
+        assert vm._repair_uv_archive_rename(wrapped) == 1
+        assert dest_dir.is_dir()
+
+    def test_repair_handles_multiple_rename_pairs(self, tmp_path):
+        """≥2 个改名错误逐段配对全部修复。
+
+        回归（2026-10-11 review 发现）：全局单正则的贪婪 dest 会把后续
+        对整个吞进前一条 dest（实测失配，仅剩 1 条垃圾对，第二对永不
+        修复）；改为按关键字切段后各段独立配对。
+        """
+        tmp_a = tmp_path / ".tmpAAA"
+        tmp_a.mkdir()
+        (tmp_a / "marker.txt").write_text("a", encoding="utf-8")
+        dest_a = tmp_path / "archive-v0" / "hashA"
+        tmp_b = tmp_path / ".tmpBBB"
+        tmp_b.mkdir()
+        (tmp_b / "marker.txt").write_text("b", encoding="utf-8")
+        dest_b = tmp_path / "archive-v0" / "hashB"
+        stderr = (f"failed to rename file from {tmp_a} to {dest_a}: "
+                  f"拒绝访问。(os error 5)\n"
+                  f"failed to rename file from {tmp_b} to {dest_b}: "
+                  f"拒绝访问。(os error 5)")
+
+        assert vm._repair_uv_archive_rename(stderr) == 2
+        assert dest_a.is_dir() and (dest_a / "marker.txt").is_file()
+        assert dest_b.is_dir() and (dest_b / "marker.txt").is_file()
+        assert not tmp_a.exists() and not tmp_b.exists()
+
+    def test_rename_blocked_falls_back_to_mirror(self, monkeypatch):
+        """修复后仍失败 → 第 3 级镜像兑底成功（镜像 + --no-cache 一步到位）。
+
+        独立官方源 --no-cache 层已裁剪：慢网时必 300s 超时（2026-10-11 实测
+        三级全超时 15 分钟零成果），成功场景与镜像级重合，信息增量小。
+        """
+        sleeps: list = []
+        cmds, repairs = self._patch_uv(monkeypatch, [False, False, True], sleeps)
+
+        assert vm.preinstall_packages("fake/py") is True
+        assert len(cmds) == 3
+        mirror_cmd = cmds[2]
+        assert "--no-cache" in mirror_cmd
+        assert mirror_cmd[mirror_cmd.index("--default-index") + 1] == \
+            vm._PYPI_MIRROR
+        assert all("--no-cache" not in c for c in cmds[:2])
+        assert len(repairs) == 2  # cached-retry 前 + mirror 前各修一次
+
+    def test_all_attempts_fail_returns_false(self, monkeypatch):
+        """三级全败 → False（调用方转 retryable，下次调用重新走链路）。"""
+        sleeps: list = []
+        cmds, repairs = self._patch_uv(monkeypatch, [], sleeps)
+
+        assert vm.preinstall_packages("fake/py") is False
+        assert len(cmds) == 3  # cached + cached-retry + mirror
+        assert len(repairs) == 2
+
+    def test_pip_branch_has_no_no_cache_fallback(self, monkeypatch):
+        """无 uv 走 pip：pip 缓存无 archive 层，无需 --no-cache 绕行（仅 2 次）。"""
+        monkeypatch.setattr(vm, "resolve_tool", lambda name: None)
+        cmds = []
+
+        def fake_run(cmd):
+            cmds.append(cmd)
+            return (len(cmds) >= 2, "")  # 重试即成功
+
+        repairs: list = []
+        monkeypatch.setattr(
+            vm, "_repair_uv_archive_rename",
+            lambda err: repairs.append(err) or 0)
+        monkeypatch.setattr(vm, "_run_preinstall", fake_run)
+        monkeypatch.setattr(vm.time, "sleep", lambda s: None)
+
+        assert vm.preinstall_packages("fake/py") is True
+        assert len(cmds) == 2
+        assert cmds[0][:5] == ["fake/py", "-m", "pip", "install", "--quiet"]
+
+    def test_pip_branch_falls_back_to_mirror(self, monkeypatch):
+        """无 uv 且官方源慢网 → pip 镜像兑底（-i 指向国内镜像）。"""
+        monkeypatch.setattr(vm, "resolve_tool", lambda name: None)
+        cmds = []
+
+        def fake_run(cmd):
+            cmds.append(cmd)
+            return (False, "timed out")
+
+        monkeypatch.setattr(vm, "_run_preinstall", fake_run)
+        monkeypatch.setattr(vm, "_repair_uv_archive_rename", lambda err: 0)
+        monkeypatch.setattr(vm.time, "sleep", lambda s: None)
+
+        assert vm.preinstall_packages("fake/py") is False
+        assert len(cmds) == 3  # cached + cached-retry + mirror
+        mirror_cmd = cmds[2]
+        assert mirror_cmd[mirror_cmd.index("-i") + 1] == vm._PYPI_MIRROR
 
 
 # ── 3. agent 侧懒 ensure ───────────────────────────────────

@@ -9,7 +9,7 @@ vi.mock('../src/features/home/TodayTodo.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 vi.mock('../src/features/knowledge/Toast', () => ({
-  useToast: () => ({ showToast: vi.fn() }),
+  useToast: () => vi.fn(),
 }))
 
 import { render, fireEvent, cleanup, act } from '@testing-library/react'
@@ -59,6 +59,15 @@ describe('TodayTodo (3.0 三期 Task 4)', () => {
     fireEvent.click(getByTitle('homeTodo.upload'))
     expect(onOpenProject).toHaveBeenCalledWith('pa', 'materials')
     expect(onOpenProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('row click carries taskId for drawer deep-link (§6.1.8 直达执行动线)', () => {
+    const onOpenProject = vi.fn()
+    const { container } = render(
+      <TodayTodo tasks={[mk({ id: 't9', due_date: '2026-10-08' })]} onOpenProject={onOpenProject} />)
+    // 行文本为「项目名 · 标题」组合节点,getByText 无法整串匹配,按行容器点击(同 AffairsTab 惯例)
+    fireEvent.click(container.querySelector('.row')!)
+    expect(onOpenProject).toHaveBeenCalledWith('pa', 'affairs', 't9')
   })
 
   it('check button invokes affairs:updateTask and dispatches app:tasks-changed', async () => {

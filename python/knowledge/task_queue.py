@@ -42,6 +42,8 @@ class KnowledgeWorker:
         max_file_concurrency: int = 2,
         max_image_concurrency: int = 2,
         max_compile_concurrency: int = 2,
+        scan_initial_delay: float = 3.0,
+        scan_interval: float = 5.0,
     ):
         self.db = db
         self.data_dir = data_dir
@@ -59,12 +61,21 @@ class KnowledgeWorker:
         self._file_run.set()
         self._image_run = asyncio.Event()
         self._image_run.set()
+        # 三队列统一防重：track 已入队条目（出队时 discard）。QueueScanner 周期
+        # 全量补投递 pending 条目，无防重时积压期间同一 pending 每轮重复入队
+        # （事故 2026-10-09/10：图片积压时单张被入队 40+ 次，叠加出队守卫放行
+        # archived，seal 类图片被真实重复调用 VLM 45 次）。compile 队列原本就有。
         self._compile_enqueued: set[str] = set()  # track task_ids already in queue to prevent duplicates
+        self._file_enqueued: set[str] = set()
+        self._image_enqueued: set[str] = set()
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._max_file_concurrency = max_file_concurrency
         self._max_image_concurrency = max_image_concurrency
         self._max_compile_concurrency = max_compile_concurrency
+        # 扫描节奏可注入（测试用）；生产默认 3s 启动延迟 + 5s 轮询
+        self._scan_initial_delay = scan_initial_delay
+        self._scan_interval = scan_interval
 
         # Shared VectorStore instance – avoids creating a new one (and
         # potentially triggering a separate model load) per image.
@@ -136,19 +147,32 @@ class KnowledgeWorker:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        # 清空防重集合：防止 stop→start 复用实例时残留条目挡住新投递
+        self._file_enqueued.clear()
+        self._image_enqueued.clear()
+        self._compile_enqueued.clear()
         logger.info("[KnowledgeWorker] Stopped")
 
     async def enqueue_file(self, file_id: str):
-        """Add a file to the parsing queue."""
+        """Add a file to the parsing queue (skip if already enqueued)."""
+        if file_id in self._file_enqueued:
+            logger.debug("File %s already in queue, skipping duplicate", file_id)
+            return
+        self._file_enqueued.add(file_id)
         logger.debug("Enqueue file: %s", file_id)
         await self._file_queue.put(file_id)
 
     async def enqueue_image(self, image_id: str, force: bool = False):
-        """Add an image to the description queue.
+        """Add an image to the description queue (skip if already enqueued).
         
         Args:
-            force: If True, skip small-image auto-archive (user manual trigger)
+            force: If True, skip small-image auto-archive (user manual trigger);
+                bypasses dedup so an explicit retry always schedules a run.
         """
+        if not force and image_id in self._image_enqueued:
+            logger.debug("Image %s already in queue, skipping duplicate", image_id)
+            return
+        self._image_enqueued.add(image_id)
         logger.debug("Enqueue image: %s (force=%s)", image_id, force)
         await self._image_queue.put((image_id, force))
 
@@ -182,6 +206,7 @@ class KnowledgeWorker:
 
             async with self._file_sem:
                 try:
+                    self._file_enqueued.discard(file_id)
                     logger.info("[%s] Processing file %s", name, file_id)
                     await self._process_file(file_id)
                 except Exception as e:
@@ -307,6 +332,7 @@ class KnowledgeWorker:
 
             async with self._image_sem:
                 try:
+                    self._image_enqueued.discard(image_id)
                     logger.info("[%s] Processing image %s", name, image_id)
                     await self._process_image(image_id, force=force)
                 except Exception as e:
@@ -335,7 +361,11 @@ class KnowledgeWorker:
             return
         img = dict(row)
 
-        if img.get("status") not in ("pending", "error", "archived"):
+        # 出队守卫：仅 force（用户显式重试）可重新处理 archived 图片。普通出队
+        # 放行 archived 时，队列中残留的重复条目会把已自动归档的图片（seal/qr_code
+        # /signature）再次送去 VLM——事故 2026-10-09/10 重复解析根因之二。
+        allowed_statuses = ("pending", "error", "archived") if force else ("pending", "error")
+        if img.get("status") not in allowed_statuses:
             return
 
         # Small image check: auto-archive unless forced
@@ -597,12 +627,12 @@ class KnowledgeWorker:
         duplicate queue entries for items picked up via the API).
         """
         # Give workers a moment to start up before first scan
-        await asyncio.sleep(3.0)
+        await asyncio.sleep(self._scan_initial_delay)
         logger.info("[QueueScanner] Running")
 
         while self._running:
             try:
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(self._scan_interval)
 
                 # Pick up pending files (only those still in 'pending' status)
                 # 暂停时跳过拾取（闸门在 worker 侧也能拦住，这里省去无谓入队）

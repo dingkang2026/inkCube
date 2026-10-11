@@ -1,9 +1,13 @@
 /** src/features/project/affairs/PhaseBoard.tsx — 时期看板(3.0 §6.1.3)
  *  顶部时期进度条仅展示当前期高亮(general 无时期则不渲染);任务按时期分组,
- *  当前期默认展开、其余折叠为计数;阶段 pill 切换仅自动展开对应组,不激活任务(§6.4-2)。
+ *  当前期默认展开、其余折叠为计数(展开历史组即「回看」);阶段 pill 切换仅自动
+ *  展开对应组,不激活任务(§6.4-2)。行内类型徽章标注任务类型。
  *  行状态色(§6.3):逾期 --error / 7 日内 --warning / 进行中 --accent /
  *  done 灰 / skipped 灰划线 / pending_activation 灰斜体「等待进入时期」。
- *  已跳过默认隐藏,开关切换;组内 due_date 升序、无 due 殿后。
+ *  头部计数 = 当前期任务数(默认视角,不含 skipped/pending 占位)+ 7 日内到期数;
+ *  「显示已跳过」开关仅存在 skipped 实例时显示;存在 recurring 实例时显示提示条
+ *  (§6.1.3 边界:recurring 不进看板,唯一管理入口在「周期节奏」,避免双入口漂移)。
+ *  组内 due_date 升序、无 due 殿后。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -36,10 +40,24 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
     if (stage !== 'none') setOpenPhases((prev) => new Set([...prev, stage as PhaseKey]))
   }, [stage])
 
+  // recurring 不进看板(§6.1.3 边界);开关条件/头部计数均基于看板内任务口径
+  const boardTasks = useMemo(() => tasks.filter((x) => x.task_type !== 'recurring'), [tasks])
+  const hasRecurring = tasks.some((x) => x.task_type === 'recurring')
+  const hasSkipped = boardTasks.some((x) => x.status === 'skipped')
+
   const visible = useMemo(
-    () => tasks.filter((x) => showSkipped || x.status !== 'skipped'),
-    [tasks, showSkipped],
+    () => boardTasks.filter((x) => showSkipped || x.status !== 'skipped'),
+    [boardTasks, showSkipped],
   )
+
+  // 头部计数(§6.1.3):当前期任务数 + 7 日内到期数;general 无时期 → 全量口径、无期名前缀
+  const headCount = useMemo(() => {
+    const scoped = stage !== 'none' ? boardTasks.filter((x) => x.phase === stage) : boardTasks
+    return {
+      total: scoped.filter((x) => x.status !== 'skipped' && x.status !== 'pending_activation').length,
+      week: scoped.filter((x) => x.status === 'open' && dueWithin(x, 7)).length,
+    }
+  }, [boardTasks, stage])
   const phaseLabelKey = (p: PhaseKey): string =>
     STAGE_MAP[projectType].find((x) => x.key === p)?.labelKey ?? `project.stage.${p}`
 
@@ -82,15 +100,22 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
           </div>
         )}
         <div className={s.headActions}>
-          <label className={s.skippedToggle}>
-            <input type="checkbox" checked={showSkipped} onChange={(e) => setShowSkipped(e.target.checked)} />
-            <span>{t('affairs.showSkipped')}</span>
-          </label>
+          <span className={s.headMeta}>
+            {stage !== 'none' && <span>{t(phaseLabelKey(stage as PhaseKey))} · </span>}
+            {t('affairs.board.headCount', headCount)}
+          </span>
+          {hasSkipped && (
+            <label className={s.skippedToggle}>
+              <input type="checkbox" checked={showSkipped} onChange={(e) => setShowSkipped(e.target.checked)} />
+              <span>{t('affairs.showSkipped')}</span>
+            </label>
+          )}
           <button className={s.addBtn} onClick={onCreateTask} title={t('affairs.addTask')}>
             <Plus size={14} /><span>{t('affairs.addTask')}</span>
           </button>
         </div>
       </div>
+      {hasRecurring && <div className={s.recurringHint}>{t('affairs.board.recurringHint')}</div>}
       {visible.length === 0 && <div className={s.empty}>{t('affairs.boardEmpty')}</div>}
       {PHASES.map((p) => {
         const group = visible

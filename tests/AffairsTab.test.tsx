@@ -1,25 +1,22 @@
 /** tests/AffairsTab.test.tsx — 3.0 二期 Task 6:容器拉取/三视图切换/快切守卫
- *  Task 11 增:抽屉数据同步用例(TaskDrawer mock 为探针,记录 task prop)。
+ *  Task 11 增:抽屉数据同步用例(TaskDrawer mock 为探针,渲染真实 DOM 断言存在性)。
+ *  三期 Task 2 增:healthLevel / summarizeDueByProject。
+ *  拉齐补丁增:首页待办直达抽屉焦点链(§6.1.8)。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const invokeMock = vi.fn()
-const drawerProps = vi.hoisted(() => ({ task: null as { id: string; title: string } | null }))
 vi.mock('../src/features/project/affairs/TaskDrawer', () => ({
-  // 探针渲染真实 DOM(卸载即消失,断言存在性;仅记 props 无法区分卸载)
-  TaskDrawer: (props: { task: { id: string; title: string } }) => {
-    drawerProps.task = props.task
-    return <div data-testid="drawer-probe">{props.task.id}:{props.task.title}</div>
-  },
+  // 探针渲染真实 DOM(卸载即消失,断言存在性)
+  TaskDrawer: (props: { task: { id: string; title: string } }) => (
+    <div data-testid="drawer-probe">{props.task.id}:{props.task.title}</div>
+  ),
 }))
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (k: string, o?: { defaultValue?: string }) => o?.defaultValue ?? k,
     i18n: { language: 'zh-CN' },
   }),
-}))
-vi.mock('../src/features/activity/ActivityContext', () => ({
-  useActivity: () => ({ byProject: new Map(), items: [] }),
 }))
 vi.mock('../src/features/project/affairs/AffairsTab.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
@@ -148,6 +145,40 @@ describe('AffairsTab container', () => {
     await flush()
     expect(probe()).toBeNull()
     expect(panelSpy).toHaveBeenCalledWith(false)
+  })
+})
+
+describe('AffairsTab focusTask (拉齐补丁:首页待办直达抽屉,§6.1.8)', () => {
+  it('opens the drawer for the focused task once the list is ready, then reports handled', async () => {
+    invokeMock.mockImplementation(async (ch: string) =>
+      ch === 'affairs:listByProject' ? { tasks: [task({ id: 't9', title: '直达任务' })] } : {})
+    const onHandled = vi.fn()
+    const { container } = render(
+      <AffairsTab {...base} focusTask={{ taskId: 't9', ts: 1 }} onFocusHandled={onHandled} />)
+    const probe = () => container.querySelector('[data-testid="drawer-probe"]')
+    expect(probe()).toBeNull()   // 列表未就绪,先不开
+    await flush()
+    expect(probe()!.textContent).toBe('t9:直达任务')
+    expect(onHandled).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up (no drawer) and still reports handled when the task no longer exists', async () => {
+    const onHandled = vi.fn()
+    const { container } = render(
+      <AffairsTab {...base} focusTask={{ taskId: 'gone', ts: 2 }} onFocusHandled={onHandled} />)
+    await flush()
+    expect(container.querySelector('[data-testid="drawer-probe"]')).toBeNull()
+    expect(onHandled).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up and reports handled when list load fails (信号不悬挂)', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('boom'))
+    const onHandled = vi.fn()
+    const { container } = render(
+      <AffairsTab {...base} focusTask={{ taskId: 't1', ts: 3 }} onFocusHandled={onHandled} />)
+    await flush()
+    expect(container.querySelector('[data-testid="drawer-probe"]')).toBeNull()
+    expect(onHandled).toHaveBeenCalledTimes(1)
   })
 })
 

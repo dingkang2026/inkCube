@@ -1,0 +1,79 @@
+/* ── Antivirus exclusion banner (2.8 §12 F3) — resumeBanner 视觉语言 ── */
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  background: rgba(245, 158, 11, 0.08);
+  border-top: 1px solid rgba(245, 158, 11, 0.2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.icon {
+  color: var(--warning, #f59e0b);
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.workingText {
+  color: var(--warning, #f59e0b);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--accent-hover);
+}
+
+/* 次级动作（知道了）：不抢占视觉，仅提供退出路径 */
+.btnGhost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.btnGhost:hover {
+  color: var(--text-primary, inherit);
+}
+
+.spin {
+  animation: avSpin 1s linear infinite;
+}
+
+@keyframes avSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

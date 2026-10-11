@@ -100,6 +100,19 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def _skip_venv_preinstall(monkeypatch):
+    """默认隔离 CLI 首用同步预装（loader.AgentSkillAdapter._ensure_venv_ready）。
+
+    本文件的 _context() 用 sys.executable 当 venv_python，反推出的 venv 根
+    是真实 conda 环境目录——marker 探测大概率缺失，会真的触发预装命令。
+    预装语义由 TestFirstUseVenvPreinstall 专测（自行覆盖 mock）。
+    """
+    import skills.loader as loader_mod
+
+    monkeypatch.setattr(loader_mod, "is_preinstall_done", lambda venv_path: True)
+
+
 class TestSpecCompliance:
     """标准格式容错 + compatibility 语义。"""
 
@@ -146,6 +159,61 @@ class TestSpecCompliance:
         assert calls, "script should have been executed via subprocess"
         for cmd in calls:
             assert "pip" not in cmd and "install" not in cmd, f"unexpected pip call: {cmd}"
+
+
+class TestFirstUseVenvPreinstall:
+    """CLI 模式 skill 首用同步补装（2.8 §5.5：缺就装、装完继续）。"""
+
+    def test_missing_marker_triggers_blocking_install(self, mini_skill: Path, monkeypatch):
+        """marker 缺失 → 调 ensure_venv_blocking（反推 venv 根）→ 装完继续执行。
+
+        venv_python 用 sys.executable（可真执行）；blocking 已 mock 拦截，
+        不会对真实解释器环境产生安装动作；反推正确性由
+        test_venv_lazy.py::test_get_venv_path_from_python 覆盖。
+        """
+        import skills.loader as loader_mod
+
+        expected_venv_dir = loader_mod.get_venv_path_from_python(sys.executable)
+        blocking_calls: list[str] = []
+
+        def fake_blocking(venv_path: str) -> bool:
+            blocking_calls.append(venv_path)
+            return True
+
+        monkeypatch.setattr(loader_mod, "is_preinstall_done", lambda vp: False)
+        monkeypatch.setattr(loader_mod, "ensure_venv_blocking", fake_blocking)
+        adapter = _adapter(mini_skill)
+
+        result = json.loads(_run(adapter.execute({"command": "hello --name Dep"}, _context())))
+
+        assert result["output"] == "hello Dep"  # 装完继续执行，错误未抛给 LLM
+        assert blocking_calls == [expected_venv_dir]  # 参数为反推的 venv 根目录
+
+    def test_failed_install_returns_retryable_without_running_script(self, mini_skill: Path, tmp_path: Path, monkeypatch):
+        """补装失败 → retryable JSON 交还 LLM，脚本不执行（不产出二次误导错误）。"""
+        import skills.loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "is_preinstall_done", lambda vp: False)
+        monkeypatch.setattr(loader_mod, "ensure_venv_blocking", lambda vp: False)
+        exec_calls: list[list[str]] = []
+
+        async def spy_exec(*cmd, **kwargs):
+            exec_calls.append(list(cmd))
+            raise AssertionError("script must not run when preinstall failed")
+
+        monkeypatch.setattr(loader_mod.asyncio, "create_subprocess_exec", spy_exec)
+        ctx = SkillContext(
+            workspace_path=os.getcwd(),
+            venv_python=str(tmp_path / "task" / ".venv" / "Scripts" / "python.exe"),
+            settings={},
+        )
+        adapter = _adapter(mini_skill)
+
+        result = json.loads(_run(adapter.execute({"command": "hello"}, ctx)))
+
+        assert result["retryable"] is True
+        assert "安装失败" in result["error"]
+        assert exec_calls == []
 
 
 class TestProgressiveDisclosure:
