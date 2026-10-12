@@ -6,6 +6,7 @@
 import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useToast } from '../features/knowledge/Toast'
+import { apiErrorText, apiErrorSuggestion } from '../i18n/errorCodes'
 import type { ErrorCategory } from '../types/error'
 
 interface StructuredError extends Error {
@@ -38,8 +39,8 @@ export function useErrorHandler() {
           case 'CONFIG':
           case 'CREDENTIAL': {
             const section = CODE_SETTINGS_SECTION[err.errorCode ?? '']
-            showToast(err.message || t('errors.configFallback'), 'error', {
-              suggestion: err.errorSuggestion || t('errors.configSuggestion'),
+            showToast(apiErrorText(err.errorCode, err.message || t('errors.configFallback'), t), 'error', {
+              suggestion: apiErrorSuggestion(err.errorCode, err.errorSuggestion || t('errors.configSuggestion'), t),
               action: {
                 label: t('errors.goSettings'),
                 onClick: () => {
@@ -54,8 +55,8 @@ export function useErrorHandler() {
             break
           }
           case 'NETWORK':
-            showToast(err.message || t('errors.networkFallback'), 'error', {
-              suggestion: t('errors.networkSuggestion'),
+            showToast(apiErrorText(err.errorCode, err.message || t('errors.networkFallback'), t), 'error', {
+              suggestion: apiErrorSuggestion(err.errorCode, t('errors.networkSuggestion'), t),
               detail: err.errorDetail,
             })
             break
@@ -63,8 +64,8 @@ export function useErrorHandler() {
           case 'RESOURCE': {
             // 模型缺失类（ensure_ready 第三层拦截）→ 跳设置对应锚点（0.4 §7.3）
             const section = CODE_SETTINGS_SECTION[err.errorCode ?? '']
-            showToast(err.message || t('errors.resourceFallback'), 'error', {
-              suggestion: err.errorSuggestion || t('errors.resourceSuggestion'),
+            showToast(apiErrorText(err.errorCode, err.message || t('errors.resourceFallback'), t), 'error', {
+              suggestion: apiErrorSuggestion(err.errorCode, err.errorSuggestion || t('errors.resourceSuggestion'), t),
               ...(section
                 ? {
                     action: {
@@ -83,8 +84,8 @@ export function useErrorHandler() {
           }
 
           case 'INTERNAL':
-            showToast(err.message || t('errors.internalFallback'), 'error', {
-              suggestion: t('errors.internalSuggestion'),
+            showToast(apiErrorText(err.errorCode, err.message || t('errors.internalFallback'), t), 'error', {
+              suggestion: apiErrorSuggestion(err.errorCode, t('errors.internalSuggestion'), t),
               action: {
                 label: t('errors.viewDetails'),
                 onClick: () => {
@@ -98,13 +99,13 @@ export function useErrorHandler() {
             break
 
           case 'PROCESS':
-            showToast(err.message || t('errors.processFallback'), 'error', {
-              suggestion: err.errorSuggestion || t('errors.processSuggestion'),
+            showToast(apiErrorText(err.errorCode, err.message || t('errors.processFallback'), t), 'error', {
+              suggestion: apiErrorSuggestion(err.errorCode, err.errorSuggestion || t('errors.processSuggestion'), t),
             })
             break
 
           default:
-            showToast(err.message || String(err), 'error')
+            showToast(apiErrorText(err.errorCode, err.message || String(err), t), 'error')
         }
       } else {
         // Non-structured error — fallback display

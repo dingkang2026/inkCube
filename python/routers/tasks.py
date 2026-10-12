@@ -74,7 +74,7 @@ async def task_has_state(task_id: str):
 async def get_task(task_id: str):
     task = deps.db.get_task(task_id)
     if not task:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     messages = deps.db.get_task_messages(task_id)
     return {"task": task, "messages": messages}
 
@@ -85,7 +85,7 @@ async def delete_task(task_id: str):
     task = deps.db.get_task(task_id)
     if not task:
         logger.warning("Delete failed: task %s not found", task_id)
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     # Only cancel if this task is currently running
     if deps.task_agent.is_task_running(task_id):
         logger.info("Cancelling running task before delete: %s", task_id)
@@ -129,10 +129,10 @@ async def set_task_mode(task_id: str, body: dict):
     """Set task mode to 'coding' or 'general'."""
     mode = body.get("mode", "coding")
     if mode not in ("coding", "general"):
-        return {"error": "mode must be 'coding' or 'general'"}
+        return {"error": "mode must be 'coding' or 'general'", "code": "INVALID_MODE"}
     ok = deps.db.set_task_mode(task_id, mode)
     if not ok:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     return {"ok": True, "mode": mode}
 
 
@@ -148,7 +148,7 @@ async def archive_task(task_id: str):
         )
     ok = deps.db.archive_task(task_id)
     if not ok:
-        return {"error": "任务不存在或已删除"}
+        return {"error": "任务不存在或已删除", "code": "TASK_NOT_FOUND"}
     return {"ok": True}
 
 
@@ -157,7 +157,7 @@ async def unarchive_task(task_id: str):
     """Restore an archived task to active."""
     ok = deps.db.unarchive_task(task_id)
     if not ok:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     return {"ok": True}
 
 
@@ -166,10 +166,10 @@ async def export_task(task_id: str):
     """Export task workspace as a zip file."""
     task = deps.db.get_task(task_id)
     if not task:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     workspace = Path(task["workspace_path"])
     if not workspace.is_dir():
-        return {"error": "工作区目录不存在"}
+        return {"error": "工作区目录不存在", "code": "WORKSPACE_NOT_FOUND"}
 
     loop = asyncio.get_event_loop()
     zip_buffer = await loop.run_in_executor(None, _create_workspace_zip, workspace)
@@ -214,7 +214,7 @@ async def task_chat(task_id: str, req: TaskChatRequest):
         # Resume mode: check for saved state, skip saving user message
         state = deps.db.load_agent_state(task_id)
         if not state:
-            return {"error": "没有可恢复的任务状态"}
+            return {"error": "没有可恢复的任务状态", "code": "NO_RESUMABLE_STATE"}
         logger.info("Resuming task %s from iteration %d", task_id, state.get("iteration", 0))
     else:
         # Normal mode: save user message and update title
@@ -266,7 +266,7 @@ async def pause_task_chat(task_id: str):
     ok = deps.task_agent.pause_task(task_id, messages, current_iteration, [])
     if not ok:
         logger.warning("Pause failed: task %s", task_id)
-        return {"error": "暂停失败"}
+        return {"error": "暂停失败", "code": "PAUSE_FAILED"}
     logger.info("Task paused: %s at iteration %d", task_id, current_iteration)
     return {"ok": True}
 
@@ -299,7 +299,7 @@ async def get_task_files(task_id: str):
     """Return workspace file tree for a task."""
     task = deps.db.get_task(task_id)
     if not task:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     workspace = Path(task["workspace_path"])
     if not workspace.is_dir():
         return {"tree": []}
@@ -311,16 +311,16 @@ async def get_file_content(task_id: str, path: str = ""):
     """Read file content from task workspace for preview."""
     task = deps.db.get_task(task_id)
     if not task:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     if not path:
-        return {"error": "缺少 path 参数"}
+        return {"error": "缺少 path 参数", "code": "PATH_REQUIRED"}
     workspace = Path(task["workspace_path"])
     file_path = (workspace / path).resolve()
     # Security: ensure path is within workspace
     if not str(file_path).startswith(str(workspace.resolve()) + os.sep):
-        return {"error": "路径超出工作区范围"}
+        return {"error": "路径超出工作区范围", "code": "PATH_OUTSIDE_WORKSPACE"}
     if not file_path.exists() or not file_path.is_file():
-        return {"error": "文件不存在"}
+        return {"error": "文件不存在", "code": "FILE_NOT_FOUND"}
     size = file_path.stat().st_size
     # Determine file category
     ext = file_path.suffix.lower()
@@ -375,7 +375,7 @@ async def upload_task_files(task_id: str, files: list[UploadFile] = File(...)):
     """Upload files to a task's workspace."""
     task = deps.db.get_task(task_id)
     if not task:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     workspace = Path(task["workspace_path"])
     workspace.mkdir(parents=True, exist_ok=True)
 
@@ -391,7 +391,7 @@ async def upload_task_files(task_id: str, files: list[UploadFile] = File(...)):
         dest.parent.mkdir(parents=True, exist_ok=True)
         content = await f.read()
         if len(content) > 50 * 1024 * 1024:  # 50MB limit
-            return {"error": f"文件 {safe_name} 超过 50MB 限制"}
+            return {"error": f"文件 {safe_name} 超过 50MB 限制", "code": "FILE_TOO_LARGE"}
         dest.write_bytes(content)
         uploaded.append({"name": safe_name, "size": len(content)})
 
@@ -414,7 +414,7 @@ async def get_task_logs(task_id: str, lines: int = Query(200, ge=1, le=2000)):
     """Read execution log for a task. Returns last N lines."""
     task = deps.db.get_task(task_id)
     if not task:
-        return {"error": "任务不存在"}
+        return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
     from main import get_data_dir
     log_dir = os.path.join(get_data_dir(), "tasks", task_id)
     log_path = os.path.join(log_dir, "execution.log")

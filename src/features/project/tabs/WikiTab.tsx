@@ -19,6 +19,7 @@ import { WikiSchemaManager } from './WikiSchemaManager'
 import { useActivity } from '../../activity/ActivityContext'
 import { useFeatureGuard } from '../../readiness/useReadiness'
 import { useToast } from '../../knowledge/Toast'
+import { translateStoredError } from '../../../i18n/errorCodes'
 import s from './WikiTab.module.css'
 
 interface WikiTabProps {
@@ -582,7 +583,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
         {compileTask && compileTask.status === 'failed' && (
           <div className={s.compileError}>
             <AlertCircle size={14} />
-            <span>{t('project.wiki.compileFailed', { error: compileTask.error_message })}</span>
+            <span>{t('project.wiki.compileFailed', { error: translateStoredError(compileTask.error_message ?? '', t) })}</span>
             <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
               {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
             </button>

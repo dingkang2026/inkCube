@@ -8,6 +8,7 @@ import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './ImageList.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { translateStoredError } from '../../i18n/errorCodes'
 import { useActivity } from '../activity/ActivityContext'
 import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
@@ -93,7 +94,7 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
     try {
       await window.electronAPI.invoke(ipc.archiveImage, { projectId, imageId })
       setImages(prev => prev.map(i =>
-        i.id === imageId ? { ...i, status: 'archived' as const, vlm_description: null, error_message: '手动归档' } : i
+        i.id === imageId ? { ...i, status: 'archived' as const, vlm_description: null, error_message: 'INKCUBE_CODE:MANUALLY_ARCHIVED' } : i
       ))
     } catch (err) {
       handleError(err)
@@ -171,7 +172,7 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
                   <p className={s.description}>{img.vlm_description.slice(0, 120)}...</p>
                 )}
                 {img.error_message && (
-                  <p className={s.error}>{img.error_message}</p>
+                  <p className={s.error}>{translateStoredError(img.error_message, t)}</p>
                 )}
               </div>
               <div className={s.imageActions}>

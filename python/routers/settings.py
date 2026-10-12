@@ -72,9 +72,9 @@ async def test_settings(settings: SettingsModel):
         ok = await client.test_connection()
     except Exception as e:
         logger.warning("personal_test connectivity failed: %s", str(e))
-        return {"ok": False, "message": f"连接失败: {str(e)}", "capabilities": capabilities}
+        return {"ok": False, "message": f"连接失败: {str(e)}", "code": "CONNECTION_FAILED", "capabilities": capabilities}
     if not ok:
-        return {"ok": False, "message": "连接失败", "capabilities": capabilities}
+        return {"ok": False, "message": "连接失败", "code": "CONNECTION_FAILED", "capabilities": capabilities}
 
     probes = [
         ("function_calling", {"tools": [_PROBE_TOOL], "tool_choice": "auto"}),
@@ -88,4 +88,4 @@ async def test_settings(settings: SettingsModel):
             break
 
     logger.info("personal_test capabilities: %s", capabilities)
-    return {"ok": True, "message": "连接成功", "capabilities": capabilities}
+    return {"ok": True, "message": "连接成功", "code": "CONNECTED", "capabilities": capabilities}

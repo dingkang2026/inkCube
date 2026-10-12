@@ -9,6 +9,7 @@ import s from './FileUploader.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useToast } from './Toast'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
+import { translateStoredError } from '../../i18n/errorCodes'
 
 interface FileUploaderProps {
   projectId: string
@@ -207,7 +208,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
             <div
               key={file.id}
               className={`${s.fileItem} ${selectedIds.has(file.id) ? s.fileItemSelected : ''} ${selectedFileId === file.id ? s.fileItemActive : ''} ${isParsing ? s.fileItemParsing : ''}`}
-              title={file.error_message || undefined}
+              title={file.error_message ? translateStoredError(file.error_message, t) : undefined}
               onClick={() => onSelectFile?.(selectedFileId === file.id ? null : file.id)}
             >
               <input

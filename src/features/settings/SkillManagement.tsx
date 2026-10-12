@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import styles from './SkillManagement.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
+import { apiErrorText } from '../../i18n/errorCodes'
 
 interface Skill {
   id: string
@@ -74,9 +75,17 @@ export function SkillManagement() {
       const result = await window.electronAPI.invoke('skills:install', {
         source: installSource.trim(),
         sourceType: installType,
-      }) as { skill?: Skill; error?: string }
+      }) as { skill?: Skill; error?: string; code?: string; type?: string; sub_skills?: string[]; example?: string }
       if (result.error) {
-        setInstallError(result.error)
+        if (result.type === 'collection_detected' && result.sub_skills?.length) {
+          // D1 集合目录：引导性提示，插值子 Skill 列表与示例路径
+          setInstallError(t('errors.codes.collectionDetected', {
+            skills: result.sub_skills.join(', '),
+            example: result.example || '',
+          }))
+        } else {
+          setInstallError(apiErrorText(result.code, result.error, t))
+        }
       } else {
         setInstallSource('')
         await loadSkills()

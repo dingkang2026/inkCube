@@ -66,6 +66,7 @@ export interface ModelStatusInfo {
 
 export type StreamStep =
   | { type: 'action'; tool: string; input: Record<string, unknown>; output?: string; diff?: string; filePath?: string; iteration?: number }
+  | { type: 'note'; text: string; iteration?: number }
 
 export interface PlanStep {
   id: number

@@ -6,18 +6,19 @@ import styles from './AntivirusBanner.module.css'
 
 type Status = 'hidden' | 'prompt' | 'working' | 'fallback'
 
-/** 信号轮询间隔：信号变化慢（tmp 残留只在安装失败时新增），低频足够 */
+/** 状态轮询间隔：授权状态只在用户点授权后变化，低频足够 */
 const POLL_INTERVAL_MS = 30_000
 
 /**
- * 一键加白名单横幅（2.8 §12 F3）。
+ * 白名单授权横幅（2.8 §12 F4，前置阻断）。
  *
- * 信号：uv-cache 的陈旧 .tmp 解压残留（杀软阻断/安装中断的持久物证，
- * Python /system/uv-cache-blocked 返回，Electron 非 win32 短路）。blocked
- * 时展示「一键优化」：提权 Add-MpPreference（UAC 由系统弹窗，用户一次
- * 确认）；回读验证失败（UAC 取消 / 防篡改拦截）→ 深链直达 Defender 排
- * 除项页 + 剪贴板路径，降级为手动引导。信号归零（如手动清理后）prompt
- * 随之隐藏；用户关闭或完成优化后本会话不再打扰。
+ * 信号：{dataDir}/uv-exclusion-verified.json 是否有效（Electron
+ * system:getUvExclusionStatus 直读，无 Python 参与；提权会话内回读
+ * 成功后落盘）。未验证时 Python 侧前置阻断一切 uv/pip 安装
+ * （venv_manager UvExclusionRequired），横幅引导用户完成一次系统授权
+ * （UAC 确认即完成，无需打开安全中心）；验证失败（UAC 取消 / 防篡改
+ * 拦截）→ 深链直达 Defender 排除项页 + 剪贴板路径，降级为手动引导。
+ * 用户关闭或完成授权后本会话不再打扰。
  */
 export function AntivirusBanner() {
   const { t } = useTranslation()
@@ -25,19 +26,19 @@ export function AntivirusBanner() {
   const dismissedRef = useRef(false)
 
   usePolling({
-    name: 'uv-cache-blocked',
+    name: 'uv-exclusion-status',
     interval: POLL_INTERVAL_MS,
     enabled: status === 'hidden' || status === 'prompt',
     taskTimeoutMs: 20_000,
     task: async () => {
       if (dismissedRef.current) return
-      const res = (await window.electronAPI.invoke('system:getUvCacheBlocked')) as {
-        blocked?: boolean
+      const res = (await window.electronAPI.invoke('system:getUvExclusionStatus')) as {
+        verified?: boolean
       }
-      if (res?.blocked) {
+      if (!res?.verified) {
         setStatus((prev) => (prev === 'hidden' ? 'prompt' : prev))
       } else {
-        // 阻断信号可逆：prompt 态信号归零（残留被清理等）→ 横幅下线；
+        // 授权完成（其他窗口/会话早前完成）→ prompt 态横幅下线；
         // 经函数式更新，不会覆盖进行中的 working/fallback 态
         setStatus((prev) => (prev === 'prompt' ? 'hidden' : prev))
       }
@@ -89,7 +90,8 @@ export function AntivirusBanner() {
       </span>
       <span className={styles.text}>
         {t('task.avPrompt', {
-          defaultValue: '检测到杀毒软件实时扫描拖慢依赖安装，建议将依赖缓存加入白名单',
+          defaultValue:
+            '代码执行与网页抓取环境需要一次系统授权（加入杀毒软件白名单），授权完成前依赖安装无法进行',
         })}
       </span>
       {status === 'working' ? (
@@ -99,10 +101,10 @@ export function AntivirusBanner() {
       ) : (
         <>
           <button className={styles.btn} onClick={() => void handleOptimize()}>
-            <ShieldCheck size={12} /> {t('task.avOptimize', { defaultValue: '一键优化' })}
+            <ShieldCheck size={12} /> {t('task.avOptimize', { defaultValue: '立即授权' })}
           </button>
           <button className={styles.btnGhost} onClick={dismiss}>
-            {t('task.avDismiss', { defaultValue: '知道了' })}
+            {t('task.avDismiss', { defaultValue: '暂不' })}
           </button>
         </>
       )}

@@ -12,6 +12,7 @@ import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import s from './ImageGallery.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { translateStoredError } from '../../i18n/errorCodes'
 
 interface ImageGalleryProps {
   projectId: string
@@ -251,7 +252,7 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
         imageId: img.id,
       })
       setImages(prev => prev.map(i =>
-        i.id === img.id ? { ...i, status: 'archived' as const, vlm_description: null, error_message: '手动归档' } : i
+        i.id === img.id ? { ...i, status: 'archived' as const, vlm_description: null, error_message: 'INKCUBE_CODE:MANUALLY_ARCHIVED' } : i
       ))
     } catch (err) {
       handleError(err)
@@ -395,10 +396,10 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
                   {t(`knowledge.imgStatus_${img.status}`)}
                 </span>
               )}
-              {/* Error tooltip on hover */}
+              {/* Error tooltip on hover（D1：落库协议串还原为当前语言） */}
               {img.status === 'error' && img.error_message && (
                 <div className={s.errorTooltip}>
-                  {img.error_message}
+                  {translateStoredError(img.error_message, t)}
                 </div>
               )}
               {/* Hover overlay with actions */}

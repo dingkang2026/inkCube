@@ -5,6 +5,7 @@
  * 摘要审阅（2.6 F2）；停止入口在状态条（与暂停机制解耦，0.4 §6.7 修订）。 */
 import { useTranslation } from 'react-i18next'
 import { FileText, CheckCircle, AlertCircle, Loader2, XCircle, SkipForward, ChevronUp } from 'lucide-react'
+import { translateStoredError } from '../../../i18n/errorCodes'
 import s from './WikiTab.module.css'
 
 interface FileSummary {
@@ -127,9 +128,9 @@ export function CompilePanel({
                   </span>
                 )}
               </div>
-              {/* Error detail */}
+              {/* Error detail（D1：落库协议串还原为当前语言） */}
               {summary.error && (
-                <div className={s.compilePanelErrorDetail}>{summary.error}</div>
+                <div className={s.compilePanelErrorDetail}>{translateStoredError(summary.error, t)}</div>
               )}
               {/* Stats for successful files */}
               {!summary.skipped && !summary.error && (
@@ -205,11 +206,11 @@ export function CompilePanel({
         </div>
       )}
 
-      {/* Task-level error */}
+      {/* Task-level error（D1：落库协议串还原为当前语言） */}
       {task.error_message && (
         <div className={s.compilePanelTaskError}>
           <AlertCircle size={13} />
-          <span>{task.error_message}</span>
+          <span>{translateStoredError(task.error_message, t)}</span>
         </div>
       )}
     </div>

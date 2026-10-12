@@ -7,11 +7,11 @@
 4. ingest 缺口闭环：open_gaps 注入 prompt + RESOLVES 按编号确定性归档
 """
 import asyncio
+import json
 import os
 import sys
 
 import pytest
-from fastapi import HTTPException
 
 # Ensure python/ is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -336,12 +336,12 @@ class TestAdjudicateEndpoint:
         )
         monkeypatch.setattr("routers.wiki.get_db", lambda: db)
 
-        with pytest.raises(HTTPException) as exc_info:
-            _run(adjudicate_review(
-                project_id, "rev_legacy", ReviewAdjudicateRequest(chosen=0),
-            ))
+        resp = _run(adjudicate_review(
+            project_id, "rev_legacy", ReviewAdjudicateRequest(chosen=0),
+        ))
 
-        assert exc_info.value.status_code == 400
+        assert resp.status_code == 400
+        assert json.loads(resp.body)["code"] == "FINDING_NO_EVIDENCE"
 
     def test_adjudicate_rejects_non_contradiction(self, db, project_id, monkeypatch):
         """非矛盾类发现项不支持裁决 → 400。"""
@@ -351,12 +351,12 @@ class TestAdjudicateEndpoint:
         )
         monkeypatch.setattr("routers.wiki.get_db", lambda: db)
 
-        with pytest.raises(HTTPException) as exc_info:
-            _run(adjudicate_review(
-                project_id, "rev_sugg", ReviewAdjudicateRequest(chosen=0),
-            ))
+        resp = _run(adjudicate_review(
+            project_id, "rev_sugg", ReviewAdjudicateRequest(chosen=0),
+        ))
 
-        assert exc_info.value.status_code == 400
+        assert resp.status_code == 400
+        assert json.loads(resp.body)["code"] == "FINDING_NOT_ADJUDICABLE"
 
     def test_adjudicate_rejects_already_resolved(self, db, project_id, monkeypatch):
         """已处理发现项 → 409，不允许重复裁决。"""
@@ -364,24 +364,24 @@ class TestAdjudicateEndpoint:
         db.resolve_wiki_review(review_id, "dismiss")
         monkeypatch.setattr("routers.wiki.get_db", lambda: db)
 
-        with pytest.raises(HTTPException) as exc_info:
-            _run(adjudicate_review(
-                project_id, review_id, ReviewAdjudicateRequest(chosen=0),
-            ))
+        resp = _run(adjudicate_review(
+            project_id, review_id, ReviewAdjudicateRequest(chosen=0),
+        ))
 
-        assert exc_info.value.status_code == 409
+        assert resp.status_code == 409
+        assert json.loads(resp.body)["code"] == "FINDING_ALREADY_RESOLVED"
 
     def test_adjudicate_chosen_out_of_range(self, db, project_id, monkeypatch):
         """chosen 索引越界 → 400。"""
         review_id = _setup_contradiction(db, project_id)
         monkeypatch.setattr("routers.wiki.get_db", lambda: db)
 
-        with pytest.raises(HTTPException) as exc_info:
-            _run(adjudicate_review(
-                project_id, review_id, ReviewAdjudicateRequest(chosen=5),
-            ))
+        resp = _run(adjudicate_review(
+            project_id, review_id, ReviewAdjudicateRequest(chosen=5),
+        ))
 
-        assert exc_info.value.status_code == 400
+        assert resp.status_code == 400
+        assert json.loads(resp.body)["code"] == "CHOSEN_INDEX_OUT_OF_RANGE"
 
     def test_adjudicate_rejects_while_compiling(self, db, project_id, monkeypatch):
         """编译进行中裁决 → 409（修复 review #1'：与并发摄入互斥，防覆写竞态）。"""
@@ -389,12 +389,12 @@ class TestAdjudicateEndpoint:
         db.create_wiki_compile_task(project_id, "manual")  # status=queued
         monkeypatch.setattr("routers.wiki.get_db", lambda: db)
 
-        with pytest.raises(HTTPException) as exc_info:
-            _run(adjudicate_review(
-                project_id, review_id, ReviewAdjudicateRequest(chosen=0),
-            ))
+        resp = _run(adjudicate_review(
+            project_id, review_id, ReviewAdjudicateRequest(chosen=0),
+        ))
 
-        assert exc_info.value.status_code == 409
+        assert resp.status_code == 409
+        assert json.loads(resp.body)["code"] == "COMPILING_IN_PROGRESS"
         # 未产生任何写操作
         assert db.get_wiki_review(review_id)["resolved"] == 0
 

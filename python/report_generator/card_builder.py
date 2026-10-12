@@ -175,7 +175,7 @@ async def build_knowledge_cards(
             )
             return list(existing_cards) + _fallback_cards(
                 raw_results, section_id, start_index=len(existing_cards)), \
-                {"level": "insufficient", "reason": "LLM 响应无法解析", "follow_up_queries": []}, usage
+                {"level": "insufficient", "reason": "INKCUBE_CODE:CARD_PARSE_FAILED", "follow_up_queries": []}, usage
 
     except Exception as e:
         logger.error(
@@ -184,7 +184,7 @@ async def build_knowledge_cards(
         )
         return list(existing_cards) + _fallback_cards(
             raw_results, section_id, start_index=len(existing_cards)), \
-            {"level": "insufficient", "reason": f"LLM 调用失败: {actionable(e)}", "follow_up_queries": []}, \
+            {"level": "insufficient", "reason": actionable(e), "follow_up_queries": []}, \
             {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 

@@ -137,7 +137,7 @@ class TestContinuousCompile:
         assert all(s["file_id"] in ("f1", "f2", "f3") for s in db._summaries)
 
     def test_credential_error_isolated_with_actionable_text(self, monkeypatch, wiki_data_dir):
-        """凭据类错误（Key 失效等）：该文件失败记 actionable 文案，不中断队列。"""
+        """凭据类错误（Key 失效等）：该文件失败记 actionable 协议串，不中断队列。"""
         db = StubDB(FILES[:2])
         w = _make_worker(db, wiki_data_dir)
 
@@ -146,7 +146,8 @@ class TestContinuousCompile:
 
         assert db.status_updates[-1][0] == "completed"  # 队列不中断
         failed = next(s for s in db._summaries if s["file_id"] == "f1")
-        assert "设置" in failed["error"]  # actionable 文案含设置页指引
+        # D1 契约：落库协议串（前端 translateStoredError 还原为当前语言）
+        assert failed["error"] == "INKCUBE_CODE:LLM_INVALID_KEY"
 
     def test_progress_updated_per_file(self, monkeypatch, wiki_data_dir):
         """每个文件完成后刷新 ingesting 进度（前端进度条数据源）。"""

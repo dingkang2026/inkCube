@@ -9,6 +9,7 @@ import { useConfirm } from '../../../components/ConfirmDialog'
 import { usePolling } from '../../../hooks/usePolling'
 import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
 import { useActivity } from '../../activity/ActivityContext'
+import { apiErrorText, translateStoredError } from '../../../i18n/errorCodes'
 import s from './ReportPreview.module.css'
 
 interface ReportContent {
@@ -152,7 +153,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     try {
       const result: any = await window.electronAPI.invoke('reports:pauseReport', { reportId: report.id })
       if (result.error) {
-        showToast(t('project.report.pauseFailed', { error: result.error }), 'error')
+        showToast(t('project.report.pauseFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       } else {
         showToast(t('project.report.pauseRequested'), 'info')
       }
@@ -166,7 +167,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const handleResume = async () => {
     try {
       const result: any = await window.electronAPI.invoke('reports:retryReport', { reportId: report.id, mode: 'resume' })
-      if (result.error) showToast(t('project.report.retryFailed', { error: result.error }), 'error')
+      if (result.error) showToast(t('project.report.retryFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       else setStatusOverride('generating')  // 乐观翻转：不等快照同步，立即切生成中视图
     } catch (err) {
       showToast(t('project.report.retryFailed', { error: String(err) }), 'error')
@@ -177,7 +178,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     if (!(await confirmDialog({ title: t('project.report.restartReport'), message: t('project.report.restartConfirm') }))) return
     try {
       const result: any = await window.electronAPI.invoke('reports:retryReport', { reportId: report.id, mode: 'restart' })
-      if (result.error) showToast(t('project.report.retryFailed', { error: result.error }), 'error')
+      if (result.error) showToast(t('project.report.retryFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       else setStatusOverride('generating')  // 乐观翻转：不等快照同步，立即切生成中视图
     } catch (err) {
       showToast(t('project.report.retryFailed', { error: String(err) }), 'error')
@@ -338,7 +339,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
         ) : status === 'error' ? (
           <div className={s.errorState}>
             <AlertCircle size={24} />
-            <span>{report.error_message || t('project.report.failed')}</span>
+            <span>{report.error_message ? translateStoredError(report.error_message, t) : t('project.report.failed')}</span>
             {/* 崩溃恢复入口（§3.8.3）：error 保留 checkpoint，与 paused 同构提供
                 恢复（断点续跑）/ 重新生成（全量重跑，确认后）——兑现中断日志
                 「可重新生成续跑」的承诺，免去退回列表找重试按钮 */}

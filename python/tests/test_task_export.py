@@ -83,7 +83,7 @@ class TestExportTask:
         resp = client.get(f"/tasks/{TASK_ID}/export")
 
         assert resp.status_code == 200
-        assert resp.json() == {"error": "任务不存在"}
+        assert resp.json() == {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
 
     def test_workspace_missing(self, client, mock_db, tmp_path):
         mock_db.get_task.return_value = {
@@ -94,4 +94,4 @@ class TestExportTask:
         resp = client.get(f"/tasks/{TASK_ID}/export")
 
         assert resp.status_code == 200
-        assert resp.json() == {"error": "工作区目录不存在"}
+        assert resp.json() == {"error": "工作区目录不存在", "code": "WORKSPACE_NOT_FOUND"}

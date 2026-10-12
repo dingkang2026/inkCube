@@ -1,8 +1,8 @@
-/** tests/AntivirusBanner.test.tsx — 一键加白名单横幅（2.8 §12 F3）
- *  覆盖：blocked=false 不渲染；blocked=true 渲染提示 + 一键优化；点击后
+/** tests/AntivirusBanner.test.tsx — 白名单授权横幅（2.8 §12 F4，前置阻断）
+ *  覆盖：verified=true 不渲染；verified=false 渲染提示 + 立即授权；点击后
  *  added=true 横幅消失；added=false / invoke 抛错降级 fallback 引导文案，
- *  「知道了」关闭；prompt 态可手动关闭（不触发提权）；信号归零后 prompt
- *  回退隐藏。轮询用真 usePolling（挂载即首查，30s 间隔内测试只依赖首查）。
+ *  fallback 以「知道了」关闭；prompt 态以「暂不」手动关闭（不触发提权）；verified 翻 true 后
+ *  prompt 回退隐藏。轮询用真 usePolling（挂载即首查，30s 间隔内测试只依赖首查）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
@@ -31,7 +31,7 @@ const invokeMock = vi.fn()
 beforeEach(() => {
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
-    if (channel === 'system:getUvCacheBlocked') return { blocked: false, tmp_count: 0 }
+    if (channel === 'system:getUvExclusionStatus') return { verified: true }
     return {}
   })
   ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke: invokeMock }
@@ -43,41 +43,41 @@ afterEach(() => {
   delete (window as unknown as { electronAPI?: unknown }).electronAPI
 })
 
-function mockBlocked(blocked: boolean) {
+function mockVerified(verified: boolean) {
   invokeMock.mockImplementation(async (channel: string) => {
-    if (channel === 'system:getUvCacheBlocked') return { blocked, tmp_count: blocked ? 3 : 0 }
+    if (channel === 'system:getUvExclusionStatus') return { verified }
     return {}
   })
 }
 
-describe('AntivirusBanner (2.8 §12 F3)', () => {
-  it('renders nothing when not blocked', async () => {
+describe('AntivirusBanner (2.8 §12 F4)', () => {
+  it('renders nothing when already verified', async () => {
     const { container } = render(<AntivirusBanner />)
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith('system:getUvCacheBlocked')
+      expect(invokeMock).toHaveBeenCalledWith('system:getUvExclusionStatus')
     })
     expect(container.querySelector('.banner')).toBeNull()
   })
 
-  it('shows prompt with optimize button when blocked', async () => {
-    mockBlocked(true)
+  it('shows prompt with authorize button when not verified', async () => {
+    mockVerified(false)
     const { container } = render(<AntivirusBanner />)
 
     await waitFor(() => {
       expect(container.querySelector('.banner')).toBeTruthy()
     })
-    expect(screen.getByText('检测到杀毒软件实时扫描拖慢依赖安装，建议将依赖缓存加入白名单')).toBeTruthy()
-    expect(screen.getByText('一键优化')).toBeTruthy()
+    expect(screen.getByText('代码执行与网页抓取环境需要一次系统授权（加入杀毒软件白名单），授权完成前依赖安装无法进行')).toBeTruthy()
+    expect(screen.getByText('立即授权')).toBeTruthy()
   })
 
   it('closes from prompt via dismiss without invoking elevation', async () => {
-    mockBlocked(true)
+    mockVerified(false)
     const { container } = render(<AntivirusBanner />)
 
     await waitFor(() => {
-      expect(screen.getByText('一键优化')).toBeTruthy()
+      expect(screen.getByText('立即授权')).toBeTruthy()
     })
-    fireEvent.click(screen.getByText('知道了'))
+    fireEvent.click(screen.getByText('暂不'))
 
     await waitFor(() => {
       expect(container.querySelector('.banner')).toBeNull()
@@ -85,13 +85,11 @@ describe('AntivirusBanner (2.8 §12 F3)', () => {
     expect(invokeMock).not.toHaveBeenCalledWith('system:addUvCacheExclusion')
   })
 
-  it('hides again when the blocked signal clears', async () => {
+  it('hides again once verification turns true', async () => {
     vi.useFakeTimers()
-    let blocked = true
+    let verified = false
     invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'system:getUvCacheBlocked') {
-        return { blocked, tmp_count: blocked ? 3 : 0 }
-      }
+      if (channel === 'system:getUvExclusionStatus') return { verified }
       return {}
     })
     const { container } = render(<AntivirusBanner />)
@@ -99,7 +97,7 @@ describe('AntivirusBanner (2.8 §12 F3)', () => {
     await act(async () => {}) // 首轮 tick（挂载即查）
     expect(container.querySelector('.banner')).toBeTruthy()
 
-    blocked = false
+    verified = true
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000) // 下一轮轮询
     })
@@ -108,16 +106,16 @@ describe('AntivirusBanner (2.8 §12 F3)', () => {
 
   it('hides the banner after successful exclusion', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'system:getUvCacheBlocked') return { blocked: true, tmp_count: 3 }
+      if (channel === 'system:getUvExclusionStatus') return { verified: false }
       if (channel === 'system:addUvCacheExclusion') return { added: true, fallback: false }
       return {}
     })
     const { container } = render(<AntivirusBanner />)
 
     await waitFor(() => {
-      expect(screen.getByText('一键优化')).toBeTruthy()
+      expect(screen.getByText('立即授权')).toBeTruthy()
     })
-    fireEvent.click(screen.getByText('一键优化'))
+    fireEvent.click(screen.getByText('立即授权'))
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith('system:addUvCacheExclusion')
@@ -129,16 +127,16 @@ describe('AntivirusBanner (2.8 §12 F3)', () => {
 
   it('falls back to manual guidance when exclusion fails', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'system:getUvCacheBlocked') return { blocked: true, tmp_count: 3 }
+      if (channel === 'system:getUvExclusionStatus') return { verified: false }
       if (channel === 'system:addUvCacheExclusion') return { added: false, fallback: true }
       return {}
     })
     const { container } = render(<AntivirusBanner />)
 
     await waitFor(() => {
-      expect(screen.getByText('一键优化')).toBeTruthy()
+      expect(screen.getByText('立即授权')).toBeTruthy()
     })
-    fireEvent.click(screen.getByText('一键优化'))
+    fireEvent.click(screen.getByText('立即授权'))
 
     await waitFor(() => {
       expect(screen.getByText(/未能自动写入排除项/)).toBeTruthy()
@@ -153,16 +151,16 @@ describe('AntivirusBanner (2.8 §12 F3)', () => {
 
   it('falls back to manual guidance when the IPC call throws', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'system:getUvCacheBlocked') return { blocked: true, tmp_count: 3 }
+      if (channel === 'system:getUvExclusionStatus') return { verified: false }
       if (channel === 'system:addUvCacheExclusion') throw new Error('electron down')
       return {}
     })
     const { container } = render(<AntivirusBanner />)
 
     await waitFor(() => {
-      expect(screen.getByText('一键优化')).toBeTruthy()
+      expect(screen.getByText('立即授权')).toBeTruthy()
     })
-    fireEvent.click(screen.getByText('一键优化'))
+    fireEvent.click(screen.getByText('立即授权'))
 
     await waitFor(() => {
       expect(screen.getByText(/未能自动写入排除项/)).toBeTruthy()

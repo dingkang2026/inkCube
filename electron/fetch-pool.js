@@ -4,12 +4,15 @@
 // SSRF 字面拦截（§5.3 第 2 层）应用启动即挂，与窗口生命周期无关。
 // 主窗口 default session 无涉（§10 隔离边界）。
 const { BrowserWindow, session } = require('electron')
+const path = require('path')
 const { logElectron } = require('./log-utils')
 
 const PARTITION = 'persist:webfetch'
+// 池窗口对 Python 侧的匹配锚点是 preload 注入的 window.__INKCUBE_POOL__
+// （每次导航后自动重注入，与 document.title / 窗口标题无关——抓取后
+// 窗口停留在目标页，页面 title 会污染任何基于标题的锚点）。POOL_TITLE
+// 系列仅驱动窗口标题可视化（待命 / 抓取中）。
 const POOL_TITLE = 'inkcube-fetch-pool'
-// 标题必须始终以 POOL_TITLE 开头：Python 侧 find_pool_page 按 startswith
-// 匹配 CDP target，抓取中状态（追加后缀）不能破坏 attach（§6.2 可视化策略）
 const FETCHING_TITLE = `${POOL_TITLE} · 抓取中…`
 const MARK_PAGE =
   `data:text/html,<title>${POOL_TITLE}</title>` +
@@ -84,25 +87,45 @@ function ensurePoolWindow() {
     title: POOL_TITLE,
     webPreferences: {
       partition: PARTITION,
+      // 匹配锚点：每次导航重注入 window.__INKCUBE_POOL__（见文件头注释）。
+      // contextIsolation 必须 false：Electron 12+ 默认 true，preload 跑在
+      // isolated world，标记对 CDP evaluate（main world）不可见（2026-10-12
+      // 实证 mark=False）。本窗口无 nodeIntegration、preload 仅设标记，
+      // 关闭隔离无安全损失
+      preload: path.join(__dirname, 'fetch-pool-preload.js'),
+      contextIsolation: false,
       backgroundThrottling: false,  // 最小化不影响抓取（§2 可视化策略）
     },
   })
   poolWindow.loadURL(MARK_PAGE)
 
-  // 可视化：真实抓取导航开始 → showInactive（不抢焦点）+ 抓取中标题。
+  // 可视化：真实抓取导航开始 → 显示窗口（不夺焦点）+ 抓取中标题。
   // 用 did-start-navigation（携带目标 url）而非 did-start-loading：后者在
   // 加载 data: 标记页时也触发，会让窗口创建即显示。
   poolWindow.webContents.on('did-start-navigation', (_e, url) => {
     if (!url || url.startsWith('data:')) return
     if (poolWindow.isDestroyed()) return
-    if (!poolWindow.isVisible()) poolWindow.showInactive()
+    if (!poolWindow.isVisible()) {
+      // 可见性三连（2.8 §6.2）：showInactive 不抢焦点，但主窗口最大化时
+      // 池窗口被完全遮挡、任务栏也无提示——用户感知就是「没看到窗口」
+      // （2026-10-12 实测）。moveTop 提到最前（不夺焦点）+ flashFrame
+      // 任务栏闪烁（Windows transient），显示链路同步落日志便于排查。
+      poolWindow.showInactive()
+      poolWindow.moveTop()
+      poolWindow.flashFrame(true)
+      logElectron('INFO', `[fetch-pool] pool window shown (nav: ${url.slice(0, 120)})`)
+    }
     poolWindow.setTitle(FETCHING_TITLE)
   })
   // 加载结束恢复标题（抓取是否真正完成主进程不可感知——CDP 会话对主进程
-  // 透明，恢复只表示网络加载完成，不影响 Python 侧 startswith 匹配）
+  // 透明，恢复只表示网络加载完成）
   poolWindow.webContents.on('did-stop-loading', () => {
     if (!poolWindow.isDestroyed()) poolWindow.setTitle(POOL_TITLE)
   })
+
+  // 页面 <title> 不得覆盖窗口标题（否则任务栏显示网站标题、「抓取中…」
+  // 状态语义丢失）；窗口标题完全由上面两个状态机的 setTitle 驱动
+  poolWindow.on('page-title-updated', (event) => event.preventDefault())
 
   // 用户点 ✕ → 仅隐藏：池窗口存活，CDP target 不销毁（§6.2）
   poolWindow.on('close', (event) => {
@@ -117,8 +140,8 @@ function ensurePoolWindow() {
     if (poolWindow === win) poolWindow = null
   })
 
-  // 崩溃自愈（§6.2）：恶意页面致渲染进程崩溃只影响本窗口；重建后 title
-  // 标记不变，skill 下次 attach 自动恢复。不重建则后续所有抓取失败。
+  // 崩溃自愈（§6.2）：恶意页面致渲染进程崩溃只影响本窗口；重建后 preload
+  // 标记照常注入，skill 下次 attach 自动恢复。不重建则后续所有抓取失败。
   poolWindow.webContents.on('render-process-gone', (_e, details) => {
     logElectron('ERROR', `[fetch-pool] pool renderer gone (${details.reason}), recreating window`)
     if (poolWindow && !poolWindow.isDestroyed()) poolWindow.destroy()

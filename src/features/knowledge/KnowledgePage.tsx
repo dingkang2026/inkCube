@@ -15,6 +15,7 @@ import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import { useQueuePause } from '../../hooks/useQueuePause'
 import type { Project, FileRecord, SearchResult, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
+import { apiErrorText } from '../../i18n/errorCodes'
 import s from './KnowledgePage.module.css'
 
 interface KnowledgePageProps {
@@ -170,9 +171,9 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
             filename: file.name,
             fileType: ext,
             data: base64,
-          }) as { success?: boolean; message?: string; error?: string }
+          }) as { success?: boolean; message?: string; error?: string; code?: string }
           if (result && !result.success) {
-            showToast(`${file.name}: ${result.message || result.error || t('knowledge.uploadFailed')}`, 'error')
+            showToast(`${file.name}: ${apiErrorText(result.code, result.message || result.error || t('knowledge.uploadFailed'), t)}`, 'error')
           }
           // Refresh file list after each upload so the new file appears immediately
           loadFiles(selectedProject.id, 1, filenameSearchRef.current)

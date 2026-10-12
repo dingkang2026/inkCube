@@ -3,8 +3,8 @@
 
 用法: python main.py <url> [--selector CSS] [--wait-for CSS] [--timeout 秒] [--save-to 名.md]
 
-流程: SSRF 探测链 → 抓取锁 → CDP attach 抓取窗口 → 导航/等待 →
-      提取 → 登录墙检测 → HTML→MD 落盘 → stdout JSON 摘要。
+流程: 参数契约预检 → SSRF 探测链 → 抓取锁 → CDP attach 抓取窗口 →
+      导航/等待 → 提取 → 登录墙检测 → HTML→MD 落盘 → stdout JSON 摘要。
 stdout 只输出一行 JSON（唯一通信通道，adapter 解析）。
 """
 from __future__ import annotations
@@ -32,27 +32,76 @@ except ImportError:  # pragma: no cover - 需真实缺包环境
     sys.exit(0)
 
 
+# 参数契约摘要：预检错误里随 JSON 返回，LLM 拿到即可下轮自纠
+_ARG_CONTRACT = (
+    "browser-fetch <url> [--selector CSS] [--wait-for CSS] "
+    "[--timeout 秒] [--save-to 文件名.md]"
+)
+
+
+def _arg_contract_error(url: str, extra: list[str]) -> dict | None:
+    """argparse 之后的参数契约检查（返回错误 dict，None 表示通过）。
+
+    实测失败模式：弱模型把自然语言需求直译成 command="open pricing"，
+    argparse 的英文 usage + unrecognized arguments 无法引导自纠，模型
+    误判「工具不支持打开网址」后直接放弃。这里用中文 JSON 错误 + 正确
+    示例替代（stdout 单行 JSON 契约不变）；仅做形似性检查，SSRF 安全
+    校验仍由 fetch() 里的 core.validate_url 全量负责，职责不重叠。
+    """
+    if not url:
+        return {
+            "error": "缺少 URL 参数（第一个位置参数）",
+            "usage": _ARG_CONTRACT,
+            "example": 'browser-fetch "https://example.com/pricing"',
+        }
+    if not url.lower().startswith(("http://", "https://")):
+        return {
+            "error": (
+                f'第一个参数必须是 http(s):// 开头的完整 URL，收到: "{url}"'
+                "（自然语言需求不能直接作为本工具的输入，请翻译成 URL）"
+            ),
+            "usage": _ARG_CONTRACT,
+            "example": 'browser-fetch "https://example.com/pricing"',
+        }
+    if extra:
+        return {
+            "error": f"无法识别的参数: {' '.join(extra)}",
+            "usage": _ARG_CONTRACT,
+        }
+    return None
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="browser-fetch")
-    parser.add_argument("url", help="目标页 URL（http/https）")
+    # url 用 nargs="?" + 主动预检：argparse 对必填位置参数缺失只会打英文
+    # usage 后 exit 2，LLM 无法自纠（见 _arg_contract_error docstring）
+    parser.add_argument("url", nargs="?", default="",
+                        help="目标页 URL（http/https）")
     parser.add_argument("--selector", default=None, help="CSS 选择器，只提取匹配区域")
     parser.add_argument("--wait-for", dest="wait_for", default=None,
                         help="等待该选择器出现后再提取")
     parser.add_argument("--timeout", type=int, default=20, help="超时秒数，默认 20")
     parser.add_argument("--save-to", dest="save_to", default=None, help="落盘文件名")
-    return parser.parse_args(argv)
+    args, extra = parser.parse_known_args(argv)
+    err = _arg_contract_error(args.url, extra)
+    if err:
+        emit(err)
+        sys.exit(0)
+    return args
 
 
 async def find_pool_page(browser) -> object | None:
-    """按 title 标记匹配抓取窗口 target（§5.3）。
+    """按 preload 运行时标记匹配抓取窗口 target（§5.3）。
 
-    title 以 POOL_TITLE 开头即命中：抓取中状态 Electron 侧会追加「· 抓取中…」
-    后缀（§6.2 可视化），前缀不变，后缀变化不能丢 attach。
+    window.__INKCUBE_POOL__ 由 fetch-pool-preload.js 注入，每次导航后
+    自动重执行——窗口无论停在待命页、抓取目标页还是登录页，标记恒在。
+    （title 匹配不可用：抓取后 document.title 是目标页面内容，首次成功
+    即污染锚点。）
     """
     for ctx in browser.contexts:
         for page in ctx.pages:
             try:
-                if (await page.title()).startswith(core.POOL_TITLE):
+                if await page.evaluate(core.POOL_MARK_JS):
                     return page
             except Exception:
                 continue

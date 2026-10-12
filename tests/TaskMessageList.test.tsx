@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
-import type { TaskMessage } from '../src/types'
+import type { TaskMessage, StreamStep } from '../src/types'
 
 // loginRequired 查表返回带 {{domain}} 的真实文案，验证插值；其余返回 key。
 // i18n.language 需存在：MessageBubble 用它格式化时间戳
@@ -30,7 +30,7 @@ vi.mock('../src/components/Markdown', () => ({
   Markdown: () => null,
 }))
 
-import { TaskMessageList } from '../src/features/task/TaskMessageList'
+import { TaskMessageList, buildStreamGroups } from '../src/features/task/TaskMessageList'
 
 const invokeMock = vi.fn()
 
@@ -139,5 +139,78 @@ describe('TaskMessageList login-wall banner (2.8 §8.3)', () => {
       />,
     )
     expect(container.querySelector('.loginBanner')).toBeNull()
+  })
+})
+
+describe('TaskMessageList env-setup notes (2.8 §5.5 step_note)', () => {
+  it('buildStreamGroups separates note steps from tool actions', () => {
+    const steps: StreamStep[] = [
+      { type: 'note', text: '⏳ 首次使用 browser-fetch，正在准备运行环境...', iteration: 0 },
+      { type: 'action', tool: 'browser-fetch', input: { command: 'https://x' }, iteration: 0, output: '{"ok":true}' },
+      { type: 'note', text: '✅ browser-fetch 运行环境就绪（38s）', iteration: 0 },
+    ]
+    const groups = buildStreamGroups(steps, '', '', 0, new Map(), new Map())
+    expect(groups).toHaveLength(1)
+    // notes 顺序保留（含 action 前后穿插），不混入 actions
+    expect(groups[0].notes).toEqual([
+      '⏳ 首次使用 browser-fetch，正在准备运行环境...',
+      '✅ browser-fetch 运行环境就绪（38s）',
+    ])
+    expect(groups[0].actions).toHaveLength(1)
+    // note 不驱动状态：唯一 action 已有 output；isCurrent 且有 actions → running（流式期）
+    expect(groups[0].status).toBe('running')
+  })
+
+  it('note-only steps still produce an iteration card (first visible feedback)', () => {
+    // 首条 note 到达、action 未出时即有可见卡片（环境准备中的第一反馈）
+    const groups = buildStreamGroups(
+      [{ type: 'note', text: '⏳ 准备中', iteration: 2 }],
+      '', '', 2, new Map(), new Map(),
+    )
+    expect(groups).toHaveLength(1)
+    expect(groups[0].iteration).toBe(2)
+    expect(groups[0].notes).toEqual(['⏳ 准备中'])
+    expect(groups[0].actions).toHaveLength(0)
+  })
+
+  it('renders note rows; pending note shows spinner, terminal note stops it', () => {
+    const { container } = render(
+      <TaskMessageList
+        messages={[]}
+        streamContent=""
+        streamSteps={[
+          { type: 'note', text: '⏳ 首次使用 browser-fetch，正在准备运行环境...', iteration: 0 },
+          { type: 'note', text: '✅ browser-fetch 运行环境就绪（38s）', iteration: 0 },
+          { type: 'action', tool: 'browser-fetch', input: { command: 'https://x' }, iteration: 0 },
+        ]}
+        streamIteration={0}
+        isGenerating={true}
+      />,
+    )
+    // isGenerating 时当前迭代挂载即自动展开（autoExpand），无需点击
+    expect(screen.getByText(/运行环境就绪/)).toBeTruthy()
+    // 最后一条 note 是终态 ✅ → noteRow 内无 spinner（header 的 running spinner 不在此断言范围）
+    const noteRows = container.querySelectorAll('.noteRow')
+    expect(noteRows).toHaveLength(2)
+    expect(noteRows[0].querySelector('.spinner')).toBeNull()
+    expect(noteRows[1].querySelector('.spinner')).toBeNull()
+  })
+
+  it('pending ⏳ as the last note renders a spinner in the note row', () => {
+    const { container } = render(
+      <TaskMessageList
+        messages={[]}
+        streamContent=""
+        streamSteps={[
+          { type: 'note', text: '⏳ 首次使用 browser-fetch，正在准备运行环境...', iteration: 0 },
+        ]}
+        streamIteration={0}
+        isGenerating={true}
+      />,
+    )
+    // 同上：当前迭代自动展开
+    const noteRow = container.querySelector('.noteRow')
+    expect(noteRow).toBeTruthy()
+    expect(noteRow!.querySelector('.spinner')).toBeTruthy()
   })
 })

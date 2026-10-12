@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from readiness import ensure_ready
@@ -452,17 +453,17 @@ async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudica
         if review["project_id"] != project_id:
             raise HTTPException(status_code=403, detail="Review belongs to different project")
         if review["type"] != "contradiction":
-            raise HTTPException(status_code=400, detail="仅矛盾类发现项支持裁决")
+            return JSONResponse(status_code=400, content={"error": "仅矛盾类发现项支持裁决", "code": "FINDING_NOT_ADJUDICABLE"})
         if review.get("resolved"):
-            raise HTTPException(status_code=409, detail="该发现项已处理")
+            return JSONResponse(status_code=409, content={"error": "该发现项已处理", "code": "FINDING_ALREADY_RESOLVED"})
         # 编译进行中禁止裁决（§5.5）：与并发摄入对同一批页面的写入互斥——
         # ingest Step 4 已实时重读 user_edited（根因修复），此处提前拒绝给用户
         # 即时反馈，避免裁决与编译产出交错（与 trigger_compile 同一防重入模式）
         latest_task = db.get_latest_compile_task(project_id)
         if latest_task and latest_task["status"] in ("queued", "ingesting", "storing"):
-            raise HTTPException(
+            return JSONResponse(
                 status_code=409,
-                detail=f"编译进行中({latest_task['status']})，请等待完成后再裁决",
+                content={"error": f"编译进行中({latest_task['status']})，请等待完成后再裁决", "code": "COMPILING_IN_PROGRESS"},
             )
         evidence = review.get("evidence")
         if isinstance(evidence, str):
@@ -473,18 +474,18 @@ async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudica
             except Exception:
                 evidence = None
         if not evidence or not isinstance(evidence, list) or len(evidence) < 2:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail="该发现项缺少结构化证据（旧版产出），请点开相关页面手动核对",
+                content={"error": "该发现项缺少结构化证据（旧版产出），请点开相关页面手动核对", "code": "FINDING_NO_EVIDENCE"},
             )
         if not 0 <= req.chosen < len(evidence):
-            raise HTTPException(status_code=400, detail="chosen 索引越界")
+            return JSONResponse(status_code=400, content={"error": "chosen 索引越界", "code": "CHOSEN_INDEX_OUT_OF_RANGE"})
 
         chosen_ev = evidence[req.chosen]
         chosen_quote = (chosen_ev.get("quote") or "").strip()
         chosen_key = (chosen_ev.get("page_key") or "").strip()
         if not chosen_quote:
-            raise HTTPException(status_code=400, detail="选中侧证据缺少引用原文")
+            return JSONResponse(status_code=400, content={"error": "选中侧证据缺少引用原文", "code": "EVIDENCE_QUOTE_MISSING"})
 
         details = []
         all_ok = True

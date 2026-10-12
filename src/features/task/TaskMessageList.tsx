@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
+import { translateStoredError } from '../../i18n/errorCodes'
 import s from './TaskMessageList.module.css'
 
 interface TaskMessageListProps {
@@ -87,6 +88,8 @@ interface IterationGroup {
   iteration: number
   reasoning: string | null
   thought: string | null
+  /** skill 首用环境准备提示行（仅流式期，2.8 §5.5）；历史回放无此内容 */
+  notes: string[]
   actions: TaskMessage[]
   status: 'ok' | 'error' | 'running'
   /** true while the field is still streaming live (current iteration, not yet locked by thought/done) */
@@ -98,6 +101,7 @@ interface IterationGroup {
 function computeStepsStatus(steps: StreamStep[]): 'ok' | 'error' | 'running' {
   let status: 'ok' | 'error' | 'running' = 'ok'
   for (const step of steps) {
+    if (step.type === 'note') continue // 环境准备提示行不驱动迭代状态
     if (!step.output) { status = 'running'; break }
     try {
       const parsed = JSON.parse(step.output)
@@ -142,7 +146,11 @@ export function buildStreamGroups(
   const groups: IterationGroup[] = []
   for (const iter of [...iters].sort((a, b) => a - b)) {
     const steps = stepsByIteration.get(iter) || []
-    const actions = steps.map((step, idx) => ({
+    // step_note（skill 首用环境准备提示，2.8 §5.5）单独收集成 notes，
+    // 不参与工具行包装与状态计算；其余步骤仍按 action/observation 配对渲染
+    const notes = steps.filter((st) => st.type === 'note').map((st) => st.text)
+    const actionSteps = steps.filter((st): st is Extract<StreamStep, { type: 'action' }> => st.type !== 'note')
+    const actions = actionSteps.map((step, idx) => ({
       id: `stream-${iter}-${idx}`,
       task_id: '',
       role: 'action' as const,
@@ -154,12 +162,13 @@ export function buildStreamGroups(
     // Locked snapshots win over live streams; live flags mark still-streaming fields
     const reasoning = streamIterationReasoning.get(iter) ?? (isCurrent && streamReasoning.trim() ? streamReasoning : null)
     const thought = streamIterationThoughts.get(iter) ?? (isCurrent && streamContent.trim() ? streamContent : null)
-    let status = computeStepsStatus(steps)
-    if (status === 'ok' && isCurrent && (reasoning || thought || actions.length > 0)) status = 'running'
+    let status = computeStepsStatus(actionSteps)
+    if (status === 'ok' && isCurrent && (reasoning || thought || actions.length > 0 || notes.length > 0)) status = 'running'
     groups.push({
       iteration: iter,
       reasoning: reasoning || null,
       thought: thought || null,
+      notes,
       actions,
       status,
       liveReasoning: isCurrent && !streamIterationReasoning.has(iter) && !!streamReasoning.trim(),
@@ -193,11 +202,11 @@ export function buildHistoryItems(msgs: TaskMessage[]): RenderItem[] {
     if (msg.role === 'reasoning') {
       // Start new iteration group
       flushGroup()
-      currentGroup = { iteration: iterCounter, reasoning: msg.content, thought: null, actions: [], status: 'ok' }
+      currentGroup = { iteration: iterCounter, reasoning: msg.content, thought: null, notes: [], actions: [], status: 'ok' }
     } else if (msg.role === 'thought') {
       // Defensive: create group if no preceding reasoning
       if (!currentGroup) {
-        currentGroup = { iteration: iterCounter, reasoning: null, thought: msg.content, actions: [], status: 'ok' }
+        currentGroup = { iteration: iterCounter, reasoning: null, thought: msg.content, notes: [], actions: [], status: 'ok' }
       } else {
         currentGroup.thought = msg.content
       }
@@ -208,7 +217,7 @@ export function buildHistoryItems(msgs: TaskMessage[]): RenderItem[] {
       // dropping the step, keeping history replay aligned with the
       // streaming view (matches the thought branch above).
       if (!currentGroup) {
-        currentGroup = { iteration: iterCounter, reasoning: null, thought: null, actions: [], status: 'ok' }
+        currentGroup = { iteration: iterCounter, reasoning: null, thought: null, notes: [], actions: [], status: 'ok' }
       }
       currentGroup.actions.push(msg)
       if (currentGroup.status !== 'error' && msg.metadata?.tool_output) {
@@ -388,6 +397,14 @@ function IterationCard({
           {group.reasoning && (
             <ReasoningBlock content={group.reasoning} streaming={group.liveReasoning} defaultOpen={isStreaming && open} />
           )}
+          {/* 环境准备提示行（2.8 §5.5）：最后一条仍为 ⏳（开始态）时带 spinner，
+              终态 note（✅/❌）入列后自然停转 */}
+          {group.notes.map((text, i) => (
+            <div key={`note-${i}`} className={s.noteRow}>
+              {isStreaming && i === group.notes.length - 1 && text.startsWith('⏳') && <span className={s.spinner} />}
+              <span className={s.noteText}>{text}</span>
+            </div>
+          ))}
           {group.actions.map((action, i) => {
             const toolName = action.metadata?.tool_name || 'unknown'
             const toolInput = action.metadata?.tool_input || {}
@@ -429,7 +446,8 @@ function MessageBubble({ message }: { message: TaskMessage }) {
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation()
     try {
-      await navigator.clipboard.writeText(message.content)
+      // D1 错误契约：复制前还原落库协议串，剪贴板不出 INKCUBE_CODE 原串
+      await navigator.clipboard.writeText(isUser ? message.content : translateStoredError(message.content, t))
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch { /* ignore */ }
@@ -443,7 +461,7 @@ function MessageBubble({ message }: { message: TaskMessage }) {
           {isUser ? (
             <p>{message.content}</p>
           ) : (
-            <Markdown content={message.content} className={s.markdown} />
+            <Markdown content={translateStoredError(message.content, t)} className={s.markdown} />
           )}
         </div>
         <div className={`${s.timeRow} ${isUser ? s.timeRowUser : ''}`}>

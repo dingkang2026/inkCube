@@ -709,7 +709,7 @@ class RepoMapTool(BaseTool):
 
         workspace = Path(self.workspace_dir).resolve()
         try:
-            files = self._collect_files(workspace, workspace, depth=3)
+            files = self._collect_files(workspace, workspace, max_depth=3)
             if not files:
                 return ""
 

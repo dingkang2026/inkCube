@@ -70,9 +70,17 @@ export function InternalModelSettings() {
 
   const handleDownload = async (name: string) => {
     try {
-      await window.electronAPI.invoke(MODELS_IPC.download, name)
+      // ok:False（如重复下载）为 200 响应体不抛错，显式检查避免「点了没反应」
+      const res = (await window.electronAPI.invoke(MODELS_IPC.download, name)) as { ok?: boolean; message?: string; code?: string }
+      if (res && res.ok === false) {
+        const err = new Error(res.message || 'download rejected')
+        ;(err as Error & { errorCode?: string }).errorCode = res.code
+        handleError(err)
+        return
+      }
     } catch (err) {
       handleError(err)
+      return
     }
     // 后台线程已同步置 downloading，立即拉一次接上启动间隙（全局心跳 ≤5/15s 后接管谓词）
     await fetchStatus().catch(() => {})
@@ -81,7 +89,14 @@ export function InternalModelSettings() {
   const handleDownloadAll = async () => {
     setDownloadingAll(true)
     try {
-      await window.electronAPI.invoke(MODELS_IPC.downloadAll)
+      const res = (await window.electronAPI.invoke(MODELS_IPC.downloadAll)) as { ok?: boolean; message?: string; code?: string }
+      if (res && res.ok === false) {
+        const err = new Error(res.message || 'download rejected')
+        ;(err as Error & { errorCode?: string }).errorCode = res.code
+        handleError(err)
+        setDownloadingAll(false)
+        return
+      }
       await fetchStatus().catch(() => {})
     } catch (err) {
       handleError(err)

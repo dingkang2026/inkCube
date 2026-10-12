@@ -115,6 +115,44 @@ describe('SettingsPage auto-save', () => {
     expect(screen.queryByText('settings.autoSave.saved')).toBeNull()
   })
 
+  it('pauses editing and shows a retry banner when load failed (D8)', async () => {
+    const retryMock = vi.fn()
+    render(<SettingsPage settings={baseSettings} onSave={onSave} loadFailed onRetryLoad={retryMock} />)
+
+    // 横幅 + 重试按钮可见
+    expect(screen.getByText('settings.loadFailed')).toBeTruthy()
+    expect(screen.getByText('settings.retryLoad')).toBeTruthy()
+
+    // 编辑被短路：改动不进 form、不排自动保存定时器 → 无落盘
+    fireEvent.click(screen.getByTestId('change-key'))
+    act(() => { vi.advanceTimersByTime(800) })
+    await flush()
+    expect(saveCalls).toHaveLength(0)
+  })
+
+  it('retry button invokes onRetryLoad (D8)', () => {
+    const retryMock = vi.fn()
+    render(<SettingsPage settings={baseSettings} onSave={onSave} loadFailed onRetryLoad={retryMock} />)
+    fireEvent.click(screen.getByText('settings.retryLoad'))
+    expect(retryMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes normal auto-save once loadFailed clears (D8)', async () => {
+    const { rerender } = render(<SettingsPage settings={baseSettings} onSave={onSave} loadFailed />)
+    fireEvent.click(screen.getByTestId('change-key'))
+    act(() => { vi.advanceTimersByTime(800) })
+    await flush()
+    expect(saveCalls).toHaveLength(0) // 失败态编辑全部被吞
+
+    // 重试成功（loadFailed 清除）后恢复正常自动保存
+    rerender(<SettingsPage settings={baseSettings} onSave={onSave} />)
+    fireEvent.click(screen.getByTestId('change-key'))
+    act(() => { vi.advanceTimersByTime(800) })
+    await flush()
+    expect(saveCalls).toHaveLength(1)
+    expect(saveCalls[0].api_key).toBe('new-key')
+  })
+
   it('does not roll back in-flight input when the saved settings prop echoes back', async () => {
     let resolveSave!: () => void
     const slowSave = (s: LLMSettings) => {

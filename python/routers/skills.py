@@ -72,14 +72,14 @@ async def install_skill(req: SkillInstallRequest):
     elif req.source_type == "git":
         return await _install_git(req.source, skills_dir)
     else:
-        return {"error": f"不支持的安装类型: {req.source_type}"}
+        return {"error": f"不支持的安装类型: {req.source_type}", "code": "INVALID_SOURCE_TYPE"}
 
 
 async def _install_local(source_path: str, skills_dir: str) -> dict:
     """Install skill from a local directory path."""
     source = Path(source_path).resolve()
     if not source.is_dir():
-        return {"error": f"路径不存在或不是目录: {source_path}"}
+        return {"error": f"路径不存在或不是目录: {source_path}", "code": "SOURCE_PATH_NOT_FOUND"}
 
     # Detect skill type: SKILL.md (Agent Skills standard)
     is_agent_skill = (source / "SKILL.md").exists()
@@ -96,15 +96,19 @@ async def _install_local(source_path: str, skills_dir: str) -> dict:
                     sub_skills.append(sub_name)
         if sub_skills:
             return {
+                # 引导性复合返回：动态子列表无法静态 i18n，结构化字段供前端插值渲染（D1）
                 "error": (
                     f"所选目录 `{source.name}` 是一个 Skill 集合目录，根目录没有 SKILL.md。\n\n"
                     f"发现以下子 Skill: {', '.join(f'`{s}`' for s in sub_skills)}\n\n"
                     f"请单独安装子目录，例如: `{source / sub_skills[0].replace('-', '_')}`"
                 ),
+                "code": "COLLECTION_DETECTED",
                 "type": "collection_detected",
                 "sub_skills": sub_skills,
+                "dir": source.name,
+                "example": str(source / sub_skills[0].replace('-', '_')),
             }
-        return {"error": "未找到 SKILL.md，这不是有效的 Agent Skill"}
+        return {"error": "未找到 SKILL.md，这不是有效的 Agent Skill", "code": "SKILL_MANIFEST_MISSING"}
 
     # Parse skill metadata
     meta = _parse_skill_md_meta(source)
@@ -114,7 +118,7 @@ async def _install_local(source_path: str, skills_dir: str) -> dict:
     # Check for duplicate name
     existing = deps.db.list_skills()
     if any(s["name"] == name for s in existing):
-        return {"error": f"已存在同名 Skill: {name}"}
+        return {"error": f"已存在同名 Skill: {name}", "code": "SKILL_NAME_EXISTS"}
 
     # Copy to skills directory
     install_name = name.lower().replace(" ", "-")
@@ -150,15 +154,15 @@ async def _install_git(git_url: str, skills_dir: str) -> dict:
     repo_name = git_url.rstrip("/").split("/")[-1].replace(".git", "")
     # Validate: reject path traversal characters
     if not repo_name or ".." in repo_name or "/" in repo_name or "\\" in repo_name:
-        return {"error": "无效的 Git URL"}
+        return {"error": "无效的 Git URL", "code": "INVALID_GIT_URL"}
     # Sanitize to safe characters
     repo_name = re.sub(r'[^a-zA-Z0-9_\-.]', '', repo_name)
     if not repo_name:
-        return {"error": "无法从 Git URL 提取仓库名"}
+        return {"error": "无法从 Git URL 提取仓库名", "code": "GIT_REPO_NAME_FAILED"}
     install_path = os.path.join(skills_dir, repo_name)
 
     if os.path.exists(install_path):
-        return {"error": f"已存在同名目录: {repo_name}，请先删除"}
+        return {"error": f"已存在同名目录: {repo_name}，请先删除", "code": "SKILL_DIR_EXISTS"}
 
     loop = asyncio.get_event_loop()
 
@@ -171,18 +175,18 @@ async def _install_git(git_url: str, skills_dir: str) -> dict:
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
         if proc.returncode != 0:
-            return {"error": f"Git clone 失败: {stderr.decode(errors='replace')}"}
+            return {"error": f"Git clone 失败: {stderr.decode(errors='replace')}", "code": "GIT_CLONE_FAILED"}
     except FileNotFoundError:
-        return {"error": "未找到 git 命令，请确保已安装 Git"}
+        return {"error": "未找到 git 命令，请确保已安装 Git", "code": "GIT_NOT_FOUND"}
     except asyncio.TimeoutError:
         await loop.run_in_executor(None, shutil.rmtree, install_path, True)
-        return {"error": "Git clone 超时（60 秒）"}
+        return {"error": "Git clone 超时（60 秒）", "code": "GIT_CLONE_TIMEOUT"}
 
     # Parse metadata (Agent Skills format)
     is_agent_skill = (Path(install_path) / "SKILL.md").exists()
     if not is_agent_skill:
         await loop.run_in_executor(None, shutil.rmtree, install_path, True)
-        return {"error": "Git 仓库中没有 SKILL.md，不是有效的 Agent Skill"}
+        return {"error": "Git 仓库中没有 SKILL.md，不是有效的 Agent Skill", "code": "SKILL_MANIFEST_MISSING"}
 
     meta = _parse_skill_md_meta(Path(install_path))
     name = meta.get("name", repo_name)
@@ -212,11 +216,11 @@ async def delete_skill(skill_id: str):
     skills = deps.db.list_skills()
     skill = next((s for s in skills if s["id"] == skill_id), None)
     if not skill:
-        return {"error": "Skill 不存在"}
+        return {"error": "Skill 不存在", "code": "SKILL_NOT_FOUND"}
 
     # 内置 skill（2.8 §9.1）：随应用种子安装，卸载无意义且下次启动会被重新种回
     if skill.get("source_type") == "builtin":
-        return {"error": "内置 Skill 不可卸载，可禁用"}
+        return {"error": "内置 Skill 不可卸载，可禁用", "code": "SKILL_BUILTIN_PROTECTED"}
 
     # Remove files
     install_path = skill.get("install_path", "")
@@ -242,7 +246,7 @@ async def confirm_skill(skill_id: str):
     """Mark a skill as confirmed (first-use acknowledgement done)."""
     ok = deps.db.confirm_skill(skill_id)
     if not ok:
-        return {"error": "Skill 不存在"}
+        return {"error": "Skill 不存在", "code": "SKILL_NOT_FOUND"}
     return {"ok": True}
 
 

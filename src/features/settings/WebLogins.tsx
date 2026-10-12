@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import styles from './WebLogins.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
+import { apiErrorText } from '../../i18n/errorCodes'
 
 interface WebLogin {
   domain: string
@@ -46,9 +47,9 @@ export function WebLogins() {
       const res = await window.electronAPI.invoke('weblogin:add', {
         domain: domain.trim(),
         note: note.trim() || null,
-      }) as { error?: string }
+      }) as { error?: string; code?: string }
       if (res.error) {
-        setError(res.error)
+        setError(apiErrorText(res.code, res.error, t))
       } else {
         setDomain('')
         setNote('')

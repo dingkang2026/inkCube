@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from readiness import ensure_ready
@@ -172,9 +173,9 @@ async def save_template(req: TemplateSaveRequest):
 
         # Ensure custom_ prefix (prevent overwriting preset templates)
         if not template["template_id"].startswith("custom_"):
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail="预置模板不可修改，请复制为自定义模板后编辑。",
+                content={"error": "预置模板不可修改，请复制为自定义模板后编辑。", "code": "TEMPLATE_PRESET_IMMUTABLE"},
             )
 
         template.setdefault("version", "1.0")
@@ -201,9 +202,9 @@ async def update_template(template_id: str, req: TemplateUpdateRequest):
     """Update a custom template. Preset templates cannot be modified."""
     try:
         if not template_id.startswith("custom_"):
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail="预置模板不可修改，请复制为自定义模板后编辑。",
+                content={"error": "预置模板不可修改，请复制为自定义模板后编辑。", "code": "TEMPLATE_PRESET_IMMUTABLE"},
             )
 
         loader = get_loader()
@@ -258,7 +259,7 @@ async def upgrade_template(template_id: str):
         from report_generator.loader import migrate_template
 
         if not template_id.startswith("custom_"):
-            raise HTTPException(status_code=400, detail="预置模板无需升级。")
+            return JSONResponse(status_code=400, content={"error": "预置模板无需升级。", "code": "TEMPLATE_PRESET_NO_UPGRADE"})
 
         loader = get_loader()
         row = get_db().get_template(template_id)
@@ -320,9 +321,9 @@ async def extract_template_from_sample(
         filename = file.filename or "sample"
         ext = Path(filename).suffix.lower()
         if ext not in (".docx", ".doc", ".pdf"):
-            raise HTTPException(
+            return JSONResponse(
                 status_code=400,
-                detail=f"不支持的文件格式: {ext}。仅支持 Word (.docx) 和 PDF (.pdf)。",
+                content={"error": f"不支持的文件格式: {ext}。仅支持 Word (.docx) 和 PDF (.pdf)。", "code": "UNSUPPORTED_SAMPLE_FORMAT"},
             )
 
         # Save uploaded file temporarily
@@ -423,9 +424,9 @@ async def delete_report(report_id: str):
                 # 生成中的报告后台任务持有文件句柄/DB 引用：删文件与 runner 写盘
                 # 竞争、删行后事件落库 FK 失败，且 LLM 继续烧 token —— 拒绝删除
                 # （崩溃后遗留的孤儿 generating 由启动扫描置 error，不会被此门误拦）
-                raise HTTPException(
+                return JSONResponse(
                     status_code=409,
-                    detail="报告正在生成中，请先暂停或等待完成后再删除"
+                    content={"error": "报告正在生成中，请先暂停或等待完成后再删除", "code": "REPORT_GENERATING"},
                 )
             content_path = report.get("content_path", "")
             if content_path and os.path.isdir(content_path):
@@ -488,9 +489,9 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
         max_concurrent = settings.get("report_max_concurrent", 2)
         active_count = db.count_active_reports()
         if active_count >= max_concurrent:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=429,
-                detail=f"当前已有 {active_count} 个报告正在生成（上限 {max_concurrent}），请稍后再试。"
+                content={"error": f"当前已有 {active_count} 个报告正在生成（上限 {max_concurrent}），请稍后再试。", "code": "REPORT_CONCURRENT_LIMIT"},
             )
 
         # 获取模板
@@ -733,9 +734,9 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
         max_concurrent = settings.get("report_max_concurrent", 2)
         active_count = db.count_active_reports()
         if active_count >= max_concurrent:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=429,
-                detail=f"当前已有 {active_count} 个报告正在生成（上限 {max_concurrent}），请稍后再试。"
+                content={"error": f"当前已有 {active_count} 个报告正在生成（上限 {max_concurrent}），请稍后再试。", "code": "REPORT_CONCURRENT_LIMIT"},
             )
 
         mode = req.mode if req else "resume"

@@ -169,7 +169,7 @@ async def _upload_core(project_id: str, upload: FileUpload, db, data_dir, worker
             "chunks_count": existing.get("chunk_count", 0),
             "images_count": existing.get("image_count", 0),
             "error": None,
-            "duplicate": True, "message": f"文件已存在: {existing['filename']}",
+            "duplicate": True, "message": f"文件已存在: {existing['filename']}", "code": "FILE_DUPLICATE",
         }
 
     db.create_file(
@@ -1126,7 +1126,8 @@ async def archive_image(project_id: str, image_id: str):
 
         db.update_image_status(
             image_id, "archived",
-            error_message="手动归档",
+            # D1 错误契约：落库协议串，前端 translateStoredError 还原为当前语言
+            error_message="INKCUBE_CODE:MANUALLY_ARCHIVED",
             clear_vlm_description=True,
         )
         db.update_file_image_status(file_id)

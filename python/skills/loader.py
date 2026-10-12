@@ -16,6 +16,7 @@ from skills.context import SkillContext
 from skills.protocol import BaseSkill
 from tools.base import BaseTool
 from tools.venv_manager import (
+    UvExclusionRequired,
     ensure_venv_blocking,
     get_venv_path_from_python,
     is_preinstall_done,
@@ -35,6 +36,12 @@ SKILL_GUIDE_MAX_CHARS = 8000
 # arbitrary utility (analyze_images.py), so they fall back to
 # instructions mode and the LLM drives the scripts itself via shell.
 _ENTRY_SCRIPT_NAMES = ("main.py", "cli.py")
+
+# L1 synopsis budget: SKILL.md usage fence attached to the command
+# description/input-schema. Lets the LLM build correct args on the FIRST
+# call without shipping the whole body into every prompt (full guide
+# stays L2, attached to the first execution result / slash hint).
+USAGE_SYNOPSIS_MAX_CHARS = 200
 
 
 class BuiltinToolAdapter(BaseSkill):
@@ -140,6 +147,13 @@ class AgentSkillAdapter(BaseSkill):
         # the strict CLI contract (saying "natural language" there misled the
         # LLM into passing raw user text, which argparse rejects); workflow
         # skills have no CLI to translate — natural language is the input.
+        # CLI 契约再附 SKILL.md 的用法围栏（argv 契约）：实测弱模型在无契约时
+        # 首调传自然语言（"open pricing"），argparse 报错后直接放弃而非自纠——
+        # 首调正确比事后纠错可靠，用法行必须在 L1 可见。
+        self._usage_synopsis = (
+            self._extract_usage_synopsis(self._body)
+            if self._entry_script else ""
+        )
         if self._entry_script:
             command_desc = (
                 f"CLI arguments for the {self.name} skill's entry script, "
@@ -147,6 +161,8 @@ class AgentSkillAdapter(BaseSkill):
                 f"into the subcommand and flags documented in the skill's "
                 f"instructions; never pass natural language directly."
             )
+            if self._usage_synopsis:
+                command_desc += f" Usage: {self._usage_synopsis}"
         else:
             command_desc = (
                 f"The user's request for the {self.name} skill (free-form). "
@@ -163,6 +179,28 @@ class AgentSkillAdapter(BaseSkill):
             },
             "required": ["command"],
         }
+
+    @staticmethod
+    def _extract_usage_synopsis(body: str) -> str:
+        """Extract the usage fence (first fenced code block) from SKILL.md body.
+
+        CLI-mode skills document their argv contract in a fenced block (e.g.
+        ``python scripts/main.py <url> [--selector CSS]``). Block-internal
+        newlines are collapsed so multi-line fences stay a one-line synopsis;
+        missing fence returns "" (description stays as-is).
+        """
+        start = body.find("```")
+        if start < 0:
+            return ""
+        rest = body[start + 3:]
+        nl = rest.find("\n")
+        if nl < 0:
+            return ""
+        end = rest.find("```", nl)
+        if end < 0:
+            end = len(rest)
+        synopsis = " ".join(rest[nl + 1:end].split())
+        return synopsis[:USAGE_SYNOPSIS_MAX_CHARS]
 
     @property
     def usage_instructions(self) -> str:
@@ -259,7 +297,16 @@ class AgentSkillAdapter(BaseSkill):
         # 首用同步预装（2.8 §5.5）：marker 缺失（后台预装未完成或曾失败）时
         # 在此「缺就装、装完继续」，不把预装竞态的错误抛给 LLM。
         if self._entry_script and context.venv_python:
-            ready = await self._ensure_venv_ready(context.venv_python)
+            try:
+                ready = await self._ensure_venv_ready(context.venv_python)
+            except UvExclusionRequired as e:
+                # 前置阻断（2.8 §12 F4）：重试无用，须用户先完成系统授权，
+                # 不可标 retryable（会诱导 LLM 无谓重试）
+                return json.dumps({
+                    "error": str(e),
+                    "retryable": False,
+                    "error_type": "UvExclusionRequired",
+                }, ensure_ascii=False)
             if not ready:
                 return json.dumps({
                     "error": "任务依赖自动安装失败，请重试（反复失败请检查网络或重启应用）",
@@ -407,6 +454,8 @@ class AgentSkillAdapter(BaseSkill):
             lines.append(
                 "  command (string, required): 完整的 CLI 命令参数，例如: greet --name Alice"
             )
+            if self._usage_synopsis:
+                lines.append(f"  用法: {self._usage_synopsis}")
         else:
             lines.append(
                 "  command (string, required): 用户需求描述（工作流型 Skill，无 CLI 入口；"

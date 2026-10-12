@@ -17,6 +17,7 @@ import {
   Info, Lightbulb, Search, RefreshCw, CheckCircle, Filter, Upload,
 } from 'lucide-react'
 import { useToast } from '../../knowledge/Toast'
+import { apiErrorText } from '../../../i18n/errorCodes'
 import s from './WikiTab.module.css'
 
 interface WikiLintViewProps {
@@ -295,7 +296,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
         data: base64,
       })
       if (result && !result.success) {
-        showToast(`${file.name}: ${result.message || result.error || 'Upload failed'}`, 'error')
+        showToast(`${file.name}: ${apiErrorText(result.code, result.message || result.error || t('knowledge.uploadFailed'), t)}`, 'error')
       } else {
         showToast(
           t('project.wiki.lintGapUploaded', {

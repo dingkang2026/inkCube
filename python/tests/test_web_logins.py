@@ -96,7 +96,9 @@ def test_add_invalid_domain_rejected(patched):
 def test_delete_existing_and_case_normalized(patched):
     _add("MiXeD.Com")
     assert asyncio.run(wl_router.delete_web_login("mixed.com")) == {"ok": True}
-    assert asyncio.run(wl_router.delete_web_login("mixed.com")) == {"error": "站点不存在"}
+    assert asyncio.run(wl_router.delete_web_login("mixed.com")) == {
+        "error": "站点不存在", "code": "SITE_NOT_FOUND",
+    }
     assert asyncio.run(wl_router.list_web_logins())["logins"] == []
 
 

@@ -72,4 +72,5 @@ class TestArchiveRunningGuard:
         resp = client.post(f"/tasks/{TASK_ID}/archive")
 
         assert resp.status_code == 200
-        assert resp.json() == {"error": "任务不存在或已删除"}
+        # D1 契约：错误返回带 code，中文原文保留作 fallback 线索
+        assert resp.json() == {"error": "任务不存在或已删除", "code": "TASK_NOT_FOUND"}

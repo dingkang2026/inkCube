@@ -9,6 +9,7 @@ import { TaskSettings } from './TaskSettings'
 import { SkillManagement } from './SkillManagement'
 import { WebLogins } from './WebLogins'
 import type { LLMSettings } from '../../types'
+import { apiErrorText } from '../../i18n/errorCodes'
 import s from './SettingsPage.module.css'
 
 interface SettingsPageProps {
@@ -37,6 +38,7 @@ export function SettingsPage({ settings, onSave, loadFailed = false, onRetryLoad
   const [testResult, setTestResult] = useState<{
     ok: boolean
     message: string
+    code?: string
     capabilities?: { function_calling: boolean | null; reasoning_effort: boolean | null; thinking_toggle: boolean | null }
   } | null>(null)
   const [testing, setTesting] = useState(false)
@@ -104,10 +106,17 @@ export function SettingsPage({ settings, onSave, loadFailed = false, onRetryLoad
       const res = (await window.electronAPI.invoke('settings:personal_test', form)) as {
         ok: boolean
         message: string
+        code?: string
       }
       setTestResult(res)
     } catch (err) {
-      setTestResult({ ok: false, message: String(err) })
+      // IPC throw 路径：handlePythonResponse 已把响应体 code 挂到 err.errorCode
+      const errCode = (err as { errorCode?: string })?.errorCode
+      setTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+        code: errCode,
+      })
     } finally {
       setTesting(false)
     }
@@ -162,7 +171,7 @@ export function SettingsPage({ settings, onSave, loadFailed = false, onRetryLoad
             <div className={s.actions}>
               {testResult && (
                 <div className={`${s.testResult} ${testResult.ok ? s.success : s.error}`}>
-                  {testResult.message}
+                  {apiErrorText(testResult.code, testResult.message, t)}
                 </div>
               )}
               {testResult?.ok && testResult.capabilities && (

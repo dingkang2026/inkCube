@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
+import { apiErrorText } from '../../i18n/errorCodes'
 
 export interface ShellConfirmData {
   command: string
@@ -181,6 +182,14 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           streamStepsRef.current = next
           return next
         })
+      } else if (type === 'step_note') {
+        // Skill 首用依赖安装进度（2.8 §5.5）：粗粒度两条（开始/终态），
+        // 渲染在当前迭代卡内；不持久化——预装一次性，历史回放无需呈现
+        setStreamSteps((prev) => {
+          const next: StreamStep[] = [...prev, { type: 'note', text: parsed.text || '', iteration: streamIterationRef.current }]
+          streamStepsRef.current = next
+          return next
+        })
       } else if (type === 'observation') {
         setStreamSteps((prev) => {
           const steps = [...prev]
@@ -249,7 +258,12 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           if (thought?.trim()) {
             newMessages.push({ id: crypto.randomUUID(), task_id: taskId, role: 'thought', content: thought, created_at: now })
           }
-          const iterActions = streamStepsRef.current.filter((s) => (s.iteration ?? 0) === iter)
+          // note 步骤（skill 首用环境提示，2.8 §5.5）不持久化——预装一次性，
+          // 历史回放无需呈现，与 useTaskChat 的流式期渲染策略一致
+          const iterActions = streamStepsRef.current.filter(
+            (s): s is Extract<StreamStep, { type: 'action' }> =>
+              (s.iteration ?? 0) === iter && s.type === 'action',
+          )
           for (const step of iterActions) {
             const actionId = crypto.randomUUID()
             newMessages.push({
@@ -335,10 +349,11 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       } else if (type === 'observation') {
         if (!bg) return
         for (let i = bg.steps.length - 1; i >= 0; i--) {
-          if (bg.steps[i].type === 'action' && !bg.steps[i].output) {
-            bg.steps[i] = { ...bg.steps[i], output: parsed.content, diff: parsed.diff, filePath: parsed.file_path }
-            break
-          }
+          const step = bg.steps[i]
+          if (step.type !== 'action') continue // note 不参与 action/observation 配对
+          if (step.output) continue
+          bg.steps[i] = { ...step, output: parsed.content, diff: parsed.diff, filePath: parsed.file_path }
+          break
         }
       } else if (type === 'answer_chunk') {
         if (!bg) return
@@ -416,12 +431,8 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         setIsGenerating(false)
         const errMsg = err instanceof Error ? err.message : String(err)
         const errCode = (err as { errorCode?: string })?.errorCode
-        const text =
-          errCode === 'TASK_LIMIT_REACHED' || errMsg.includes('并发')
-            ? t('task.limitReached')
-            : errCode === 'TASK_RUNNING' || errMsg.includes('执行中')
-              ? t('task.alreadyRunning')
-              : `${t('task.startFailed')}${errMsg}`
+        // D1 错误契约：code 命中映射 → 当前语言文案；否则 fallback 后端原文
+        const text = apiErrorText(errCode, `${t('task.startFailed')}${errMsg}`, t)
         const infoMsg: TaskMessage = {
           id: crypto.randomUUID(),
           task_id: activeTaskId,

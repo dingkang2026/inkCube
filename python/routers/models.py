@@ -21,16 +21,16 @@ async def download_model(name: str):
         raise HTTPException(status_code=404, detail=f"Unknown model: {name}")
     started = get_manager().start_download(name)
     if not started:
-        return {"ok": False, "message": "该模型正在下载中或已下载完成"}
-    return {"ok": True, "message": f"开始下载 {name}"}
+        return {"ok": False, "message": "该模型正在下载中或已下载完成", "code": "MODEL_ALREADY_DOWNLOADING"}
+    return {"ok": True, "message": f"开始下载 {name}", "code": "DOWNLOAD_STARTED"}
 
 
 @router.post("/models/download-all")
 async def download_all():
     started = get_manager().start_download_all()
     if not started:
-        return {"ok": False, "message": "所有模型已下载完成或正在下载中"}
-    return {"ok": True, "message": f"开始下载: {', '.join(started)}"}
+        return {"ok": False, "message": "所有模型已下载完成或正在下载中", "code": "MODEL_ALL_BUSY"}
+    return {"ok": True, "message": f"开始下载: {', '.join(started)}", "code": "DOWNLOAD_ALL_STARTED"}
 
 
 @router.get("/models/libreoffice/status")

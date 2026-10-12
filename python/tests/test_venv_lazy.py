@@ -1,14 +1,16 @@
 """python/tests/test_venv_lazy.py — 任务 venv 懒创建回归测试。
 
 回归背景：create_task 此前即在 data_dir/tasks/<id> 下建 .venv 并后台预装
-6 个包——纯聊天任务也占 20~100MB/个（uv 缓存跨盘符时硬链接失效、整包复制）。
+全部常用包——纯聊天任务也占 20~100MB/个（uv 缓存跨盘符时硬链接失效、整包复制）。
 改为懒创建后：
   1. create_task 只登记确定性 venv 路径，不落盘；
   2. task_agent 首次执行代码/装包/跑 Skill 时经 venv_manager.ensure_venv 落盘；
   3. 预装以 marker 文件保证每 venv 至多一次，失败可重试；
-  4. main.py 将 UV_CACHE_DIR 指到数据目录同盘，同版本包硬链接零增量。
+  4. main.py 将 UV_CACHE_DIR 指到数据目录同盘，同版本包硬链接零增量；
+  5. 白名单前置阻断（2.8 §12 F4）：未验证加白前任何安装不发生。
 """
 import asyncio
+import json
 import os
 import subprocess as _real_subprocess
 import sys
@@ -23,6 +25,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import tools.venv_manager as vm
 from agent.task_agent import TaskAgent
 from db.database import Database
+
+
+@pytest.fixture(autouse=True)
+def _verified_exclusion(monkeypatch, tmp_path):
+    """默认构造「白名单已验证」环境（前置阻断闸门放行，2.8 §12 F4）。
+
+    不替换闸门函数本身（TestUvExclusionGate 要测真实实现），而是搭好
+    已验证环境：UV_CACHE_DIR 指向 tmp、裁决文件在位且匹配；其余用例
+    自行 setenv 覆盖时闸门按真实逻辑判定。
+    """
+    cache_dir = str(tmp_path / "data" / "uv-cache")
+    monkeypatch.setenv("UV_CACHE_DIR", cache_dir)
+    marker = os.path.join(os.path.dirname(cache_dir), vm._VERIFIED_MARKER_NAME)
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"ok": True, "cache_dir": cache_dir}, f)
 
 
 @pytest.fixture
@@ -241,30 +259,25 @@ class TestEnsureVenvBlocking:
             os.path.join("d", "x", "bin", "python")) == os.path.join("d", "x")
 
 
-# ── 2c. preinstall_packages 自愈重试编排 ─────────────────
+# ── 2c. preinstall_packages 重试编排（两级链）─────────────────
 
 
 class TestPreinstallFallback:
-    """预装自愈编排：cached → 修复 archive 改名 + 重试 → --no-cache 绕行
-    → 镜像 + --no-cache（官方源不可达/极慢时的可达性兑底）。
+    """预装重试编排：cached → 镜像 + --no-cache（官方源不可达/极慢时的
+    可达性兑底）。
 
-    背景：Windows 上 uv 缓存的解压→archive-v0 改名可被实时防护稳定阻断
-    （os error 5，与 uv 版本无关，2.8 §12 F2），瞬态网络失败与官方源慢网
-    也会导致预装退出；单次尝试的 preinstall 在这类环境下永远无法自愈。
+    白名单前置阻断（2.8 §12 F4）上线后，杀软阻断场景在闸门处停机、
+    不再进入安装链路，rename 自愈层（cached-retry + 改名修复）随之退役；
+    镜像层解决的是网络可达性，与杀软无关，保留。
     """
 
-    def _patch_uv(self, monkeypatch, results, sleeps):
-        """mock uv 存在、_run_preinstall 按序返回 results、time.sleep 记录。
+    def _patch_uv(self, monkeypatch, results):
+        """mock uv 存在、_run_preinstall 按序返回 results。
 
         results 元素可为 bool（默认错误文案）或 (ok, err) 元组。
-        返回 (cmds, repairs)：cmds 为各次安装命令，repairs 为每轮修复拿到的错误全文。
         """
         monkeypatch.setattr(vm, "resolve_tool",
                             lambda name: "uv.exe" if name == "uv" else None)
-        repairs: list[str] = []
-        monkeypatch.setattr(
-            vm, "_repair_uv_archive_rename",
-            lambda err: repairs.append(err) or 0)
         cmds = []
 
         def fake_run(cmd):
@@ -276,124 +289,33 @@ class TestPreinstallFallback:
             return (r, "" if r else "exit 1: boom")
 
         monkeypatch.setattr(vm, "_run_preinstall", fake_run)
-        monkeypatch.setattr(vm.time, "sleep", lambda s: sleeps.append(s))
-        return cmds, repairs
+        return cmds
 
     def test_first_attempt_success_no_retry(self, monkeypatch):
-        """首次即成功 → 只调 1 次、无等待、无修复（常态零开销）。"""
-        sleeps: list = []
-        cmds, repairs = self._patch_uv(monkeypatch, [True], sleeps)
+        """首次即成功 → 只调 1 次（常态零开销）。"""
+        cmds = self._patch_uv(monkeypatch, [True])
 
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 1
         assert "--no-cache" not in cmds[0]
-        assert sleeps == []
-        assert repairs == []
 
-    def test_transient_failure_repaired_then_retry_succeeds(self, monkeypatch):
-        """首次失败 → 等待后修复 archive 再重试成功（零系统操作自愈）。"""
-        sleeps: list = []
-        cmds, repairs = self._patch_uv(monkeypatch, [False, True], sleeps)
+    def test_cached_failure_falls_back_to_mirror(self, monkeypatch):
+        """cached 失败（网络/源问题）→ 镜像 + --no-cache 一步到位。"""
+        cmds = self._patch_uv(monkeypatch, [False, True])
 
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 2
-        assert all("--no-cache" not in c for c in cmds)
-        assert sleeps == [vm._PREINSTALL_RETRY_DELAY]
-        assert len(repairs) == 1
-        assert "exit 1: boom" in repairs[0]  # 修复拿到上轮错误全文供解析
-
-    def test_repair_blocked_rename_from_stderr(self, tmp_path):
-        """从 uv stderr 提取改名对并亲手完成：tmp 存在且 dest 不存在 → rename。"""
-        tmp_dir = tmp_path / ".tmpUQVz67"
-        tmp_dir.mkdir()
-        (tmp_dir / "marker.txt").write_text("x", encoding="utf-8")
-        dest_dir = tmp_path / "archive-v0" / "WKFokGJGUE5kmkb-lsKZH"
-        stderr = (f"error: Failed to write to the distribution cache\n"
-                  f"  cause: failed to rename file from {tmp_dir} to "
-                  f"{dest_dir}: 拒绝访问。\u0028os error 5\u0029")
-
-        assert vm._repair_uv_archive_rename(stderr) == 1
-        assert dest_dir.is_dir()  # 真实 rename 发生，内容随目录迁移
-        assert (dest_dir / "marker.txt").is_file()
-        assert not tmp_dir.exists()
-
-    def test_repair_skips_missing_tmp_and_existing_dest(self, tmp_path):
-        """tmp 已被清理 / dest 已有同名条目 → 跳过该对，不报错。"""
-        gone = tmp_path / ".tmpGONE"
-        dest_exist = tmp_path / "destA"
-        dest_exist.mkdir()
-        stderr = (f"failed to rename file from {gone} to {tmp_path / 'destB'}: x\n"
-                  f"failed to rename file from {tmp_path / '.tmpOK'} to {dest_exist}: x")
-
-        assert vm._repair_uv_archive_rename(stderr) == 0
-        assert not (tmp_path / "destB").exists()
-
-    def test_repair_parses_word_wrapped_stderr(self, tmp_path):
-        """uv 管道输出按固定宽度折行（路径在「from」后断到下一行）→
-        折叠空白后仍能解析（2026-10-11 实测踩坑：不折叠则零匹配静默空转）。"""
-        tmp_dir = tmp_path / ".tmpWRAPPED"
-        tmp_dir.mkdir()
-        dest_dir = tmp_path / "archive-v0" / "FtA9Z7Awz3ITXJow"
-        # 模拟 uv 80 列 word-wrap：from 后直接换行，路径在下一行
-        wrapped = (f"error: Failed to write to the distribution cache\n"
-                   f"  cause: failed to rename file from\n"
-                   f"{tmp_dir} to\n"
-                   f"{dest_dir}: \u62d2\u7edd\u8bbf\u95ee\u3002(os error 5)\n")
-
-        assert vm._repair_uv_archive_rename(wrapped) == 1
-        assert dest_dir.is_dir()
-
-    def test_repair_handles_multiple_rename_pairs(self, tmp_path):
-        """≥2 个改名错误逐段配对全部修复。
-
-        回归（2026-10-11 review 发现）：全局单正则的贪婪 dest 会把后续
-        对整个吞进前一条 dest（实测失配，仅剩 1 条垃圾对，第二对永不
-        修复）；改为按关键字切段后各段独立配对。
-        """
-        tmp_a = tmp_path / ".tmpAAA"
-        tmp_a.mkdir()
-        (tmp_a / "marker.txt").write_text("a", encoding="utf-8")
-        dest_a = tmp_path / "archive-v0" / "hashA"
-        tmp_b = tmp_path / ".tmpBBB"
-        tmp_b.mkdir()
-        (tmp_b / "marker.txt").write_text("b", encoding="utf-8")
-        dest_b = tmp_path / "archive-v0" / "hashB"
-        stderr = (f"failed to rename file from {tmp_a} to {dest_a}: "
-                  f"拒绝访问。(os error 5)\n"
-                  f"failed to rename file from {tmp_b} to {dest_b}: "
-                  f"拒绝访问。(os error 5)")
-
-        assert vm._repair_uv_archive_rename(stderr) == 2
-        assert dest_a.is_dir() and (dest_a / "marker.txt").is_file()
-        assert dest_b.is_dir() and (dest_b / "marker.txt").is_file()
-        assert not tmp_a.exists() and not tmp_b.exists()
-
-    def test_rename_blocked_falls_back_to_mirror(self, monkeypatch):
-        """修复后仍失败 → 第 3 级镜像兑底成功（镜像 + --no-cache 一步到位）。
-
-        独立官方源 --no-cache 层已裁剪：慢网时必 300s 超时（2026-10-11 实测
-        三级全超时 15 分钟零成果），成功场景与镜像级重合，信息增量小。
-        """
-        sleeps: list = []
-        cmds, repairs = self._patch_uv(monkeypatch, [False, False, True], sleeps)
-
-        assert vm.preinstall_packages("fake/py") is True
-        assert len(cmds) == 3
-        mirror_cmd = cmds[2]
+        mirror_cmd = cmds[1]
         assert "--no-cache" in mirror_cmd
         assert mirror_cmd[mirror_cmd.index("--default-index") + 1] == \
             vm._PYPI_MIRROR
-        assert all("--no-cache" not in c for c in cmds[:2])
-        assert len(repairs) == 2  # cached-retry 前 + mirror 前各修一次
 
     def test_all_attempts_fail_returns_false(self, monkeypatch):
-        """三级全败 → False（调用方转 retryable，下次调用重新走链路）。"""
-        sleeps: list = []
-        cmds, repairs = self._patch_uv(monkeypatch, [], sleeps)
+        """两级全败 → False（调用方转 retryable，下次调用重新走链路）。"""
+        cmds = self._patch_uv(monkeypatch, [])
 
         assert vm.preinstall_packages("fake/py") is False
-        assert len(cmds) == 3  # cached + cached-retry + mirror
-        assert len(repairs) == 2
+        assert len(cmds) == 2  # cached + mirror
 
     def test_pip_branch_has_no_no_cache_fallback(self, monkeypatch):
         """无 uv 走 pip：pip 缓存无 archive 层，无需 --no-cache 绕行（仅 2 次）。"""
@@ -402,14 +324,9 @@ class TestPreinstallFallback:
 
         def fake_run(cmd):
             cmds.append(cmd)
-            return (len(cmds) >= 2, "")  # 重试即成功
+            return (len(cmds) >= 2, "")  # 镜像级成功
 
-        repairs: list = []
-        monkeypatch.setattr(
-            vm, "_repair_uv_archive_rename",
-            lambda err: repairs.append(err) or 0)
         monkeypatch.setattr(vm, "_run_preinstall", fake_run)
-        monkeypatch.setattr(vm.time, "sleep", lambda s: None)
 
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 2
@@ -425,13 +342,108 @@ class TestPreinstallFallback:
             return (False, "timed out")
 
         monkeypatch.setattr(vm, "_run_preinstall", fake_run)
-        monkeypatch.setattr(vm, "_repair_uv_archive_rename", lambda err: 0)
-        monkeypatch.setattr(vm.time, "sleep", lambda s: None)
 
         assert vm.preinstall_packages("fake/py") is False
-        assert len(cmds) == 3  # cached + cached-retry + mirror
-        mirror_cmd = cmds[2]
+        assert len(cmds) == 2  # cached + mirror
+        mirror_cmd = cmds[1]
         assert mirror_cmd[mirror_cmd.index("-i") + 1] == vm._PYPI_MIRROR
+
+
+# ── 2d. 白名单前置阻断闸门（2.8 §12 F4）────────────────
+
+
+class TestUvExclusionGate:
+    """前置阻断：未验证加白前任何安装不允许发生。
+
+    裁决文件 = 提权会话内回读成功后 Electron 落盘的
+    {UV_CACHE_DIR 同级}/uv-exclusion-verified.json。
+    """
+
+    def _set_cache(self, monkeypatch, tmp_path):
+        cache_dir = str(tmp_path / "uv-cache")
+        monkeypatch.setenv("UV_CACHE_DIR", cache_dir)
+        return cache_dir
+
+    def _write_verified(self, cache_dir, ok=True, cache_dir_field=None):
+        import json
+        marker = os.path.join(os.path.dirname(cache_dir),
+                              vm._VERIFIED_MARKER_NAME)
+        payload = {"ok": ok, "ts": "2026-10-12T00:00:00Z"}
+        if cache_dir_field is not None:
+            payload["cache_dir"] = cache_dir_field
+        with open(marker, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+    def test_valid_marker_verified(self, tmp_path, monkeypatch):
+        """ok=true 且 cache_dir 匹配（含相对/绝对路径归一）→ 已验证。"""
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        self._write_verified(cache_dir, ok=True, cache_dir_field=cache_dir)
+        assert vm.is_uv_exclusion_verified() is True
+
+    def test_relative_path_normalized(self, tmp_path, monkeypatch):
+        """Python 侧 UV_CACHE_DIR 可能是相对路径（main.py setdefault 相对
+        cwd），Electron 写入的是绝对路径——归一后必须匹配。"""
+        real = str(tmp_path / "data" / "uv-cache")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("UV_CACHE_DIR", os.path.join("data", "uv-cache"))
+        self._write_verified(real, ok=True, cache_dir_field=real)
+        assert vm.is_uv_exclusion_verified() is True
+
+    def test_missing_marker_not_verified(self, tmp_path, monkeypatch):
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        assert vm.is_uv_exclusion_verified() is False
+
+    def test_ok_false_not_verified(self, tmp_path, monkeypatch):
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        self._write_verified(cache_dir, ok=False, cache_dir_field=cache_dir)
+        assert vm.is_uv_exclusion_verified() is False
+
+    def test_cache_dir_mismatch_not_verified(self, tmp_path, monkeypatch):
+        """data 目录迁移后旧裁决文件不误放行。"""
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        self._write_verified(cache_dir, ok=True, cache_dir_field="D:\\other\\uv-cache")
+        assert vm.is_uv_exclusion_verified() is False
+
+    def test_corrupt_marker_not_verified(self, tmp_path, monkeypatch):
+        import json
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        marker = os.path.join(os.path.dirname(cache_dir),
+                              vm._VERIFIED_MARKER_NAME)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        assert vm.is_uv_exclusion_verified() is False
+
+    def test_no_uv_cache_dir_treated_verified(self, monkeypatch):
+        """UV_CACHE_DIR 未设置（理论不发生）：无路径可阻，放行。"""
+        monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+        assert vm.is_uv_exclusion_verified() is True
+
+    def test_blocking_path_raises_when_not_verified(self, tmp_path, monkeypatch):
+        """首用同步路径：未验证 → 抛 UvExclusionRequired（不跑安装）。"""
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+        called = []
+        monkeypatch.setattr(
+            vm, "preinstall_packages", lambda py: called.append(py) or True)
+
+        with pytest.raises(vm.UvExclusionRequired):
+            vm.ensure_venv_blocking(venv_path)
+        assert called == []  # 安装命令零执行（前置阻断语义）
+
+    def test_background_preinstall_skipped_when_not_verified(self, tmp_path, monkeypatch):
+        """后台线程路径：未验证 → 跳过预装（marker 缺失，首用时同步路径给出指引）。"""
+        cache_dir = self._set_cache(monkeypatch, tmp_path)
+        monkeypatch.setattr(vm, "is_uv_exclusion_verified", lambda: False)
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+        called = []
+        monkeypatch.setattr(
+            vm, "preinstall_packages", lambda py: called.append(py) or True)
+
+        assert vm.ensure_venv(str(tmp_path)) == venv_path
+        assert called == []
+        assert not os.path.isfile(os.path.join(venv_path, vm._PREINSTALL_MARKER))
 
 
 # ── 3. agent 侧懒 ensure ───────────────────────────────────
@@ -489,3 +501,21 @@ class TestAgentEnsureTaskVenv:
         monkeypatch.setattr(ta, "ensure_venv", boom)
         venv_path = str(tmp_path / "tasks" / "t1" / ".venv")
         assert asyncio.run(agent._ensure_task_venv("t1", venv_path)) == ""
+
+    def test_not_verified_raises_uv_exclusion_required(self, agent, db, tmp_path, monkeypatch):
+        """白名单未验证 → marker 缺失不交付空 venv，抛 UvExclusionRequired
+        给调用方向 LLM 转授权指引（前置阻断，2.8 §12 F4）。
+
+        ensure_venv 置为 no-op：其内部跳过预装行为已由
+        TestUvExclusionGate.test_background_preinstall_skipped_when_not_verified
+        覆盖，此处聚焦 _ensure_task_venv 的 marker 检查与抛出。
+        """
+        import agent.task_agent as ta
+
+        monkeypatch.setattr(vm, "is_uv_exclusion_verified", lambda: False)
+        monkeypatch.setattr(ta, "ensure_venv", lambda task_dir: None)
+        task = db.create_task("t", str(tmp_path / "data"), "")
+        venv_path = task["venv_path"]
+
+        with pytest.raises(ta.UvExclusionRequired):
+            asyncio.run(agent._ensure_task_venv(task["id"], venv_path))

@@ -26,7 +26,12 @@ from tools.repo_map import RepoMapTool
 from tools.skill_runner import SkillRunnerTool
 from tools.git_ops import GitOpsTool
 from tools.lsp_client import LSPClientTool
-from tools.venv_manager import ensure_venv, get_venv_python, is_preinstall_done
+from tools.venv_manager import (
+    UvExclusionRequired,
+    ensure_venv,
+    get_venv_python,
+    is_preinstall_done,
+)
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter, SKILL_GUIDE_MAX_CHARS
@@ -39,19 +44,49 @@ logger = logging.getLogger(__name__)
 def _llm_error_msg(e: Exception) -> str:
     """LLM 调用失败的用户可行动文案（存为助手消息 + 流式推送，0.4 §7.3 v3.6）。
 
-    配置/凭据类（Key 失效/限流额度/欠费/模型名错）经 errors.actionable()
-    自带设置页修正指引；网络类保留原双分支文案；未知异常透传 detail。
+    D1 错误契约：网络类区分超时/连接两个 code、配置/凭据类经 errors.actionable()
+    产出 `INKCUBE_CODE:<CODE>|<detail>` 协议串，前端渲染前经 translateStoredError
+    还原为当前语言；未知异常透传 detail（第三方异常串原文展示，自动降级）。
     """
     if isinstance(e, LLMNetworkError):
         detail = getattr(e, "detail", "") or str(e)
         lowered = detail.lower()
         # httpx 超时惯用表述为 "timed out"（带空格），与 "timeout" 一并匹配
         if "超时" in detail or "timed out" in lowered or "timeout" in lowered:
-            return "⏱️ 调用模型超时，请检查网络连接或稍后重试。"
-        return "🔌 无法连接模型服务，请检查网络连接。"
+            return "INKCUBE_CODE:LLM_NETWORK_TIMEOUT"
+        return "INKCUBE_CODE:LLM_NETWORK_ERROR"
     if isinstance(e, InkCubeError):
         return f"❌ {actionable(e)}"
     return f"调用模型出错: {getattr(e, 'detail', '') or str(e)}"
+
+
+def _skill_env_needs_setup(venv_path: str) -> bool:
+    """CLI 型 skill 首用环境预检（2.8 §5.5 step_note 可见性）。
+
+    venv python 与预装 marker 均在位才算就绪（与 _ensure_task_venv 快路径
+    同一判据）；venv_path 为空（任务无 venv，chat-only）不会发生预装，
+    返回 False。预检为真时马上要发生同步预装（3~60s+ 黑盒），调用方推
+    step_note 呈现给用户。
+    """
+    if not venv_path:
+        return False
+    return not (
+        os.path.isfile(get_venv_python(venv_path))
+        and is_preinstall_done(venv_path)
+    )
+
+
+def _skill_env_setup_failed(venv_python: str, result_str: str) -> bool:
+    """环境终态判定（2.8 §5.5）：venv 未就绪（创建失败回退空串）或 loader
+    报 retryable 预装失败 → 环境失败；脚本自身业务失败（exit_code≠0 等）
+    不算——那说明环境已就绪，只是脚本没跑成（业务错误在执行结果里可见）。"""
+    if not venv_python:
+        return True
+    try:
+        rj = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(rj, dict) and bool(rj.get("retryable"))
 
 # ── Modular System Prompt Components ──
 # Each section is independently maintained and dynamically assembled.
@@ -520,8 +555,18 @@ class TaskAgent:
                 shutil.rmtree(os.path.dirname(venv_path), ignore_errors=True)
                 logger.info("Task %s deleted during venv creation, cleaned %s", task_id, venv_path)
                 return ""
+            if not is_preinstall_done(venv_path):
+                # 前置阻断（2.8 §12 F4）：白名单未验证时后台预装被跳过，
+                # marker 不会出现——不交付空 venv（裸环境 import 必败），
+                # 也不降级系统 Python（污染主环境），抛出给调用方向 LLM
+                # 给出明确的授权指引
+                raise UvExclusionRequired(
+                    "杀毒软件白名单未确认，任务运行环境无法就绪；"
+                    "请用户在应用顶部横幅完成一次系统授权后重试")
             logger.info("Task venv lazily created: %s", venv_path)
             return venv_path
+        except UvExclusionRequired:
+            raise
         except Exception as e:
             logger.warning("Lazy venv creation failed (%s): %s", venv_path, e)
             return ""
@@ -1658,37 +1703,45 @@ class TaskAgent:
                     # (失败时 venv_path 置 ""，同轮后续外部 Skill 上下文一并降级)
                     if tool_name in _VENV_TOOL_ATTRS and getattr(
                             tool, _VENV_TOOL_ATTRS[tool_name], ""):
-                        venv_path = await self._ensure_task_venv(task_id, venv_path)
-                    # Log key param details for diagnostics
-                    _param_summary = {k: (f"len={len(v)}" if isinstance(v, str) and len(v) > 100 else v)
-                                      for k, v in tool_params.items()}
-                    logger.info(
-                        "TaskAgent FC exec tool=%s params=%s task=%s",
-                        tool_name, json.dumps(_param_summary, ensure_ascii=False), task_id,
-                    )
-                    # Builtin tool execution
-                    try:
-                        override_params = await tool.pre_execute(**tool_params)
-                        if override_params is not None:
-                            tool_params = override_params
-                        result_str = await tool.execute(**tool_params)
-                        result_str = await tool.post_execute(result_str, **tool_params)
-                        # ── Edit-verify: enrich result with lint hint ──
-                        if tool_name in ("file_ops",):
-                            result_str = self._enrich_result_with_lint_hint(result_str, tool_params)
-                            # Phase 11: real auto-fix loop for lint errors
-                            action_type = tool_params.get("action", "")
-                            if action_type in ("write", "search_replace", "apply_diff"):
-                                result_str = await self._edit_verify_loop(
-                                    tool, tool_params, result_str,
-                                    task_llm, settings,
-                                )
-                    except Exception as e:
-                        logger.warning(
-                            "TaskAgent FC tool exception: tool=%s error=%s task=%s",
-                            tool_name, e, task_id,
+                        try:
+                            venv_path = await self._ensure_task_venv(task_id, venv_path)
+                        except UvExclusionRequired as e:
+                            # 前置阻断（2.8 §12 F4）：白名单未验证，不降级
+                            # 裸跑，给 LLM 明确的授权指引
+                            result_str = json.dumps(
+                                {"error": str(e), "error_type": "UvExclusionRequired"},
+                                ensure_ascii=False)
+                    if result_str is None:
+                        # Log key param details for diagnostics
+                        _param_summary = {k: (f"len={len(v)}" if isinstance(v, str) and len(v) > 100 else v)
+                                          for k, v in tool_params.items()}
+                        logger.info(
+                            "TaskAgent FC exec tool=%s params=%s task=%s",
+                            tool_name, json.dumps(_param_summary, ensure_ascii=False), task_id,
                         )
-                        result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
+                        # Builtin tool execution
+                        try:
+                            override_params = await tool.pre_execute(**tool_params)
+                            if override_params is not None:
+                                tool_params = override_params
+                            result_str = await tool.execute(**tool_params)
+                            result_str = await tool.post_execute(result_str, **tool_params)
+                            # ── Edit-verify: enrich result with lint hint ──
+                            if tool_name in ("file_ops",):
+                                result_str = self._enrich_result_with_lint_hint(result_str, tool_params)
+                                # Phase 11: real auto-fix loop for lint errors
+                                action_type = tool_params.get("action", "")
+                                if action_type in ("write", "search_replace", "apply_diff"):
+                                    result_str = await self._edit_verify_loop(
+                                        tool, tool_params, result_str,
+                                        task_llm, settings,
+                                    )
+                        except Exception as e:
+                            logger.warning(
+                                "TaskAgent FC tool exception: tool=%s error=%s task=%s",
+                                tool_name, e, task_id,
+                            )
+                            result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
                 else:
                     # Check if it's an external skill registered in skill_registry
                     skill = skill_registry.get(tool_name)
@@ -1732,6 +1785,17 @@ class TaskAgent:
                                     }, ensure_ascii=False)
                         # External skill execution via SkillRegistry
                         if result_str is None:
+                            # ── 首用依赖安装可见性（2.8 §5.5）──
+                            # 预检判据与终态判定见模块级纯函数；marker 在位则
+                            # 零开销跳过。粗粒度两条（开始/终态）：预装一次性
+                            # （venv 常驻任务目录），不做逐行下载进度。
+                            _need_setup = _skill_env_needs_setup(venv_path)
+                            if _need_setup:
+                                yield {"type": "step_note", "data": {
+                                    "text": (f"⏳ 首次使用 {tool_name}，正在准备运行环境"
+                                             f"（创建虚拟环境并安装依赖，约 10~60 秒）..."),
+                                }}
+                            _setup_t0 = time.time()
                             try:
                                 venv_path = await self._ensure_task_venv(task_id, venv_path)
                                 _venv_py = ""
@@ -1745,7 +1809,22 @@ class TaskAgent:
                                     cancel_event=cancel_event,
                                 )
                                 result_str = await skill_registry.execute(tool_name, tool_params, context)
+                                if _need_setup:
+                                    _setup_secs = time.time() - _setup_t0
+                                    if _skill_env_setup_failed(_venv_py, result_str):
+                                        yield {"type": "step_note", "data": {
+                                            "text": f"❌ {tool_name} 运行环境准备失败"
+                                                    f"（耗时 {_setup_secs:.0f}s），详见执行结果",
+                                        }}
+                                    else:
+                                        yield {"type": "step_note", "data": {
+                                            "text": f"✅ {tool_name} 运行环境就绪（{_setup_secs:.0f}s）",
+                                        }}
                             except Exception as e:
+                                if _need_setup:
+                                    yield {"type": "step_note", "data": {
+                                        "text": f"❌ {tool_name} 运行环境准备失败：{e}",
+                                    }}
                                 result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
                     else:
                         result_str = f"未知工具: {tool_name}"

@@ -10,7 +10,10 @@ const fetchPool = require('./fetch-pool')
 async function handlePythonResponse(res) {
   if (res.ok) return res.json()
   const body = await res.json().catch(() => null)
-  const err = new Error(body?.message || `Python backend error (${res.status})`)
+  // D1 错误契约：统一 {error, code} 体（FastAPI HTTPException 的 {detail} 与
+  // pydantic 422 的 {detail: [...]} 依次降级），中文原文仅作未知 code 的 fallback
+  const detailText = typeof body?.detail === 'string' ? body.detail : ''
+  const err = new Error(body?.error || body?.message || detailText || `Python backend error (${res.status})`)
   err.errorCode = body?.code || 'UNKNOWN_ERROR'
   err.errorCategory = body?.category || 'INTERNAL'
   err.errorSuggestion = body?.suggestion || ''
@@ -259,92 +262,92 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return { success: true }
   })
 
-  // ── 一键加白名单（2.8 §12 F3）：杀软实时防护阻断 uv 缓存改名的根因处置 ──
-  // 信号端点：uv-cache .tmp 残留（阻断/中断的持久物证，Python 侧零状态维护）。
-  // 阻断是 Windows 杀软特性，非 win32 直接短路，前端零平台逻辑。
-  ipcMain.handle('system:getUvCacheBlocked', async () => {
+  // ── 杀毒软件白名单（2.8 §12 F4，前置阻断）──
+  // 语义：未验证加白前，Python 侧任何 uv/pip 安装被禁止（venv_manager
+  // is_uv_exclusion_verified 闸门）；验证状态落盘在
+  // {dataDir}/uv-exclusion-verified.json，两侧约定一致（Python 校验时做
+  // abspath 归一，防相对/绝对路径差异误判）。
+  // 阻断是 Windows 杀软特性，非 win32 恒已验证，前端零平台逻辑。
+  const fs = require('fs')
+  const path = require('path')
+  const uvCacheDir = () => path.join(getDataDir(), 'uv-cache')
+  const uvVerifiedMarker = () => path.join(getDataDir(), 'uv-exclusion-verified.json')
+
+  ipcMain.handle('system:getUvExclusionStatus', async () => {
     if (process.platform !== 'win32') {
-      return { blocked: false, tmp_count: 0 }
+      return { verified: true, notApplicable: true }
     }
+    const cacheDir = uvCacheDir()
     try {
-      const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/uv-cache-blocked`)
-      return handlePythonResponse(res)
-    } catch (e) {
-      logElectron('WARN', `uv-cache-blocked check failed: ${e.message}`)
-      return { blocked: false, tmp_count: 0 }
+      const data = JSON.parse(fs.readFileSync(uvVerifiedMarker(), 'utf-8'))
+      const verified = !!(data && data.ok === true &&
+        String(data.cache_dir || '').toLowerCase() === cacheDir.toLowerCase())
+      return { verified, cacheDir }
+    } catch {
+      return { verified: false, cacheDir }
     }
   })
 
-  // 加白：提权 Add-MpPreference（UAC 由系统弹窗，用户一次确认即完成）。
-  // 成功与否以 Get-MpPreference 回读验证为准（exit code 不可靠：防篡改
-  // 拦截时提权子进程也会退出，但排除项列表不会变化）。验证失败 →
+  // 加白：单次提权会话内完成「Add-MpPreference + 提权内回读」——普通权限
+  // 下 Get-MpPreference 读 ExclusionPath 返回 N/A（2026-10-12 实测），回读
+  // 必须放进提权上下文，否则加白成功也判失败。回读结果经重定向文件回传
+  // （Start-Process -Verb RunAs 的子进程 stdout 不会自动透传），主进程
+  // 据此落盘 verified.json（写自己的 data 目录无需提权）。验证失败 →
   // 深链直达 Defender 排除项页 + 剪贴板路径，降级为手动引导。
-  // 两次 PowerShell 均异步 spawn：UAC 等待最长 2 分钟，同步 spawnSync
-  // 会冻结主进程事件循环（全应用「未响应」，所有 IPC/轮询停摆）。
+  // PowerShell 异步 spawn：UAC 等待最长 2 分钟，同步 spawnSync 会冻结主
+  // 进程事件循环（全应用「未响应」）；'error'/'close' 双路 resolve 永不
+  // reject，成败统一交由回读 stdout 裁决。
   ipcMain.handle('system:addUvCacheExclusion', async () => {
     if (process.platform !== 'win32') {
       return { added: false, notApplicable: true }
     }
-    const path = require('path')
     const { spawn } = require('child_process')
     const { shell, clipboard } = require('electron')
-    const cacheDir = path.join(getDataDir(), 'uv-cache')
-    // 单引号形式（'' 转义），与回读命令对称：路径段含 $ 时双引号会被
-    // PowerShell 插值，静默写错排除路径（回读 False → 误入 fallback）
+    const cacheDir = uvCacheDir()
+    // 单引号形式（'' 转义）：路径段含 $ 时双引号会被 PowerShell 插值，
+    // 静默写错排除路径（回读 False → 误入 fallback）
     const psPath = cacheDir.replace(/'/g, "''")
-    // EncodedCommand（Base64 UTF-16LE）完全避开引号嵌套地狱
+    // EncodedCommand（Base64 UTF-16LE）完全避开引号嵌套地狱；两步同会话：
+    // 先加白，回读在提权上下文内执行（可信）
     const inner = Buffer.from(
-      `Add-MpPreference -ExclusionPath '${psPath}'`, 'utf16le').toString('base64')
+      `Add-MpPreference -ExclusionPath '${psPath}'; ` +
+      `(Get-MpPreference).ExclusionPath -contains '${psPath}'`,
+      'utf16le').toString('base64')
     const elevate = (
-      `$p = Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -PassThru ` +
-      `-EncodedCommand ${inner}; exit $p.ExitCode`
+      '$out = New-TemporaryFile; ' +
+      '$p = Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -PassThru ' +
+      `-EncodedCommand ${inner} -RedirectStandardOutput $out; ` +
+      'Get-Content $out; Remove-Item $out -ErrorAction SilentlyContinue'
     )
     // 异步包 Promise：'error'（spawn 失败）与 'close'（含 timeout 强杀）
-    // 双路 resolve，永不 reject——成败统一交由回读验证裁决
-    const runPS = (args, timeout) => new Promise((resolve) => {
-      const p = spawn('powershell.exe', args, { timeout })
+    // 双路 resolve，永不 reject——成败统一交由回读 stdout 裁决
+    const result = await new Promise((resolve) => {
+      const p = spawn('powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', elevate],
+        { timeout: 120000 })
       let out = ''
       p.stdout.on('data', (d) => { out += d })
       p.on('error', (e) => {
         logElectron('WARN', `uv-cache powershell spawn failed: ${e.message}`)
-        resolve({ code: null, stdout: out })
+        resolve(out)
       })
-      p.on('close', (code) => resolve({ code, stdout: out }))
+      p.on('close', () => resolve(out))
     })
 
-    await runPS(['-NoProfile', '-NonInteractive', '-Command', elevate], 120000)
-
-    // 回读验证（读不需提权；防篡改拦截下 Add 会静默失败，只有回读能发现）
-    const check = await runPS(
-      ['-NoProfile', '-NonInteractive', '-Command',
-        `(Get-MpPreference).ExclusionPath -contains '${psPath}'`],
-      30000)
-    if (check.code === 0 && check.stdout.trim() === 'True') {
-      logElectron('INFO', `uv-cache exclusion added: ${cacheDir}`)
-      // 信号闭环：历史残骸会让信号持续为真，重启后横幅反复弹出；加白成功
-      // 后残骸不再有产生原因，顺手清零。只删陈旧条目（与 Python 端
-      // get_uv_cache_tmp_residue 的计数阈值同一 10 分钟值，2.8 §12 F3）：
-      // 在途解压的 .tmp 可能正被 uv 占用，误删会白烧一级重试；逐条捕获，
-      // 单条被占用不中断其余清理
-      const staleMs = 10 * 60_000
+    if (result.trim() === 'True') {
+      logElectron('INFO', `uv-cache exclusion added & verified: ${cacheDir}`)
       try {
-        const fs = require('fs')
-        for (const name of fs.readdirSync(cacheDir)) {
-          if (!name.startsWith('.tmp')) continue
-          try {
-            const st = fs.statSync(path.join(cacheDir, name))
-            if (Date.now() - st.mtimeMs <= staleMs) continue
-            fs.rmSync(path.join(cacheDir, name), { recursive: true, force: true })
-          } catch (e) {
-            logElectron('WARN', `uv-cache tmp cleanup skip ${name}: ${e.message}`)
-          }
-        }
+        fs.writeFileSync(uvVerifiedMarker(), JSON.stringify({
+          ok: true, cache_dir: cacheDir, ts: new Date().toISOString(),
+        }, null, 2), 'utf-8')
       } catch (e) {
-        logElectron('WARN', `uv-cache tmp cleanup failed: ${e.message}`)
+        // 裁决文件写失败 = 前置阻断无法解除（Python 读不到），视为失败
+        logElectron('WARN', `uv-exclusion marker write failed: ${e.message}`)
+        return { added: false, fallback: true, cacheDir }
       }
       return { added: true, fallback: false }
     }
-    logElectron('WARN', `uv-cache exclusion verify failed: code=${check.code}`)
+    logElectron('WARN', 'uv-cache exclusion verify failed (UAC denied / tamper protection)')
 
     // 兜底：深链直达排除项页，路径进剪贴板供粘贴
     try {

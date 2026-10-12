@@ -177,6 +177,61 @@ class TestAgentSkillSchema:
     def test_usage_instructions_returns_body(self, tmp_path):
         assert self._make_adapter(tmp_path, None).usage_instructions == "body text"
 
+    # ── L1 用法摘要（2026-10 回归：首调即见 argv 契约）───────
+
+    def _make_adapter_with_body(self, tmp_path, scripts: list[str], body: str):
+        from skills.loader import AgentSkillAdapter
+
+        skill_dir = tmp_path / "demo-skill"
+        if scripts is not None:
+            (skill_dir / "scripts").mkdir(parents=True)
+            for name in scripts:
+                (skill_dir / "scripts" / name).write_text("print('ok')\n", encoding="utf-8")
+        else:
+            skill_dir.mkdir(parents=True)
+        parsed = {"frontmatter": {"name": "demo-skill", "description": "d"}, "body": body}
+        return AgentSkillAdapter(str(skill_dir), parsed, None)
+
+    def test_usage_synopsis_in_l1_schema_and_prompt(self, tmp_path):
+        """CLI 模式 L1 描述附 SKILL.md 首个围栏块（argv 契约首调可见）。
+
+        回归背景：browser-fetch 首调无任何用法行时，弱模型传自然语言
+        （command="open pricing"），argparse 报错后直接放弃而非自纠。
+        """
+        body = "## 用法\n\n```\npython scripts/main.py <url> [--selector CSS]\n```\n"
+        adapter = self._make_adapter_with_body(tmp_path, ["main.py"], body)
+
+        desc = adapter.input_schema["properties"]["command"]["description"]
+        assert "Usage: python scripts/main.py <url> [--selector CSS]" in desc
+        assert "用法: python scripts/main.py <url> [--selector CSS]" \
+            in adapter.prompt_description
+
+    def test_usage_synopsis_multiline_collapsed_and_capped(self, tmp_path):
+        """多行围栏折叠为单行；超 USAGE_SYNOPSIS_MAX_CHARS 截断。"""
+        from skills.loader import USAGE_SYNOPSIS_MAX_CHARS
+
+        long_flags = " ".join(f"[--flag{i} X]" for i in range(40))
+        body = f"```\npython main.py <url>\n  {long_flags}\n```"
+        adapter = self._make_adapter_with_body(tmp_path, ["main.py"], body)
+
+        desc = adapter.input_schema["properties"]["command"]["description"]
+        assert "\n" not in desc.split("Usage: ", 1)[1]  # 折叠为单行
+        synopsis = desc.split("Usage: ", 1)[1]
+        assert len(synopsis) == USAGE_SYNOPSIS_MAX_CHARS  # 截断生效
+
+    def test_no_fence_keeps_description_clean(self, tmp_path):
+        """SKILL.md 无围栏块 → 描述保持原样（不附空 Usage）。"""
+        adapter = self._make_adapter_with_body(tmp_path, ["main.py"], "no fence here")
+        desc = adapter.input_schema["properties"]["command"]["description"]
+        assert "Usage:" not in desc
+        assert "用法:" not in adapter.prompt_description
+
+    def test_workflow_skill_never_gets_synopsis(self, tmp_path):
+        """工作流模式（无可发现入口）不附用法行（其无 CLI 契约）。"""
+        body = "```\narbitrary fence\n```"
+        adapter = self._make_adapter_with_body(tmp_path, None, body)
+        assert "Usage:" not in adapter.input_schema["properties"]["command"]["description"]
+
 
 class TestExecuteSlashCommand:
     def test_help_answers_directly(self, agent, db, tmp_path):

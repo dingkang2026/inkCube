@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useToast } from '../knowledge/Toast'
+import { apiErrorText } from '../../i18n/errorCodes'
 import type { Task } from '../../types'
 
 export type TaskTab = 'active' | 'archived'
@@ -59,10 +60,10 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     if (creating) return
     setCreating(true)
     try {
-      const res = await window.electronAPI.invoke('tasks:create', { title: defaultTaskTitle, mode }) as Task & { error?: string }
+      const res = await window.electronAPI.invoke('tasks:create', { title: defaultTaskTitle, mode }) as Task & { error?: string; code?: string }
       if (res.error) {
         // 兼容 200 + error dict 的旧形态；配额错误现走 catch 分支的 409 结构化错误
-        showToast(t('task.createFailed') + '：' + res.error, 'error')
+        showToast(t('task.createFailed') + '：' + apiErrorText(res.code, res.error, t), 'error')
         return
       }
       setTasks((prev) => [res, ...prev])
@@ -71,10 +72,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     } catch (err) {
       console.error('Create task failed:', err)
       const code = (err as { errorCode?: string })?.errorCode
-      showToast(
-        code === 'TASK_QUOTA_REACHED' ? t('task.quotaReached') : t('task.createFailed'),
-        'error',
-      )
+      showToast(apiErrorText(code, t('task.createFailed'), t), 'error')
     } finally {
       setCreating(false)
     }
@@ -87,9 +85,9 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     const folderName = parts[parts.length - 1] || defaultTaskTitle
     setCreating(true)
     try {
-      const res = await window.electronAPI.invoke('tasks:create', { title: folderName, workspacePath: dirPath, mode }) as Task & { error?: string }
+      const res = await window.electronAPI.invoke('tasks:create', { title: folderName, workspacePath: dirPath, mode }) as Task & { error?: string; code?: string }
       if (res.error) {
-        showToast(t('task.createFailed') + '：' + res.error, 'error')
+        showToast(t('task.createFailed') + '：' + apiErrorText(res.code, res.error, t), 'error')
         return
       }
       setTasks((prev) => [res, ...prev])
@@ -98,10 +96,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     } catch (err) {
       console.error('Create task with dir failed:', err)
       const code = (err as { errorCode?: string })?.errorCode
-      showToast(
-        code === 'TASK_QUOTA_REACHED' ? t('task.quotaReached') : t('task.createFailed'),
-        'error',
-      )
+      showToast(apiErrorText(code, t('task.createFailed'), t), 'error')
     } finally {
       setCreating(false)
     }

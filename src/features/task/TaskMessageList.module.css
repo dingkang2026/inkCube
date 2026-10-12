@@ -237,6 +237,31 @@
   flex-shrink: 0;
 }
 
+/* ── Skill env-setup note (2.8 §5.5)：skill 首用依赖安装进度行，
+   复用 fixBanner 视觉语言但中性色（非警告语义） ── */
+
+.noteRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 2px 20px;
+  padding: 4px 10px;
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.noteText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Fix suggestion / warning banners ── */
 
 .fixBanner {

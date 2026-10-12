@@ -20,7 +20,11 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger("browser-fetch")
 
-POOL_TITLE = "inkcube-fetch-pool"       # CDP attach 的抓取窗口 title 标记（§5.3）
+POOL_TITLE = "inkcube-fetch-pool"       # 池窗口标题（可视化用，§6.2）
+# 池窗口匹配锚点（§5.3）：preload 每次导航重注入的运行时标记。不能用
+# document.title——抓取后窗口停留在目标页，页面 title 首次成功即污染锚点
+# （2026-10-12 实证：首次抓取 ok，之后全部「未找到抓取窗口」）
+POOL_MARK_JS = "() => window.__INKCUBE_POOL__ === true"
 LOCK_STALE_SECONDS = 60                  # 持锁超过此时长视为僵死，可接管（§3.3）
 LOGIN_TEXT_SPARSE = 500                  # 登录墙「正文稀疏」阈值（§5.4）
 USER_AGENT = (

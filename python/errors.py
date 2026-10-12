@@ -45,9 +45,19 @@ class InkCubeError(Exception):
 
 
 def actionable(e: BaseException) -> str:
-    """用户可行动文案：InkCubeError 拼 message + suggestion（含设置页指引）；
-    其余异常透传 str(e)。供所有后台任务失败落库（error_message / 助手消息）统一使用，
-    确保运行中配置类错误（Key 失效 / 余额不足 / 限流 / 模型名错）的文案自带修正指引。"""
+    """长时活动落库/助手消息用的错误串（D1 错误契约，见 0.1dev-guide）。
+
+    InkCubeError → `INKCUBE_CODE:<CODE>|<detail>` 结构化串：前端渲染前经
+    translateStoredError 还原为当前语言文案；其他异常透传 str(e)
+    （第三方异常串保持原文，历史落库数据同样原文展示，自动降级兼容）。
+    后端日志请用 describe(e)，避免日志出现协议串。"""
+    if isinstance(e, InkCubeError):
+        return f"INKCUBE_CODE:{e.code}|{e.detail}" if e.detail else f"INKCUBE_CODE:{e.code}"
+    return str(e)
+
+
+def describe(e: BaseException) -> str:
+    """后端日志可读文案：InkCubeError 拼 message + suggestion；其余透传 str(e)。"""
     if isinstance(e, InkCubeError):
         return f"{e.message}。{e.suggestion}" if e.suggestion else e.message
     return str(e)

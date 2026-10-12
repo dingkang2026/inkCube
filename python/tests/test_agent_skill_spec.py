@@ -440,3 +440,73 @@ class TestGuideBudget:
         result = json.loads(_run(adapter.execute({"command": "hi"}, _context())))
 
         assert result["instructions"] == body
+
+
+class TestSkillEnvSetupVisibility:
+    """task_agent 首用环境可见性纯函数（2.8 §5.5 step_note 事件）。
+
+    预检（_skill_env_needs_setup）决定是否向流推「正在准备运行环境」
+    提示；终态（_skill_env_setup_failed）决定收尾文案语义——业务失败
+    （exit_code≠0）不算环境失败，retryable 预装失败才算。
+    """
+
+    def test_needs_setup_false_when_no_venv(self):
+        """venv_path 空（chat-only 任务）不会发生预装，不推 note。"""
+        from agent.task_agent import _skill_env_needs_setup
+
+        assert _skill_env_needs_setup("") is False
+
+    def test_needs_setup_true_when_venv_dir_missing(self, tmp_path: Path):
+        """venv 目录不存在（首用）→ 预检为真 → 应推 note。"""
+        from agent.task_agent import _skill_env_needs_setup
+
+        venv_path = str(tmp_path / "venv")
+        assert _skill_env_needs_setup(venv_path) is True
+
+    def test_needs_setup_false_when_ready(self, tmp_path: Path):
+        """venv python + marker 均在位（快路径）→ 不推 note。"""
+        from agent.task_agent import _skill_env_needs_setup
+        from tools.venv_manager import get_venv_python, _PREINSTALL_MARKER
+
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        py = Path(get_venv_python(str(venv_dir)))
+        py.parent.mkdir(parents=True, exist_ok=True)
+        py.write_text("", encoding="utf-8")
+        (venv_dir / _PREINSTALL_MARKER).write_text("", encoding="utf-8")
+        assert _skill_env_needs_setup(str(venv_dir)) is False
+
+    def test_needs_setup_true_when_marker_missing_but_python_exists(self, tmp_path: Path):
+        """python 在位但 marker 缺失（预装中断/被删）→ 仍要补装 → 推 note。"""
+        from agent.task_agent import _skill_env_needs_setup
+        from tools.venv_manager import get_venv_python
+
+        venv_dir = tmp_path / "venv"
+        py = Path(get_venv_python(str(venv_dir)))
+        py.parent.mkdir(parents=True, exist_ok=True)
+        py.write_text("", encoding="utf-8")
+        assert _skill_env_needs_setup(str(venv_dir)) is True
+
+    def test_setup_failed_when_venv_python_empty(self):
+        """_ensure_task_venv 失败回退空串 → 环境未就绪。"""
+        from agent.task_agent import _skill_env_setup_failed
+
+        assert _skill_env_setup_failed("", '{"output": "x"}') is True
+
+    def test_setup_failed_when_retryable(self):
+        """loader 预装失败专属契约 retryable=true → 环境失败。"""
+        from agent.task_agent import _skill_env_setup_failed
+
+        assert _skill_env_setup_failed("py", '{"error": "install failed", "retryable": true}') is True
+
+    def test_setup_ok_when_business_error(self):
+        """exit_code≠0 的业务失败不算环境失败——环境已就绪，只是脚本没跑成。"""
+        from agent.task_agent import _skill_env_setup_failed
+
+        assert _skill_env_setup_failed("py", '{"error": "boom", "exit_code": 1}') is False
+
+    def test_setup_ok_when_non_json(self):
+        """非 JSON 结果（如纯文本 output）不算环境失败。"""
+        from agent.task_agent import _skill_env_setup_failed
+
+        assert _skill_env_setup_failed("py", "plain text") is False

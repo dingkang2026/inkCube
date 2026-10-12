@@ -12,6 +12,7 @@ import { useConfirm } from '../../../components/ConfirmDialog'
 import { usePolling } from '../../../hooks/usePolling'
 import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
 import { useActivity } from '../../activity/ActivityContext'
+import { apiErrorText, translateStoredError } from '../../../i18n/errorCodes'
 
 type ViewMode = 'list' | 'wizard' | 'preview'
 
@@ -123,7 +124,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
         mode,
       })
       if (result.error) {
-        showToast(t('project.report.retryFailed', { error: result.error }), 'error')
+        showToast(t('project.report.retryFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       } else {
         await loadReports()
       }
@@ -139,7 +140,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     try {
       const result: any = await window.electronAPI.invoke('reports:pauseReport', { reportId: report.id })
       if (result.error) {
-        showToast(t('project.report.pauseFailed', { error: result.error }), 'error')
+        showToast(t('project.report.pauseFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       } else {
         showToast(t('project.report.pauseRequested'), 'info')
         await loadReports()
@@ -248,7 +249,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
                         {report.status === 'error' && (
                           <span
                             className={s.statusFailed}
-                            title={report.error_message || t('project.report.failed')}
+                            title={report.error_message ? translateStoredError(report.error_message, t) : t('project.report.failed')}
                           >
                             <AlertCircle size={12} /> {t('project.report.failed')}
                           </span>

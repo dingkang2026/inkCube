@@ -66,7 +66,7 @@ async def add_web_login(req: WebLoginAddRequest):
     """添加/登记站点（幂等：已存在时保留原行，含用户备注）。"""
     domain = normalize_domain(req.domain)
     if not domain:
-        return {"error": "无效的域名"}
+        return {"error": "无效的域名", "code": "INVALID_DOMAIN"}
     result = deps.db.add_web_login(domain, (req.note or "").strip() or None)
     logger.info("Web login registered: %s (inserted=%s)", domain, result["inserted"])
     return {"login": result}
@@ -77,6 +77,6 @@ async def delete_web_login(domain: str):
     """删除登记行。cookie 清除由前端先行经 IPC 完成（§9.2）。"""
     ok = deps.db.delete_web_login(domain.lower())
     if not ok:
-        return {"error": "站点不存在"}
+        return {"error": "站点不存在", "code": "SITE_NOT_FOUND"}
     logger.info("Web login removed: %s", domain)
     return {"ok": True}
