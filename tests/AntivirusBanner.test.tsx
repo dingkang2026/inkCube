@@ -50,6 +50,15 @@ function mockVerified(verified: boolean) {
   })
 }
 
+function mockVerifiedWithAv(verified: boolean, thirdPartyAv?: string) {
+  invokeMock.mockImplementation(async (channel: string) => {
+    if (channel === 'system:getUvExclusionStatus') {
+      return thirdPartyAv ? { verified, thirdPartyAv } : { verified }
+    }
+    return {}
+  })
+}
+
 describe('AntivirusBanner (2.8 §12 F4)', () => {
   it('renders nothing when already verified', async () => {
     const { container } = render(<AntivirusBanner />)
@@ -120,6 +129,71 @@ describe('AntivirusBanner (2.8 §12 F4)', () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith('system:addUvCacheExclusion')
     })
+    await waitFor(() => {
+      expect(container.querySelector('.banner')).toBeNull()
+    })
+  })
+
+  it('switches copy and keeps the authorize button when a third-party AV is detected (2.8 §12 F6)', async () => {
+    mockVerifiedWithAv(false, 'Lenovo Anti-Virus powered by Huorong Security')
+    const { container } = render(<AntivirusBanner />)
+
+    await waitFor(() => {
+      expect(container.querySelector('.banner')).toBeTruthy()
+    })
+    expect(screen.getByText(/检测到第三方杀毒软件（Lenovo Anti-Virus powered by Huorong Security）/)).toBeTruthy()
+    expect(screen.getByText('立即授权')).toBeTruthy() // Defender 部分照加
+    expect(screen.queryByText('代码执行与网页抓取环境需要一次系统授权（加入杀毒软件白名单），授权完成前依赖安装无法进行')).toBeNull()
+  })
+
+  it('stays hidden when verified even with a third-party AV detected', async () => {
+    mockVerifiedWithAv(true, 'Huorong')
+    const { container } = render(<AntivirusBanner />)
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('system:getUvExclusionStatus')
+    })
+    expect(container.querySelector('.banner')).toBeNull()
+  })
+
+  it('shows manual hint after defender-skipped authorization with a third-party AV', async () => {
+    mockVerifiedWithAv(false, 'Lenovo Anti-Virus powered by Huorong Security')
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'system:getUvExclusionStatus') {
+        return { verified: false, thirdPartyAv: 'Lenovo Anti-Virus powered by Huorong Security' }
+      }
+      if (channel === 'system:addUvCacheExclusion') return { added: true, defenderSkipped: true }
+      return {}
+    })
+    const { container } = render(<AntivirusBanner />)
+
+    await waitFor(() => {
+      expect(screen.getByText('立即授权')).toBeTruthy()
+    })
+    fireEvent.click(screen.getByText('立即授权'))
+
+    await waitFor(() => {
+      expect(screen.getByText(/已跳过 Windows Defender（服务未运行）.*Lenovo Anti-Virus powered by Huorong Security/)).toBeTruthy()
+    })
+    expect(container.querySelector('.banner')).toBeTruthy() // 指引保持，不无声消失
+    fireEvent.click(screen.getByText('知道了'))
+    await waitFor(() => {
+      expect(container.querySelector('.banner')).toBeNull()
+    })
+  })
+
+  it('disappears directly after defender-skipped authorization without a third-party AV', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'system:getUvExclusionStatus') return { verified: false }
+      if (channel === 'system:addUvCacheExclusion') return { added: true, defenderSkipped: true }
+      return {}
+    })
+    const { container } = render(<AntivirusBanner />)
+
+    await waitFor(() => {
+      expect(screen.getByText('立即授权')).toBeTruthy()
+    })
+    fireEvent.click(screen.getByText('立即授权'))
+
     await waitFor(() => {
       expect(container.querySelector('.banner')).toBeNull()
     })

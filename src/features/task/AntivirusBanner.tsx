@@ -4,7 +4,7 @@ import { ShieldAlert, ShieldCheck, Loader2, ClipboardList } from 'lucide-react'
 import { usePolling } from '../../hooks/usePolling'
 import styles from './AntivirusBanner.module.css'
 
-type Status = 'hidden' | 'prompt' | 'working' | 'fallback'
+type Status = 'hidden' | 'prompt' | 'working' | 'fallback' | 'hint'
 
 /** 状态轮询间隔：授权状态只在用户点授权后变化，低频足够 */
 const POLL_INTERVAL_MS = 30_000
@@ -23,6 +23,7 @@ const POLL_INTERVAL_MS = 30_000
 export function AntivirusBanner() {
   const { t } = useTranslation()
   const [status, setStatus] = useState<Status>('hidden')
+  const [thirdPartyAv, setThirdPartyAv] = useState('')
   const dismissedRef = useRef(false)
 
   usePolling({
@@ -34,7 +35,10 @@ export function AntivirusBanner() {
       if (dismissedRef.current) return
       const res = (await window.electronAPI.invoke('system:getUvExclusionStatus')) as {
         verified?: boolean
+        thirdPartyAv?: string
       }
+      // Electron 侧 WSC 检测异步（首查可能不带字段），带上即记录供文案分流
+      if (res?.thirdPartyAv) setThirdPartyAv(res.thirdPartyAv)
       if (!res?.verified) {
         setStatus((prev) => (prev === 'hidden' ? 'prompt' : prev))
       } else {
@@ -51,8 +55,16 @@ export function AntivirusBanner() {
     try {
       const res = (await window.electronAPI.invoke('system:addUvCacheExclusion')) as {
         added?: boolean
+        defenderSkipped?: boolean
       }
-      setStatus(res?.added ? 'hidden' : 'fallback')
+      if (res?.added && res?.defenderSkipped) {
+        // Defender 未运行被跳过（阻断已解除）：第三方杀软仍需手动加信任区，
+        // 切手动指引态告知（路径已由 Electron 侧复制到剪贴板）；无第三方
+        // 杀软时无需提示，直接消失
+        setStatus(thirdPartyAv ? 'hint' : 'hidden')
+      } else {
+        setStatus(res?.added ? 'hidden' : 'fallback')
+      }
     } catch {
       setStatus('fallback')
     }
@@ -65,6 +77,24 @@ export function AntivirusBanner() {
   }
 
   if (status === 'hidden') return null
+
+  if (status === 'hint') {
+    return (
+      <div className={styles.banner}>
+        <span className={styles.icon}><ClipboardList size={14} /></span>
+        <span className={styles.text}>
+          {t('task.avHint3p', {
+            name: thirdPartyAv,
+            defaultValue:
+              `已跳过 Windows Defender（服务未运行）。检测到第三方杀毒软件（${thirdPartyAv}）仍在运行——建议手动将以下目录加入其信任区（路径已复制到剪贴板）`,
+          })}
+        </span>
+        <button className={styles.btnGhost} onClick={dismiss}>
+          {t('task.avDismiss', { defaultValue: '知道了' })}
+        </button>
+      </div>
+    )
+  }
 
   if (status === 'fallback') {
     return (
@@ -89,10 +119,16 @@ export function AntivirusBanner() {
         {status === 'working' ? <Loader2 size={14} className={styles.spin} /> : <ShieldAlert size={14} />}
       </span>
       <span className={styles.text}>
-        {t('task.avPrompt', {
-          defaultValue:
-            '代码执行与网页抓取环境需要一次系统授权（加入杀毒软件白名单），授权完成前依赖安装无法进行',
-        })}
+        {thirdPartyAv
+          ? t('task.avPrompt3p', {
+              name: thirdPartyAv,
+              defaultValue:
+                `检测到第三方杀毒软件（${thirdPartyAv}）：一键授权仅写入 Windows Defender 白名单，可能不覆盖该杀软——建议同时将 uv-cache 目录手动加入其信任区`,
+            })
+          : t('task.avPrompt', {
+              defaultValue:
+                '代码执行与网页抓取环境需要一次系统授权（加入杀毒软件白名单），授权完成前依赖安装无法进行',
+            })}
       </span>
       {status === 'working' ? (
         <span className={styles.workingText}>

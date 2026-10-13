@@ -273,6 +273,35 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   const uvCacheDir = () => path.join(getDataDir(), 'uv-cache')
   const uvVerifiedMarker = () => path.join(getDataDir(), 'uv-exclusion-verified.json')
 
+  // 第三方杀软检测（2.8 §12 F6）：WSC（SecurityCenter2）注册名单中过滤
+  // Defender 后的非 Defender AV，用于横幅分流——一键授权仅写入 Defender
+  // 白名单，第三方杀软（如实测本机的「Lenovo Anti-Virus powered by
+  // Huorong Security」）需用户手动加信任区。
+  // productState 不解析：实测联想 262144 按常见位域解码为 disabled 但实际
+  // 在拦截（2026-10-12 归零测试），状态位不可信——注册即上报。
+  // 进程内缓存一次：WMI 查询约 1s，不能进 30s 轮询热路径；杀软安装/卸载
+  // 是低频事件。首查进行中返回 undefined（本次响应不带字段），查询失败
+  // /WSC 服务异常归 null（等同无第三方，行为与 F4 现状一致）。
+  let thirdPartyAvCache
+  const detectThirdPartyAv = () => {
+    if (thirdPartyAvCache !== undefined) return thirdPartyAvCache
+    const { spawn } = require('child_process')
+    const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' +
+      'Get-CimInstance -Namespace root/SecurityCenter2 ' +
+      '-ClassName AntiVirusProduct | Select-Object -ExpandProperty displayName'],
+    { timeout: 15000 })
+    let out = ''
+    p.stdout.on('data', (d) => { out += d })
+    p.on('error', () => { thirdPartyAvCache = null })
+    p.on('close', () => {
+      const names = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+        .filter((n) => !n.toLowerCase().includes('defender'))
+      thirdPartyAvCache = names.length ? names.join(', ') : null
+    })
+    return undefined // 首查进行中，不阻塞本次响应
+  }
+
   ipcMain.handle('system:getUvExclusionStatus', async () => {
     if (process.platform !== 'win32') {
       return { verified: true, notApplicable: true }
@@ -282,42 +311,98 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       const data = JSON.parse(fs.readFileSync(uvVerifiedMarker(), 'utf-8'))
       const verified = !!(data && data.ok === true &&
         String(data.cache_dir || '').toLowerCase() === cacheDir.toLowerCase())
-      return { verified, cacheDir }
+      const thirdPartyAv = detectThirdPartyAv()
+      return thirdPartyAv ? { verified, cacheDir, thirdPartyAv } : { verified, cacheDir }
     } catch {
-      return { verified: false, cacheDir }
+      const thirdPartyAv = detectThirdPartyAv()
+      return thirdPartyAv ? { verified: false, cacheDir, thirdPartyAv } : { verified: false, cacheDir }
     }
   })
 
   // 加白：单次提权会话内完成「Add-MpPreference + 提权内回读」——普通权限
-  // 下 Get-MpPreference 读 ExclusionPath 返回 N/A（2026-10-12 实测），回读
-  // 必须放进提权上下文，否则加白成功也判失败。回读结果经重定向文件回传
-  // （Start-Process -Verb RunAs 的子进程 stdout 不会自动透传），主进程
-  // 据此落盘 verified.json（写自己的 data 目录无需提权）。验证失败 →
-  // 深链直达 Defender 排除项页 + 剪贴板路径，降级为手动引导。
+  // 下 Get-MpPreference 读 ExclusionPath 直接报 Must be an administrator
+  // （2026-10-12 实测），回读必须放进提权上下文，否则加白成功也判失败。
+  // 结果回传用内层自写临时文件：PowerShell 5.1 的 Start-Process 参数集
+  // 冲突（AmbiguousParameterSet），-Verb RunAs 与 -RedirectStandardOutput
+  // 不能同用——曾致 Start-Process 根本不执行（UAC 弹窗都不出现）、stdout
+  // 恒空、永远误判失败走降级（2026-10-12 实测根因）。主进程据结果文件
+  // 落盘 verified.json（写自己的 data 目录无需提权）。验证失败 → 深链
+  // 直达 Defender 排除项页 + 剪贴板路径，降级为手动引导。
   // PowerShell 异步 spawn：UAC 等待最长 2 分钟，同步 spawnSync 会冻结主
   // 进程事件循环（全应用「未响应」）；'error'/'close' 双路 resolve 永不
-  // reject，成败统一交由回读 stdout 裁决。
+  // reject，成败统一交由回读结果裁决。
   ipcMain.handle('system:addUvCacheExclusion', async () => {
     if (process.platform !== 'win32') {
       return { added: false, notApplicable: true }
     }
+    const cacheDir = uvCacheDir()
+    // Defender 服务未运行（被第三方安全中心接管禁用，如实测联想贴牌
+    // 火绒停用 WinDefend → Add-MpPreference 报 0x800106ba）时，「验证
+    // Defender 排除项」成死锁——而服务停用即 Defender 本就非扫描器，
+    // 加白无意义。跳过加白直接落盘裁决解除阻断；第三方杀软指引由横幅
+    // 分流文案（F6 thirdPartyAv）承担。查询失败按运行中处理（保守，
+    // 不放松阻断，走原提权链路由回读裁决）。
+    const defenderRunning = await new Promise((resolve) => {
+      const { spawn: spawnPs } = require('child_process')
+      const p = spawnPs('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status -eq 'Running'"],
+      { timeout: 15000 })
+      let out = ''
+      p.stdout.on('data', (d) => { out += d })
+      p.on('error', () => resolve(true))
+      p.on('close', () => resolve(out.trim() === 'True'))
+    })
+    if (!defenderRunning) {
+      try {
+        fs.writeFileSync(uvVerifiedMarker(), JSON.stringify({
+          ok: true, cache_dir: cacheDir, note: 'defender-not-running',
+          ts: new Date().toISOString(),
+        }, null, 2), 'utf-8')
+      } catch (e) {
+        logElectron('WARN', `uv-exclusion marker write failed (defender skipped): ${e.message}`)
+        return { added: false, fallback: true, cacheDir }
+      }
+      // 路径进剪贴板：前端将切「手动指引」态，提醒第三方杀软信任区需手动添加
+      try {
+        require('electron').clipboard.writeText(cacheDir)
+      } catch { /* 剪贴板失败不影响阻断解除 */ }
+      logElectron('INFO', `Defender service not running, exclusion skipped, gate released: ${cacheDir}`)
+      return { added: true, defenderSkipped: true }
+    }
     const { spawn } = require('child_process')
     const { shell, clipboard } = require('electron')
-    const cacheDir = uvCacheDir()
+    const os = require('os')
     // 单引号形式（'' 转义）：路径段含 $ 时双引号会被 PowerShell 插值，
     // 静默写错排除路径（回读 False → 误入 fallback）
     const psPath = cacheDir.replace(/'/g, "''")
+    // 结果文件：外层预建（无需提权写 %TEMP%），内层 Set-Content 覆盖写入
+    const outPath = path.join(os.tmpdir(), `uv-excl-result-${Date.now()}.txt`)
+    const psOut = outPath.replace(/'/g, "''")
     // EncodedCommand（Base64 UTF-16LE）完全避开引号嵌套地狱；两步同会话：
-    // 先加白，回读在提权上下文内执行（可信）
+    // 先加白，回读在提权上下文内执行（可信）。Add/Read 分别捕获异常：
+    // 防篡改拦截（如火绒拦 Add-MpPreference）、服务异常等都会以
+    // ADD_ERR/READ_ERR 行留痕，失败时主进程记入日志（否则失败细节全丢）
     const inner = Buffer.from(
-      `Add-MpPreference -ExclusionPath '${psPath}'; ` +
-      `(Get-MpPreference).ExclusionPath -contains '${psPath}'`,
+      `$addMsg = ''; ` +
+      `try { Add-MpPreference -ExclusionPath '${psPath}' -ErrorAction Stop } catch { $addMsg = $_.Exception.Message }; ` +
+      `$ok = $false; $readMsg = ''; ` +
+      `try { $ok = (Get-MpPreference).ExclusionPath -contains '${psPath}' } catch { $readMsg = $_.Exception.Message }; ` +
+      `$lines = @(); ` +
+      `if ($addMsg) { $lines += ('ADD_ERR: ' + $addMsg) }; ` +
+      `if ($readMsg) { $lines += ('READ_ERR: ' + $readMsg) }; ` +
+      `$lines += ('RESULT=' + $ok); ` +
+      `Set-Content -LiteralPath '${psOut}' -Value $lines -Encoding UTF8`,
       'utf16le').toString('base64')
+    // 外层仅用 -Verb 参数集合法参数（-Wait -WindowStyle -PassThru）；
+    // -EncodedCommand/-NoProfile 是 powershell.exe 的 CLI 参数，须经 -ArgumentList
+    // 传入（直写在 Start-Process 上会 NamedParameterNotFound）；
+    // UTF8 控制台编码让 Node 端读到的错误消息不乱码
     const elevate = (
-      '$out = New-TemporaryFile; ' +
-      '$p = Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -PassThru ' +
-      `-EncodedCommand ${inner} -RedirectStandardOutput $out; ` +
-      'Get-Content $out; Remove-Item $out -ErrorAction SilentlyContinue'
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' +
+      `New-Item -Path '${psOut}' -ItemType File -Force | Out-Null; ` +
+      `Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-EncodedCommand','${inner}' | Out-Null; ` +
+      `Get-Content -LiteralPath '${psOut}' -Encoding UTF8; ` +
+      `Remove-Item -LiteralPath '${psOut}' -ErrorAction SilentlyContinue`
     )
     // 异步包 Promise：'error'（spawn 失败）与 'close'（含 timeout 强杀）
     // 双路 resolve，永不 reject——成败统一交由回读 stdout 裁决
@@ -327,6 +412,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         { timeout: 120000 })
       let out = ''
       p.stdout.on('data', (d) => { out += d })
+      p.stderr.on('data', (d) => { out += '\n[spawn stderr] ' + d })
       p.on('error', (e) => {
         logElectron('WARN', `uv-cache powershell spawn failed: ${e.message}`)
         resolve(out)
@@ -334,7 +420,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       p.on('close', () => resolve(out))
     })
 
-    if (result.trim() === 'True') {
+    // 判定以 RESULT= 行为准；全程（EXIT/ADD_ERR/READ_ERR/STDERR）留痕可查
+    const verdict = result.split(/\r?\n/).find((l) => l.startsWith('RESULT='))
+    if (verdict === 'RESULT=True') {
       logElectron('INFO', `uv-cache exclusion added & verified: ${cacheDir}`)
       try {
         fs.writeFileSync(uvVerifiedMarker(), JSON.stringify({
@@ -347,7 +435,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       }
       return { added: true, fallback: false }
     }
-    logElectron('WARN', 'uv-cache exclusion verify failed (UAC denied / tamper protection)')
+    logElectron('WARN', `uv-cache exclusion verify failed, elevation transcript:\n${result}`)
 
     // 兜底：深链直达排除项页，路径进剪贴板供粘贴
     try {

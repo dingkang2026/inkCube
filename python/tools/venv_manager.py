@@ -13,9 +13,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
+import time
+from pathlib import Path
 
 from tools.tool_resolver import resolve_python, resolve_tool
 
@@ -154,21 +157,37 @@ def create_venv(task_dir: str) -> str:
         raise RuntimeError(f"无法创建任务虚拟环境: {e}") from e
 
 
-# uv 预装失败后的自愈重试（2.8 §5.5）——两级链：
-# 1) cached：常态路径，缓存热则秒级完成。前置条件：白名单已验证
-#    （is_uv_exclusion_verified），否则 uv 解压 wheel → rename 进 archive-v0
-#    会被实时防护的扫描句柄稳定阻断，缓存永远建不成（2.8 §12 F4）。
-# 2) mirror：官方源不可达/极慢时的可达性兑底（国内实测 resolve 3.1s/
-#    全装 31.9s vs 官方源 resolve 28s~1m37s 且慢网时 300s 超时），同时带
-#    --no-cache 绕开 archive 路径（镜像快下载仍会写缓存再撞 rename）。
-#    pip 分支无 archive 层，镜像兑底用 -i。
+# 预装安装链（2.8 §12 F4）——cached（镜像+缓存）重试收敛 → mirror（--no-cache）兑底：
+# 1) cached：镜像源 + 带缓存，rename 竞态失败自动重试（共 2 尝试）。
+#    前置条件：白名单已验证（is_uv_exclusion_verified）。
+#    - 源选镜像：官方源慢网下 resolve 28s~1m37s + 冷缓存下载 300s 超时
+#      （2026-10-12 三轮实测），腾讯云源 resolve+全装 ~15-32s。
+#    - 重试收敛：rename 竞态（os error 5）死包随机（certifi/pillow 各死
+#      过）、每轮死 1~2 但缓存增量推进 2~4 个（实测 archive 3→16→18）。
+#      保留 2 次重试：全冷机器每任务渐进推进缓存；稳态（小包全缓存后）
+#      剩余大包（pillow/playwright，>5MB 下载写入期扫描锁 100% 必死）
+#      零推进，重试即纯浪费——由 mirror 层兼做绕竞态快速通道（本机实测
+#      稳态下 6 次全败零推进，2 次即足够）。
+# 2) mirror：--no-cache 完全绕开 archive rename 路径——既是 cached 链
+#    全败时的永成功兑底，也是大包必死场景的快速通道（4s vs 必败重试）。
 #    腾讯云源：曾用清华源，实测其对 packages 路径 wheel 下载间歇性 403
 #    （index 可达、下载被拒），换腾讯云源规避。
 _PYPI_MIRROR = "https://mirrors.cloud.tencent.com/pypi/simple"
 
+# rename 竞态瞬态错误特征（uv#1491）：单包概率性失败，重试可收敛；
+# 超时/网络类错误不重试（增量无益且烧 300s 预算），直接降级 mirror。
+_TRANSIENT_MARKERS = ("os error 5", "拒绝访问", "access is denied",
+                      "failed to read from the distribution cache")
+
+
+def _is_transient_rename_error(err: str) -> bool:
+    """错误是否为 rename 竞态瞬态（可重试收敛）。"""
+    low = err.lower()
+    return any(marker in low for marker in _TRANSIENT_MARKERS)
+
 
 def _run_preinstall(cmd: list[str]) -> tuple[bool, str]:
-    """执行一次预装命令，返回 (成功?, 错误全文供 rename 修复解析)。"""
+    """执行一次预装命令，返回 (成功?, 错误全文供重试判定)。"""
     try:
         proc = subprocess.run(
             cmd,
@@ -183,44 +202,68 @@ def _run_preinstall(cmd: list[str]) -> tuple[bool, str]:
     return False, (proc.stderr or "") + "\n" + (proc.stdout or "")
 
 
+# .tmp 孤儿陈旧阈值：rename 竞态失败留下的死目录。仅清 mtime 超过 1 小时
+# 的——在途解压的 .tmp 可能属于其他 venv 的并发预装进程（锁是 per-venv
+# 的），不可触碰；超时后仍存在的必为本进程或已退出进程的孤儿。
+_TMP_ORPHAN_STALE_SECS = 3600
+
+
+def _cleanup_stale_tmp_orphans() -> None:
+    """清扫 uv-cache 中陈旧的 .tmp 孤儿（重试链失败现场，防持续累积）。"""
+    cache_dir = os.environ.get("UV_CACHE_DIR", "")
+    if not cache_dir:
+        return
+    now = time.time()
+    try:
+        for entry in Path(cache_dir).glob(".tmp*"):
+            try:
+                if now - entry.stat().st_mtime > _TMP_ORPHAN_STALE_SECS:
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                continue
+    except OSError as e:
+        logger.debug(".tmp orphan cleanup skipped: %s", e)
+
+
 def preinstall_packages(venv_python: str) -> bool:
     """Preinstall common packages into a new task venv (best-effort).
 
-    Uses uv if available (faster), falls back to pip. Both uv and pip
-    have global caches, so repeated installs are fast. Caller must gate
-    on is_uv_exclusion_verified() first (前置阻断，2.8 §12 F4)：缓存被
-    实时防护阻断时 uv 的 archive 层永远建不成，带病安装只会烧流量重建
-    不出缓存。Two-tier retry (2.8 §12 F3): domestic-mirror + --no-cache
-    attempt for slow/unreachable official index. Returns True when any
-    attempt succeeded.
+    Uses uv if available (faster), falls back to pip. Caller must gate
+    on is_uv_exclusion_verified() first (前置阻断，2.8 §12 F4)。
+
+    链路：cached（镜像+缓存）重试收敛 → mirror（--no-cache）兑底，
+    详见模块内注释。Returns True when any attempt succeeded.
     """
     uv = resolve_tool("uv")
     if uv:
-        base_cmd = [uv, "pip", "install", "--python", venv_python,
-                    *PREINSTALLED_PACKAGES]
-        fallbacks = [
-            ("mirror", [*base_cmd, "--no-cache",
-                        "--default-index", _PYPI_MIRROR]),
-        ]
+        cached_cmd = [uv, "pip", "install", "--python", venv_python,
+                      "--default-index", _PYPI_MIRROR,
+                      *PREINSTALLED_PACKAGES]
+        mirror_cmd = [*cached_cmd, "--no-cache"]
     else:
-        base_cmd = [venv_python, "-m", "pip", "install", "--quiet",
-                    *PREINSTALLED_PACKAGES]
-        fallbacks = [
-            ("mirror", [venv_python, "-m", "pip", "install", "--quiet",
-                        "-i", _PYPI_MIRROR, *PREINSTALLED_PACKAGES]),
-        ]
+        cached_cmd = [venv_python, "-m", "pip", "install", "--quiet",
+                      "-i", _PYPI_MIRROR, *PREINSTALLED_PACKAGES]
+        mirror_cmd = [venv_python, "-m", "pip", "install", "--quiet",
+                      "-i", _PYPI_MIRROR, *PREINSTALLED_PACKAGES]
 
-    attempts: list[tuple[str, list[str]]] = [("cached", base_cmd),
-                                             *fallbacks]
-
-    for name, cmd in attempts:
-        ok, err = _run_preinstall(cmd)
+    for attempt in range(2):  # 稳态下大包必死零推进，2 次足够；mirror 兼做绕行
+        ok, err = _run_preinstall(cached_cmd)
         if ok:
-            logger.info("Package preinstall in %s (%s attempt)",
-                        venv_python, name)
+            _cleanup_stale_tmp_orphans()
+            logger.info("Package preinstall in %s (cached attempt #%d)",
+                        venv_python, attempt + 1)
             return True
-        logger.warning("Package preinstall failed on %s attempt: %s",
-                       name, err[:500])
+        logger.warning("Package preinstall failed on cached attempt #%d: %s",
+                       attempt + 1, err[:2000])
+        if not _is_transient_rename_error(err):
+            break  # 非瞬态（超时/网络）——重试无益，直接降级
+    ok, err = _run_preinstall(mirror_cmd)
+    if ok:
+        _cleanup_stale_tmp_orphans()
+        logger.info("Package preinstall in %s (mirror attempt)", venv_python)
+        return True
+    logger.warning("Package preinstall failed on mirror attempt: %s",
+                   err[:500])
     return False
 
 

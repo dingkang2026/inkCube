@@ -263,13 +263,20 @@ class TestEnsureVenvBlocking:
 
 
 class TestPreinstallFallback:
-    """预装重试编排：cached → 镜像 + --no-cache（官方源不可达/极慢时的
-    可达性兑底）。
+    """预装重试编排：cached（镜像+缓存）重试收敛 → mirror（--no-cache）兑底。
 
     白名单前置阻断（2.8 §12 F4）上线后，杀软阻断场景在闸门处停机、
-    不再进入安装链路，rename 自愈层（cached-retry + 改名修复）随之退役；
-    镜像层解决的是网络可达性，与杀软无关，保留。
+    不再进入安装链路；rename 竞态（os error 5）是概率性单包失败且缓存
+    增量累积，瞬态错误重试收敛（uv#1491 retry-until-done）；镜像层
+    提供吞吐（官方源慢网 300s 超时实测）与永成功兑底。
     """
+
+    # 真实 rename 竞态错误样本（2026-10-12 归零实验抓取）
+    RENAME_ERR = (
+        "× Failed to download `certifi==2026.7.22`\n"
+        "  ├─▶ Failed to read from the distribution cache\n"
+        "  ╰─▶ failed to rename file from .tmpSvPQYs to archive-v0/xxx:\n"
+        "      拒绝访问。 (os error 5)")
 
     def _patch_uv(self, monkeypatch, results):
         """mock uv 存在、_run_preinstall 按序返回 results。
@@ -292,33 +299,48 @@ class TestPreinstallFallback:
         return cmds
 
     def test_first_attempt_success_no_retry(self, monkeypatch):
-        """首次即成功 → 只调 1 次（常态零开销）。"""
+        """首次即成功 → 只调 1 次（常态零开销），镜像源 + 带缓存。"""
         cmds = self._patch_uv(monkeypatch, [True])
 
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 1
+        assert cmds[0][cmds[0].index("--default-index") + 1] == vm._PYPI_MIRROR
         assert "--no-cache" not in cmds[0]
 
-    def test_cached_failure_falls_back_to_mirror(self, monkeypatch):
-        """cached 失败（网络/源问题）→ 镜像 + --no-cache 一步到位。"""
-        cmds = self._patch_uv(monkeypatch, [False, True])
+    def test_transient_rename_retries_then_succeeds(self, monkeypatch):
+        """rename 竞态瞬态 → 同命令重试收敛（缓存增量累积），不降级。"""
+        cmds = self._patch_uv(
+            monkeypatch,
+            [(False, self.RENAME_ERR), True])
+
+        assert vm.preinstall_packages("fake/py") is True
+        assert len(cmds) == 2  # cached #1 失败重试，#2 成功
+        assert all("--no-cache" not in c for c in cmds)  # 全程带缓存
+
+    def test_non_transient_goes_mirror_directly(self, monkeypatch):
+        """超时/网络类失败重试无益 → 直接降级 mirror（--no-cache）。"""
+        cmds = self._patch_uv(
+            monkeypatch,
+            [(False, "Command timed out after 300 seconds"), True])
 
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 2
-        mirror_cmd = cmds[1]
-        assert "--no-cache" in mirror_cmd
-        assert mirror_cmd[mirror_cmd.index("--default-index") + 1] == \
-            vm._PYPI_MIRROR
+        assert "--no-cache" in cmds[1]
+        assert cmds[1][cmds[1].index("--default-index") + 1] == vm._PYPI_MIRROR
 
-    def test_all_attempts_fail_returns_false(self, monkeypatch):
-        """两级全败 → False（调用方转 retryable，下次调用重新走链路）。"""
-        cmds = self._patch_uv(monkeypatch, [])
+    def test_transient_exhausted_falls_back_to_mirror(self, monkeypatch):
+        """瞬态重试耗尽（2 尝试全败）→ mirror 兑底。"""
+        cmds = self._patch_uv(
+            monkeypatch,
+            [(False, self.RENAME_ERR), (False, self.RENAME_ERR), True])
 
-        assert vm.preinstall_packages("fake/py") is False
-        assert len(cmds) == 2  # cached + mirror
+        assert vm.preinstall_packages("fake/py") is True
+        assert len(cmds) == 3
+        assert all("--no-cache" not in c for c in cmds[:2])
+        assert "--no-cache" in cmds[2]
 
     def test_pip_branch_has_no_no_cache_fallback(self, monkeypatch):
-        """无 uv 走 pip：pip 缓存无 archive 层，无需 --no-cache 绕行（仅 2 次）。"""
+        """无 uv 走 pip：pip 缓存无 archive rename 问题，无需 --no-cache。"""
         monkeypatch.setattr(vm, "resolve_tool", lambda name: None)
         cmds = []
 
@@ -333,7 +355,7 @@ class TestPreinstallFallback:
         assert cmds[0][:5] == ["fake/py", "-m", "pip", "install", "--quiet"]
 
     def test_pip_branch_falls_back_to_mirror(self, monkeypatch):
-        """无 uv 且官方源慢网 → pip 镜像兑底（-i 指向国内镜像）。"""
+        """无 uv 且超时 → pip 镜像兑底（-i 指向国内镜像）。"""
         monkeypatch.setattr(vm, "resolve_tool", lambda name: None)
         cmds = []
 
@@ -344,9 +366,28 @@ class TestPreinstallFallback:
         monkeypatch.setattr(vm, "_run_preinstall", fake_run)
 
         assert vm.preinstall_packages("fake/py") is False
-        assert len(cmds) == 2  # cached + mirror
-        mirror_cmd = cmds[1]
-        assert mirror_cmd[mirror_cmd.index("-i") + 1] == vm._PYPI_MIRROR
+        assert len(cmds) == 2  # cached（非瞬态直接降级）+ mirror
+        assert cmds[0][cmds[0].index("-i") + 1] == vm._PYPI_MIRROR
+        assert cmds[1][cmds[1].index("-i") + 1] == vm._PYPI_MIRROR
+
+    def test_stale_tmp_orphans_cleanup(self, tmp_path, monkeypatch):
+        """孤儿清扫：仅删 mtime 超时阈值的 .tmp，新目录（可能在途）不动。"""
+        import os
+        import time
+        cache = tmp_path / "uv-cache"
+        cache.mkdir()
+        stale = cache / ".tmpOLD"
+        fresh = cache / ".tmpNEW"
+        stale.mkdir()
+        fresh.mkdir()
+        old = time.time() - vm._TMP_ORPHAN_STALE_SECS - 10
+        os.utime(stale, (old, old))
+        monkeypatch.setenv("UV_CACHE_DIR", str(cache))
+
+        vm._cleanup_stale_tmp_orphans()
+
+        assert not stale.exists()
+        assert fresh.exists()
 
 
 # ── 2d. 白名单前置阻断闸门（2.8 §12 F4）────────────────

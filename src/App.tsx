@@ -14,6 +14,7 @@ import { TemplateManagement } from './features/project/tabs/TemplateManagement'
 import { KnowledgePage } from './features/knowledge/KnowledgePage'
 import { HomePage } from './features/home/HomePage'
 import { TaskPage } from './features/task/TaskPage'
+import { AntivirusBanner } from './features/task/AntivirusBanner'
 import { TaskList } from './features/task/TaskList'
 import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
@@ -423,6 +424,11 @@ export default function App() {
         onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
         onShowAbout={() => setAboutOpen(true)}
       />
+      {/* 白名单授权横幅（2.8 §12 F4）：全局停机状态全局可见——未验证加白前
+          Python 侧阻断一切依赖安装，不应只提示任务页用户（原挂 TaskChatView
+          的缺陷：停在首页/项目页/设置页时完全无感知）。#root 纵向 flex，
+          此处自然成为 TitleBar 之下的全宽顶条 */}
+      <AntivirusBanner />
       <div className="app-layout">
         {/* Sidebar */}
         {!sidebarCollapsed && (
