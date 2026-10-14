@@ -7,6 +7,7 @@ import {
 import { Markdown } from '../../components/Markdown'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import { translateStoredError } from '../../i18n/errorCodes'
+import { browserPanelStore } from '../browser/browserPanelStore'
 import s from './TaskMessageList.module.css'
 
 interface TaskMessageListProps {
@@ -535,7 +536,6 @@ function ToolCard({
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [elapsed, setElapsed] = useState(0)
-  const [loginOpenError, setLoginOpenError] = useState(false)
   const meta = getToolMeta(toolName)
   const summary = formatToolInput(input)
 
@@ -567,21 +567,15 @@ function ToolCard({
     } catch { statusIcon = 'ok' }
   }
 
-  // 登录主路径在任务卡片内（2.8 §8.3）：幂等自动登记（失败不阻塞弹窗）后弹登录窗口；
-  // 用户手动登录完关闭窗口即完成，回对话说「重试」由 agent 重试抓取。
-  // openLoginWindow 拒开（内网字面量等）时在横幅下方提示，避免「点了没反应」
+  // 登录主路径（2.8 §8.3 V2）：幂等自动登记（失败不阻塞）后经 BrowserPanel
+  // 导航到该站点登录页；用户在面板登录完回对话说「重试」由 agent 重试抓取。
+  // 导航被内网防线拒时面板呈现 blocked 页，无需独立错误通道。
   const handleLogin = async () => {
     if (!loginDomain) return
-    setLoginOpenError(false)
     try {
       await window.electronAPI.invoke('weblogin:add', { domain: loginDomain })
     } catch { /* 登记失败仍可登录 */ }
-    try {
-      const res = await window.electronAPI.invoke('weblogin:open', { domain: loginDomain }) as { error?: string } | undefined
-      if (res?.error) setLoginOpenError(true)
-    } catch {
-      setLoginOpenError(true)
-    }
+    browserPanelStore.navigate(`https://${loginDomain}`)
   }
 
   const formatElapsed = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
@@ -610,9 +604,6 @@ function ToolCard({
           <span className={s.loginText}>{t('task.loginRequired', { domain: loginDomain })}</span>
           <button className={s.loginBtn} onClick={handleLogin}>{t('task.loginNow')}</button>
         </div>
-      )}
-      {loginDomain && loginOpenError && (
-        <div className={s.warnBanner}><AlertTriangle size={14} className={s.warnIcon} /> {t('task.loginOpenFailed', { domain: loginDomain })}</div>
       )}
       {fixSuggestion && (
         <div className={s.fixBanner}><Lightbulb size={14} className={s.fixIcon} /> {fixSuggestion}</div>

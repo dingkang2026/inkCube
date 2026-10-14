@@ -557,10 +557,11 @@
     "steps": "{{count}} steps",
     "loginRequired": "Login required to fetch {{domain}}",
     "loginNow": "Log In",
-    "loginOpenFailed": "Failed to open login window: {{domain}} (private addresses are not supported for web logins)",
     "avPrompt": "The code-execution & web-fetch environment needs one-time authorization (antivirus exclusion). Dependency installs are blocked until granted",
-    "avPrompt3p": "Third-party antivirus detected ({{name}}): one-click authorization only writes Windows Defender exclusions and may not cover it — consider adding the uv-cache directory to its trust list manually",
-    "avHint3p": "Windows Defender skipped (service not running). Third-party antivirus ({{name}}) is still active — consider adding the directory below to its trust list manually (path copied to clipboard)",
+    "av3pBanner": "{{name}} detected: add the directory below to its trust list (code-execution environment whitelist)",
+    "avCopyPath": "Copy path",
+    "avCopied": "Copied",
+    "avAck": "Done",
     "avOptimize": "Authorize now",
     "avWorking": "Please confirm in the system dialog…",
     "avFallback": "Could not write the exclusion automatically. The Windows Security exclusions page is open and the path is copied to your clipboard — paste it there. If Huorong is installed, add the same path in its Trust Zone",
@@ -806,8 +807,15 @@
     "relogin": "Log In Again",
     "remove": "Remove",
     "empty": "No registered sites yet",
-    "confirmRemove": "Remove the login state for {{domain}}? Locally saved cookies for this site will be cleared.",
-    "openFailed": "Failed to open login window: {{domain}} (private addresses are not supported for web logins)"
+    "confirmRemove": "Remove the login state for {{domain}}? Locally saved cookies for this site will be cleared."
+  },
+  "browserPanel": {
+    "title": "Browser",
+    "driving": "AI driving",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "hide": "Hide",
+    "crashReload": "Page crashed, reloading"
   },
   "baseLib": {
     "title": "Base Libraries",

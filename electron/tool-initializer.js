@@ -82,7 +82,7 @@ function checkInitNeeded() {
   const sourceVersionsPath = path.join(resourcesDir, 'tools', 'tool-versions.json')
   const targetVersionsPath = path.join(appDataDir, 'tool-versions.json')
 
-  // 源版本文件不存在（开发环境未运行 prepare-tools.ps1）
+  // 源版本文件不存在（开发环境 resources/tools/ 未人工放置 tool-versions.json）
   if (!fs.existsSync(sourceVersionsPath)) {
     return { needed: false, reason: 'source versions not found (dev mode)' }
   }

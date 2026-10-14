@@ -320,3 +320,69 @@ def test_sanitize_filename():
     assert core.sanitize_filename("x" * 100) == "x" * 80
     assert core.sanitize_filename("???") == "___"
     assert core.sanitize_filename("") == "page"
+
+
+# ── V2 租约锁（2.8 §3.3：锁内容 {pid, ts, task_id} 三规则）──
+
+class TestFetchLockTaskId:
+
+    def test_lock_payload_contains_task_id(self, tmp_path):
+        lock = core.FetchLock(str(tmp_path), task_id="t1")
+        assert lock.acquire()
+        data = json.loads((tmp_path / "fetch.lock").read_text(encoding="utf-8"))
+        assert data["task_id"] == "t1" and data["pid"] == os.getpid()
+        lock.release()
+        assert not (tmp_path / "fetch.lock").exists()
+
+    def test_same_task_reentry_takes_over(self, tmp_path):
+        first = core.FetchLock(str(tmp_path), task_id="t1")
+        assert first.acquire()   # 模拟同 task 上个 CLI 进程异常退出未 release
+        second = core.FetchLock(str(tmp_path), task_id="t1")
+        assert second.acquire()  # 同 task 重入放行（接管）
+        second.release()
+
+    def test_other_task_rejected_within_stale_window(self, tmp_path):
+        first = core.FetchLock(str(tmp_path), task_id="t1")
+        assert first.acquire()
+        second = core.FetchLock(str(tmp_path), task_id="t2")
+        assert not second.acquire()
+        data = json.loads((tmp_path / "fetch.lock").read_text(encoding="utf-8"))
+        assert data["task_id"] == "t1"  # 原锁未被破坏
+
+    def test_other_task_takes_over_after_stale(self, tmp_path):
+        first = core.FetchLock(str(tmp_path), task_id="t1")
+        assert first.acquire()
+        stale_ts = time.time() - (core.LOCK_STALE_SECONDS + 5)
+        os.utime(tmp_path / "fetch.lock", (stale_ts, stale_ts))
+        second = core.FetchLock(str(tmp_path), task_id="t2")
+        assert second.acquire()
+        second.release()
+
+    def test_release_verifies_task_id(self, tmp_path):
+        lock = core.FetchLock(str(tmp_path), task_id="t1")
+        assert lock.acquire()
+        # 锁内容被接管者覆盖 → release 不得删除
+        (tmp_path / "fetch.lock").write_text(
+            json.dumps({"pid": os.getpid(), "ts": time.time(), "task_id": "t2"}),
+            encoding="utf-8")
+        lock.release()
+        assert (tmp_path / "fetch.lock").exists()
+
+
+# ── V2 快照 JS / 待命页（2.8 §5.2；真实 evaluate 由 Task 8 手动验收覆盖）──
+
+class TestSnapshotJs:
+
+    def test_snapshot_js_contains_limits(self):
+        js = core.snapshot_js()
+        assert "3000" in js and "80" in js and "40" in js
+
+    def test_snapshot_js_is_arrow_function_source(self):
+        assert core.snapshot_js().lstrip().startswith("() =>")
+
+    def test_mark_page_is_data_url_with_pool_title(self):
+        assert core.MARK_PAGE.startswith("data:text/html,")
+        assert "inkcube-fetch-pool" in core.MARK_PAGE
+        # data: URL 中裸 # 会被解析为 fragment 截断（2026-10-13 review 实证），
+        # 待命页正文必须无裸 #（否则 body 后半段不渲染）
+        assert "#" not in core.MARK_PAGE

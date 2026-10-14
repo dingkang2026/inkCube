@@ -6,7 +6,6 @@ Provides endpoints for querying data usage and cleaning specific categories:
 """
 import asyncio
 import os
-import sys
 import shutil
 import logging
 from pathlib import Path
@@ -14,19 +13,11 @@ from pathlib import Path
 from fastapi import APIRouter
 
 import deps
+from paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"])
-
-
-def _get_data_dir() -> str:
-    if os.environ.get("INKCUBE_DATA_DIR"):
-        return os.environ["INKCUBE_DATA_DIR"]
-    if getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        return os.path.join(user_data_dir("InkCube", "InkCube"), "data")
-    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
 
 def _dir_size(path: str) -> int:
@@ -70,7 +61,7 @@ async def get_data_usage():
         "total_size": bytes,
     }
     """
-    data_dir = _get_data_dir()
+    data_dir = get_data_dir()
 
     # Logs
     logs_dir = os.path.join(data_dir, "logs")
@@ -136,7 +127,7 @@ def _clean_logs() -> dict:
     or Electron's appendFileSync, so we truncate instead of delete.
     Backup files (app.log.1, .2, .3) are deleted.
     """
-    data_dir = _get_data_dir()
+    data_dir = get_data_dir()
     logs_dir = os.path.join(data_dir, "logs")
     cleaned = 0
     try:
@@ -164,7 +155,7 @@ async def _clean_knowledge() -> dict:
     """Delete all knowledge base data: projects, files, images, chroma, disk files."""
     try:
         db = deps.db
-        data_dir = _get_data_dir()
+        data_dir = get_data_dir()
 
         # 1. Delete ChromaDB collections
         chroma_dir = os.path.join(data_dir, "chroma")
@@ -240,7 +231,7 @@ def _clean_models() -> dict:
     On Windows, model files loaded in memory may fail to delete.
     We use ignore_errors=True and report partial success.
     """
-    data_dir = _get_data_dir()
+    data_dir = get_data_dir()
     models_dir = os.path.join(data_dir, "models")
     cleaned = 0
     failed_items = []

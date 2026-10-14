@@ -25,17 +25,6 @@ def get_db():
         raise HTTPException(status_code=500, detail="Database not initialized")
 
 
-def get_data_dir() -> str:
-    import os
-    import sys
-    if os.environ.get("INKCUBE_DATA_DIR"):
-        return os.environ.get("INKCUBE_DATA_DIR")
-    if getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        return os.path.join(user_data_dir("InkCube", "InkCube"), "data")
-    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-
-
 # ── Request/Response Models ──
 
 

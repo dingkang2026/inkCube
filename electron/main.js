@@ -74,6 +74,10 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // 2.8 §6.2 V2：BrowserPanel 内嵌浏览器面板。<webview> 无
+      // nodeIntegration、preload 仅设标记，开启本身不授予页面任何
+      // Node 能力（§10 webviewTag 攻击面评估）
+      webviewTag: true,
     },
   })
 
@@ -83,6 +87,28 @@ async function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist-renderer', 'index.html'))
   }
+
+  // bge-m3 preload fires after the renderer's FIRST full load: loading the
+  // model on CUDA during startup competes with the renderer's module-graph
+  // fetch for CPU/disk and stretched the dev cold-start splash to ~85s
+  // (measured 2026-10-13, DCL at 84s). Renderer load finished = contention
+  // window closed — a deterministic signal, not an arbitrary delay.
+  // did-finish-load refires on every full reload → /models/preload is
+  // idempotent (skips while loading / when already loaded).
+  mainWindow.webContents.on('did-finish-load', () => {
+    fetch(`${pythonManager.getBaseUrl()}/models/preload`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000),
+    })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}))
+        logElectron('INFO', `[preload] bge-m3 trigger: HTTP ${res.status} ${body.code || ''}`)
+      })
+      .catch((err) => {
+        // External/dev backends older than the endpoint return 404 — harmless
+        logElectron('WARN', `[preload] bge-m3 trigger failed: ${err.message}`)
+      })
+  })
 
   // Prevent all in-app navigation — open external URLs in system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -100,8 +126,8 @@ async function createWindow() {
     shell.openExternal(url)
   })
 
-  // Explicit quit on main-window close: the hidden fetch-pool window (2.8)
-  // stays alive by design, so window-all-closed never fires — quit here.
+  // Explicit quit on main-window close（pool 窗口已退役，window-all-closed
+  // 本可触发；保留显式 quit 语义不变）
   mainWindow.on('closed', () => {
     mainWindow = null
     if (process.platform !== 'darwin') app.quit()
@@ -154,6 +180,22 @@ ipcMain.on('menu:action', (_event, action) => {
 // Knowledge base IPC handlers are registered in ipc-handlers.js via registerIpcHandlers()
 // using dynamic pythonManager.getBaseUrl() for correct port resolution.
 
+// BrowserPanel webview 注入（2.8 §6.2）：webPreferences 在 guest 创建时一次性锁定，
+// 渲染层异步写 preload 属性是 no-op（Electron web-view-attributes 无 handleMutation）；
+// 且池标记须对 CDP Runtime.evaluate（main world）可见 → 必须 contextIsolation:false，
+// 否则 preload 落在 isolated world，Python _find_pool_page 永远匹配不到。
+// backgroundThrottling:false 保面板隐藏/窗口最小化时 LLM 驱动不被节流（§8.2）。
+// 仅注入 persist:webfetch 分区的 webview；preload 仅设 window 布尔标记、无 Node API，
+// 目标页可见/可篡改该标记的攻击增量≈0（SSRF 防护在 partition 网络层）。
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (_e, webPreferences, params) => {
+    if (params.partition !== 'persist:webfetch') return
+    webPreferences.preload = fetchPool.PRELOAD_PATH
+    webPreferences.contextIsolation = false
+    webPreferences.backgroundThrottling = false
+  })
+})
+
 app.whenReady().then(async () => {
   // Handle inkcube:// protocol → serve local files (whitelisted)
   protocol.handle('inkcube', (request) => {
@@ -184,9 +226,9 @@ app.whenReady().then(async () => {
     return net.fetch('file://' + filePath)
   })
 
-  // Fetch-pool: partition-level SSRF interceptor + resident pool window (2.8 §6.2)
+  // Fetch-pool: partition-level SSRF interceptor（2.8 §5.3；V2 池窗口退役，
+  // 浏览器承载为主窗口 BrowserPanel webview，启动即挂拦截器）
   fetchPool.installSsrfInterceptor()
-  fetchPool.ensurePoolWindow()
 
   try {
     // Ensure bundled tools are initialized (first run / version update)
@@ -204,9 +246,6 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', (event) => {
-  // Fetch-pool windows must die before the close-chain settles: the pool
-  // window's close is preventDefault-ed, it would block window-all-closed.
-  fetchPool.shutdown()
   if (pythonManager.isRunning()) {
     event.preventDefault()
     pythonManager.stop().finally(() => app.quit())
@@ -220,9 +259,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', async () => {
-  // Count the MAIN window only: the hidden fetch-pool window is always alive,
-  // so getAllWindows().length would never reach 0 and macOS activate would
-  // never recreate the main window after close.
+  // Recreate the main window on macOS activate（按主窗口计数，多窗口时代仍正确）
   if (!mainWindow || mainWindow.isDestroyed()) {
     if (!pythonManager.isRunning()) {
       await pythonManager.start()

@@ -1,86 +1,151 @@
-﻿# build-installer.ps1 — 一键构建 InkCube 安装包
+# build-installer.ps1 - one-shot build script for the InkCube installer.
 #
-# 用法：powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
-# 流程：
-#   1. 准备工具链（若 resources/tools/ 不完整则调用 prepare-tools.ps1）
-#   2. 装配 Python 后端（代码 + uv 安装依赖到 resources/python-backend/site-packages）
-#   3. Vite 构建前端
-#   4. electron-builder 生成安装包
+# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
+# Flow:
+#   1. Verify the tool chain (uv/rg/ruff/pandoc/python-build-standalone/tool-versions.json, abort on any miss)
+#   2. Assemble the Python backend (code + deps installed by uv into resources/python-backend/site-packages)
+#   3. Build the frontend with Vite
+#   4. Produce the installer with electron-builder
 #
-# 后端打包方案 B（0.2 §9）：不使用 PyInstaller——RAG 重依赖（FlagEmbedding/torch、
-# docling、rapidocr）为函数级延迟导入，PyInstaller 静态分析会丢失；安装包改为捆绑
-# python-build-standalone 解释器 + site-packages 目录，运行时 spawn python main.py。
+# Packaging plan B (0.2 section 9): no PyInstaller. The RAG-heavy deps
+# (FlagEmbedding/torch, docling, rapidocr) are imported lazily at function
+# level, which PyInstaller's static analysis cannot see. The installer instead
+# bundles the python-build-standalone interpreter plus a site-packages
+# directory and spawns "python main.py" at runtime.
+#
+# This script is ASCII-only on purpose: PowerShell 5.1 parses BOM-less files
+# as ANSI, and editors (PyCharm) keep stripping the BOM on rewrite, which
+# turned CJK comments into syntax errors. Keep it ASCII.
 
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
-Write-Host "=== InkCube 安装包构建 ===" -ForegroundColor Cyan
-Write-Host "项目根目录: $projectRoot"
+Write-Host "=== InkCube installer build ===" -ForegroundColor Cyan
+Write-Host "Project root: $projectRoot"
 Write-Host ""
 
-# ─── Step 1: 准备工具链 ─────────────────────────────────────
+# --- Step 1: verify the tool chain ------------------------------------------
 $toolsDir = Join-Path (Join-Path $projectRoot "resources") "tools"
-$runtimePython = Join-Path $toolsDir "python-build-standalone" "python.exe"
-if (-not (Test-Path (Join-Path $toolsDir "uv.exe")) -or -not (Test-Path $runtimePython)) {
-    Write-Host "`n[Step 1/5] 准备工具链..." -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot "prepare-tools.ps1")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  工具链准备失败!" -ForegroundColor Red
-        exit 1
-    }
-} else {
-    Write-Host "`n[Step 1/5] 工具链已存在，跳过" -ForegroundColor DarkGray
+$runtimePython = Join-Path (Join-Path $toolsDir "python-build-standalone") "python.exe"
+Write-Host "`n[Step 1/5] Verifying tool chain..." -ForegroundColor Yellow
+
+# prepare-tools.ps1 was removed (GitHub Releases is not reliably reachable
+# from mainland China networks, so the tool chain is placed manually; the
+# manifest and download URLs live in docs/0.2packaging-design.md section 6.2).
+# The build verifies everything up front so missing pieces surface at build
+# time instead of on an end-user machine mid-task.
+$required = @("uv.exe", "rg.exe", "ruff.exe", "pandoc.exe", "tool-versions.json")
+$missing = @($required | Where-Object { -not (Test-Path (Join-Path $toolsDir $_)) })
+if (-not (Test-Path $runtimePython)) { $missing += "python-build-standalone\python.exe" }
+if ($missing.Count -gt 0) {
+    Write-Host "  Tool chain is missing the following files (resources/tools/):" -ForegroundColor Red
+    $missing | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
+    Write-Host "  Download and place them manually, see docs/0.1dev-guide.md section 11.1" -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "  Tool chain complete" -ForegroundColor Green
+
+# node-gyp (Step 4 rebuilds the better-sqlite3 native module) needs Python;
+# honour the PYTHON env var first. Fail fast here instead of in Step 4 with
+# "Could not find any Python installation to use". The python.exe under
+# WindowsApps is the Microsoft Store execution-alias stub, not a real
+# interpreter, so it does not count.
+$pyCmd = Get-Command python.exe -ErrorAction SilentlyContinue
+if ($pyCmd -and $pyCmd.Source -like "*WindowsApps*") { $pyCmd = $null }
+if (-not $env:PYTHON -and -not $pyCmd) {
+    Write-Host "  Python not found: electron-builder needs it to rebuild better-sqlite3" -ForegroundColor Red
+    Write-Host "  Set the env var first, e.g.: `$env:PYTHON = 'C:\Users\Kelvin\.conda\envs\inkcube\python.exe'" -ForegroundColor Yellow
+    exit 1
 }
 
-# ─── Step 2: 装配 Python 后端 ───────────────────────────────
-Write-Host "`n[Step 2/5] 装配 Python 后端 (代码 + site-packages)..." -ForegroundColor Yellow
+# --- Step 2: assemble the Python backend ------------------------------------
+Write-Host "`n[Step 2/5] Assembling Python backend (code + site-packages)..." -ForegroundColor Yellow
 
 $backendDir = Join-Path (Join-Path $projectRoot "resources") "python-backend"
 
-# 2a. 拷贝后端代码（排除 tests / __pycache__ / data 开发数据）
+# 2a. Copy backend code (excluding tests / __pycache__ / dev data under data)
 if (Test-Path $backendDir) { Remove-Item $backendDir -Recurse -Force }
 robocopy (Join-Path $projectRoot "python") $backendDir /E /XD __pycache__ .pytest_cache tests data /XF *.pyc /NFL /NDL /NJH /NJS | Out-Null
 if ($LASTEXITCODE -ge 8) {
-    Write-Host "  后端代码拷贝失败 (robocopy exit $LASTEXITCODE)!" -ForegroundColor Red
+    Write-Host "  Backend code copy failed (robocopy exit $LASTEXITCODE)!" -ForegroundColor Red
     exit 1
 }
-Write-Host "  后端代码已拷贝到 resources/python-backend/" -ForegroundColor Green
+Write-Host "  Backend code copied to resources/python-backend/" -ForegroundColor Green
 
-# 2b. uv 安装依赖（干净 site-packages；--python 与运行时用同一解释器，消除版本断层）
-# 镜像：pypi.org 直连超时、清华镜像 wheel 下载 403，阿里云镜像实测可用（2026-10）
+# 2b. Install deps with uv (clean site-packages; --python pins the same
+# interpreter as runtime, removing any version drift).
+# Mirror notes: pypi.org direct times out, Tsinghua mirror 403s on wheel
+# downloads, Aliyun mirror verified working (2026-10).
 $uvExe = Join-Path $toolsDir "uv.exe"
 $sitePackages = Join-Path $backendDir "site-packages"
-& $uvExe pip install --python $runtimePython --target $sitePackages --index-url https://mirrors.aliyun.com/pypi/simple/ -r (Join-Path $projectRoot "python" "requirements.txt")
+& $uvExe pip install --python $runtimePython --target $sitePackages --index-url https://mirrors.aliyun.com/pypi/simple/ -r (Join-Path (Join-Path $projectRoot "python") "requirements.txt")
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  依赖安装失败!" -ForegroundColor Red
+    Write-Host "  Dependency installation failed!" -ForegroundColor Red
     exit 1
 }
-Write-Host "  依赖已安装到 resources/python-backend/site-packages/" -ForegroundColor Green
+Write-Host "  Dependencies installed into resources/python-backend/site-packages/" -ForegroundColor Green
 
-# ─── Step 3: Vite 构建前端 ───────────────────────────────────
-Write-Host "`n[Step 3/5] Vite 构建前端..." -ForegroundColor Yellow
+# 2c. Generate sitecustomize.py: replicate what pywin32.pth does.
+# In the packaged layout python-manager.js injects site-packages via
+# PYTHONPATH, and Python does not process .pth files found on PYTHONPATH
+# entries, so pywin32.pth never runs -> the pywintypes/pythoncom shims under
+# win32\lib are not importable -> win32com crashes. site.py imports
+# sitecustomize.py through the normal sys.path lookup (PYTHONPATH entries
+# included) at interpreter startup, so we patch the pywin32 paths and the DLL
+# directory there. See docs/0.2packaging-design.md sections 6.1 / 9.2.
+$sitecustomize = Join-Path $sitePackages "sitecustomize.py"
+$scContent = @'
+# Auto-generated by scripts/build-installer.ps1 -- do not edit.
+# The packaged layout injects site-packages via PYTHONPATH; Python ignores
+# .pth files found on PYTHONPATH entries, so pywin32.pth never runs.
+# site.py imports this module through normal sys.path lookup (PYTHONPATH
+# entries included), which restores pywin32 importability.
+# See docs/0.2packaging-design.md section 9.2.
+import os
+import sys
+
+_sp = os.path.dirname(os.path.abspath(__file__))
+
+# Paths normally appended by pywin32.pth
+for _sub in ("win32", os.path.join("win32", "lib"), "pythonwin"):
+    _p = os.path.join(_sp, _sub)
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.append(_p)
+
+# Register pywin32_system32 so the Windows loader finds pywintypes312.dll etc.
+_dll_dir = os.path.join(_sp, "pywin32_system32")
+if os.path.isdir(_dll_dir):
+    os.add_dll_directory(_dll_dir)
+    os.environ["PATH"] = _dll_dir + os.pathsep + os.environ.get("PATH", "")
+'@
+# Write BOM-less UTF-8 (the default encoding for Python 3 source files).
+[System.IO.File]::WriteAllText($sitecustomize, $scContent, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "  sitecustomize.py generated (pywin32 packaged-layout adaptation)" -ForegroundColor Green
+
+# --- Step 3: build the frontend with Vite -----------------------------------
+Write-Host "`n[Step 3/5] Building frontend with Vite..." -ForegroundColor Yellow
 npm.cmd run build
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  前端构建失败!" -ForegroundColor Red
+    Write-Host "  Frontend build failed!" -ForegroundColor Red
     exit 1
 }
-Write-Host "  前端构建完成" -ForegroundColor Green
+Write-Host "  Frontend build complete" -ForegroundColor Green
 
-# ─── Step 4: electron-builder 生成安装包 ─────────────────────
-Write-Host "`n[Step 4/5] electron-builder 生成安装包..." -ForegroundColor Yellow
+# --- Step 4: produce the installer with electron-builder --------------------
+Write-Host "`n[Step 4/5] Producing installer with electron-builder..." -ForegroundColor Yellow
 npx.cmd electron-builder --win
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  electron-builder 失败!" -ForegroundColor Red
+    Write-Host "  electron-builder failed!" -ForegroundColor Red
     exit 1
 }
 
-# ─── Step 5: 汇总 ────────────────────────────────────────────
-Write-Host "`n[Step 5/5] 构建完成!" -ForegroundColor Cyan
+# --- Step 5: summary ----------------------------------------------------------
+Write-Host "`n[Step 5/5] Build complete!" -ForegroundColor Cyan
 $distDir = Join-Path $projectRoot "dist"
 if (Test-Path $distDir) {
-    Write-Host "`n安装包输出:" -ForegroundColor White
+    Write-Host "`nInstaller output:" -ForegroundColor White
     Get-ChildItem $distDir -File | Where-Object { $_.Extension -in ".exe", ".msi", ".nsis" } | ForEach-Object {
         $sizeMB = [math]::Round($_.Length / 1MB, 1)
         Write-Host "  $($_.Name) - $sizeMB MB" -ForegroundColor Green
@@ -88,4 +153,4 @@ if (Test-Path $distDir) {
 }
 
 Write-Host ""
-Write-Host "完成!" -ForegroundColor Cyan
+Write-Host "Done!" -ForegroundColor Cyan

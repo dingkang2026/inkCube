@@ -22,6 +22,11 @@ numpy>=1.26.0
 docling>=2.127.0
 Pillow>=10.0.0
 python-docx>=1.1.0
+# PDF 样例提取（report_generator/template_extractor；缺包时 PDF 提取静默返回空）
+PyMuPDF>=1.24
+# MS Office COM 探测/转换（doc_generator / doc_parser / model_manager；
+# 当前经传递依赖引入，显式声明防上游断供）
+pywin32>=312
 
 # ── OCR ──
 rapidocr-onnxruntime>=1.4.0
@@ -29,11 +34,26 @@ rapidocr-onnxruntime>=1.4.0
 # ── Model Download ──
 huggingface_hub>=0.25.0
 modelscope>=1.20.0
-platformdirs>=4.0.0
+# 模型下载直连（knowledge/model_manager；当前经 modelscope 传递引入，显式声明）
+requests>=2.31
 
 # ── Async & Networking ──
 aiohttp>=3.9.0
 html2text>=2024.2.26
+
+# ── Agent Tooling ──
+# 精确 token 计量（agent/context_manager；缺失时代码回退启发式估算）
+tiktoken>=0.7
+# repo_map 代码结构解析（本体 + 语言包；语言包由 repo_map.py 动态 import，
+# 静态扫描不可见，必须显式声明）
+tree-sitter>=0.23
+tree-sitter-python>=0.23
+tree-sitter-javascript>=0.25
+tree-sitter-typescript>=0.23
+# Wiki 图谱 PageRank（wiki/wiki_graph；当前经 chromadb 传递引入，显式声明）
+networkx>=3.0
+# SKILL.md front-matter 解析（skills/parser；当前经 modelscope 传递引入，显式声明）
+PyYAML>=6.0
 
 # ── Testing ──
 # 单元测试框架（python/tests/，运行：python -m pytest python/tests/ -v）

@@ -6,14 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 
-
-def get_data_dir() -> str:
-    if os.environ.get("INKCUBE_DATA_DIR"):
-        return os.environ["INKCUBE_DATA_DIR"]
-    if getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        return os.path.join(user_data_dir("InkCube", "InkCube"), "data")
-    return os.path.join(os.path.dirname(__file__), "data")
+from paths import get_data_dir
 
 
 # ── Logging: console + rotating file ──
@@ -22,12 +15,28 @@ def get_data_dir() -> str:
 #   [YYYY-MM-DD HH:MM:SS.mmm] [source] [LEVEL] message
 # Rotation: 5 MB per file, keep 3 backups (app.log.1 / .2 / .3)
 _data_dir = get_data_dir()
-# uv 全局缓存指到数据目录同盘（进程级环境变量，所有 uv 子进程继承）：uv pip
-# 安装默认以硬链接复用缓存文件，硬链接不能跨盘符——缓存留在默认的
-# %LOCALAPPDATA%（C 盘）而任务 venv 在 D 盘时会退化为整包复制，每个任务
-# venv 重复占一份包体积。同盘后同版本包只存物理一份，新增任务零增量。
+# uv 全局缓存：生产跟随数据目录（与 venv 同盘，硬链接复用——uv 默认 hardlink
+# 不能跨盘符，缓存若留在 %LOCALAPPDATA% 而 venv 在其他盘会退化为整包复制）；
+# dev(Windows) 外置项目树——项目内 cache 的 uv 解压 rename 被 IDE 文件监视器
+# 锁死（os error 5，2026-10-12 根因实测，杀软排除/停用实时防护均无效），放
+# 项目盘根外置目录（盘符取后端代码所在盘，不硬编码），与任务 venv 仍同盘，
+# 硬链接语义不变；Electron ipc-handlers uvCacheDir 以同规则推导保持两侧一致。
 # 用户显式设置的 UV_CACHE_DIR 优先（setdefault）。
-os.environ.setdefault("UV_CACHE_DIR", os.path.join(_data_dir, "uv-cache"))
+# dev 判据不能用 sys.frozen：本项目生产无 PyInstaller（python-manager 注释
+# 「PyInstaller was dropped」），生产是 python-build-standalone 裸解释器跑
+# 源码，frozen 恒 False——用 frozen 会令生产误走 dev 分支、cache 落安装盘
+# 根、闸门读不到 Electron 写的 marker。生产真信号 = Electron 仅在生产
+# spawn 时注入 INKCUBE_DATA_DIR（python-manager 非 dev 分支）；dev 四条
+# 启动路径（npm/PyCharm/Electron spawn/手动）均无此变量，恰好覆盖「外部
+# 手动启动也要命中 dev 分支」的诉求。
+if sys.platform == "win32" and not os.environ.get("INKCUBE_DATA_DIR"):
+    os.environ.setdefault(
+        "UV_CACHE_DIR",
+        os.path.join(
+            os.path.splitdrive(os.path.dirname(os.path.abspath(__file__)))[0] + os.sep,
+            "InkCube-dev-cache", "uv-cache"))
+else:
+    os.environ.setdefault("UV_CACHE_DIR", os.path.join(_data_dir, "uv-cache"))
 _log_dir = Path(_data_dir) / "logs"
 _log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -141,19 +150,10 @@ async def lifespan(app: FastAPI):
         models_dir=os.path.join(data_dir, "models"),
     )
 
-    # Preload bge-m3 embedding model in background so the first query
-    # (search / chat / file processing) doesn't block on model loading.
-    import threading as _thr
-    from knowledge.vector_store import preload_bge_m3
-    _bge_m3_path = os.path.join(data_dir, "models", "bge-m3")
-    if os.path.isdir(_bge_m3_path):
-        def _preload():
-            try:
-                preload_bge_m3(_bge_m3_path)
-                logging.getLogger(__name__).info("bge-m3 model preloaded")
-            except Exception as e:
-                logging.getLogger(__name__).warning("bge-m3 preload failed: %s", e)
-        _thr.Thread(target=_preload, daemon=True, name="bge-m3-preload").start()
+    # bge-m3 预热已移出启动链（POST /models/preload，routers/models.py）：
+    # 启动期 CUDA 加载与渲染层模块装载争抢 CPU/磁盘，拖慢 dev 冷启动首屏
+    # （2026-10-13 实测 DCL 84s）；现由 Electron 窗口 did-finish-load 触发。
+    # 首查询不依赖预热：vector_store 单例懒加载（双检锁）。
 
     # Initialize knowledge worker for async file/image processing
     settings = deps.db.get_settings()

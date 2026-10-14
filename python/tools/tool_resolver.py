@@ -49,13 +49,11 @@ def _get_app_data_dir() -> Path:
 
 
 def _get_bundled_tools_dir() -> Path:
-    """获取捆绑工具目录。
+    """获取捆绑工具目录（开发环境：{项目根}/resources/tools/）。
 
-    开发环境：{项目根}/resources/tools/
-    生产环境（PyInstaller）：exe 同级目录 resources/tools/
+    生产不命中此分支：依赖由 python-manager 注入的 INKCUBE_*_PATH
+    （userData/tools/，env 一级优先）覆盖。
     """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "resources" / "tools"
     return _get_project_root() / "resources" / "tools"
 
 
@@ -92,7 +90,7 @@ def resolve_tool(name: str) -> str | None:
         logger.debug("resolve_tool(%s): found via env %s = %s", name, env_var, env_path)
         return env_path
 
-    # 2a. 捆绑工具目录（开发: resources/tools/，生产: exe旁 resources/tools/）
+    # 2a. 捆绑工具目录（开发: resources/tools/；生产由 env 一级覆盖优先命中）
     bundled_dir = _get_bundled_tools_dir()
     for bin_name in bin_names:
         candidate = bundled_dir / bin_name

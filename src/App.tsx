@@ -23,6 +23,7 @@ import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { useResizeHandle } from './hooks/useResizeHandle'
 import { useToast } from './features/knowledge/Toast'
+import { BrowserPanel } from './features/browser/BrowserPanel'
 import { ActivityProvider } from './features/activity/ActivityContext'
 import { ActivityMonitor } from './features/activity/ActivityMonitor'
 import { useConfirm } from './components/ConfirmDialog'
@@ -567,6 +568,8 @@ export default function App() {
           <div />
         )}
       </div>
+      {/* 内嵌浏览器面板（2.8 §8）：App 级常驻，三态由 store 驱动 */}
+      <BrowserPanel />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
       {showOnboarding && (
         <OnboardingWizard

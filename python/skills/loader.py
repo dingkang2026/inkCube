@@ -392,11 +392,17 @@ class AgentSkillAdapter(BaseSkill):
         cmd = base_cmd + args
 
         try:
+            # 2.8 §3.3：租约锁 owner 需要 task 身份——注入 INKCUBE_TASK_ID
+            #（空值不注入；一处改动全 skill 受益）
+            spawn_env = os.environ.copy()
+            if context.task_id:
+                spawn_env["INKCUBE_TASK_ID"] = context.task_id
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=context.workspace_path,
+                env=spawn_env,
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),

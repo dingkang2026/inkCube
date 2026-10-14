@@ -560,3 +560,35 @@ class TestAgentEnsureTaskVenv:
 
         with pytest.raises(ta.UvExclusionRequired):
             asyncio.run(agent._ensure_task_venv(task["id"], venv_path))
+
+    def test_verified_waits_for_preinstall_blocking(self, agent, db, tmp_path, monkeypatch):
+        """白名单已验证 + marker 缺失（预装进行中/曾失败）→ 同步等待装完再
+        继续，不误报 UvExclusionRequired（2026-10-13 回归：cb44ad52 首任务
+        在预装 ~20s 窗口内被误报授权未确认）。
+        """
+        import agent.task_agent as ta
+
+        monkeypatch.setattr(vm, "is_uv_exclusion_verified", lambda: True)
+        monkeypatch.setattr(ta, "ensure_venv", lambda task_dir: None)
+        blocking_calls = []
+        monkeypatch.setattr(
+            ta, "ensure_venv_blocking",
+            lambda vp: blocking_calls.append(vp) or True)
+        task = db.create_task("t", str(tmp_path / "data"), "")
+        venv_path = task["venv_path"]
+
+        assert asyncio.run(agent._ensure_task_venv(task["id"], venv_path)) == venv_path
+        assert blocking_calls == [venv_path]
+
+    def test_verified_preinstall_failed_continues_with_partial_venv(self, agent, db, tmp_path, monkeypatch):
+        """已验证但预装最终失败 → 返回 venv 在位的部分环境（交 LLM 按需补装），
+        不抛不降级系统 Python（与 fire-and-forget 失败时的实际行为一致）。
+        """
+        import agent.task_agent as ta
+
+        monkeypatch.setattr(vm, "is_uv_exclusion_verified", lambda: True)
+        monkeypatch.setattr(ta, "ensure_venv", lambda task_dir: None)
+        monkeypatch.setattr(ta, "ensure_venv_blocking", lambda vp: False)
+        task = db.create_task("t", str(tmp_path / "data"), "")
+
+        assert asyncio.run(agent._ensure_task_venv(task["id"], task["venv_path"])) == task["venv_path"]

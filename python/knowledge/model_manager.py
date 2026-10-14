@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 def get_models_dir() -> str:
     if os.environ.get("INKCUBE_DATA_DIR"):
         base = os.environ["INKCUBE_DATA_DIR"]
-    elif getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        base = user_data_dir("InkCube", "InkCube")
     else:
         base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
     d = os.path.join(base, "models")

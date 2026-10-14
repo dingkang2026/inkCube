@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import shutil
-import sys
 from copy import deepcopy
 from pathlib import Path
 
@@ -21,19 +20,13 @@ logger = logging.getLogger(__name__)
 def get_resources_dir() -> str:
     """Resolve the resources directory path.
 
-    In packaged (frozen) mode: set by Electron via INKCUBE_RESOURCES_DIR env var,
-    or fallback to the directory containing the executable.
+    Production: set by Electron via INKCUBE_RESOURCES_DIR env var
+    (python-manager.js injects it on every non-dev spawn).
     In dev mode: ../../resources relative to this file (python/report_generator/ → resources/).
     """
     env_dir = os.environ.get("INKCUBE_RESOURCES_DIR")
     if env_dir and os.path.isdir(env_dir):
         return env_dir
-
-    if getattr(sys, "frozen", False):
-        # Packaged: Electron should set INKCUBE_RESOURCES_DIR
-        # Fallback: same dir as executable
-        base = os.path.dirname(sys.executable)
-        return os.path.join(base, "resources")
 
     # Dev mode: python/report_generator/loader.py → ../../resources
     return str(Path(__file__).resolve().parent.parent.parent / "resources")

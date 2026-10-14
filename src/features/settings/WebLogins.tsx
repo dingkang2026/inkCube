@@ -4,6 +4,7 @@ import styles from './WebLogins.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import { apiErrorText } from '../../i18n/errorCodes'
+import { browserPanelStore } from '../browser/browserPanelStore'
 
 interface WebLogin {
   domain: string
@@ -12,7 +13,8 @@ interface WebLogin {
 }
 
 /** 设置页「网页登录态」区块（2.8 §8.1）：仅管理入口（查看/重新登录/移除/手动添加），
- *  首登主路径在任务对话流卡片。cookie 的实际清除与登录窗口由 Electron IPC 承担。 */
+ *  首登主路径在任务对话流卡片。cookie 的实际清除由 Electron IPC 承担；
+ *  重新登录导航到内嵌 BrowserPanel（2.8 V2 §8.3）。 */
 export function WebLogins() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
@@ -62,15 +64,9 @@ export function WebLogins() {
     }
   }
 
-  // 重新登录 = 打开登录窗口（同任务卡片主路径的 IPC，§8.3）；
-  // openLoginWindow 拒开（内网字面量/非法域名）时向用户展示，避免「点了没反应」
-  const handleRelogin = async (d: string) => {
-    try {
-      const res = await window.electronAPI.invoke('weblogin:open', { domain: d }) as { error?: string } | undefined
-      if (res?.error) setError(t('webLogins.openFailed', { domain: d }))
-    } catch (err) {
-      handleError(err)
-    }
+  // 重新登录 = 导航内嵌 BrowserPanel 到登录页（V2 §8.3），复用任务卡片主路径的分区 cookie
+  const handleRelogin = (d: string) => {
+    browserPanelStore.navigate(`https://${d}`)
   }
 
   const handleRemove = async (d: string) => {
@@ -134,7 +130,7 @@ export function WebLogins() {
                 {login.note && <span className={styles.note}>{login.note}</span>}
               </div>
               <div className={styles.actions}>
-                <button className={styles.reloginBtn} onClick={() => void handleRelogin(login.domain)}>
+                <button className={styles.reloginBtn} onClick={() => handleRelogin(login.domain)}>
                   {t('webLogins.relogin')}
                 </button>
                 <button

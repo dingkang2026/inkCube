@@ -1,6 +1,5 @@
 """python/routers/knowledge.py"""
 import os
-import sys
 import asyncio
 import base64
 import logging
@@ -17,6 +16,7 @@ from knowledge.fts_store import FTSStore
 from knowledge.knowledge_search import KnowledgeSearchTool
 from errors import InkCubeError, VLMNotConfigured
 from readiness import ensure_ready
+from paths import get_data_dir
 
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -29,16 +29,6 @@ def get_db() -> Database:
         return deps.db
     except ImportError:
         raise HTTPException(status_code=500, detail="Database not initialized")
-
-
-def get_data_dir() -> str:
-    """Get data directory path"""
-    if os.environ.get("INKCUBE_DATA_DIR"):
-        return os.environ.get("INKCUBE_DATA_DIR")
-    if getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        return os.path.join(user_data_dir("InkCube", "InkCube"), "data")
-    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
 
 def _validate_vlm_config(db: Database) -> None:

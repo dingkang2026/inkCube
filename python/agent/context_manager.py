@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 import time
 import uuid
 from typing import Any
@@ -22,13 +23,44 @@ logger = logging.getLogger(__name__)
 
 # ── Token counting ──
 # Use tiktoken for precise counting when available; fallback to heuristic.
+#
+# The encoder is initialised in a daemon thread, NOT at import time:
+# encoding_for_model("gpt-4o") needs the o200k_base data file, and when it is
+# not in the local cache tiktoken downloads it from the OpenAI CDN via a
+# requests.get() WITHOUT timeout. On networks where that CDN is unreachable
+# the download blocks forever, which froze module import (agent.task_agent →
+# deps → main) and made the whole backend fail its /health budget
+# ("Python backend failed to start within 60000ms", 2026-10-13).
+# Import below is local-only; the daemon thread fills the encoder in when
+# (and if) it becomes available — count_tokens falls back to the heuristic
+# until then.
 _CHARS_PER_TOKEN = 3  # conservative middle ground (fallback)
 _tiktoken_encoder = None
+
 try:
     import tiktoken
-    _tiktoken_encoder = tiktoken.encoding_for_model("gpt-4o")
-except Exception:
-    pass  # tiktoken not installed — will use heuristic
+except ImportError:
+    tiktoken = None
+
+
+def _init_tiktoken_encoder() -> None:
+    global _tiktoken_encoder
+    try:
+        cache_dir = os.environ.get("TIKTOKEN_CACHE_DIR")
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+        _tiktoken_encoder = tiktoken.encoding_for_model("gpt-4o")
+        logger.info("tiktoken encoder ready (gpt-4o / o200k_base)")
+    except Exception as e:
+        # Reachable only for fast failures (missing pkg data, corrupt cache);
+        # a hung CDN download stays in the daemon thread and never blocks.
+        logger.warning("tiktoken encoder unavailable, using heuristic fallback: %s", e)
+
+
+if tiktoken is not None:
+    threading.Thread(
+        target=_init_tiktoken_encoder, daemon=True, name="tiktoken-init"
+    ).start()
 
 
 class ContextManager:

@@ -1,6 +1,7 @@
 /** tests/WebLogins.test.tsx — 设置页「网页登录态」区块（2.8 §8.1）
  *  覆盖：列表加载渲染 / 手动添加并刷新 / 后端业务错误（HTTP 200 + {error}）
- *  就地展示且不刷新列表 / 移除链路（先清 cookie 再删行，§9.2 方向）。
+ *  就地展示且不刷新列表 / 移除链路（先清 cookie 再删行，§9.2 方向）/
+ *  重新登录导航内嵌 BrowserPanel（V2 §8.3，不再开独立窗口）。
  *  ConfirmDialog 打桩为恒确认；IPC 全部经 invokeMock 捕获。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -34,6 +35,18 @@ vi.mock('../src/hooks/useErrorHandler', () => ({
   useErrorHandler: () => handleErrorMock,
 }))
 
+// V2 §8.3：重新登录 = 导航内嵌 BrowserPanel（不再走 weblogin:open 独立窗口）
+const navSpy = vi.hoisted(() => vi.fn())
+vi.mock('../src/features/browser/browserPanelStore', () => ({
+  browserPanelStore: {
+    navigate: navSpy,
+    showCompact: vi.fn(),
+    expand: vi.fn(),
+    collapse: vi.fn(),
+    hide: vi.fn(),
+  },
+}))
+
 import { WebLogins } from '../src/features/settings/WebLogins'
 
 const invokeMock = vi.fn()
@@ -49,6 +62,7 @@ beforeEach(() => {
   })
   confirmMock.mockReset()
   confirmMock.mockResolvedValue(true)
+  navSpy.mockClear()
   ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke: invokeMock }
 })
 
@@ -125,5 +139,14 @@ describe('WebLogins settings block (2.8 §8.1)', () => {
     const channels = invokeMock.mock.calls.map(([c]) => c)
     expect(channels.indexOf('weblogin:remove-cookies')).toBeLessThan(channels.indexOf('weblogin:remove'))
     await waitFor(() => expect(listCalls()).toBe(2))
+  })
+
+  it('relogin navigates the embedded panel instead of opening a window (V2 §8.3)', async () => {
+    render(<WebLogins />)
+    await screen.findByText('example.com')
+    fireEvent.click(screen.getByText('webLogins.relogin'))
+
+    expect(navSpy).toHaveBeenCalledWith('https://example.com')
+    expect(invokeMock).not.toHaveBeenCalledWith('weblogin:open', expect.anything())
   })
 })

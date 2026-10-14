@@ -12,6 +12,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 import deps
+from paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,6 @@ class SkillInstallRequest(BaseModel):
 
 def _get_skills_dir() -> str:
     """Return the base directory for installed skills."""
-    from main import get_data_dir
     return os.path.join(get_data_dir(), "skills")
 
 

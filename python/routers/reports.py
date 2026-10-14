@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import shutil
-import sys
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -21,6 +20,7 @@ from pydantic import BaseModel
 from readiness import ensure_ready
 from errors import actionable
 import activity_events
+from paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +34,6 @@ def get_db():
         return deps.db
     except ImportError:
         raise HTTPException(status_code=500, detail="Database not initialized")
-
-
-def get_data_dir() -> str:
-    """Get data directory path."""
-    if os.environ.get("INKCUBE_DATA_DIR"):
-        return os.environ.get("INKCUBE_DATA_DIR")
-    if getattr(sys, "frozen", False):
-        from platformdirs import user_data_dir
-        return os.path.join(user_data_dir("InkCube", "InkCube"), "data")
-    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
 
 def get_loader():

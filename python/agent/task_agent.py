@@ -29,14 +29,17 @@ from tools.lsp_client import LSPClientTool
 from tools.venv_manager import (
     UvExclusionRequired,
     ensure_venv,
+    ensure_venv_blocking,
     get_venv_python,
     is_preinstall_done,
+    is_uv_exclusion_verified,
 )
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter, SKILL_GUIDE_MAX_CHARS
 from agent.context_manager import ContextManager, build_git_context, detect_project_context
 from errors import LLMNetworkError, InkCubeError, actionable
+from paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +63,15 @@ def _llm_error_msg(e: Exception) -> str:
     return f"调用模型出错: {getattr(e, 'detail', '') or str(e)}"
 
 
-def _skill_env_needs_setup(venv_path: str) -> bool:
-    """CLI 型 skill 首用环境预检（2.8 §5.5 step_note 可见性）。
+def _venv_env_needs_setup(venv_path: str) -> bool:
+    """任务 venv 首用环境预检（2.8 §5.5 step_note 可见性）。
 
     venv python 与预装 marker 均在位才算就绪（与 _ensure_task_venv 快路径
     同一判据）；venv_path 为空（任务无 venv，chat-only）不会发生预装，
     返回 False。预检为真时马上要发生同步预装（3~60s+ 黑盒），调用方推
-    step_note 呈现给用户。
+    step_note 呈现给用户。判据本为通用 venv 判据，2026-10-13 随 tool 链
+    （code_executor/shell/package_manager 首用可见性）接入由 skill 专属
+    升为 tool/skill 共用，更名（原名 _skill_env_needs_setup）。
     """
     if not venv_path:
         return False
@@ -101,7 +106,8 @@ _PROMPT_IDENTITY_GENERAL = """你是一个智能助手"墨方-任务"。你可�
 💡 提示：当前为通用模式，已有文件操作和 Shell 命令能力。如需执行代码、代码搜索、代码检查、包管理等高级编程功能，可建议用户切换到编程模式（🛠）。"""
 
 _PROMPT_EFFICIENCY = """⚠️ 效率原则：
-- 一旦获得了回答用户问题所需的信息，立即输出 Final Answer 总结结果
+- 一旦获得了回答用户问题所需的信息，立即给出最终回答（回答正文就是交付物）
+- 不要输出 Final Answer 之类的标记词，不要重复总结已完成的内容
 - 不要在已有结果的情况下继续探索额外细节
 - 通常 3-5 次工具调用就足以完成一个任务
 - 如果工具执行失败，根据返回的 error_type 和 suggestion 修正，最多重试 3 次"""
@@ -126,10 +132,10 @@ _PROMPT_SELF_REVIEW = """🔍 自我审查原则：
 - 在给出最终回答之前，检查所有修改的文件是否已保存且语法正确
 - 如果编辑了代码，至少执行一次验证（code_executor 或 code_lint）
 - 如果有遗漏的需求点，继续执行而不是急于总结
-- 如果一切就绪，输出 Final Answer"""
+- 如果一切就绪，直接给出最终回答"""
 
 _PROMPT_RICH_TEXT = """📊 富文本支持：
-你可以在 Final Answer 中使用 Markdown 格式：
+你可以在最终回答中使用 Markdown 格式：
 - Mermaid 图表：用 ```mermaid 代码块绘制流程图、时序图、甘特图等
 - SVG 图形：直接嵌入 <svg> 标签绘制自定义图形（仅图形元素：rect/circle/text/path/g 等）
 - 行内样式：用 <span style="color:#663399">标注颜色/强调，style 仅支持视觉属性
@@ -483,15 +489,16 @@ class TaskAgent:
 
         # Budget check: drop low-priority sections if over budget
         included_sections = list(optional_sections)  # copy
-        full_parts = parts + [s for _, s in included_sections]
+        # 每个可选 section 的值是片段列表（list[str]），需展平后才能 join
+        full_parts = parts + [seg for _, s in included_sections for seg in s]
         full_prompt = "\n".join(full_parts)
         prompt_tokens = ContextManager.count_tokens(full_prompt)
 
         if prompt_tokens > PROMPT_BUDGET:
             # Drop sections from lowest priority first
-            for name, section_parts in reversed(list(included_sections)):
+            for name, _ in reversed(list(included_sections)):
                 included_sections = [(n, s) for n, s in included_sections if n != name]
-                full_parts = parts + [s for _, s in included_sections]
+                full_parts = parts + [seg for _, s in included_sections for seg in s]
                 test_prompt = "\n".join(full_parts)
                 test_tokens = ContextManager.count_tokens(test_prompt)
                 if test_tokens <= PROMPT_BUDGET:
@@ -538,6 +545,10 @@ class TaskAgent:
         快路径要求 venv 与预装 marker 均在位（零创建开销）——marker 缺失时
         落入 ensure_venv 补跑预装（create_venv 幂等 no-op），兑现「预装失败
         不写 marker、下次 ensure 重试」的承诺（含跨重启的中断预装补装）。
+        marker 缺失后区分两种原因（2026-10-13 误报修复）：白名单未验证 →
+        抛 UvExclusionRequired（真阻断）；已验证 → ensure_venv_blocking
+        同步等待后台预装完成或自愈补装——此前统一按白名单误报，首次任务
+        必吃误导性授权指引（实测 cb44ad52：预装 ~20s 窗口内首用必中）。
         创建后校验任务仍存在：delete_task 在 cancel 等待超时后直接 rmtree
         任务目录，若落在 create_venv 的 makedirs 窗口内目录会被重建，此处
         回收刚落盘的 venv 避免孤儿目录。创建失败/任务已删返回 ""，后续执行
@@ -556,13 +567,23 @@ class TaskAgent:
                 logger.info("Task %s deleted during venv creation, cleaned %s", task_id, venv_path)
                 return ""
             if not is_preinstall_done(venv_path):
-                # 前置阻断（2.8 §12 F4）：白名单未验证时后台预装被跳过，
-                # marker 不会出现——不交付空 venv（裸环境 import 必败），
-                # 也不降级系统 Python（污染主环境），抛出给调用方向 LLM
-                # 给出明确的授权指引
-                raise UvExclusionRequired(
-                    "杀毒软件白名单未确认，任务运行环境无法就绪；"
-                    "请用户在应用顶部横幅完成一次系统授权后重试")
+                if not is_uv_exclusion_verified():
+                    # 前置阻断（2.8 §12 F4）：白名单未验证时后台预装被跳过，
+                    # marker 不会出现——不交付空 venv（裸环境 import 必败），
+                    # 也不降级系统 Python（污染主环境），抛出给调用方向 LLM
+                    # 给出明确的授权指引
+                    raise UvExclusionRequired(
+                        "杀毒软件白名单未确认，任务运行环境无法就绪；"
+                        "请用户在应用顶部横幅完成一次系统授权后重试")
+                # 白名单已验证：marker 缺失 = 预装进行中（等后台完成）或曾
+                # 失败（自愈补装）。同步等待装完再继续任务；blocking 内部
+                # per-venv 锁 + 双检与后台线程互斥，不重复下载。装失败 →
+                # venv 在位仅包不全，交由 LLM 按需 package_manager 补装
+                #（不降级系统 Python，与 fire-and-forget 失败时的实际行为一致）
+                if not await asyncio.to_thread(ensure_venv_blocking, venv_path):
+                    logger.warning(
+                        "Task %s preinstall failed after blocking wait, "
+                        "continuing with partial venv: %s", task_id, venv_path)
             logger.info("Task venv lazily created: %s", venv_path)
             return venv_path
         except UvExclusionRequired:
@@ -823,7 +844,6 @@ class TaskAgent:
     def _log_execution(task_id: str, tool_name: str, tool_input: dict, result: str, duration_ms: int):
         """Write execution log entry to task's execution.log file."""
         try:
-            from main import get_data_dir
             log_dir = os.path.join(get_data_dir(), "tasks", task_id)
             if not os.path.isdir(log_dir):
                 return
@@ -1700,14 +1720,41 @@ class TaskAgent:
                 tool = tools.get(tool_name)
                 if tool:
                     # Lazy venv: materialize on first venv-configured tool use
-                    # (失败时 venv_path 置 ""，同轮后续外部 Skill 上下文一并降级)
+                    # (失败时 venv_path 置 ""，同轮后续外部 Skill 上下文一并降级)。
+                    # 首用环境准备 UI 可见（2.8 §5.5，2026-10-13 从 skill 链
+                    # 补齐到 tool 链）：预检 marker 缺失才推 step_note（快路径
+                    # 零噪音），终态按 venv 物化结果 + marker 落定。
                     if tool_name in _VENV_TOOL_ATTRS and getattr(
                             tool, _VENV_TOOL_ATTRS[tool_name], ""):
+                        _tool_env_setup = _venv_env_needs_setup(venv_path)
+                        if _tool_env_setup:
+                            yield {"type": "step_note", "data": {
+                                "text": ("⏳ 首次执行需要 Python 环境，正在准备"
+                                         "运行环境（创建虚拟环境并安装依赖，约 10~60 秒）..."),
+                            }}
+                        _env_t0 = time.time()
                         try:
                             venv_path = await self._ensure_task_venv(task_id, venv_path)
+                            if _tool_env_setup:
+                                if venv_path and is_preinstall_done(venv_path):
+                                    yield {"type": "step_note", "data": {
+                                        "text": f"✅ Python 运行环境就绪（{time.time() - _env_t0:.0f}s）",
+                                    }}
+                                elif venv_path:
+                                    yield {"type": "step_note", "data": {
+                                        "text": "⚠️ Python 环境部分就绪，执行所需依赖将按需安装",
+                                    }}
+                                else:
+                                    yield {"type": "step_note", "data": {
+                                        "text": "❌ Python 环境创建失败，本次执行将回退系统 Python",
+                                    }}
                         except UvExclusionRequired as e:
                             # 前置阻断（2.8 §12 F4）：白名单未验证，不降级
                             # 裸跑，给 LLM 明确的授权指引
+                            if _tool_env_setup:
+                                yield {"type": "step_note", "data": {
+                                    "text": "❌ 运行环境准备被阻断：请先在应用顶部横幅完成系统授权",
+                                }}
                             result_str = json.dumps(
                                 {"error": str(e), "error_type": "UvExclusionRequired"},
                                 ensure_ascii=False)
@@ -1789,7 +1836,7 @@ class TaskAgent:
                             # 预检判据与终态判定见模块级纯函数；marker 在位则
                             # 零开销跳过。粗粒度两条（开始/终态）：预装一次性
                             # （venv 常驻任务目录），不做逐行下载进度。
-                            _need_setup = _skill_env_needs_setup(venv_path)
+                            _need_setup = _venv_env_needs_setup(venv_path)
                             if _need_setup:
                                 yield {"type": "step_note", "data": {
                                     "text": (f"⏳ 首次使用 {tool_name}，正在准备运行环境"
@@ -1932,7 +1979,7 @@ class TaskAgent:
 
         # ── Self-Reflection injection (Phase 17) ──
         # If edits were made in this iteration, inject a review prompt
-        # to encourage the agent to verify changes before Final Answer.
+        # to encourage the agent to verify changes before the final answer.
         if _edits_made:
             messages.append({
                 "role": "user",
@@ -1941,7 +1988,7 @@ class TaskAgent:
                     "在给出最终回答前，请确认："
                     "1) 所有修改的文件语法正确（用 code_executor 或 code_lint 验证）"
                     "2) 没有遗漏的需求点"
-                    "3) 如果一切就绪，输出 Final Answer"
+                    "3) 如果一切就绪，直接给出最终回答"
                 ),
             })
             logger.info("Self-reflection prompt injected after edits in task %s", task_id)

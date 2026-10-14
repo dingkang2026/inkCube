@@ -48,6 +48,7 @@ desktop.ini
 
 # ── Dev (local-only) ──
 dev/
+.superpowers/
 
 # ── Test / coverage ──
 coverage/

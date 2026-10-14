@@ -1,0 +1,78 @@
+/* BrowserPanel 三态（2.8 §8）：hidden 移出视口保布局（非 display:none，
+   §8.3——webview 布局尺寸保留，快照视口枚举与人工点击坐标有效） */
+.panel {
+  position: fixed;
+  top: 48px;
+  right: 12px;
+  width: 360px;
+  height: 480px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #1e1e2e);
+  border: 1px solid var(--border, #333);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  z-index: 900;
+  transition: width 0.18s ease, height 0.18s ease;
+}
+
+.panel[data-visible='false'] {
+  /* hidden：移出视口 + pointer-events 关（布局尺寸不变） */
+  left: -10000px;
+  top: -10000px;
+  right: auto;
+  pointer-events: none;
+}
+
+.panel[data-expanded='true'] {
+  width: 92vw;
+  height: calc(92vh - 48px);
+  top: calc(4vh + 48px);
+  right: 4vw;
+  z-index: 1100;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #333);
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+}
+
+.drivingDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e5484d;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
+
+.pageTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crashHint { color: #f76b15; }
+
+.iconBtn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.iconBtn:hover { background: var(--bg-hover, #2a2a3a); }
+
+.webview { flex: 1; width: 100%; border: none; }

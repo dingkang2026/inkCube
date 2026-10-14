@@ -265,13 +265,32 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── 杀毒软件白名单（2.8 §12 F4，前置阻断）──
   // 语义：未验证加白前，Python 侧任何 uv/pip 安装被禁止（venv_manager
   // is_uv_exclusion_verified 闸门）；验证状态落盘在
-  // {dataDir}/uv-exclusion-verified.json，两侧约定一致（Python 校验时做
-  // abspath 归一，防相对/绝对路径差异误判）。
+  // dirname(uvCacheDir)/uv-exclusion-verified.json，与 Python 侧推导
+  // （venv_manager _verified_marker_path = dirname(UV_CACHE_DIR)）对称，
+  // 两侧约定一致（Python 校验时做 abspath 归一，防相对/绝对路径差异误判）。
   // 阻断是 Windows 杀软特性，非 win32 恒已验证，前端零平台逻辑。
   const fs = require('fs')
   const path = require('path')
-  const uvCacheDir = () => path.join(getDataDir(), 'uv-cache')
-  const uvVerifiedMarker = () => path.join(getDataDir(), 'uv-exclusion-verified.json')
+  // uv-cache 路径与 Python main.py 的 UV_CACHE_DIR 语义对称：显式 env 优先；
+  // dev(Windows) 外置项目树（IDE 文件监视器锁 rename——2026-10-12 根因实测，
+  // 规则与 Python dev 分支一致：项目盘根\InkCube-dev-cache\uv-cache，盘符取
+  // 项目根不硬编码），生产回落 data 目录（与 venv 同盘硬链接，布局不变）。
+  const uvCacheDir = () => {
+    if (process.env.UV_CACHE_DIR) return process.env.UV_CACHE_DIR
+    // INKCUBE_DATA_DIR 在场 = 生产 spawn（review C1 对称加固）：dev 下显式
+    // 设该变量时 Electron 侧跟随生产口径，与 Python main.py 判据同源
+    if (process.platform === 'win32' && !process.env.INKCUBE_DATA_DIR &&
+        process.env.NODE_ENV === 'development') {
+      return path.join(path.parse(path.join(__dirname, '..')).root, 'InkCube-dev-cache', 'uv-cache')
+    }
+    return path.join(getDataDir(), 'uv-cache')
+  }
+  const uvVerifiedMarker = () => path.join(path.dirname(uvCacheDir()), 'uv-exclusion-verified.json')
+  // marker 读辅助（H2）：授权两落盘点读改写保留 third_party_ack 时共用；
+  // 读不到（不存在/损坏/权限）返回空对象——与「未验证」同义，不抛错
+  const readMarkerData = () => {
+    try { return JSON.parse(fs.readFileSync(uvVerifiedMarker(), 'utf-8')) } catch { return {} }
+  }
 
   // 第三方杀软检测（2.8 §12 F6）：WSC（SecurityCenter2）注册名单中过滤
   // Defender 后的非 Defender AV，用于横幅分流——一键授权仅写入 Defender
@@ -297,7 +316,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     p.on('close', () => {
       const names = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
         .filter((n) => !n.toLowerCase().includes('defender'))
-      thirdPartyAvCache = names.length ? names.join(', ') : null
+      // 数组逐名返回（F8）：每个第三方 AV 独立一条引导横幅 + 独立确认台账
+      thirdPartyAvCache = names.length ? names : null
     })
     return undefined // 首查进行中，不阻塞本次响应
   }
@@ -307,15 +327,65 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       return { verified: true, notApplicable: true }
     }
     const cacheDir = uvCacheDir()
+    // ackedNames：第三方确认台账（F8，用户声明制——信任区无通用写入 API，
+    // WSC 状态位不可信，唯一可行确认方式是用户点「我已处理」后落盘）
+    const readAcked = (data) =>
+      (data && data.third_party_ack && Array.isArray(data.third_party_ack.acked_names))
+        ? data.third_party_ack.acked_names : []
+    // WSC 查中后恒给确定值（null→[]），仅首查进行中（undefined）省略字段——
+    // 否则渲染端首响应缺字段无法区分「查中无」与「没查完」，会误判已完毕停轮，
+    // 第三方条在已验证机器上永不出现（review H1）
+    const withAv = (base) => {
+      const tp = detectThirdPartyAv()
+      return tp === undefined ? base : { ...base, thirdPartyAv: tp ?? [] }
+    }
     try {
-      const data = JSON.parse(fs.readFileSync(uvVerifiedMarker(), 'utf-8'))
+      const data = readMarkerData()
       const verified = !!(data && data.ok === true &&
         String(data.cache_dir || '').toLowerCase() === cacheDir.toLowerCase())
-      const thirdPartyAv = detectThirdPartyAv()
-      return thirdPartyAv ? { verified, cacheDir, thirdPartyAv } : { verified, cacheDir }
+      const ackedNames = readAcked(data)
+      return withAv({ verified, cacheDir, ackedNames })
     } catch {
-      const thirdPartyAv = detectThirdPartyAv()
-      return thirdPartyAv ? { verified: false, cacheDir, thirdPartyAv } : { verified: false, cacheDir }
+      return withAv({ verified: false, cacheDir, ackedNames: [] })
+    }
+  })
+
+  // 第三方杀软确认（F8）：逐名写台账，marker 读改写（保留 ok/cache_dir）；
+  // cache 挪位时 marker 随目录失效 → 台账一并作废，重新引导（语义正确：
+  // 信任区里的旧路径已无效）。新装杀软重启后出现（停轮后不再轮询 WSC，
+  // 且名单进程内缓存一次）
+  ipcMain.handle('system:ackThirdPartyAv', async (_e, name) => {
+    if (process.platform !== 'win32' || typeof name !== 'string' || !name.trim()) {
+      return { acked: false }
+    }
+    let data = {}
+    try {
+      data = JSON.parse(fs.readFileSync(uvVerifiedMarker(), 'utf-8'))
+    } catch { /* marker 不存在/损坏 → 新建 */ }
+    const ack = (data.third_party_ack && Array.isArray(data.third_party_ack.acked_names))
+      ? data.third_party_ack : { acked_names: [] }
+    if (!ack.acked_names.includes(name)) ack.acked_names.push(name)
+    ack.ts = new Date().toISOString()
+    data.third_party_ack = ack
+    try {
+      fs.mkdirSync(path.dirname(uvVerifiedMarker()), { recursive: true })
+      fs.writeFileSync(uvVerifiedMarker(), JSON.stringify(data, null, 2), 'utf-8')
+      return { acked: true, ackedNames: ack.acked_names }
+    } catch (e) {
+      logElectron('WARN', `third-party ack write failed: ${e.message}`)
+      return { acked: false }
+    }
+  })
+
+  // 通用剪贴板（F8）：渲染端 file:// 下 navigator.clipboard 不可靠，
+  // 剪贴板操作统一走主进程（同 defenderSkipped 分支的 clipboard.writeText）
+  ipcMain.handle('system:copyText', async (_e, text) => {
+    if (typeof text !== 'string' || !text) return { copied: false }
+    try {
+      require('electron').clipboard.writeText(text)
+      return { copied: true }
+    } catch {
+      return { copied: false }
     }
   })
 
@@ -354,18 +424,24 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     })
     if (!defenderRunning) {
       try {
+        // dev 外置布局下 cache 父目录（如 D:\InkCube-dev-cache）首次授权时
+        // 尚不存在（uv 首跑才建 cache），marker 写入前先建，否则 ENOENT 假失败
+        // 读改写保留 third_party_ack（review H2：盲写会抹掉用户已确认台账；
+        // cache_dir 变化时按设计有意作废台账——信任区旧路径已无效）
+        fs.mkdirSync(path.dirname(uvVerifiedMarker()), { recursive: true })
+        const prev = readMarkerData()
+        const keepAck = String(prev.cache_dir || '').toLowerCase() === cacheDir.toLowerCase()
+          ? prev.third_party_ack : undefined
         fs.writeFileSync(uvVerifiedMarker(), JSON.stringify({
           ok: true, cache_dir: cacheDir, note: 'defender-not-running',
           ts: new Date().toISOString(),
+          ...(keepAck ? { third_party_ack: keepAck } : {}),
         }, null, 2), 'utf-8')
       } catch (e) {
         logElectron('WARN', `uv-exclusion marker write failed (defender skipped): ${e.message}`)
         return { added: false, fallback: true, cacheDir }
       }
-      // 路径进剪贴板：前端将切「手动指引」态，提醒第三方杀软信任区需手动添加
-      try {
-        require('electron').clipboard.writeText(cacheDir)
-      } catch { /* 剪贴板失败不影响阻断解除 */ }
+      // 路径引导由第三方横幅条承担（F8：逐 AV 一条 + 复制按钮），不再预复制
       logElectron('INFO', `Defender service not running, exclusion skipped, gate released: ${cacheDir}`)
       return { added: true, defenderSkipped: true }
     }
@@ -425,8 +501,15 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (verdict === 'RESULT=True') {
       logElectron('INFO', `uv-cache exclusion added & verified: ${cacheDir}`)
       try {
+        // 同上：marker 父目录先建（dev 外置布局首次授权时不存在）；
+        // 读改写保留 third_party_ack（review H2，cache_dir 变化时作废）
+        fs.mkdirSync(path.dirname(uvVerifiedMarker()), { recursive: true })
+        const prev = readMarkerData()
+        const keepAck = String(prev.cache_dir || '').toLowerCase() === cacheDir.toLowerCase()
+          ? prev.third_party_ack : undefined
         fs.writeFileSync(uvVerifiedMarker(), JSON.stringify({
           ok: true, cache_dir: cacheDir, ts: new Date().toISOString(),
+          ...(keepAck ? { third_party_ack: keepAck } : {}),
         }, null, 2), 'utf-8')
       } catch (e) {
         // 裁决文件写失败 = 前置阻断无法解除（Python 读不到），视为失败
@@ -1790,13 +1873,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // ── Web logins (2.8 §9.2)：登录窗口与 partition cookie 清理 ──
-
-  // 创建/复用登录窗口并导航至 domain；用户关闭窗口即完成（无 done 通道）。
-  // 前端调 DELETE /web-logins/{domain} 之前需先发本组 remove-cookies。
-  ipcMain.handle('weblogin:open', (_event, payload) => {
-    return fetchPool.openLoginWindow(payload?.domain)
-  })
+  // ── Web logins (2.8 §9.2)：登录载体为 BrowserPanel（V2），本组仅存
+  // cookie 清理与登记列表转发；webview preload 由主进程 will-attach-webview
+  // 注入（main.js，2.8 §6.2），不经 IPC ──
 
   ipcMain.handle('weblogin:remove-cookies', (_event, payload) => {
     return fetchPool.removeCookiesForDomain(payload?.domain)

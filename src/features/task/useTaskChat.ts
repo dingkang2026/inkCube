@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import { apiErrorText } from '../../i18n/errorCodes'
+import { browserPanelStore } from '../browser/browserPanelStore'
 
 export interface ShellConfirmData {
   command: string
@@ -177,6 +178,14 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         setStreamContent('')
       } else if (type === 'action') {
         // Don't clear reasoning — it stays visible in the IterationCard during tool execution
+        // V2 §8.2：browser-fetch 实时驱动 → 弹 Compact 面板（仅前台流；后台/历史回放不弹）。
+        // skill_runner 备选路径（slash 调用 hint 允许 LLM 走 skill_runner）同样感知
+        if (
+          parsed.tool === 'browser-fetch' ||
+          (parsed.tool === 'skill_runner' && (parsed.input as { skill?: string } | undefined)?.skill === 'browser-fetch')
+        ) {
+          browserPanelStore.showCompact()
+        }
         setStreamSteps((prev) => {
           const next: StreamStep[] = [...prev, { type: 'action', tool: parsed.tool, input: parsed.input, iteration: streamIterationRef.current }]
           streamStepsRef.current = next

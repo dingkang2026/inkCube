@@ -27,6 +27,17 @@ POOL_TITLE = "inkcube-fetch-pool"       # 池窗口标题（可视化用，§6.2
 POOL_MARK_JS = "() => window.__INKCUBE_POOL__ === true"
 LOCK_STALE_SECONDS = 60                  # 持锁超过此时长视为僵死，可接管（§3.3）
 LOGIN_TEXT_SPARSE = 500                  # 登录墙「正文稀疏」阈值（§5.4）
+SNAPSHOT_TEXT_LIMIT = 3000               # 快照正文截断（§5.2）
+SNAPSHOT_ELEMENTS_LIMIT = 80             # 快照可交互元素上限（§5.2）
+SNAPSHOT_NAME_LIMIT = 40                 # 元素 name 截断（§5.2）
+# 待命页（close 归位目标 §5.2；前端 BrowserPanel 初始 src 用同值字符串）。
+# data: URL 不产生网络请求，partition 拦截器放行（§5.3 第 2 层）
+MARK_PAGE = (
+    f"data:text/html,<title>{POOL_TITLE}</title>"
+    # 注意：data: URL 中裸 # 会被解析为 fragment 截断（2026-10-13 review 实证），
+    # 正文颜色用关键字 gray，不得用 #888 十六进制
+    '<body style="font-family:sans-serif;color:gray">InkCube 网页抓取待命</body>'
+)
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -117,28 +128,33 @@ def probe_redirect_chain(
         return url, None
 
 
-# ── 跨进程抓取锁（§3.3：fetch.lock，O_CREAT|O_EXCL，僵死接管）──
+# ── 跨进程抓取锁（§3.3 V2：fetch.lock，O_CREAT|O_EXCL，租约三规则）──
 
 class FetchLock:
-    """`<data_dir>/fetch.lock` 文件锁：多任务并发抓取串行化。
+    """`<data_dir>/fetch.lock` 文件锁（V2 §3.3）：多任务浏览器串行化。
 
-    - O_CREAT|O_EXCL 原子创建；内容为 {"pid": …, "ts": …}
-    - 已存在且 mtime 超过 LOCK_STALE_SECONDS → 僵死锁，接管（覆盖写入）
-    - release 校验锁内容是自己的 pid 才删除，避免误删接管者的锁
+    - O_CREAT|O_EXCL 原子创建；内容 {"pid": …, "ts": …, "task_id": …}
+    - 同 task 重入（上个 action 进程异常退出未 release）→ 接管放行
+    - 异 task 且 mtime 未超 LOCK_STALE_SECONDS → 拒绝（浏览器正被其他任务使用）
+    - 超 LOCK_STALE_SECONDS → 僵死接管
+    - release 校验 pid + task_id 均为自己的才删除，避免误删接管者的锁
     """
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, task_id: str = ""):
         self.path = os.path.join(data_dir, "fetch.lock")
+        self.task_id = task_id
         self._mine = False
+
+    def _payload(self) -> str:
+        return json.dumps({"pid": os.getpid(), "ts": time.time(), "task_id": self.task_id})
 
     def acquire(self) -> bool:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        payload = json.dumps({"pid": os.getpid(), "ts": time.time()})
         while True:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(payload)
+                    f.write(self._payload())
                 self._mine = True
                 return True
             except FileExistsError:
@@ -146,21 +162,31 @@ class FetchLock:
             except OSError as e:
                 logger.error("fetch lock create failed: %s", e)
                 return False
-            # 已存在：检查是否僵死
+            # 已存在：读持有者
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    holder = json.loads(f.read() or "{}")
+            except (OSError, ValueError):
+                holder = {}
+            # 同 task 重入 → 接管（覆盖写保证单持有者语义）
+            if self.task_id and holder.get("task_id") == self.task_id:
+                with open(self.path, "w", encoding="utf-8") as f:
+                    f.write(self._payload())
+                self._mine = True
+                return True
             try:
                 age = time.time() - os.path.getmtime(self.path)
-                if age > LOCK_STALE_SECONDS:
-                    logger.warning(
-                        "stale fetch lock (age %.0fs > %ds), taking over",
-                        age, LOCK_STALE_SECONDS,
-                    )
-                    # 直接覆盖（unlink+create 有竞态窗口；覆盖写保证仍只有一个持有者语义）
-                    with open(self.path, "w", encoding="utf-8") as f:
-                        f.write(payload)
-                    self._mine = True
-                    return True
             except OSError:
                 continue  # 锁刚被释放，重试
+            if age > LOCK_STALE_SECONDS:
+                logger.warning(
+                    "stale fetch lock (age %.0fs > %ds, holder=%s), taking over",
+                    age, LOCK_STALE_SECONDS, holder.get("task_id", "?"),
+                )
+                with open(self.path, "w", encoding="utf-8") as f:
+                    f.write(self._payload())
+                self._mine = True
+                return True
             return False
 
     def release(self) -> None:
@@ -169,7 +195,8 @@ class FetchLock:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 holder = json.loads(f.read() or "{}")
-            if holder.get("pid") == os.getpid():
+            if (holder.get("pid") == os.getpid()
+                    and holder.get("task_id") == self.task_id):
                 os.unlink(self.path)
         except (OSError, ValueError):
             pass
@@ -257,3 +284,96 @@ def sanitize_filename(name: str) -> str:
     """文件名安全化（Windows 保留字符 + 路径穿越）。"""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
     return name[:80] or "page"
+
+
+# ── 页面快照（§5.2：纯读取 evaluate，与 POOL_MARK_JS 同模式零副作用）──
+
+def snapshot_js() -> str:
+    """生成可 evaluate 的快照 JS 源码（() => {…} 形式）。
+
+    结果：{text, truncated, elements: [{role, name, selector}], remaining,
+    total, hasPassword}。selector 生成优先级 #id → [name=] → [data-testid=]
+    → nth-of-type 路径（≤3 层）——selector 与可见文本跨调用稳定，从根上
+    避免 ref 编号漂移（§1 元素定位决策）；视口内元素优先入列。
+    """
+    return """() => {
+  const SEL = 'a[href], button, input:not([type=hidden]), select, textarea, [role], [onclick]';
+  const nodes = document.querySelectorAll(SEL);
+  const inVp = [], offVp = [];
+  const rectOf = (el) => el.getBoundingClientRect();
+  const isVisible = (el) => { const r = rectOf(el); return r.width > 0 || r.height > 0; };
+  const isInside = (el) => {
+    const r = rectOf(el);
+    return r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+  };
+  for (const el of nodes) { if (isVisible(el)) (isInside(el) ? inVp : offVp).push(el); }
+
+  const selectorOf = (el) => {
+    if (el.id) return '#' + CSS.escape(el.id);
+    const nm = el.getAttribute('name');
+    if (nm) return el.tagName.toLowerCase() + '[name="' + nm.replace(/"/g, '\\\\"') + '"]';
+    const dt = el.getAttribute('data-testid');
+    if (dt) return '[data-testid="' + dt.replace(/"/g, '\\\\"') + '"]';
+    const parts = [];
+    let cur = el;
+    for (let i = 0; i < 3 && cur && cur !== document.body; i++) {
+      const tag = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (!parent) break;
+      const same = Array.from(parent.children).filter((c) => c.tagName === cur.tagName);
+      parts.unshift(same.length > 1 ? tag + ':nth-of-type(' + (same.indexOf(cur) + 1) + ')' : tag);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  };
+
+  const roleOf = (el) => {
+    const explicit = el.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'button') return 'button';
+    if (tag === 'select') return 'select';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'input') {
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'submit' || t === 'button') return 'button';
+      if (t === 'checkbox') return 'checkbox';
+      if (t === 'radio') return 'radio';
+      return 'textbox';
+    }
+    return tag;
+  };
+
+  const nameOf = (el) => {
+    const label = el.getAttribute('aria-label')
+      || (el.labels && el.labels[0] && el.labels[0].innerText)
+      || el.innerText || el.value || el.getAttribute('placeholder')
+      || el.getAttribute('title') || '';
+    return label.trim().replace(/\\s+/g, ' ').slice(0, %(name_limit)d);
+  };
+
+  const elements = [];
+  let remaining = 0;
+  for (const el of [...inVp, ...offVp]) {
+    const role = roleOf(el);
+    const name = nameOf(el);
+    if (!name && role !== 'textbox' && role !== 'select' && role !== 'textarea') continue;
+    if (elements.length >= %(elem_limit)d) { remaining++; continue; }
+    elements.push({ role, name, selector: selectorOf(el) });
+  }
+
+  const fullText = document.body ? (document.body.innerText || '') : '';
+  return {
+    text: fullText.slice(0, %(text_limit)d),
+    truncated: fullText.length > %(text_limit)d,
+    elements,
+    remaining,
+    total: nodes.length,
+    hasPassword: !!document.querySelector('input[type=password]'),
+  };
+}""" % {
+        "name_limit": SNAPSHOT_NAME_LIMIT,
+        "elem_limit": SNAPSHOT_ELEMENTS_LIMIT,
+        "text_limit": SNAPSHOT_TEXT_LIMIT,
+    }

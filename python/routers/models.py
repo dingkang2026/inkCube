@@ -1,9 +1,17 @@
+import logging
+import os
+import threading
+
 from fastapi import APIRouter, HTTPException
 
 import deps
 from knowledge.model_manager import MODELS
 
 router = APIRouter()
+
+# bge-m3 预热线程句柄：窗口整页刷新会重复触发 POST /models/preload，
+# 线程存活时直接跳过（幂等；加载本体另有 vector_store 单例双检锁兜底）
+_preload_thread: threading.Thread | None = None
 
 
 def get_manager():
@@ -13,6 +21,35 @@ def get_manager():
 @router.get("/models/status")
 async def models_status():
     return get_manager().check_status()
+
+
+@router.post("/models/preload")
+async def preload_embedding_model():
+    """预热 bge-m3 嵌入模型（Electron 主窗口首屏加载完成后触发）。
+
+    启动期即时加载会与渲染层模块装载争抢 CPU/磁盘，拖慢 dev 冷启动首屏
+    （2026-10-13 实测 DCL 84s），改为渲染层就绪后触发。首查询不依赖预热：
+    vector_store 单例懒加载（双检锁）保证正确性。模型未下载时跳过。
+    """
+    global _preload_thread
+    if _preload_thread is not None and _preload_thread.is_alive():
+        return {"ok": True, "message": "bge-m3 预加载进行中", "code": "PRELOAD_IN_PROGRESS"}
+    model_path = get_manager().get_model_path("bge-m3")
+    if not os.path.isdir(model_path):
+        return {"ok": False, "message": "bge-m3 模型未下载", "code": "MODEL_NOT_DOWNLOADED"}
+
+    from knowledge.vector_store import preload_bge_m3
+
+    def _run():
+        try:
+            preload_bge_m3(model_path)
+            logging.getLogger(__name__).info("bge-m3 model preloaded")
+        except Exception as e:
+            logging.getLogger(__name__).warning("bge-m3 preload failed: %s", e)
+
+    _preload_thread = threading.Thread(target=_run, daemon=True, name="bge-m3-preload")
+    _preload_thread.start()
+    return {"ok": True, "message": "开始预热 bge-m3", "code": "PRELOAD_STARTED"}
 
 
 @router.post("/models/{name}/download")

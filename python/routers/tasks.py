@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse, JSONResponse, Response
 import deps
 from readiness import ensure_ready
 from schemas import TaskCreateRequest, TaskChatRequest
+from paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,7 +31,6 @@ async def list_tasks(
 @router.post("/tasks")
 async def create_task(req: TaskCreateRequest):
     logger.info("Creating task: title=%s, mode=%s, workspace=%s", req.title, req.mode, req.workspace_path)
-    from main import get_data_dir
     data_dir = get_data_dir()
     # Check task count quota
     settings = deps.db.get_settings()
@@ -415,7 +415,6 @@ async def get_task_logs(task_id: str, lines: int = Query(200, ge=1, le=2000)):
     task = deps.db.get_task(task_id)
     if not task:
         return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
-    from main import get_data_dir
     log_dir = os.path.join(get_data_dir(), "tasks", task_id)
     log_path = os.path.join(log_dir, "execution.log")
     if not os.path.isfile(log_path):

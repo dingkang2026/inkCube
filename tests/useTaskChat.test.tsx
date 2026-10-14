@@ -14,6 +14,17 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
+// V2 §8.2：browser-fetch 实时 action 弹 Compact 面板——spy 捕获，避免污染全局 store
+const showCompactSpy = vi.hoisted(() => vi.fn())
+vi.mock('../src/features/browser/browserPanelStore', () => ({
+  browserPanelStore: {
+    showCompact: showCompactSpy,
+    navigate: vi.fn(),
+    expand: vi.fn(),
+    collapse: vi.fn(),
+    hide: vi.fn(),
+  },
+}))
 import { useTaskChat } from '../src/features/task/useTaskChat'
 
 type StreamHandler = (data: unknown) => void
@@ -47,6 +58,7 @@ const settle = async () => {
 beforeEach(() => {
   invoke.mockClear()
   invoke.mockResolvedValue({ messages: [] })
+  showCompactSpy.mockClear()
   wireWindow()
 })
 
@@ -113,6 +125,25 @@ describe('useTaskChat stream protocol', () => {
     await emit('done', {})
     const roles = result.current.messages.map((m) => m.role)
     expect(roles).toEqual(['action', 'observation'])
+  })
+
+  it('browser-fetch action pops the compact panel; other tools do not (V2 §8.2)', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    await emit('action', { tool: 'shell', input: {} })
+    expect(showCompactSpy).not.toHaveBeenCalled()
+
+    await emit('action', { tool: 'browser-fetch', input: { action: 'open', url: 'https://example.com' } })
+    expect(showCompactSpy).toHaveBeenCalledTimes(1)
+    // action 本身仍正常入流式步骤
+    expect(result.current.streamSteps[result.current.streamSteps.length - 1].tool).toBe('browser-fetch')
+
+    // skill_runner 备选路径（slash 调用）同样感知；无关 skill 不误弹
+    await emit('action', { tool: 'skill_runner', input: { skill: 'browser-fetch' } })
+    expect(showCompactSpy).toHaveBeenCalledTimes(2)
+    await emit('action', { tool: 'skill_runner', input: { skill: 'wiki-compiler' } })
+    expect(showCompactSpy).toHaveBeenCalledTimes(2)
   })
 })
 

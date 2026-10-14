@@ -1,7 +1,8 @@
 /** tests/TaskMessageList.test.tsx — browser-fetch 登录墙横幅（2.8 §8.3）
  *  覆盖：历史消息（action+observation 顺序配对）中 needs_login observation
  *  渲染登录横幅（iter 卡片默认收起，展开后可见）；点击「去登录」先幂等登记
- *  （登记失败不阻塞）再开登录窗口；正常 observation / 未完成步骤不渲染横幅。
+ *  （登记失败不阻塞）再导航内嵌 BrowserPanel（V2 §8.3）；
+ *  正常 observation / 未完成步骤不渲染横幅。
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
@@ -28,6 +29,18 @@ vi.mock('../src/features/task/TaskMessageList.module.css', () => ({
 
 vi.mock('../src/components/Markdown', () => ({
   Markdown: () => null,
+}))
+
+// V2 §8.3：去登录 = 导航内嵌 BrowserPanel（不再走 weblogin:open 独立窗口）
+const navSpy = vi.hoisted(() => vi.fn())
+vi.mock('../src/features/browser/browserPanelStore', () => ({
+  browserPanelStore: {
+    navigate: navSpy,
+    showCompact: vi.fn(),
+    expand: vi.fn(),
+    collapse: vi.fn(),
+    hide: vi.fn(),
+  },
 }))
 
 import { TaskMessageList, buildStreamGroups } from '../src/features/task/TaskMessageList'
@@ -72,6 +85,7 @@ const renderList = (messages: TaskMessage[], extra?: Partial<Parameters<typeof T
 beforeEach(() => {
   invokeMock.mockReset()
   invokeMock.mockImplementation(async () => ({}))
+  navSpy.mockClear()
   ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke: invokeMock }
 })
 
@@ -97,9 +111,9 @@ describe('TaskMessageList login-wall banner (2.8 §8.3)', () => {
     expect(screen.getByText('task.loginNow')).toBeTruthy()
   })
 
-  it('registers the domain best-effort, then opens the login window', async () => {
+  it('registers the domain best-effort, then navigates the embedded panel', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'weblogin:add') throw new Error('backend down') // 登记失败不阻塞开窗
+      if (channel === 'weblogin:add') throw new Error('backend down') // 登记失败不阻塞导航
       return {}
     })
     renderList([
@@ -112,8 +126,10 @@ describe('TaskMessageList login-wall banner (2.8 §8.3)', () => {
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith('weblogin:add', { domain: 'example.com' })
-      expect(invokeMock).toHaveBeenCalledWith('weblogin:open', { domain: 'example.com' })
+      expect(navSpy).toHaveBeenCalledWith('https://example.com')
     })
+    // V2：不再打开独立登录窗口
+    expect(invokeMock).not.toHaveBeenCalledWith('weblogin:open', expect.anything())
   })
 
   it('renders no banner for a normal observation', () => {

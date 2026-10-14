@@ -557,10 +557,11 @@
     "steps": "{{count}}步",
     "loginRequired": "抓取 {{domain}} 需要登录",
     "loginNow": "去登录",
-    "loginOpenFailed": "无法打开登录窗口：{{domain}}（内网地址不支持登录态管理）",
     "avPrompt": "代码执行与网页抓取环境需要一次系统授权（加入杀毒软件白名单），授权完成前依赖安装无法进行",
-    "avPrompt3p": "检测到第三方杀毒软件（{{name}}）：一键授权仅写入 Windows Defender 白名单，可能不覆盖该杀软——建议同时将 uv-cache 目录手动加入其信任区",
-    "avHint3p": "已跳过 Windows Defender（服务未运行）。检测到第三方杀毒软件（{{name}}）仍在运行——建议手动将以下目录加入其信任区（路径已复制到剪贴板）",
+    "av3pBanner": "检测到 {{name}}：请将以下目录加入其信任区（代码执行环境白名单）",
+    "avCopyPath": "复制路径",
+    "avCopied": "已复制",
+    "avAck": "我已处理",
     "avOptimize": "立即授权",
     "avWorking": "请在系统弹窗中确认…",
     "avFallback": "未能自动写入排除项。已打开 Windows 安全中心的排除项页，路径已复制到剪贴板，粘贴添加即可；若装有火绒，请在火绒「信任区」添加同一路径",
@@ -806,8 +807,15 @@
     "relogin": "重新登录",
     "remove": "移除",
     "empty": "暂无已登记站点",
-    "confirmRemove": "确认移除 {{domain}} 的登录态？将清除本机保存的该站点 Cookie。",
-    "openFailed": "打开登录窗口失败：{{domain}}（内网地址不支持登录态管理）"
+    "confirmRemove": "确认移除 {{domain}} 的登录态？将清除本机保存的该站点 Cookie。"
+  },
+  "browserPanel": {
+    "title": "浏览器",
+    "driving": "AI 驱动中",
+    "expand": "展开",
+    "collapse": "收起",
+    "hide": "隐藏",
+    "crashReload": "页面崩溃，已自动重载"
   },
   "baseLib": {
     "title": "基础库",

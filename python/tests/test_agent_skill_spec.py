@@ -445,27 +445,28 @@ class TestGuideBudget:
 class TestSkillEnvSetupVisibility:
     """task_agent 首用环境可见性纯函数（2.8 §5.5 step_note 事件）。
 
-    预检（_skill_env_needs_setup）决定是否向流推「正在准备运行环境」
-    提示；终态（_skill_env_setup_failed）决定收尾文案语义——业务失败
-    （exit_code≠0）不算环境失败，retryable 预装失败才算。
+    预检（_venv_env_needs_setup，tool 链与 skill 链共用）决定是否向流推
+    「正在准备运行环境」提示；终态（_skill_env_setup_failed，skill 链专属）
+    决定收尾文案语义——业务失败（exit_code≠0）不算环境失败，retryable
+    预装失败才算。
     """
 
     def test_needs_setup_false_when_no_venv(self):
         """venv_path 空（chat-only 任务）不会发生预装，不推 note。"""
-        from agent.task_agent import _skill_env_needs_setup
+        from agent.task_agent import _venv_env_needs_setup
 
-        assert _skill_env_needs_setup("") is False
+        assert _venv_env_needs_setup("") is False
 
     def test_needs_setup_true_when_venv_dir_missing(self, tmp_path: Path):
         """venv 目录不存在（首用）→ 预检为真 → 应推 note。"""
-        from agent.task_agent import _skill_env_needs_setup
+        from agent.task_agent import _venv_env_needs_setup
 
         venv_path = str(tmp_path / "venv")
-        assert _skill_env_needs_setup(venv_path) is True
+        assert _venv_env_needs_setup(venv_path) is True
 
     def test_needs_setup_false_when_ready(self, tmp_path: Path):
         """venv python + marker 均在位（快路径）→ 不推 note。"""
-        from agent.task_agent import _skill_env_needs_setup
+        from agent.task_agent import _venv_env_needs_setup
         from tools.venv_manager import get_venv_python, _PREINSTALL_MARKER
 
         venv_dir = tmp_path / "venv"
@@ -474,18 +475,18 @@ class TestSkillEnvSetupVisibility:
         py.parent.mkdir(parents=True, exist_ok=True)
         py.write_text("", encoding="utf-8")
         (venv_dir / _PREINSTALL_MARKER).write_text("", encoding="utf-8")
-        assert _skill_env_needs_setup(str(venv_dir)) is False
+        assert _venv_env_needs_setup(str(venv_dir)) is False
 
     def test_needs_setup_true_when_marker_missing_but_python_exists(self, tmp_path: Path):
         """python 在位但 marker 缺失（预装中断/被删）→ 仍要补装 → 推 note。"""
-        from agent.task_agent import _skill_env_needs_setup
+        from agent.task_agent import _venv_env_needs_setup
         from tools.venv_manager import get_venv_python
 
         venv_dir = tmp_path / "venv"
         py = Path(get_venv_python(str(venv_dir)))
         py.parent.mkdir(parents=True, exist_ok=True)
         py.write_text("", encoding="utf-8")
-        assert _skill_env_needs_setup(str(venv_dir)) is True
+        assert _venv_env_needs_setup(str(venv_dir)) is True
 
     def test_setup_failed_when_venv_python_empty(self):
         """_ensure_task_venv 失败回退空串 → 环境未就绪。"""
@@ -510,3 +511,62 @@ class TestSkillEnvSetupVisibility:
         from agent.task_agent import _skill_env_setup_failed
 
         assert _skill_env_setup_failed("py", "plain text") is False
+
+
+class TestTaskIdInjection:
+    """2.8 §3.3/§7.1：_run_script 注入 INKCUBE_TASK_ID（租约锁 owner）。
+
+    注入发生在 spawn env 层（一处改动全 skill 受益）：有 task_id 才注入，
+    空值保持环境干净——锁 owner 判定不会误把无主执行记到某个 task 名下。
+    """
+
+    @staticmethod
+    def _fake_exec(captured: dict):
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return (b'{"output": "ok"}', b"")
+
+        async def fake_exec(*cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return FakeProc()
+
+        return fake_exec
+
+    def test_task_id_injected_into_spawn_env(self, mini_skill: Path, monkeypatch):
+        import skills.loader as loader_mod
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            loader_mod.asyncio, "create_subprocess_exec", self._fake_exec(captured)
+        )
+        ctx = SkillContext(
+            workspace_path=os.getcwd(),
+            venv_python=sys.executable,
+            task_id="task-abc",
+            settings={},
+        )
+        result = json.loads(
+            _run(_adapter(mini_skill).execute({"command": "hello"}, ctx))
+        )
+
+        assert result["output"] == "ok"  # FakeProc stdout 被正常解析
+        assert captured["env"]["INKCUBE_TASK_ID"] == "task-abc"
+
+    def test_empty_task_id_not_injected(self, mini_skill: Path, monkeypatch):
+        import skills.loader as loader_mod
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            loader_mod.asyncio, "create_subprocess_exec", self._fake_exec(captured)
+        )
+        ctx = SkillContext(
+            workspace_path=os.getcwd(),
+            venv_python=sys.executable,
+            task_id="",
+            settings={},
+        )
+        json.loads(_run(_adapter(mini_skill).execute({"command": "hello"}, ctx)))
+
+        assert "INKCUBE_TASK_ID" not in captured["env"]

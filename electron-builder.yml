@@ -1,5 +1,7 @@
 appId: com.inkcube.app
-productName: 墨方 InkCube
+# 纯 ASCII：productName 决定 exe/安装包/安装目录/打包版 userData 路径，
+# 中文会在脚本、日志、第三方工具链上引发编码问题（用户要求目录不含中文）
+productName: InkCube
 
 directories:
   output: dist

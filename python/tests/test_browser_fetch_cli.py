@@ -1,145 +1,164 @@
-# -*- coding: utf-8 -*-
-"""browser-fetch CLI 入口参数契约预检测试（2.8 §5.2）。
+"""test_browser_fetch_cli.py — V2 action CLI 契约（2.8 §5.2）。
 
-回归背景：弱模型把自然语言需求直译成 command="open pricing"，argparse
-对必填位置参数只打英文 usage 后 exit 2，无法引导 LLM 自纠——模型误判
-「工具不支持打开网址」后放弃（2026-10-11 app.log 实证）。预检以中文
-JSON 错误 + 正确示例替代，stdout 单行 JSON 契约不变，LLM 可下轮自纠。
+纯解析/预检层测试（不触网、不连 CDP）；CDP 交互由 Task 8 手动验收覆盖。
 
-模块加载：main.py 位于 skill 安装源（非包），与 test_browser_fetch_core
-同样用 importlib 直载；先注册 _fetch_core 再载 main（顶部 import 依赖）。
+加载注意：main.py 必须以别名模块名加载（spec_from_file_location），
+绝不能 import_module("main")——会污染 sys.modules["main"]，令同轮次
+字母序靠后的 test_security_p0 的 `import main`（FastAPI 后端）拿到
+CLI main 而确定性失败（2026-10-13 review 实证）。
 """
-import asyncio
 import importlib.util
-import json
 import sys
 from pathlib import Path
 
 import pytest
 
-_SCRIPTS_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "resources" / "skills" / "browser-fetch" / "scripts"
-)
-
-_core_spec = importlib.util.spec_from_file_location(
-    "_fetch_core", str(_SCRIPTS_DIR / "_fetch_core.py"))
-_core_mod = importlib.util.module_from_spec(_core_spec)
-sys.modules.setdefault("_fetch_core", _core_mod)
-_core_spec.loader.exec_module(_core_mod)
-
-_main_spec = importlib.util.spec_from_file_location(
-    "browser_fetch_main_test", str(_SCRIPTS_DIR / "main.py"))
-main = importlib.util.module_from_spec(_main_spec)
-sys.modules.setdefault("browser_fetch_main_test", main)
+# main.py 模块级 import _actions；playwright 缺失时 emit+sys.exit(0)
+# 会打断 pytest 收集——缺失环境整文件 skip（与 V1 防线同语义）
 try:
-    _main_spec.loader.exec_module(main)
-except SystemExit:
-    # 模块级 playwright ImportError 分支（emit retryable + exit 0）是设计
-    # 行为：无 playwright 的环境下本文件没有可测对象
-    pytest.skip("playwright 未安装，main.py 未完成加载", allow_module_level=True)
+    import playwright  # noqa: F401
+except ImportError:
+    pytest.skip("playwright 不可用：CLI 无法加载", allow_module_level=True)
+
+SCRIPTS = Path(__file__).resolve().parents[2] / "resources" / "skills" / "browser-fetch" / "scripts"
+sys.path.insert(0, str(SCRIPTS))   # main.py 顶部 import _fetch_core/_actions 需要
+_spec = importlib.util.spec_from_file_location("browser_fetch_main", str(SCRIPTS / "main.py"))
+main = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(main)     # 别名加载：sys.modules["main"] 不被污染
 
 
-def _exit_with_json(argv, capsys):
-    """parse_args 预检路径：断言 exit 0 且 stdout 是单行 JSON，返回之。"""
-    with pytest.raises(SystemExit) as ei:
-        main.parse_args(argv)
-    assert ei.value.code == 0
-    out = capsys.readouterr().out.strip()
-    assert "\n" not in out  # stdout 单行 JSON 契约
-    return json.loads(out)
+@pytest.fixture
+def mock_exec(monkeypatch):
+    """预检通过的用例打桩执行层（run_action），避免触网。"""
+    seen: dict = {}
+
+    async def fake_run(action, opts):
+        seen.update({"action": action, "opts": opts})
+        return {"action": action, "ok": True}
+
+    monkeypatch.setattr(main, "run_action", fake_run)
+    return seen
 
 
-class TestArgContractPreflight:
-    def test_missing_url_returns_usage_and_example(self, capsys):
-        """argv 为空 → 缺 URL 错误 + 用法契约 + 正确示例（LLM 可自纠）。"""
-        result = _exit_with_json([], capsys)
-        assert "URL" in result["error"]
-        assert result["usage"].startswith("browser-fetch <url>")
-        assert result["example"].startswith('browser-fetch "https://')
-
-    def test_natural_language_first_arg_rejected(self, capsys):
-        """实测失败模式 ["open", "pricing"]：首个位置参数非 URL → 指名道姓。"""
-        result = _exit_with_json(["open", "pricing"], capsys)
-        assert '"open"' in result["error"]          # 指出收到的错误值
-        assert "http" in result["error"]            # 给出形态要求
-        assert "https://" in result["example"]      # 给出正确示例
-
-    def test_unrecognized_extra_rejected(self, capsys):
-        """合法 URL 后跟未知参数 → 列出多余参数（替代 argparse 英文报错）。"""
-        result = _exit_with_json(["https://example.com/", "--bogus", "x"], capsys)
-        assert "无法识别的参数" in result["error"]
-        assert "--bogus" in result["error"]
-
-    def test_option_values_not_mistaken_as_positional(self, capsys):
-        """--selector 的值不以 - 开头，不得误判为位置参数/多余参数。"""
-        args = main.parse_args(
-            ["https://example.com/a", "--selector", "main.content"])
-        assert args.url == "https://example.com/a"
-        assert args.selector == "main.content"
-
-    def test_valid_url_passes_through(self):
-        """合法 URL 直通（返回 Namespace，不退出、不产出 stdout）。"""
-        args = main.parse_args(["https://example.com/pricing"])
-        assert args.url == "https://example.com/pricing"
-        assert args.selector is None
-        assert args.wait_for is None
-        assert args.timeout == 20
-        assert args.save_to is None
+def run(argv):
+    """跑 main.dispatch_argv，捕获 emit，返回 (exit_code, 最后一个 JSON 对象)。"""
+    calls: list = []
+    orig_emit = main.emit
+    main.emit = lambda obj: calls.append(obj)
+    try:
+        code = main.dispatch_argv(argv)
+    finally:
+        main.emit = orig_emit
+    return code, (calls[-1] if calls else {})
 
 
-# ── find_pool_page 匹配锚点回归（2026-10-12：title 锚点被首次抓取污染）──
+class TestV2Contract:
+    def test_seven_actions_defined(self):
+        assert set(main.ACTIONS) == {"open", "click", "type", "select", "scroll", "extract", "close"}
+
+    def test_no_args_returns_v2_usage(self):
+        _code, obj = run([])
+        assert obj["error"] and "usage" in obj and "open" in obj["usage"]
+
+    def test_old_single_command_syntax_teaches_v2(self):
+        _code, obj = run(["https://example.com"])
+        assert "action" in obj["error"] or "V2" in obj["error"]
+        assert "example" in obj
+
+    def test_unknown_action(self):
+        _code, obj = run(["navigate", "https://example.com"])
+        assert "usage" in obj
+
+    def test_open_missing_url(self):
+        _code, obj = run(["open"])
+        assert "URL" in obj["error"]
+
+    def test_open_bad_scheme_precheck(self):
+        # 形似性预检拒绝非 http(s)（SSRF 全量校验仍在执行层）
+        _code, obj = run(["open", "ftp://example.com"])
+        assert obj["error"]
+
+    def test_click_requires_text_or_selector(self):
+        _code, obj = run(["click"])
+        assert "--text" in obj["usage"] and "error" in obj
+
+    def test_type_requires_selector_and_text_source(self):
+        _code, obj = run(["type", "--selector", "#q"])
+        assert obj["error"]            # 缺文本来源
+        _code, obj = run(["type", "--text", "hi"])
+        assert obj["error"]            # 缺 --selector
+
+    def test_type_text_and_text_file_mutually_exclusive(self):
+        _code, obj = run(["type", "--selector", "#q", "--text", "a", "--text-file", "b.txt"])
+        assert obj["error"]
+
+    def test_select_requires_value(self):
+        _code, obj = run(["select", "--selector", "#s"])
+        assert obj["error"]
+
+    def test_scroll_direction_validated(self, mock_exec):
+        _code, obj = run(["scroll", "--direction", "left"])
+        assert obj["error"]
+        _code, obj = run(["scroll"])
+        assert obj.get("error") is None and mock_exec["action"] == "scroll"
+        assert mock_exec["opts"]["direction"] == "down"   # 默认值写入契约层
+
+    def test_extract_optional_selector(self, mock_exec):
+        _code, obj = run(["extract", "--save-to", "out.md"])
+        assert obj.get("error") is None and mock_exec["action"] == "extract"
+
+    def test_close_no_args(self, mock_exec):
+        _code, obj = run(["close"])
+        assert obj.get("error") is None and mock_exec["action"] == "close"
+
+    def test_open_unrecognized_flag_rejected(self):
+        # open 不支持 --selector（V1 残留参数显式拒绝，教 V2 契约）
+        _code, obj = run(["open", "https://example.com", "--selector", "#a"])
+        assert obj["error"]
+
+    def test_open_opts_normalized(self, mock_exec):
+        _code, obj = run(["open", "https://example.com", "--wait-for", ".a", "--timeout", "30"])
+        assert mock_exec["opts"] == {"url": "https://example.com", "wait_for": ".a", "timeout": "30"}
+
+    def test_type_submit_flag(self, mock_exec):
+        _code, obj = run(["type", "--selector", "#q", "--text", "x", "--submit"])
+        assert mock_exec["opts"]["submit"] is True
 
 
-class _MockPage:
-    """最小 page 桩：只实现 find_pool_page 用到的 evaluate。"""
+class TestReadTypeText:
+    """--text-file 工作区包含性校验（2026-10-13 review：绝对路径/.. 穿越拒）。
 
-    def __init__(self, evaluate_result=None, raise_exc=None, name="page"):
-        self._result = evaluate_result
-        self._exc = raise_exc
-        self.name = name
+    纯文件系统逻辑，零网络依赖；真实回归由 Task 8 手动验收覆盖。
+    """
 
-    async def evaluate(self, _js):
-        if self._exc:
-            raise self._exc
-        return self._result
+    @staticmethod
+    def _read(opts: dict):
+        import _actions
+        import asyncio
+        return asyncio.run(_actions._read_type_text(opts))
 
+    def test_text_channel_takes_priority(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert self._read({"text": "inline", "text_file": "a.txt"}) == "inline"
 
-class _MockContext:
-    def __init__(self, pages):
-        self.pages = pages
+    def test_relative_path_within_workspace(self, tmp_path, monkeypatch):
+        (tmp_path / "note.txt").write_text("内容", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert self._read({"text_file": "note.txt"}) == "内容"
 
+    def test_dotdot_escape_rejected(self, tmp_path, monkeypatch):
+        outside = tmp_path.parent / "secret.txt"
+        outside.write_text("x", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match="工作区内"):
+            self._read({"text_file": "../secret.txt"})
 
-class _MockBrowser:
-    def __init__(self, contexts):
-        self.contexts = contexts
+    def test_absolute_path_outside_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError, match="工作区内"):
+            self._read({"text_file": str(tmp_path.parent / "win.ini")})
 
-
-class TestFindPoolPage:
-    """同步包装 asyncio.run（项目无 pytest-asyncio 配置，与现有同步用例一致）。"""
-
-    def test_mark_hit_across_contexts(self):
-        """主窗口（无标记）与池窗口（有标记）分属不同 context，仍能命中。"""
-        main_win = _MockPage(evaluate_result=False, name="main")
-        pool = _MockPage(evaluate_result=True, name="pool")
-        browser = _MockBrowser([_MockContext([main_win]), _MockContext([pool])])
-
-        assert asyncio.run(main.find_pool_page(browser)) is pool
-
-    def test_raising_page_skipped_not_fatal(self):
-        """evaluate 抛异常的 page 跳过，不阻断后续 page 的标记命中。"""
-        broken = _MockPage(raise_exc=RuntimeError("target closed"))
-        pool = _MockPage(evaluate_result=True, name="pool")
-        browser = _MockBrowser([_MockContext([broken, pool])])
-
-        assert asyncio.run(main.find_pool_page(browser)) is pool
-
-    def test_no_mark_returns_none(self):
-        """全部 page 无标记（旧窗口无 preload / 未启动）→ None。"""
-        browser = _MockBrowser([_MockContext([_MockPage(evaluate_result=False)])])
-
-        assert asyncio.run(main.find_pool_page(browser)) is None
-
-    def test_mark_js_is_pure_read_expression(self):
-        """锚点表达式精确锁定：纯读取（无副作用），可对任意页面安全执行。"""
-        assert _core_mod.POOL_MARK_JS == "() => window.__INKCUBE_POOL__ === true"
+    def test_missing_file_reports_relative_hint(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(FileNotFoundError, match="相对任务工作区"):
+            self._read({"text_file": "nope.txt"})

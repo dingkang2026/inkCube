@@ -77,3 +77,29 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* 第三方条（F8）：等宽路径文本（可选中，复制按钮失败时的手动兜底） */
+.path {
+  display: block;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary, #9ca3af);
+  word-break: break-all;
+  user-select: text;
+  margin-top: 2px;
+}
+
+/* 条右上角 ×（仅本条会话隐藏） */
+.btnClose {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+}
+
+.btnClose:hover {
+  color: var(--text-primary, inherit);
+}
