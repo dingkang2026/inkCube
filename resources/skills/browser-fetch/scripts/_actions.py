@@ -64,6 +64,7 @@ async def _snapshot(page, action: str, orig_url: str, status: int | None) -> dic
         "title": title,
         "page": {"text": snap["text"], "truncated": snap["truncated"]},
         "elements": snap["elements"],
+        "remaining": snap.get("remaining", 0),
         "needs_login": False,
     }
 

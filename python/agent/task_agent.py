@@ -446,6 +446,7 @@ class TaskAgent:
             self._get_tools_description(mode),
             "",
             f"工作目录: {workspace_path}",
+            "运行环境: 任务代码在用户本机的桌面会话中执行，GUI 程序的窗口会直接显示在用户屏幕上。",
             "所有文件操作的路径都是相对于工作目录的。",
         ]
         if mode == "coding":
@@ -592,7 +593,7 @@ class TaskAgent:
             logger.warning("Lazy venv creation failed (%s): %s", venv_path, e)
             return ""
 
-    def _create_task_tools(self, workspace_path: str, venv_path: str = "", settings: dict | None = None, mode: str = "coding") -> dict:
+    def _create_task_tools(self, workspace_path: str, venv_path: str = "", settings: dict | None = None, mode: str = "coding", task_id: str = "") -> dict:
         """Create independent tool instances for a single task.
         
         Each concurrent task gets its own tools to avoid workspace/venv conflicts.
@@ -616,9 +617,12 @@ class TaskAgent:
         # Repo-map tool: per-task workspace-aware instance
         repo_map = RepoMapTool(workspace_dir=workspace_path)
 
-        # Skill runner: per-task instance with DB reference
+        # Skill runner: per-task instance with DB reference；task_id 供 SkillContext
+        # → loader 注入 INKCUBE_TASK_ID → 租约锁同 task 重入判据（2.8 §3.3，缺则
+        # 进程异常退出后 60s 内同任务全部被拒）
         skill_runner = SkillRunnerTool(db=self.db)
         skill_runner.task_workspace_path = workspace_path
+        skill_runner.task_id = task_id
 
         # Git ops: per-task workspace-aware instance
         git_ops = GitOpsTool()
@@ -1148,7 +1152,7 @@ class TaskAgent:
         venv_path = task.get("venv_path", "")
         task_mode = task.get("mode", "coding") or "coding"
         # Create per-task tool instances to avoid workspace/venv conflicts in concurrent mode
-        tools = self._create_task_tools(workspace_path, venv_path, settings, mode=task_mode)
+        tools = self._create_task_tools(workspace_path, venv_path, settings, mode=task_mode, task_id=task_id)
         # Apply task-specific timeout to shell and code_executor
         if "shell" in tools:
             tools["shell"].timeout = task_timeout

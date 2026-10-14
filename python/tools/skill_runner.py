@@ -44,6 +44,7 @@ class SkillRunnerTool(BaseTool):
         self._skill_cache: list[dict] = []
         self.task_venv_python: str = ""  # task venv python for Agent Skills
         self.task_workspace_path: str = ""  # task workspace for subprocess cwd
+        self.task_id: str = ""  # task identity for SkillContext (INKCUBE_TASK_ID 注入链)
 
     def configure(self, db):
         """Set the database reference for skill discovery."""
@@ -133,10 +134,12 @@ class SkillRunnerTool(BaseTool):
             adapter = AgentSkillAdapter(install_path, parsed, skill_info)
 
             # Use task venv python (Agent Skills share the task's environment)
+            # task_id 必须透传：loader 依它注入 INKCUBE_TASK_ID（租约锁身份，2.8 §3.3）
             venv_python = self.task_venv_python
             ctx = SkillContext(
                 workspace_path=self.task_workspace_path,
                 venv_python=venv_python,
+                task_id=self.task_id,
                 settings={},
             )
             return await adapter.execute(input_params, ctx)
