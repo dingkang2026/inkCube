@@ -85,6 +85,13 @@ export function computeMatches(content: string, query: string): number[] {
   return out
 }
 
+/** 工作区图片扩展名 → MIME（与 tasks.py image_exts 同构；b64 端点响应不含 mime 字段，
+ * SVG 必须标 image/svg+xml 才走 SVGImage 解码路径，否则静默破图） */
+const EXT_MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  svg: 'image/svg+xml', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon',
+}
+
 export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: FilePreviewProps) {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(true)
@@ -137,10 +144,12 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
   }
 
   // 相对路径图片 → 工作区绝对路径 → b64 通道拉取 → data: URI（ResolveImage 契约三态）
+  // 越界判定不在本地做（review 2026-10-21）：../ 越出 md 目录/根相对 / 的「工作区根」语义前端
+  // 不可得，统一按 md 目录基座归一后交服务端裁决（端点前缀校验为真边界），越界/缺失 → 失败占位可诊断。
   const resolveTaskImage = useCallback((src: string): string | undefined | null => {
     if (!absPath) return null // md 路径未知（加载中）：落回 SafeImage 原判定，加载完成后重渲染接管
     if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) return null // 带 scheme：原判定
-    // 裸相对 / ./ / ../ 相对路径 → 相对 md 所在目录归一化
+    // 裸相对 / ./ / ../ 相对路径 → 相对 md 所在目录归一化（前导 / 的空段被跳过，语义退化为 md 目录相对）
     const baseDir = absPath.replace(/\\/g, '/').split('/').slice(0, -1)
     const segs = [...baseDir]
     for (const part of src.split(/[?#]/)[0].replace(/\\/g, '/').split('/')) {
@@ -148,9 +157,8 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
       if (part === '..') { segs.pop(); continue }
       segs.push(part)
     }
-    // 归一化后未落在 md 目录之内（../ 越出）：不接管
-    if (segs.length <= baseDir.length) return null
     const abs = segs.map((seg) => { try { return decodeURIComponent(seg) } catch { return seg } }).join('/')
+    if (!abs) return null // 退化路径（../ pop 至盘符根）：交回原判定
     const hit = workspaceImagesRef.current[abs]
     if (hit) return hit
     if (pendingImagesRef.current.has(abs)) return undefined // 加载中/已失败：占位（防重试风暴）
@@ -160,13 +168,18 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
     void (async () => {
       try {
         const res = await window.electronAPI.invoke('tasks:readFile', { taskId, path: abs, b64: true }) as {
-          type?: string; data?: string; mime?: string; error?: string
+          type?: string; data?: string; error?: string
         }
         if (!res.error && res.type === 'file' && res.data) {
-          setWorkspaceImages((prev) => ({ ...prev, [abs]: `data:${res.mime || 'image/png'};base64,${res.data}` }))
+          const mime = EXT_MIME[abs.split('.').pop()?.toLowerCase() || ''] || 'application/octet-stream'
+          setWorkspaceImages((prev) => ({ ...prev, [abs]: `data:${mime};base64,${res.data}` }))
+        } else {
+          // 失败保持占位（pendingImagesRef 已拦截重复请求）：留痕供诊断（原始 src + 归一化路径 + 原因）
+          console.warn('md image resolve failed:', src, '→', abs, res.error || res)
         }
-        // 失败保持占位（pendingImagesRef 已拦截重复请求）
-      } catch { /* 通道异常同上：保持占位 */ }
+      } catch (err) {
+        console.warn('md image resolve failed:', src, '→', abs, err)
+      }
     })()
     return undefined
   }, [absPath, taskId])

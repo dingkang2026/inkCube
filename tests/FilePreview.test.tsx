@@ -145,15 +145,42 @@ describe('FilePreview md 工作区图片（resolveImage + tasks:readFile b64 通
   it('relative md image is fetched via b64 channel and rendered as data URI', async () => {
     const invoke = vi.fn().mockImplementation(async (channel: string, payload?: { path?: string; b64?: boolean }) => {
       if (channel === 'tasks:readFile' && payload?.b64) {
-        // 相对 md 所在目录归一化后的工作区绝对路径
+        // 相对 md 所在目录归一化后的工作区绝对路径；响应为端点真实形状（无 mime 字段）
         expect(payload.path).toBe('D:/ws/imgs/p6-000.png')
-        return { type: 'file', data: 'QUJD', mime: 'image/png', size: 3 }
+        return { type: 'file', data: 'QUJD', size: 3 }
       }
       return MD_IMG_RES
     })
     const { findByTestId } = mountFile(invoke, 'doc.md')
     const img = await findByTestId('md-img')
+    // mime 由扩展名推导（端点不返回 mime）：p6-000.png → image/png
     expect((img as HTMLImageElement).getAttribute('src')).toBe('data:image/png;base64,QUJD')
+  })
+
+  it('svg extension maps to image/svg+xml (否则 SVGImage 解码路径不走，静默破图)', async () => {
+    const invoke = vi.fn().mockImplementation(async (channel: string, payload?: { b64?: boolean }) => {
+      if (channel === 'tasks:readFile' && payload?.b64) {
+        return { type: 'file', data: 'PDNI', size: 3 }
+      }
+      return { type: 'text', content: '![d](assets/arch.svg)', ext: 'md', abs_path: 'D:\\ws\\doc.md' }
+    })
+    const { findByTestId } = mountFile(invoke, 'doc.md')
+    const img = await findByTestId('md-img')
+    expect((img as HTMLImageElement).getAttribute('src')).toBe('data:image/svg+xml;base64,PDNI')
+  })
+
+  it('parent-relative refs (../x.png from subdirectory md) resolve via b64 channel too', async () => {
+    // review 修复回归：深度守卫曾误拒合法 ../ 引用致落回破图；现在统一交服务端裁决
+    const invoke = vi.fn().mockImplementation(async (channel: string, payload?: { path?: string; b64?: boolean }) => {
+      if (channel === 'tasks:readFile' && payload?.b64) {
+        expect(payload.path).toBe('D:/ws/x.png') // md 在 D:/ws/report/ 下，../x.png → D:/ws/x.png
+        return { type: 'file', data: 'QQ==', size: 1 }
+      }
+      return { type: 'text', content: '![up](../x.png)', ext: 'md', abs_path: 'D:\\ws\\report\\doc.md' }
+    })
+    const { findByTestId } = mountFile(invoke, 'doc.md')
+    const img = await findByTestId('md-img')
+    expect((img as HTMLImageElement).getAttribute('src')).toBe('data:image/png;base64,QQ==')
   })
 
   it('failed fetch keeps neutral placeholder instead of broken img (no retry storm)', async () => {
