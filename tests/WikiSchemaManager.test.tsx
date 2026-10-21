@@ -1,4 +1,6 @@
-/** tests/WikiSchemaManager.test.tsx — Schema 管理台账页开关(3.0 四期 T10:checkbox/回填/透传) */
+/** tests/WikiSchemaManager.test.tsx — Schema 管理
+ *
+ *  台账页开关(3.0 四期 T10:checkbox/回填/透传)。 */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('react-i18next', () => ({
@@ -40,6 +42,10 @@ const renderView = async () => {
   return r
 }
 
+const rowEditBtns = (container: HTMLElement) =>
+  ([...container.querySelectorAll('button[class*="editBtn"]')] as HTMLButtonElement[])
+    .filter((b) => b.textContent === 'project.wiki.edit')
+
 describe('WikiSchemaManager is_ledger switch (3.0 四期 T10)', () => {
   it('shows ledger badge only on is_ledger rows', async () => {
     const { container } = await renderView()
@@ -71,7 +77,7 @@ describe('WikiSchemaManager is_ledger switch (3.0 四期 T10)', () => {
   it('edit backfills checkbox from row and passes isLedger on save', async () => {
     const { getByText, container } = await renderView()
     // 第一行(里程碑台账,is_ledger=1)的编辑按钮
-    const editBtns = [...container.querySelectorAll('button')].filter((b) => b.textContent === 'project.wiki.edit')
+    const editBtns = rowEditBtns(container)
     expect(editBtns.length).toBe(2)
     fireEvent.click(editBtns[0])
     const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement

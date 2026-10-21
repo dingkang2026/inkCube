@@ -80,7 +80,7 @@ def test_add_idempotent_keeps_user_note(patched):
     assert second["login"]["inserted"] is False
     assert second["login"]["note"] == "工作账号"  # 保留原值
 
-    rows = asyncio.run(wl_router.list_web_logins())["logins"]
+    rows = asyncio.run(wl_router.list_web_logins(limit=0, offset=0))["logins"]
     assert len(rows) == 1
     assert rows[0]["domain"] == "example.com"
     assert set(rows[0].keys()) == {"domain", "note", "created_at"}
@@ -90,7 +90,7 @@ def test_add_invalid_domain_rejected(patched):
     for bad in ("localhost", "myserver.local", "192.168.1.1", "2130706433", "127.1", "   ", ""):
         resp = _add(bad)
         assert "error" in resp, repr(bad)
-    assert asyncio.run(wl_router.list_web_logins())["logins"] == []
+    assert asyncio.run(wl_router.list_web_logins(limit=0, offset=0))["logins"] == []
 
 
 def test_delete_existing_and_case_normalized(patched):
@@ -99,7 +99,7 @@ def test_delete_existing_and_case_normalized(patched):
     assert asyncio.run(wl_router.delete_web_login("mixed.com")) == {
         "error": "站点不存在", "code": "SITE_NOT_FOUND",
     }
-    assert asyncio.run(wl_router.list_web_logins())["logins"] == []
+    assert asyncio.run(wl_router.list_web_logins(limit=0, offset=0))["logins"] == []
 
 
 def test_builtin_skill_delete_rejected(patched):

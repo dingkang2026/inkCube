@@ -6,7 +6,9 @@
  *  thought 推进计数导致思考与工具分属两卡（错位一代）。
  */
 import { describe, it, expect } from 'vitest'
-import { buildStreamGroups, buildHistoryItems } from '../src/features/task/TaskMessageList'
+import { buildStreamGroups } from '../src/features/task/TaskMessageList'
+// buildHistoryItems 随历史回放渲染资产迁至 TaskHistoryReplay(共享出口)
+import { buildHistoryItems } from '../src/features/task/TaskHistoryReplay'
 import type { StreamStep, TaskMessage } from '../src/types'
 
 const makeStep = (iteration: number, output?: string): StreamStep => ({

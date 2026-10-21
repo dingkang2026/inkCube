@@ -1,0 +1,88 @@
+/* 任务轮次用量下钻面板（2.10 §6.3）：accordion 文档流展开——meta 行内块级
+   自然撑开卡片（TaskItem .item 无 overflow 裁剪），不做弹层。 */
+.panel {
+  margin-top: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.noteError {
+  color: var(--error);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.idx {
+  min-width: 22px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tokens {
+  font-variant-numeric: tabular-nums;
+}
+
+.calls {
+  color: var(--text-muted);
+}
+
+.models {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.totalRow {
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.totalRow .idx,
+.totalRow .calls {
+  color: var(--text-secondary);
+}
+
+/* ── Load more（0.1dev-guide 列表分页统一约定）── */
+.loadMoreBtn {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.loadMoreBtn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

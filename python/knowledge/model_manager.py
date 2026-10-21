@@ -184,6 +184,51 @@ class ModelManager:
     def get_model_path(self, name: str) -> str:
         return os.path.join(self.models_dir, self._get_dir_name(name))
 
+    def is_downloading(self, name: str) -> bool:
+        with self._lock:
+            return bool(self._downloads.get(name, {}).get("downloading"))
+
+    def delete_model(self, name: str) -> dict:
+        """删除单个已下载模型（2026-10-20 删除功能审计补齐）。
+
+        此前模型只有数据管理面板的全局清理（连带 RAG 必需的 bge-m3），
+        无法按需释放单个模型空间。收口三层状态：磁盘目录 + 下载登记行
+        （model_downloads，仅服务崩溃恢复扫描）+ 内存下载态残留。
+        下载判定以文件系统 _verify 为准，删除后 UI 状态自然回退未下载。
+        """
+        if name not in MODELS:
+            return {"ok": False, "code": "MODEL_NOT_FOUND",
+                    "message": f"Unknown model: {name}"}
+        if MODELS[name].get("install_type") == "bundled":
+            return {"ok": False, "code": "MODEL_BUNDLED",
+                    "message": "随应用分发的资源，不可删除"}
+        if self.is_downloading(name):
+            return {"ok": False, "code": "MODEL_DOWNLOAD_IN_PROGRESS",
+                    "message": "模型正在下载中，请等待完成后再删除"}
+        model_path = os.path.join(self.models_dir, self._get_dir_name(name))
+        size = 0
+        try:
+            if os.path.isdir(model_path):
+                size = self._dir_size(model_path)
+                shutil.rmtree(model_path, ignore_errors=False)
+                logger.info("Deleted model %s (%d bytes) at %s",
+                            name, size, model_path)
+        except (PermissionError, OSError) as e:
+            logger.warning("Failed to delete model %s: %s", name, e)
+            return {"ok": False, "code": "MODEL_DELETE_FAILED",
+                    "message": str(e)}
+        if self._db is not None:
+            try:
+                self._db.conn.execute(
+                    "DELETE FROM model_downloads WHERE name = ?", (name,))
+                self._db.conn.commit()
+            except Exception:
+                logger.warning("Failed to clear model_downloads row: %s",
+                               name, exc_info=True)
+        with self._lock:
+            self._downloads.pop(name, None)
+        return {"ok": True, "cleaned_bytes": size}
+
     def start_download(self, name: str) -> bool:
         if name not in MODELS:
             return False

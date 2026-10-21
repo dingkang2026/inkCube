@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { MoreVertical } from 'lucide-react'
 import type { Task } from '../../types'
 import { useConfirm } from '../../components/ConfirmDialog'
+import { UsageRounds } from '../usage/UsageRounds'
 import s from './TaskItem.module.css'
 
 interface TaskItemProps {
@@ -101,6 +102,8 @@ export function TaskItem({
             </div>
             <div className={s.meta}>
               {t('task.messages', { count: task.message_count ?? 0 })} · <span title={fullTime}>{time}</span>
+              {/* 任务累计消耗 + 轮次下钻（2.10 §6.1/线框 4/§5.2；L3 操作驱动：随列表刷新） */}
+              <UsageRounds taskId={task.id} usage={task.usage} />
             </div>
           </>
         )}

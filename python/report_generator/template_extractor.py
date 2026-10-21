@@ -272,7 +272,6 @@ async def extract_template_with_llm(
     full_text: str,
     headings: list[dict],
     llm_client,
-    llm_settings: dict,
 ) -> dict:
     """Use LLM to analyze full text and generate template JSON draft.
 
@@ -280,7 +279,6 @@ async def extract_template_with_llm(
         full_text: Full text content of the sample document.
         headings: Extracted headings [{level, title}, ...] (used as hints).
         llm_client: LLMClient instance.
-        llm_settings: Application settings dict.
 
     Returns:
         Template JSON dict (draft).
@@ -306,7 +304,7 @@ async def extract_template_with_llm(
         {"role": "user", "content": user_message},
     ]
 
-    response = await llm_client.chat(messages, llm_settings)
+    response = (await llm_client.chat_full(messages))["content"]
 
     # Parse JSON from response
     text = response.strip()
@@ -347,7 +345,6 @@ async def extract_template_with_llm(
 async def extract_template_from_sample(
     filepath: str,
     llm_client,
-    llm_settings: dict,
 ) -> dict:
     """Extract a template draft from an uploaded sample document using LLM.
 
@@ -357,7 +354,6 @@ async def extract_template_from_sample(
     Args:
         filepath: Path to the uploaded Word/PDF file.
         llm_client: LLMClient instance.
-        llm_settings: Application settings dict.
 
     Returns:
         Template JSON dict (draft, needs user confirmation in editor).
@@ -379,7 +375,7 @@ async def extract_template_from_sample(
         filepath, len(full_text), len(headings),
     )
 
-    template = await extract_template_with_llm(full_text, headings, llm_client, llm_settings)
+    template = await extract_template_with_llm(full_text, headings, llm_client)
 
     logger.info(
         "Extracted template: name=%s, %d chapters",

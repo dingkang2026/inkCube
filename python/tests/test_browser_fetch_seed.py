@@ -42,7 +42,7 @@ def _skill_rows(db: Database) -> list[dict]:
 
 def test_seed_installs_skill_and_confirms(db, tmp_path, monkeypatch):
     src = _make_fake_source(tmp_path)
-    monkeypatch.setattr(seed, "_locate_source", lambda: str(src))
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
     data_dir = str(tmp_path / "data")
 
     seed.seed_builtin_skills(db, data_dir)
@@ -61,7 +61,7 @@ def test_seed_installs_skill_and_confirms(db, tmp_path, monkeypatch):
 
 def test_seed_idempotent_keeps_user_state(db, tmp_path, monkeypatch):
     src = _make_fake_source(tmp_path)
-    monkeypatch.setattr(seed, "_locate_source", lambda: str(src))
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
     data_dir = str(tmp_path / "data")
 
     seed.seed_builtin_skills(db, data_dir)
@@ -79,7 +79,7 @@ def test_seed_idempotent_keeps_user_state(db, tmp_path, monkeypatch):
 def test_seed_updates_files_but_not_db_state(db, tmp_path, monkeypatch):
     """版本升级语义：文件幂等覆盖，DB 用户状态不动。"""
     src = _make_fake_source(tmp_path)
-    monkeypatch.setattr(seed, "_locate_source", lambda: str(src))
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
     data_dir = Path(tmp_path) / "data"
 
     seed.seed_builtin_skills(db, data_dir)
@@ -94,9 +94,48 @@ def test_seed_updates_files_but_not_db_state(db, tmp_path, monkeypatch):
 
 
 def test_seed_missing_source_warns_without_raising(db, tmp_path, monkeypatch):
-    monkeypatch.setattr(seed, "_locate_source", lambda: None)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: None)
     seed.seed_builtin_skills(db, str(tmp_path / "data"))  # 不抛异常
     assert _skill_rows(db) == []
+
+
+def test_seed_fingerprint_skips_recopy(db, tmp_path, monkeypatch):
+    """指纹幂等（2.3 §2.2）：源未变时二次种子不重拷（大包启动成本保障）。"""
+    src = _make_fake_source(tmp_path)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
+    data_dir = str(tmp_path / "data")
+
+    seed.seed_builtin_skills(db, data_dir)
+
+    copy_calls = []
+    real_copytree = seed.shutil.copytree
+
+    def _counting_copytree(*args, **kwargs):
+        copy_calls.append(args)
+        return real_copytree(*args, **kwargs)
+
+    monkeypatch.setattr(seed.shutil, "copytree", _counting_copytree)
+    seed.seed_builtin_skills(db, data_dir)  # 二次启动：L1 快检命中
+
+    assert copy_calls == []  # 零拷贝
+    fp = (Path(data_dir) / "skills" / "browser-fetch" / seed._SEED_FINGERPRINT)
+    assert fp.is_file()
+
+
+def test_seed_recopies_when_source_marker_changes(db, tmp_path, monkeypatch):
+    """源文件变化（SKILL.md 重写）→ L1 失效 → L2 指纹不一致 → 重拷。"""
+    src = _make_fake_source(tmp_path)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
+    data_dir = Path(tmp_path) / "data"
+
+    seed.seed_builtin_skills(db, str(data_dir))
+    # 源升级：改 SKILL.md（保证 mtime 变化）+ 新增文件
+    md = src / "SKILL.md"
+    md.write_text(md.read_text(encoding="utf-8") + "\n<!-- v2 -->\n", encoding="utf-8")
+    (src / "NEW.md").write_text("v2", encoding="utf-8")
+    seed.seed_builtin_skills(db, str(data_dir))
+
+    assert (data_dir / "skills" / "browser-fetch" / "NEW.md").is_file()
 
 
 def test_locate_source_prefers_env_and_falls_back(monkeypatch, tmp_path):
@@ -104,8 +143,8 @@ def test_locate_source_prefers_env_and_falls_back(monkeypatch, tmp_path):
     fake = tmp_path / "res" / "skills" / "browser-fetch"
     fake.mkdir(parents=True)
     monkeypatch.setenv("INKCUBE_RESOURCES_DIR", str(tmp_path / "res"))
-    assert seed._locate_source() == str(fake)
+    assert seed._locate_source("browser-fetch") == str(fake)
 
     monkeypatch.delenv("INKCUBE_RESOURCES_DIR")
-    located = seed._locate_source()
+    located = seed._locate_source("browser-fetch")
     assert located is not None and Path(located) == PROJECT_SKILL_SRC

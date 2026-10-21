@@ -31,18 +31,18 @@ $toolsDir = Join-Path (Join-Path $projectRoot "resources") "tools"
 $runtimePython = Join-Path (Join-Path $toolsDir "python-build-standalone") "python.exe"
 Write-Host "`n[Step 1/5] Verifying tool chain..." -ForegroundColor Yellow
 
-# prepare-tools.ps1 was removed (GitHub Releases is not reliably reachable
-# from mainland China networks, so the tool chain is placed manually; the
-# manifest and download URLs live in docs/0.2packaging-design.md section 6.2).
-# The build verifies everything up front so missing pieces surface at build
-# time instead of on an end-user machine mid-task.
+# prepare-tools.ps1 (restored 2026-10) fetches the pinned tool chain from
+# GitHub Releases -- run it first on a fresh clone. The manifest and download
+# URLs live in docs/0.2packaging-design.md section 6.2. The build verifies
+# everything up front so missing pieces surface at build time instead of on
+# an end-user machine mid-task.
 $required = @("uv.exe", "rg.exe", "ruff.exe", "pandoc.exe", "tool-versions.json")
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $toolsDir $_)) })
 if (-not (Test-Path $runtimePython)) { $missing += "python-build-standalone\python.exe" }
 if ($missing.Count -gt 0) {
     Write-Host "  Tool chain is missing the following files (resources/tools/):" -ForegroundColor Red
     $missing | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
-    Write-Host "  Download and place them manually, see docs/0.1dev-guide.md section 11.1" -ForegroundColor Yellow
+    Write-Host "  Run scripts/prepare-tools.ps1 first, see docs/0.1dev-guide.md section 11.1" -ForegroundColor Yellow
     exit 1
 }
 Write-Host "  Tool chain complete" -ForegroundColor Green

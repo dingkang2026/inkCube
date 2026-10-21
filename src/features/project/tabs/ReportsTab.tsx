@@ -1,20 +1,40 @@
-/** src/features/project/tabs/ReportsTab.tsx — Reports tab with kanban layout (4 columns by stage) */
+/** src/features/project/tabs/ReportsTab.tsx — Reports tab with kanban layout (4 columns by stage)
+ *  含 PPT 交付物区块（2.3 §7.1 PptSection）：列表/新建/导入增强入口/详情入口（E3） */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw, Pause, PauseCircle, Play } from 'lucide-react'
+import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw, Pause, PauseCircle, Play, Presentation, Wand2 } from 'lucide-react'
 import type { ProjectType, ProjectStage, Report } from '../types'
 import { STAGE_COLUMNS } from '../types'
 import { ReportWizard } from './ReportWizard'
 import { ReportPreview } from './ReportPreview'
+import { PptWizard } from './PptWizard'
+import { PptDetail } from './PptDetail'
 import { useToast } from '../../knowledge/Toast'
 import s from './ReportsTab.module.css'
+import p from './ppt.module.css'
 import { useConfirm } from '../../../components/ConfirmDialog'
 import { usePolling } from '../../../hooks/usePolling'
 import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
+import { usePagedList } from '../../../hooks/usePagedList'
 import { useActivity } from '../../activity/ActivityContext'
 import { apiErrorText, translateStoredError } from '../../../i18n/errorCodes'
+import { UsageText } from '../../usage/UsageText'
 
-type ViewMode = 'list' | 'wizard' | 'preview'
+type ViewMode = 'list' | 'wizard' | 'preview' | 'pptWizard' | 'pptDetail'
+
+/** ppts 行（与后端 list_ppts 返回对齐） */
+interface PptRow {
+  id: string
+  title: string
+  kind: string | null
+  status: string
+  stage: string | null
+  progress: number | null
+  page_count: number | null
+  page_done: number | null
+  export_path: string | null
+  created_at: string
+}
 
 interface ReportsTabProps {
   projectId: string
@@ -26,34 +46,65 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   const confirmDialog = useConfirm()
   const showToast = useToast()
   const [viewMode, setViewMode] = useState<ViewMode>('list')
-  const [reports, setReports] = useState<Report[]>([])
   const [previewReport, setPreviewReport] = useState<Report | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [selectedPptId, setSelectedPptId] = useState<string | null>(null)
+  const [enhancing, setEnhancing] = useState(false)  // 增强入队防抖（卡片/导入两入口共用）
 
-  // 列表与 preview 快照同步：previewReport 是点击时的快照，若只 setReports 不更新它，
-  // 生成中打开的预览拿陈旧 status，ReportPreview 终态边沿（0.4 §6.3）永无触发前提
-  const applyReports = (list: Report[]) => {
-    setReports(list)
-    setPreviewReport((prev) => (prev ? list.find((r) => r.id === prev.id) ?? prev : prev))
-  }
+  // 列表分页（0.1dev-guide 统一约定）：50/页「加载更多」；projectId 变化经 params 自动重拉首页
+  const {
+    items: reports,
+    total: reportsTotal,
+    hasMore: hasMoreReports,
+    loadingMore: loadingMoreReports,
+    loading: reportsLoading,
+    error: reportsError,
+    reload: reloadReports,
+    loadMore: loadMoreReports,
+  } = usePagedList<Report>({ channel: 'reports:listReports', itemsKey: 'reports', params: { projectId } })
+  const {
+    items: ppts,
+    total: pptsTotal,
+    hasMore: hasMorePpts,
+    loadingMore: loadingMorePpts,
+    error: pptsError,
+    reload: reloadPpts,
+    loadMore: loadMorePpts,
+  } = usePagedList<PptRow>({ channel: 'ppt:list', itemsKey: 'ppts', params: { projectId } })
 
-  // Reload reports from backend
-  const loadReports = async () => {
-    try {
-      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-      if (result.reports) applyReports(result.reports)
-    } catch (err) {
-      console.error('Failed to load reports:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Load reports on mount / projectId change
+  // 列表加载失败提示（对齐 FormsTab m-3：静默吞掉会让列表空白且无任何提示）
   useEffect(() => {
-    setLoading(true)
-    loadReports()
+    if (reportsError) showToast(`${t('common.listLoadFailed')}: ${reportsError}`, 'error')
+  }, [reportsError, showToast, t])
+  useEffect(() => {
+    if (pptsError) showToast(`${t('common.listLoadFailed')}: ${pptsError}`, 'error')
+  }, [pptsError, showToast, t])
+
+  // 列表与 preview 快照同步：previewReport 是点击时的快照，若只更新列表不更新它，
+  // 生成中打开的预览拿陈旧 status，ReportPreview 终态边沿（0.4 §6.3）永无触发前提
+  useEffect(() => {
+    setPreviewReport((prev) => (prev ? reports.find((r) => r.id === prev.id) ?? prev : prev))
+  }, [reports])
+
+  useEffect(() => {
+    // 同类型项目切换清预览/向导残留（review Info-7，WikiTab H-2 同款隔离语义）：
+    // previewReport 是点击时快照，find 不到会永久保留旧项目报告，
+    // 且预览内导出/删除/暂停只按 report.id 定位（后端无项目校验）
+    setPreviewReport(null)
+    setViewMode('list')
   }, [projectId])
+
+  // ── PPT 交付物（2.3 §7.1 PptSection）──
+  // 活跃期心跳驱动轮询 + 终态边沿补拉（同报告列表模式，0.4 §6.2/§6.3）
+  const { items: activePptItems } = useActivity('ppt')
+  const hasActivePpt = activePptItems.some((a) => a.project_id === projectId)
+  usePolling({
+    name: 'ppts-active',
+    enabled: hasActivePpt,
+    interval: 3000,
+    // reload 按已加载量重拉（不退回第一页）；内部 catch 吞错由 usePolling 视为成功
+    task: () => reloadPpts(),
+  })
+  useEdgeRefetch(hasActivePpt, () => { void reloadPpts() })
 
   // Auto-refresh when any report is generating（#7，v1.7 迁移 usePolling；谓词收编全局心跳
   // useActivity('report')，顺序 4）：本地列表是挂载快照，存在陈旧漏判（如停轮期间
@@ -64,19 +115,16 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     name: 'reports-generating',
     enabled: hasGenerating,
     interval: 3000,
-    task: async () => {
-      // 抛错由 usePolling 计入连续失败并退避（0.4 §5.8）
-      const result: any = await window.electronAPI.invoke('reports:listReports', { projectId })
-      if (result.reports) applyReports(result.reports)
-    },
+    // reload 按已加载量重拉（不退回第一页）；内部 catch 吞错由 usePolling 视为成功
+    task: () => reloadReports(),
   })
 
   // 终态边沿补拉（0.4 §6.3）：心跳停轮可早于最后一个轮询 tick，列表可能停在
   // generating；hasGenerating 翻 false 的边沿补拉一次，终态（done/error）立即上屏
-  useEdgeRefetch(hasGenerating, () => { void loadReports() })
+  useEdgeRefetch(hasGenerating, () => { void reloadReports() })
 
   const handleWizardComplete = async () => {
-    await loadReports()
+    await reloadReports()
     setViewMode('list')
   }
 
@@ -89,7 +137,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     if (!(await confirmDialog({ title: t('project.report.delete'), message: t('project.report.confirmDelete') }))) return
     try {
       await window.electronAPI.invoke('reports:deleteReport', report.id)
-      await loadReports()
+      await reloadReports()
     } catch (err) {
       console.error('Failed to delete report:', err)
       showToast(t('project.report.deleteFailed'), 'error')
@@ -126,7 +174,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
       if (result.error) {
         showToast(t('project.report.retryFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       } else {
-        await loadReports()
+        await reloadReports()
       }
     } catch (err) {
       console.error('Retry failed:', err)
@@ -143,7 +191,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
         showToast(t('project.report.pauseFailed', { error: apiErrorText(result.code, result.error, t) }), 'error')
       } else {
         showToast(t('project.report.pauseRequested'), 'info')
-        await loadReports()
+        await reloadReports()
       }
     } catch (err) {
       showToast(t('project.report.pauseFailed', { error: String(err) }), 'error')
@@ -155,6 +203,61 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     handleRetryReport(report, 'restart')
   }
 
+  // E3 成品增强：发起后切换到新任务详情跟踪（两入口共用导航；structured 契约判 res.ok）
+  const openEnhanceDetail = async (res: any) => {
+    if (res?.ok && res?.ppt?.id) {
+      showToast(t('project.ppt.toast.enhanceStarted'), 'success')
+      await reloadPpts()
+      setSelectedPptId(res.ppt.id)
+      setViewMode('pptDetail')
+    } else {
+      showToast(t('project.ppt.toast.enhanceFailed', {
+        error: apiErrorText(res?.code, res?.error || 'unknown', t),
+      }), 'error')
+    }
+  }
+
+  // 入口 ①：从已完成的 deck 交付物卡片发起增强（旁白/转场补丁，产物为新文件）
+  const handleEnhancePpt = async (ppt: PptRow) => {
+    if (enhancing) return
+    if (!(await confirmDialog({
+      title: t('project.ppt.enhance'),
+      message: t('project.ppt.detail.enhanceConfirm'),
+    }))) return
+    setEnhancing(true)
+    try {
+      await openEnhanceDetail(await window.electronAPI.invoke('ppt:enhance', { pptId: ppt.id }))
+    } catch (err: any) {
+      showToast(t('project.ppt.toast.enhanceFailed', { error: String(err?.message || err) }), 'error')
+    } finally {
+      setEnhancing(false)
+    }
+  }
+
+  // 入口 ②：导入本机 pptx 创建增强任务（dialog:openFile 直传路径，2.3 §6.3）
+  const handleImportEnhance = async () => {
+    if (enhancing) return
+    try {
+      const result: any = await window.electronAPI.invoke('dialog:openFile', {
+        filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
+        properties: ['openFile'],
+      })
+      const filePath: string | undefined = result?.filePaths?.[0]
+      if (!filePath) return
+      const fileName = filePath.replace(/^.*[\\/]/, '').replace(/\.pptx$/i, '')
+      setEnhancing(true)
+      await openEnhanceDetail(await window.electronAPI.invoke('ppt:enhanceImport', {
+        projectId,
+        title: fileName,
+        sourcePath: filePath,
+      }))
+    } catch (err: any) {
+      showToast(t('project.ppt.toast.enhanceFailed', { error: String(err?.message || err) }), 'error')
+    } finally {
+      setEnhancing(false)
+    }
+  }
+
   // ── Wizard view ──
   if (viewMode === 'wizard') {
     return (
@@ -162,7 +265,28 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
         projectId={projectId}
         projectType={projectType}
         onComplete={handleWizardComplete}
-        onCancel={() => { loadReports(); setViewMode('list') }}
+        onCancel={() => { void reloadReports(); setViewMode('list') }}
+      />
+    )
+  }
+
+  // ── PPT wizard / detail view ──
+  if (viewMode === 'pptWizard') {
+    return (
+      <PptWizard
+        projectId={projectId}
+        onCreated={(pptId) => { setSelectedPptId(pptId); setViewMode('pptDetail') }}
+        onBack={() => { void reloadPpts(); setViewMode('list') }}
+      />
+    )
+  }
+  if (viewMode === 'pptDetail' && selectedPptId) {
+    return (
+      <PptDetail
+        pptId={selectedPptId}
+        onBack={() => { void reloadPpts(); setViewMode('list') }}
+        onDeleted={() => { void reloadPpts(); setSelectedPptId(null); setViewMode('list') }}
+        onEnhanced={(newId) => { setSelectedPptId(newId); setViewMode('pptDetail') }}
       />
     )
   }
@@ -185,7 +309,7 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     ? [{ key: 'none' as ProjectStage, labelKey: 'project.stage.other' }]
     : STAGE_COLUMNS  // before, during, after, none (other)
 
-  if (loading) {
+  if (reportsLoading) {
     return (
       <div className={s.container}>
         <div className={s.loading}>{t('common.loading')}</div>
@@ -197,9 +321,28 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
     <div className={s.container}>
       {/* Header */}
       <div className={s.header}>
-        <button className={s.primaryBtn} onClick={() => setViewMode('wizard')}>
+        <button
+          className={s.primaryBtn}
+          onClick={() => setViewMode('wizard')}
+        >
           <Plus size={16} />
           {t('project.report.newReport')}
+        </button>
+        <button
+          className={p.secondaryBtn}
+          onClick={() => setViewMode('pptWizard')}
+        >
+          <Presentation size={16} />
+          {t('project.ppt.new')}
+        </button>
+        <button
+          className={p.secondaryBtn}
+          onClick={handleImportEnhance}
+          disabled={enhancing}
+          title={t('project.ppt.enhanceImportTip')}
+        >
+          <Wand2 size={16} />
+          {t('project.ppt.enhanceImport')}
         </button>
       </div>
 
@@ -229,6 +372,8 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
                         <span>{report.output_format}</span>
                         <span className={s.dot}>·</span>
                         <span>{new Date(report.created_at).toLocaleDateString()}</span>
+                        {/* 该报告生成总消耗（2.10 §6.1/线框 6：含模板提取+变量+生成全部调用） */}
+                        {report.usage?.calls ? (<> · <UsageText usage={report.usage} /></>) : null}
                       </div>
                       <div className={s.reportCardFooter}>
                         {report.status === 'done' && (
@@ -316,7 +461,87 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
       </div>
 
       <div className={s.footer}>
-        {t('project.report.kanban.totalReports', { count: reports.length })}
+        {t('project.report.kanban.totalReports', { count: reportsTotal ?? reports.length })}
+      </div>
+      {hasMoreReports && (
+        <button
+          className={s.loadMoreBtn}
+          onClick={() => { void loadMoreReports() }}
+          disabled={loadingMoreReports}
+        >
+          {loadingMoreReports ? t('common.loading') : t('common.loadMore')}
+        </button>
+      )}
+
+      {/* PPT 交付物区块（2.3 §7.1 PptSection）*/}
+      <div className={p.pptSection}>
+        <div className={p.pptSectionHeader}>
+          <span className={p.sectionTitle}>{t('project.ppt.sectionTitle')}</span>
+          {(ppts.length > 0 || pptsTotal) && (
+            <span className={p.pptCardMeta}>{t('project.ppt.total', { count: pptsTotal ?? ppts.length })}</span>
+          )}
+        </div>
+        {ppts.length === 0 ? (
+          <div className={p.pptEmpty}>
+            {t('project.ppt.empty')}
+            <div className={p.pptEmptyHint}>{t('project.ppt.emptyHint')}</div>
+          </div>
+        ) : (
+          <div className={p.pptGrid}>
+            {ppts.map((ppt) => {
+              const active = ppt.status === 'running' || ppt.status === 'awaiting_input'
+              const progress = Math.round((ppt.progress || 0) * 100)
+              return (
+                <div key={ppt.id} className={p.pptCard} onClick={() => { setSelectedPptId(ppt.id); setViewMode('pptDetail') }}>
+                  <div className={p.pptCardHeader}>
+                    <Presentation size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <span className={p.pptCardTitle}>{ppt.title}</span>
+                    {ppt.kind === 'enhanced' && (
+                      <span className={p.kindBadge}>{t('project.ppt.enhancedBadge')}</span>
+                    )}
+                  </div>
+                  <div className={p.pptCardMeta}>
+                    <span className={`${p.statusChip} ${p[`status_${ppt.status}`] || ''}`}>
+                      {t(`project.ppt.status.${ppt.status}`)}
+                    </span>
+                    {ppt.stage && <span>{t(`project.ppt.stage.${ppt.stage}`)}</span>}
+                    {active && <span>· {progress}%</span>}
+                  </div>
+                  {active && (
+                    <div className={p.pptProgressBar}>
+                      <div className={p.pptProgressFill} style={{ width: `${progress}%` }} />
+                    </div>
+                  )}
+                  <div className={p.pptCardFooter}>
+                    {!!ppt.page_count && (
+                      <span>{t('project.ppt.pageProgress', { done: ppt.page_done || 0, count: ppt.page_count })}</span>
+                    )}
+                    <span>{new Date(ppt.created_at).toLocaleDateString()}</span>
+                    {ppt.kind === 'deck' && ppt.status === 'completed' && ppt.export_path && (
+                      <button
+                        className={p.chipBtn}
+                        disabled={enhancing}
+                        onClick={(e) => { e.stopPropagation(); void handleEnhancePpt(ppt) }}
+                        title={t('project.ppt.detail.enhanceTip')}
+                      >
+                        <Wand2 size={12} /> {t('project.ppt.enhance')}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {hasMorePpts && (
+          <button
+            className={s.loadMoreBtn}
+            onClick={() => { void loadMorePpts() }}
+            disabled={loadingMorePpts}
+          >
+            {loadingMorePpts ? t('common.loading') : t('common.loadMore')}
+          </button>
+        )}
       </div>
     </div>
   )

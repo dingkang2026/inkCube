@@ -5,13 +5,16 @@ import os
 import re
 import shutil
 import time
+import uuid
 from datetime import datetime
 from typing import AsyncGenerator
 
 import activity_events
 from llm.client import LLMClient
+from llm.budget import count_tokens, context_window, output_tokens
+from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
 from db.database import Database
-from tools.code_executor import CodeExecutorTool
+from tools.code_executor import CodeExecutorTool, check_code_danger
 from tools.shell_tool import ShellTool, check_safe_command, check_domain_whitelist
 from tools.file_ops import FileOpsTool
 from tools.code_search import CodeSearchTool
@@ -21,7 +24,7 @@ from tools.package_manager import PackageManagerTool
 from tools.project_scaffold import ProjectScaffoldTool
 from tools.task_knowledge_search import TaskKnowledgeSearchTool
 from tools.doc_generator import DocGeneratorTool
-from tools.tavily_search import TavilySearchTool
+from tools.web_search import WebSearchTool
 from tools.repo_map import RepoMapTool
 from tools.skill_runner import SkillRunnerTool
 from tools.git_ops import GitOpsTool
@@ -37,7 +40,10 @@ from tools.venv_manager import (
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
 from skills.loader import AgentSkillAdapter, SKILL_GUIDE_MAX_CHARS
-from agent.context_manager import ContextManager, build_git_context, detect_project_context
+from agent.context_manager import (
+    ContextManager, build_git_context, detect_project_context,
+    summarize_tool_result_line,
+)
 from errors import LLMNetworkError, InkCubeError, actionable
 from paths import get_data_dir
 
@@ -173,6 +179,28 @@ KEEP_RECENT = 10
 SHELL_CONFIRM_TIMEOUT = 120
 SKILL_CONFIRM_TIMEOUT = 180
 
+# 预算软着陆（1.1 §5.6，2026-10-16）：剩 BUDGET_WARNING_LEFT 轮时注入一次
+# 收束提醒，把「末轮硬切断、断点落在半成品中间」变为 LLM 自主选择安全断
+# 点软着陆。max_iter < 3 时预算过小不注入；恢复分支过滤旧提醒（新预算下
+# 旧轮数提示失效）。
+BUDGET_WARNING_LEFT = 3
+_BUDGET_WARNING_PREFIX = "[系统提示] 迭代预算"
+
+# PPT 任务参数预设（2.3 §3.2）：settings 专用键（task_ppt_*，defaults 默认
+# None）未设置时生效，显式设置即覆盖。必须用专用键而非通用键承载——
+# get_settings() 白名单恒含 task_max_iterations/task_timeout（60/30），以
+# 「get 为 None」判定未设置对通用键永不成立，用通用键则预设整体失效
+#（2026-10-17 发现：E1 起预设从未生效，ppt 实际以 60 轮/300s 运行）。
+# 实测依据：ppt-master 真实生成 169 轮/41 分钟（60 轮上限被切断 3 次），
+# svg_to_pptx 大页数转换单命令远超 30s；预算收束提前量同步放大
+#（240 轮任务末 3 轮来不及保存，剩 24 轮即提醒收束）。
+ORIGIN_PRESETS: dict[str, dict] = {
+    "ppt": {
+        "task_ppt_max_iterations": 240,
+        "task_ppt_timeout": 600,
+    },
+}
+
 # Tools carrying a task-venv interpreter config. Lazy venv creation triggers
 # only when one of these actually executes with a venv path set — general-mode
 # tools are created without venv config (see _create_task_tools), so chat-only
@@ -214,7 +242,7 @@ class TaskAgent:
             "shell": ShellTool(),
             "file_ops": FileOpsTool(),
             "code_search": CodeSearchTool(),
-            "web_search": TavilySearchTool(),
+            "web_search": WebSearchTool(),
             "code_lint": CodeLintTool(),
             "code_format": CodeFormatTool(),
             "package_manager": PackageManagerTool(),
@@ -226,6 +254,39 @@ class TaskAgent:
             "git_ops": GitOpsTool(),
             "lsp_client": LSPClientTool(),
         }
+
+    @staticmethod
+    def _apply_task_routing(settings: dict, origin: str) -> dict:
+        """按 origin 解析主对话模型档位（llm/routing.py 档位制）。
+
+        PPT 工作流在任务对话内执行（2.3 §3.2）：origin='ppt' 任务按
+        ppt_model 档位解析（唯一默认 high 的业务线，走 get_task_settings
+        统一入口留 routing 日志）；其余任务按 task_model 档位。解析结果
+        写入 settings["model"]，LLMClient 契约不变。
+        """
+        if origin == "ppt":
+            from llm.routing import get_task_settings
+            return get_task_settings(settings, "ppt")
+        from llm.routing import resolve_model
+        settings["model"] = resolve_model(
+            settings, str(settings.get("task_model") or "standard"))
+        return settings
+
+    @staticmethod
+    def _apply_origin_presets(settings: dict, origin: str) -> dict:
+        """origin 参数预设统一应用（ORIGIN_PRESETS，2.3 §3.2）。
+
+        PPT 参数走专用键（task_ppt_*）：get 到 None 即未设置 → 填预设值，
+        显式设置即覆盖。专用键与通用键（task_max_iterations / task_timeout，
+        chat 设置页字段）完全解耦——chat 的通用设置不渗透 ppt 任务，反之亦然。
+        预设值落地到通用键（task_ppt_X → task_X），下游消费点无需感知 origin。
+        独立成纯函数以便单测（run() 内调用，行为不变）。
+        """
+        for key, val in ORIGIN_PRESETS.get(origin, {}).items():
+            if settings.get(key) is None:
+                settings[key] = val
+            settings["task_" + key.removeprefix("task_ppt_")] = settings[key]
+        return settings
 
     def request_cancel(self, task_id: str | None = None):
         """Request cancellation for a specific task, or all tasks if task_id is None."""
@@ -356,6 +417,7 @@ class TaskAgent:
             from skills.parser import parse_skill_md, discover_skill_type, validate_skill_md
             all_skills = self.db.list_skills()
             file_ops = tools.get("file_ops") if tools else None
+            fc_skill_names: list[str] = []
             for skill_info in all_skills:
                 if not skill_info.get("enabled", 1):
                     continue
@@ -398,6 +460,7 @@ class TaskAgent:
 
                     adapter = AgentSkillAdapter(install_path, parsed, skill_info)
                     skill_registry.register(adapter, {"type": "agent_skill", "enabled": True})
+                    fc_skill_names.append(adapter.name)
                     # L3: keep skill files readable (read/list only) for this task
                     if file_ops is not None and hasattr(file_ops, "add_readonly_root"):
                         file_ops.add_readonly_root(install_path)
@@ -405,6 +468,17 @@ class TaskAgent:
 
                 else:
                     logger.debug("No valid skill manifest found in %s, skipping", install_path)
+
+            # 双通道去冗（2026-10-16 天眼查任务实证）：CLI 型 Agent Skill 已
+            # 注册为独立 FC 工具，skill_runner 的 L1 清单再列一遍同名 Skill
+            # 会诱导模型先经 skill_runner「激活」（参数约定不同，首调必错）。
+            # 两个实例都要标记：执行走 per-task 实例，系统提示工具清单读
+            # __init__ 实例（_build_system_prompt → _get_tools_description）
+            if fc_skill_names:
+                for runner in (tools.get("skill_runner") if tools else None,
+                               self._tools.get("skill_runner")):
+                    if runner is not None:
+                        runner.mark_fc_registered(fc_skill_names)
         except Exception as e:
             logger.warning("Failed to load external skills: %s", e)
 
@@ -493,7 +567,7 @@ class TaskAgent:
         # 每个可选 section 的值是片段列表（list[str]），需展平后才能 join
         full_parts = parts + [seg for _, s in included_sections for seg in s]
         full_prompt = "\n".join(full_parts)
-        prompt_tokens = ContextManager.count_tokens(full_prompt)
+        prompt_tokens = count_tokens(full_prompt)
 
         if prompt_tokens > PROMPT_BUDGET:
             # Drop sections from lowest priority first
@@ -501,7 +575,7 @@ class TaskAgent:
                 included_sections = [(n, s) for n, s in included_sections if n != name]
                 full_parts = parts + [seg for _, s in included_sections for seg in s]
                 test_prompt = "\n".join(full_parts)
-                test_tokens = ContextManager.count_tokens(test_prompt)
+                test_tokens = count_tokens(test_prompt)
                 if test_tokens <= PROMPT_BUDGET:
                     logger.warning(
                         "System prompt truncated (dropped %s): %d tokens (budget: %d)",
@@ -511,7 +585,7 @@ class TaskAgent:
             full_prompt = "\n".join(full_parts)
             logger.warning(
                 "System prompt truncated (dropped all optional): %d tokens (budget: %d)",
-                ContextManager.count_tokens(full_prompt), PROMPT_BUDGET,
+                count_tokens(full_prompt), PROMPT_BUDGET,
             )
 
         return full_prompt
@@ -605,7 +679,12 @@ class TaskAgent:
         doc_generator.set_workspace(workspace_path)
 
         # Create independent instances for web/knowledge tools (safe for concurrent use)
-        web_search = TavilySearchTool(api_key=settings.get("tavily_key", "") if settings else "")
+        web_search = WebSearchTool(
+            provider=settings.get("web_search_provider", "") if settings else "",
+            tavily_key=settings.get("tavily_key", "") if settings else "",
+            zhipu_key=settings.get("zhipu_search_key", "") if settings else "",
+            zhipu_engine=settings.get("zhipu_search_engine", "search_pro") if settings else "search_pro",
+        )
         knowledge_search = TaskKnowledgeSearchTool()
         if self.knowledge_search.db:
             knowledge_search.configure(
@@ -642,6 +721,9 @@ class TaskAgent:
                 max_mb = settings.get("task_workspace_max_mb", 1024)
                 if max_mb > 0:
                     file_ops.max_workspace_bytes = max_mb * 1024 * 1024
+            # browser-fetch extract 产物锚 data_dir/fetched（B7）：注册只读根
+            # 供 file_ops read/list 用绝对路径回读（写操作永不解析到该根）
+            file_ops.add_readonly_root(os.path.join(get_data_dir(), "fetched"))
             return {
                 "file_ops": file_ops,
                 "shell": shell,
@@ -678,6 +760,9 @@ class TaskAgent:
             max_mb = settings.get("task_workspace_max_mb", 1024)
             if max_mb > 0:
                 file_ops.max_workspace_bytes = max_mb * 1024 * 1024
+        # browser-fetch extract 产物锚 data_dir/fetched（B7）：注册只读根
+        # 供 file_ops read/list 用绝对路径回读（写操作永不解析到该根）
+        file_ops.add_readonly_root(os.path.join(get_data_dir(), "fetched"))
 
         if venv_path:
             venv_python = get_venv_python(venv_path)
@@ -794,10 +879,10 @@ class TaskAgent:
             ]
 
             try:
-                fixed_content = await task_llm.chat(fix_prompt, settings)
-                if not fixed_content or not isinstance(fixed_content, str):
+                fixed_content = (await task_llm.chat_full(fix_prompt))["content"]
+                if not fixed_content:
                     logger.warning(
-                        "Edit-verify loop: LLM returned empty/invalid fix for %s (attempt %d/%d)",
+                        "Edit-verify loop: LLM returned empty fix for %s (attempt %d/%d)",
                         fix_path, attempt + 1, max_retries,
                     )
                     break
@@ -1044,31 +1129,69 @@ class TaskAgent:
         self._running_task_ids.add(task_id)
         self._task_iterations[task_id] = 0
         self._run_outcomes[task_id] = "completed"
-        try:
-            async for event in self._run_inner(task_id, user_message):
-                yield event
-        except Exception:
-            self._run_outcomes[task_id] = "failed"
-            raise
-        finally:
-            # 用户取消/暂停（cancel_event 被 set，含 pause_task 路径）静默（0.4 §6.5）
-            cancel_event = self._cancel_events.get(task_id)
-            user_stopped = cancel_event is not None and cancel_event.is_set()
-            self._running_task_ids.discard(task_id)
-            self._cancel_events.pop(task_id, None)
-            self._task_iterations.pop(task_id, None)
-            self._task_messages.pop(task_id, None)
-            outcome = self._run_outcomes.pop(task_id, "completed")
-            if not user_stopped:
-                # 经 activity_events 统一入口（E2 收尾，v3.9）：内部查 title + E3 事件投递，
-                # 异常自行兜底不影响业务主流程（任务不存在静默跳过，与旧直调一致）
-                if outcome == "completed":
-                    activity_events.complete_task(self.db, task_id)
-                else:
-                    activity_events.fail_task(self.db, task_id)
+        # 2.10 §4.3: 用量环境（source=task + 轮次 round_id）——覆盖本 run 的
+        # 全部 LLM 调用（FC 迭代/planner/compact/fix）；round_id 是「每次对话」
+        # 气泡行与轮次聚合的归属键。contextvar 随 async 原生隔离，并发任务互不可见
+        round_id = uuid.uuid4().hex
+        with push_context(UsageContext(
+                source="task", task_id=task_id, round_id=round_id)):
+            try:
+                async for event in self._run_inner(task_id, user_message):
+                    if event.get("type") == "done":
+                        # 2.10 §4.5: SSE usage 事件（气泡行实时数据源）——本轮
+                        # 全部调用按 round_id 聚合，先 usage 后 done；无记录
+                        # （流式端点无 usage）不发送。data 即 usage 字段集
+                        # （与其它事件同构：载荷本身，不再包一层）——前端
+                        # parsed 直接作 UsageSummary 消费
+                        round_usage = self.db.get_usage_by_round(round_id)
+                        if round_usage:
+                            yield {"type": "usage", "data": round_usage}
+                    yield event
+            except Exception:
+                self._run_outcomes[task_id] = "failed"
+                raise
+            finally:
+                # 用户取消/暂停（cancel_event 被 set，含 pause_task 路径）静默（0.4 §6.5）
+                cancel_event = self._cancel_events.get(task_id)
+                user_stopped = cancel_event is not None and cancel_event.is_set()
+                self._running_task_ids.discard(task_id)
+                self._cancel_events.pop(task_id, None)
+                self._task_iterations.pop(task_id, None)
+                self._task_messages.pop(task_id, None)
+                outcome = self._run_outcomes.pop(task_id, "completed")
+                # 2.10 §4.5: 轮次收尾——本轮 usage 写最后一条 assistant 消息
+                # metadata.usage（气泡历史回放数据源）；无记录跳过，失败仅日志
+                try:
+                    round_usage = self.db.get_usage_by_round(round_id)
+                    if round_usage:
+                        self.db.attach_usage_to_last_assistant(task_id, round_usage)
+                except Exception:
+                    logger.warning("attach round usage failed: task=%s", task_id,
+                                   exc_info=True)
+                if not user_stopped:
+                    # 经 activity_events 统一入口（E2 收尾，v3.9）：内部查 title + E3 事件投递，
+                    # 异常自行兜底不影响业务主流程（任务不存在静默跳过，与旧直调一致）
+                    # ppt 任务跳过（origin='ppt'）：回合结束 ≠ 任务终态（门禁回合自然
+                    # 结束、迭代耗尽均为中间态），ppt 侧通知由 ppt_service 统一声明。
+                    # 通知是收尾副链路：失败仅日志，不得掩盖上方主链路的原始异常/结果
+                    try:
+                        task_row = self.db.get_task(task_id)
+                        if task_row and task_row.get("origin") == "ppt":
+                            pass
+                        elif task_row and task_row.get("schedule_id"):
+                            # 影子任务（定时订阅执行，2.11 D2）：终态通知由调度器
+                            # schedule_run 负责，此处跳过防双通知
+                            pass
+                        elif outcome == "completed":
+                            activity_events.complete_task(self.db, task_id)
+                        else:
+                            activity_events.fail_task(self.db, task_id)
+                    except Exception:
+                        logger.warning("task terminal notify failed: task=%s",
+                                       task_id, exc_info=True)
 
     async def _run_planner(
-        self, planner_llm: LLMClient, settings: dict,
+        self, planner_llm: LLMClient,
         user_message: str, editor_messages: list[dict],
     ) -> str | None:
         """Phase 1: Call planner model to generate an execution plan.
@@ -1085,7 +1208,7 @@ class TaskAgent:
         # Add the current user request
         planner_msgs.append({"role": "user", "content": user_message})
 
-        plan = await planner_llm.chat(planner_msgs, settings)
+        plan = (await planner_llm.chat_full(planner_msgs))["content"]
         if plan and plan.strip():
             return plan.strip()
         return None
@@ -1117,40 +1240,50 @@ class TaskAgent:
     async def _run_inner(self, task_id: str, user_message: str) -> AsyncGenerator[dict, None]:
         settings = self.db.get_settings()
 
-        # Override model with task-specific model if configured
-        task_model = settings.get("task_model", "")
-        if task_model:
-            settings["model"] = task_model
+        # Get task info（提前：origin 决定档位路由键，见 _apply_task_routing）
+        task = self.db.get_task(task_id)
+        if not task:
+            yield {"type": "answer_chunk", "data": {"content": "任务不存在"}}
+            yield {"type": "done", "data": {}}
+            return
+        task_origin = (task.get("origin") or "chat")
+
+        # 档位制任务路由：按 origin 分流解析最终模型名写入 settings["model"]
+        settings = self._apply_task_routing(settings, task_origin)
 
         # Apply task-specific timeout to tools
-        task_timeout = settings.get("task_timeout", 30)
+        # ppt-master 等工作流型 Skill 的长脚本链（SVG 转换/旁白合成）单命令可达数分钟，
+        # 30s 会把合法长任务误杀（超时建议语引导换非阻塞验证是第二道防线）。
+        # origin 预设在此统一应用（ORIGIN_PRESETS，2.3 §3.2）：专用键
+        # （task_ppt_*）显式设置优先，未设置时用预设默认值（chat 任务预设表为空，行为不变）
 
         # Create per-task LLM client to avoid model cross-contamination in concurrent mode
         task_llm = LLMClient(settings)
 
         # ── Planner model setup (dual-model architecture) ──
-        planner_model_name = settings.get("task_planner_model", "")
+        # task_planner_model 空串 = 不启用规划阶段（单模型模式，语义保留）；
+        # 配置档位时解析为对应模型，与主模型同名则不重复建 client
+        planner_level = str(settings.get("task_planner_model") or "")
         planner_llm = None
-        if planner_model_name:
-            planner_settings = dict(settings)
-            planner_settings["model"] = planner_model_name
-            planner_llm = LLMClient(planner_settings)
+        if planner_level:
+            planner_model_name = resolve_model(settings, planner_level)
+            if planner_model_name and planner_model_name != settings.get("model"):
+                planner_settings = dict(settings)
+                planner_settings["model"] = planner_model_name
+                planner_llm = LLMClient(planner_settings)
 
         if not settings.get("api_key"):
             async for event in self._demo_mode(task_id, user_message):
                 yield event
             return
 
-        # Get task info
-        task = self.db.get_task(task_id)
-        if not task:
-            yield {"type": "answer_chunk", "data": {"content": "任务不存在"}}
-            yield {"type": "done", "data": {}}
-            return
-
         workspace_path = task["workspace_path"]
         venv_path = task.get("venv_path", "")
         task_mode = task.get("mode", "coding") or "coding"
+        # origin 参数预设统一应用（ORIGIN_PRESETS，2.3 §3.2，语义见 _apply_origin_presets；
+        # task_origin 已在上方读取）
+        self._apply_origin_presets(settings, task_origin)
+        task_timeout = settings.get("task_timeout", 30)
         # Create per-task tool instances to avoid workspace/venv conflicts in concurrent mode
         tools = self._create_task_tools(workspace_path, venv_path, settings, mode=task_mode, task_id=task_id)
         # Apply task-specific timeout to shell and code_executor
@@ -1166,11 +1299,15 @@ class TaskAgent:
         # ── Load external skills from DB and register them ──
         self._register_external_skills(skill_registry, tools)
 
-        model_name = settings.get("model", "gpt-4o")
+        model_name = settings.get("model", "")
         logger.info("Using Function Calling mode for task %s (model=%s)", task_id, model_name)
 
         # ── V2: Context Manager (token-aware) ──
+        # 预算经 budget 唯一入口（D1/D2）；reserve_for_response 必须跟随输出下限——
+        # 输出下限升 32K 后旧硬编码 4096 预留不再匹配，压缩触发时机会失准
         ctx_mgr = ContextManager(
+            max_tokens=context_window(settings),
+            reserve_for_response=output_tokens(settings),
             snip_threshold=SNIP_THRESHOLD,
             keep_recent=KEEP_RECENT,
         )
@@ -1195,20 +1332,41 @@ class TaskAgent:
         if settings.get("system_prompt"):
             system_prompt = settings["system_prompt"] + "\n\n" + system_prompt
 
+        # 60 轮覆盖工作流型 Skill（如 ppt-master Default 路线 ≈40-60 次操作）
+        # 的单回合执行；仍不足时由「恢复」横幅续跑获新一轮预算（§恢复语义）
+        max_iter = settings.get("task_max_iterations", 60)
+        if not isinstance(max_iter, int) or max_iter < 1:
+            max_iter = 60
+
         # ── Check for paused state (resume) ──
         paused_state = self.db.load_agent_state(task_id)
         start_iteration = 0
         if paused_state:
-            messages = paused_state.get("messages", [])
-            start_iteration = paused_state.get("iteration", 0)
+            # 过滤上一轮预算注入的收束提醒：新一轮预算下旧「仅剩 N 轮」
+            # 提示已失效，保留会误导 LLM 提前收束（1.1 §5.3/§5.6）
+            messages = [
+                m for m in paused_state.get("messages", [])
+                if not (m.get("role") == "user"
+                        and str(m.get("content", "")).startswith(_BUDGET_WARNING_PREFIX))
+            ]
+            saved_iteration = paused_state.get("iteration", 0)
             recent_errors_saved = paused_state.get("recent_errors", [])
             self.db.delete_agent_state(task_id)
-            yield {"type": "thought", "data": {"content": f"▶️ 从第 {start_iteration} 轮恢复执行..."}}
+            # 恢复 = 新一轮运行、全新预算（对齐 Gemini/OpenClaw 续跑语义）：
+            # 迭代上限是单次运行护栏而非任务总护栏。若沿用已耗尽的计数，
+            # range(saved, max_iter) 为空 —— 恢复后立即再次耗尽「恢复空转」
+            #（2026-10-14 天眼查 25 轮耗尽任务实证：state 保留但点恢复无效）
+            logger.info(
+                "Task %s resuming from iteration %d with fresh budget %d",
+                task_id, saved_iteration, max_iter,
+            )
+            yield {"type": "thought", "data": {
+                "content": (f"▶️ 从第 {saved_iteration} 轮恢复执行"
+                            f"（新一轮 {max_iter} 轮预算）...")},
+            }
         else:
             messages = [{"role": "system", "content": system_prompt}]
-            for msg in history:
-                if msg["role"] in ("user", "assistant"):
-                    messages.append({"role": msg["role"], "content": msg["content"]})
+            messages.extend(self._rebuild_history_from_db(history))
             recent_errors_saved = None
 
         # ── Slash command fallthrough hint ──
@@ -1245,7 +1403,7 @@ class TaskAgent:
         if planner_llm and not paused_state:
             yield {"type": "thought", "data": {"content": "🏗️ 架构师正在制定执行计划..."}}
             try:
-                plan = await self._run_planner(planner_llm, settings, user_message, messages)
+                plan = await self._run_planner(planner_llm, user_message, messages)
                 if plan:
                     # Parse into structured steps for frontend (Phase 18)
                     plan_steps = self._parse_plan_steps(plan)
@@ -1275,11 +1433,6 @@ class TaskAgent:
         # Per-task cancel event for this execution
         cancel_event = self._cancel_events.get(task_id) or asyncio.Event()
 
-        # Configurable max iterations (default 25, up from 15)
-        max_iter = settings.get("task_max_iterations", 25)
-        if not isinstance(max_iter, int) or max_iter < 1:
-            max_iter = 25
-
         # Track in-memory messages so pause endpoint can save complete state
         self._task_messages[task_id] = messages
 
@@ -1291,13 +1444,40 @@ class TaskAgent:
             # 后续该轮的 reasoning_chunk / answer_chunk / action / observation 均归属此轮号
             yield {"type": "iteration", "data": {"iteration": iteration}}
 
+            # ── 预算软着陆：剩余阈值到时一次性注入收束提醒（1.1 §5.6）──
+            # 阈值到达天然只触发一次；max_iter < 阈值时预算过小不注入。
+            # 在 compress 之前追加，提醒计入压缩预算且下一轮 LLM 立即可见。
+            # chat 维持剩 3 轮；ppt 长工作流放大到 max(3, max_iter//10)
+            #（240 轮任务剩 3 轮来不及保存，2.3 §3.2）。
+            budget_warning_left = (
+                max(BUDGET_WARNING_LEFT, max_iter // 10)
+                if task_origin == "ppt" else BUDGET_WARNING_LEFT
+            )
+            if max_iter - iteration == budget_warning_left:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"{_BUDGET_WARNING_PREFIX}仅剩 {budget_warning_left} 轮。请："
+                        "1) 立即将所有中间产物保存到 workspace；"
+                        "2) 收束当前工作到安全断点；"
+                        "3) 简述已完成进度与剩余工作，便于恢复后续跑。"
+                    ),
+                })
+                yield {"type": "thought", "data": {
+                    "content": (f"⚠️ 接近迭代预算上限（剩 {budget_warning_left} 轮），"
+                                "已提醒 Agent 收束保存")}}
+                logger.info(
+                    "Budget soft-landing warning injected: task=%s remaining=%d",
+                    task_id, budget_warning_left,
+                )
+
             logger.info(
                 "TaskAgent iteration %d start: msg_count=%d recent_errors=%d task=%s",
                 iteration, len(messages), len(recent_errors), task_id,
             )
 
             # Context Collapse: compress if too many messages (token-aware)
-            messages = await ctx_mgr.compress(messages, task_llm, settings)
+            messages = await ctx_mgr.compress(messages, task_llm)
 
             # ── Function Calling path ──
             fc_completed = False
@@ -1309,6 +1489,7 @@ class TaskAgent:
                 venv_path=venv_path,
                 ctx_mgr=ctx_mgr,
                 workspace_path=workspace_path,
+                task_origin=task_origin,
             ):
                 if fc_event.get("type") == "_fc_done":
                     fc_completed = True
@@ -1337,6 +1518,8 @@ class TaskAgent:
                     # Task finished or errored — clear auto-saved state.
                     # Exception: an error exit caused by a user pause — keep
                     # the state so "resume" can continue from where it stopped.
+                    # 注意：迭代预算耗尽的 fallback 路径不经此处（循环自然退出），
+                    # state 有意保留 —— 前端「恢复」横幅据此显示，续跑从断点继续
                     if fc_status == "done" or task_id not in self._paused_tasks:
                         self.db.delete_agent_state(task_id)
                     self._run_outcomes[task_id] = "completed" if fc_status == "done" else "failed"
@@ -1346,10 +1529,65 @@ class TaskAgent:
         if cancel_event.is_set():
             fallback = "已停止生成。"
         else:
-            fallback = "抱歉，我尝试了多次但未能得出答案。请尝试换一种方式描述需求。"
+            # 迭代预算耗尽：此刻库中仍留着最后一轮 auto-save 的 agent_state
+            #（上方循环 return 前只对 done/error 清理），前端 tasks:hasState
+            # 会显示「恢复」横幅 —— 文案必须指引续跑而非误导改需求描述
+            #（2026-10-14 天眼查 25 轮耗尽任务实证：旧文案让用户以为是
+            # 需求问题，实际是预算耗尽且进展可续）
+            fallback = (
+                f"已连续执行 {max_iter} 轮迭代仍未完成任务，已有进展已保存。"
+                "可点击「恢复」从断点继续（将获得新一轮执行预算），"
+                "或在 设置→任务设置 中调大迭代上限后重试。"
+            )
         self.db.save_task_message(task_id, "assistant", fallback)
         yield {"type": "answer_chunk", "data": {"content": fallback}}
         yield {"type": "done", "data": {}}
+
+    # ── Cross-run history rebuild（1.1 §5.3 同任务重入）──
+
+    @staticmethod
+    def _rebuild_history_from_db(history: list[dict]) -> list[dict]:
+        """从 DB 历史重建 LLM 上下文（非 resume 的重入路径）。
+
+        DB 历史原本只回放 user/assistant 文本——工具结果全部蒸发，恢复后
+        的 LLM 需多轮盲读文件重建上下文（2026-10-16 实测 3-4 轮）。现将
+        observation 压为单行摘要路标（summarize_tool_result_line，与回合内
+        Micro Compact 共用格式）：metadata 里的 tool_name/tool_output 已在
+        落库时保存（task_messages.metadata），无需表迁移。「文件即状态」
+        仍是最终权威，摘要只提供活动线索。上一轮预算的收束提醒一并过滤。
+        """
+        rebuilt: list[dict] = []
+        pending_obs: list[str] = []
+
+        def _flush_obs():
+            if pending_obs:
+                rebuilt.append({
+                    "role": "user",
+                    "content": ("[上次运行工具活动摘要]\n"
+                                + "\n".join(pending_obs)
+                                + "\n[摘要结束]"),
+                })
+                pending_obs.clear()
+
+        for msg in history:
+            role = msg.get("role")
+            if role == "observation":
+                meta = msg.get("metadata") or {}
+                pending_obs.append(summarize_tool_result_line(
+                    meta.get("tool_name", "tool"),
+                    meta.get("tool_output") or msg.get("content", ""),
+                ))
+                continue
+            _flush_obs()
+            if role == "user":
+                content = str(msg.get("content", ""))
+                if content.startswith(_BUDGET_WARNING_PREFIX):
+                    continue  # 旧预算收束提醒：与新回合无关，不回放
+                rebuilt.append({"role": "user", "content": content})
+            elif role == "assistant":
+                rebuilt.append({"role": "assistant", "content": str(msg.get("content", ""))})
+        _flush_obs()
+        return rebuilt
 
     # ── FC Iteration Logging Helpers ──
 
@@ -1394,6 +1632,7 @@ class TaskAgent:
         venv_path: str = "",
         ctx_mgr: "ContextManager | None" = None,
         workspace_path: str = "",
+        task_origin: str = "chat",
     ) -> AsyncGenerator[dict, None]:
         """Handle one iteration of the function calling loop.
 
@@ -1444,7 +1683,7 @@ class TaskAgent:
                     _content_chunks_sent = False
 
             try:
-                async for chunk in task_llm.chat_stream(messages, settings, tools=tool_defs):
+                async for chunk in task_llm.chat_stream(messages, tools=tool_defs):
                     if cancel_event.is_set():
                         yield {"type": "_fc_done", "data": {"status": "error"}}
                         return
@@ -1477,6 +1716,16 @@ class TaskAgent:
                             tc_accum[i] = tc
                     elif chunk["type"] == "finish":
                         finish_reason = chunk.get("finish_reason", "unknown")
+                    elif chunk["type"] == "usage":
+                        # D5: 流式 usage 对账（端点支持 stream_options 时才有）——
+                        # 真实 token 消耗落日志，供 CHARS_PER_TOKEN 校准与配额追踪
+                        usage = chunk.get("usage", {})
+                        logger.info(
+                            "TaskAgent FC token usage [%d] prompt=%s completion=%s total=%s for task %s",
+                            iteration,
+                            usage.get("prompt_tokens"), usage.get("completion_tokens"),
+                            usage.get("total_tokens"), task_id,
+                        )
 
                 # Detailed summary of LLM response (use raw accumulators here)
                 _cp = "".join(content_parts) if content_parts else ""
@@ -1575,8 +1824,13 @@ class TaskAgent:
 
         # ── Execute each tool call ──
         _edits_made = False  # Track if any file edits were made (for self-reflection)
+        # PPT 任务命令静默（2.3 §3.3）：工作流命令谱系 = 内置 skill 固定脚本
+        # 清单 + 工作区文件操作，来源可信可预期；逐条确认在百轮级任务下不可用。
+        # 固定 auto 语义，覆盖用户三档设置与 task_auto_confirm_shell
         confirm_mode = settings.get("task_shell_confirm_mode", "smart")
         if settings.get("task_auto_confirm_shell", False):
+            confirm_mode = "auto"
+        if task_origin == "ppt":
             confirm_mode = "auto"
 
         for tc in tool_calls:
@@ -1627,10 +1881,9 @@ class TaskAgent:
                         "confirmed": False,
                         "event": confirm_event,
                     }
-                    self.db.save_task_message(
-                        task_id, "action", "",
-                        metadata={"confirm_shell": command, "task_id": task_id},
-                    )
+                    # Confirm dialogs are transient stream events only (same
+                    # as skill confirm): persisting them writes ghost "action"
+                    # rows that replay as empty tool cards in task history.
                     yield {"type": "confirm_shell", "data": {
                         "command": command,
                         "task_id": task_id,
@@ -1652,14 +1905,61 @@ class TaskAgent:
                             "error_type": "UserDenied",
                         }, ensure_ascii=False)
 
+            # ── code_executor dangerous-call confirmation (S12) ──
+            # Workspace boundary: in-workspace deletions run free, outside/
+            # undecidable targets and non-whitelisted commands ask the user
+            # (same confirm_shell dialog, same 3-mode semantics as shell).
+            if tool_name == "code_executor" and result_str is None:
+                needs_confirm = False
+                confirm_topic = ""
+                if confirm_mode == "auto":
+                    pass
+                elif confirm_mode == "smart":
+                    guard = check_code_danger(tool_params.get("code", ""), workspace_path)
+                    if guard and guard["action"] == "confirm":
+                        needs_confirm = True
+                        confirm_topic = guard["reason"]
+                else:  # strict
+                    needs_confirm = True
+                    confirm_topic = f"执行 Python 代码（strict 模式）: {tool_params.get('code', '')[:120]}"
+
+                if needs_confirm:
+                    confirm_event = asyncio.Event()
+                    self._pending_confirms[task_id] = {
+                        "command": confirm_topic,
+                        "confirmed": False,
+                        "event": confirm_event,
+                    }
+                    # Reuse the shell confirm dialog (stream-only, S6).
+                    yield {"type": "confirm_shell", "data": {
+                        "command": confirm_topic,
+                        "task_id": task_id,
+                    }}
+                    timed_out = False
+                    try:
+                        await asyncio.wait_for(confirm_event.wait(), timeout=SHELL_CONFIRM_TIMEOUT)
+                    except asyncio.TimeoutExpired:
+                        timed_out = True
+                    pending = self._pending_confirms.pop(task_id, {})
+                    if not pending.get("confirmed"):
+                        if timed_out:
+                            yield {"type": "confirm_expired", "data": {"kind": "shell", "task_id": task_id}}
+                        result_str = json.dumps({
+                            "exit_code": -1, "stdout": "",
+                            "stderr": "确认超时，已跳过此代码执行。" if timed_out else "用户拒绝了此代码执行。",
+                            "error_type": "UserDenied",
+                        }, ensure_ascii=False)
+
             # ── Skill confirmation check ──
+            # origin=ppt 直行（与 shell 静默同语义，2.3 §7.3 PPT 任务零确认打断；
+            # 内置 skill 已由 seed 置信，此处是第三方 skill 未置信时的兑底）
             if tool_name == "skill_runner" and result_str is None:
                 _skill_name = tool_params.get("skill", "")
                 _skill_runner_inst = tools.get("skill_runner")
                 if _skill_runner_inst:
                     _skill_runner_inst._refresh_cache()
                     _sinfo = _skill_runner_inst._find_skill(_skill_name)
-                    if _sinfo and _sinfo.get("needs_confirm"):
+                    if _sinfo and _sinfo.get("needs_confirm") and task_origin != "ppt":
                         _confirm_event = asyncio.Event()
                         self._pending_skill_confirms[task_id] = {
                             "skill_name": _skill_name,
@@ -1687,8 +1987,9 @@ class TaskAgent:
                             }, ensure_ascii=False)
 
             # ── git_ops commit confirmation ──
+            # （origin=ppt 直行：临时工作区无 commit 价值，零打断优先）
             if tool_name == "git_ops" and result_str is None:
-                if tool_params.get("action") == "commit":
+                if tool_params.get("action") == "commit" and task_origin != "ppt":
                     _commit_msg = tool_params.get("args", "")
                     _confirm_event = asyncio.Event()
                     self._pending_confirms[task_id] = {
@@ -1696,10 +1997,7 @@ class TaskAgent:
                         "confirmed": False,
                         "event": _confirm_event,
                     }
-                    self.db.save_task_message(
-                        task_id, "action", "",
-                        metadata={"confirm_shell": f"git commit {_commit_msg}", "task_id": task_id},
-                    )
+                    # Same as shell confirm: stream-only, no ghost action row.
                     yield {"type": "confirm_shell", "data": {
                         "command": f"git commit {_commit_msg}",
                         "task_id": task_id,
@@ -1808,7 +2106,8 @@ class TaskAgent:
                                 _sr_chk._refresh_cache()
                                 _si_chk = _sr_chk._find_skill(tool_name)
                                 _needs_confirm = bool(_si_chk and _si_chk.get("needs_confirm"))
-                            if _needs_confirm:
+                            if _needs_confirm and task_origin != "ppt":
+                                # origin=ppt 直行（与 shell 静默同语义，2.3 §7.3）
                                 _skill_event = asyncio.Event()
                                 self._pending_skill_confirms[task_id] = {
                                     "skill_name": tool_name,

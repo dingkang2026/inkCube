@@ -4,6 +4,7 @@
   A. DB 通知层（§3.2）：add_notification 未读查重 / unread 正序 / recent 倒序 / mark_read / cleanup
   B. model_downloads 层（§3.3）：状态记录 upsert / 崩溃恢复 downloading→failed
   C. /activities/status 聚合（§3.6）：五类活跃项 + summary 计数 + notifications 段 + mark-read 端点
+  C2. 通知中心（2.11 §3.4）：全量分页（含已读）/ limit 钳制 / read-all 幂等 / 单条删除幂等
   D. Onboarding 标记（§7.3 第一层）：get_flag/set_flag + GET /onboarding + POST /onboarding/done
   E. Readiness 矩阵与入口校验（§7.2/§7.3 第三层）：compute_features + ensure_ready 错误映射
 
@@ -24,6 +25,7 @@ from db.database import Database
 from errors import EmbeddingModelMissing, LLMNotConfigured, ParsingModelMissing
 import readiness
 import activity_events
+import scheduler
 from routers import activities as activities_router
 from routers import settings as settings_router
 
@@ -103,6 +105,14 @@ class TestNotifications:
         recent = db.list_recent_notifications(10)
         assert len(recent) == 3
 
+    def test_delete_notification_idempotent(self, db):
+        """单条删除（2.11 §3.4）：存在删除返回 1，不存在幂等返回 0，列表同步收缩。"""
+        nid = db.add_notification("file", "f1", "p1", "completed", "a.pdf")
+        assert db.delete_notification(nid) == 1
+        assert db.delete_notification(nid) == 0  # 已删，幂等
+        _, total = db.list_notifications()
+        assert total == 0
+
 
 # ── B. model_downloads 层（§3.3）─────────────────────────────
 
@@ -157,6 +167,18 @@ def _insert_report(db, project_id, report_id, status, progress=40):
     db.conn.commit()
 
 
+def _insert_base_lib(db, lib_id: str, name: str = "共享资料库",
+                     lib_type: str = "preset_test") -> str:
+    """直插 base_lib 行（原 create_base_lib 方法的测试替身，2.9 D4 后方法已删）。"""
+    db.conn.execute(
+        "INSERT INTO projects (id, name, description, kind, lib_type, created_at, updated_at) "
+        "VALUES (?, ?, '', 'base_lib', ?, datetime('now'), datetime('now'))",
+        (lib_id, name, lib_type),
+    )
+    db.conn.commit()
+    return lib_id
+
+
 class TestActivitiesStatus:
     def test_active_files_grouped_with_image_describing(self, db, project_id):
         f1 = db.create_file(project_id, "a.pdf", ".pdf", 100, "h1")["id"]
@@ -175,6 +197,36 @@ class TestActivitiesStatus:
         assert row["entity_type"] == "file"
         assert row["count"] == 3
         assert row["image_describing"] == 1
+
+    def test_active_files_stopped_queues_excluded(self, db, project_id):
+        """停止态口径（0.4 §队列暂停修订）：排队中（pending）不算活跃，
+        只有在飞（parsing / describing）保留；恢复后心跳重新点亮。"""
+        f_pend = db.create_file(project_id, "queued.pdf", ".pdf", 100, "h1")["id"]
+        f_parsing = db.create_file(project_id, "parsing.pdf", ".pdf", 100, "h2")["id"]
+        f_img_pend = db.create_file(project_id, "imgpend.pdf", ".pdf", 100, "h3")["id"]
+        f_img_desc = db.create_file(project_id, "imgdesc.pdf", ".pdf", 100, "h4")["id"]
+        db.update_file_status(f_pend, "pending")
+        db.update_file_status(f_parsing, "parsing")
+        db.update_file_status(f_img_pend, "done")
+        db.update_file_status(f_img_desc, "done")
+        db.conn.execute("UPDATE files SET image_status = 'pending' WHERE id = ?", (f_img_pend,))
+        db.conn.execute("UPDATE files SET image_status = 'describing' WHERE id = ?", (f_img_desc,))
+        db.set_flag("parsing_paused", True)
+        db.set_flag("describe_paused", True)
+        db.conn.commit()
+
+        rows = activities_router._active_files(db)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["count"] == 2  # 仅在飞：parsing 文件 + describing 图片所在文件
+        assert row["image_describing"] == 1  # describing 保留；pending 图片不计
+
+        # 恢复（flag 翻转）→ 排队中重新点亮，心跳下一拍回到全量口径
+        db.set_flag("parsing_paused", False)
+        db.set_flag("describe_paused", False)
+        rows = activities_router._active_files(db)
+        assert rows[0]["count"] == 4
+        assert rows[0]["image_describing"] == 2
 
     def test_active_files_excludes_terminal(self, db, project_id):
         f1 = db.create_file(project_id, "done.pdf", ".pdf", 100, "h1")["id"]
@@ -205,6 +257,63 @@ class TestActivitiesStatus:
         """task_agent / model_manager 未初始化 → 空列表（启动早期不崩）。"""
         assert activities_router._active_tasks(db) == []
         assert activities_router._active_model_downloads() == []
+
+    def test_active_tasks_exclude_ppt_origin(self, db, monkeypatch):
+        """PPT 借道任务（origin='ppt'）不入 task 源（2.3 审核项 #2）：
+        PPT 活动已由 ppt 源（fetch_active）呈现，双源上报造成首页双条目
+        与 running_tasks 假角标；chat 任务照常上报。"""
+        chat_id = db.create_task("对话任务", data_dir="", workspace_path="")['id']
+        ppt_id = db.create_task("PPT 生成", data_dir="", workspace_path="", origin="ppt")['id']
+        agent = SimpleNamespace(_running_task_ids={chat_id, ppt_id})
+        monkeypatch.setattr(deps, "task_agent", agent, raising=False)
+
+        rows = activities_router._active_tasks(db)
+        assert [r["entity_id"] for r in rows] == [chat_id]
+        assert rows[0]["entity_type"] == "task"
+        assert rows[0]["entity_title"] == "对话任务"
+
+    def test_active_tasks_exclude_shadow_schedule(self, db, monkeypatch):
+        """影子任务（schedule_id 非空，定时订阅执行）不入 task 源（2.11 D2 复核）：
+        订阅执行由 schedule 源（scheduler.fetch_active）呈现；影子任务不进
+        人工任务列表（服务端排除），混入 task 源会造成任务假角标与点击落
+        任务页扑空。chat 任务照常。"""
+        sch = db.create_schedule("周报订阅", "p", "general", "general",
+                                 "weekly", "MON 09:00")
+        chat_id = db.create_task("对话任务", data_dir="", workspace_path="")['id']
+        shadow_id = db.create_task("订阅期次", data_dir="", workspace_path="",
+                                   schedule_id=sch["id"])['id']
+        agent = SimpleNamespace(_running_task_ids={chat_id, shadow_id})
+        monkeypatch.setattr(deps, "task_agent", agent, raising=False)
+
+        rows = activities_router._active_tasks(db)
+        assert [r["entity_id"] for r in rows] == [chat_id]
+
+    def test_active_schedules_running_only(self, db):
+        """schedule 源（scheduler.fetch_active）：仅 running 期次呈现，
+        done/failed/skipped/missed 终态不入；entity_title 取订阅名。"""
+        sch = db.create_schedule("周报订阅", "p", "general", "general",
+                                 "weekly", "MON 09:00")
+        db.insert_schedule_run("run_live", sch["id"], None, status="running")
+        db.insert_schedule_run("run_done", sch["id"], None, status="done")
+        db.insert_schedule_run("run_fail", sch["id"], None, status="failed")
+
+        rows = scheduler.fetch_active(db)
+        assert [r["entity_id"] for r in rows] == ["run_live"]
+        assert rows[0]["entity_type"] == "schedule"
+        assert rows[0]["entity_title"] == "周报订阅"
+
+    def test_status_summary_counts_running_schedules(self, db):
+        """summary.running_schedules 计数 + schedule 条目进 active 快照
+        （0.4 §8.1 台账 schedule kind；影子任务不再计入 running_tasks）。"""
+        sch = db.create_schedule("日报", "p", "general", "general",
+                                 "daily", "09:00")
+        db.insert_schedule_run("run_s1", sch["id"], None, status="running")
+
+        result = asyncio.run(activities_router.activities_status())
+
+        assert result["summary"]["running_schedules"] == 1
+        assert result["summary"]["running_tasks"] == 0
+        assert any(a["entity_type"] == "schedule" for a in result["active"])
 
     def test_status_summary_and_notifications(self, db, project_id):
         db.create_file(project_id, "a.pdf", ".pdf", 100, "h1")
@@ -242,11 +351,70 @@ class TestActivitiesStatus:
         assert db.list_unread_notifications() == []
 
 
+class TestNotificationCenter:
+    """通知中心历史面（2.11 §3.4）：全量分页（含已读）+ 一键全部已读。"""
+
+    def test_list_notifications_pagination_and_total(self, db):
+        ids = [db.add_notification("file", f"f{i}", "p1", "completed", f"a{i}.pdf") for i in range(5)]
+        items, total = db.list_notifications(0, 2)
+        assert total == 5
+        assert [n["id"] for n in items] == [ids[4], ids[3]]  # 最新优先（created_at DESC, id DESC）
+        items2, _ = db.list_notifications(2, 2)
+        assert [n["id"] for n in items2] == [ids[2], ids[1]]
+
+    def test_list_notifications_includes_read(self, db):
+        """历史面含已读（与 unread 流的核心差异，§3.4）。"""
+        nid = db.add_notification("file", "f1", "p1", "completed", "a.pdf")
+        db.mark_notifications_read([nid])
+        items, total = db.list_notifications(0, 50)
+        assert total == 1
+        assert items[0]["read_at"] is not None
+
+    def test_mark_all_notifications_read_idempotent(self, db):
+        db.add_notification("file", "f1", "p1", "completed", "a.pdf")
+        db.add_notification("file", "f2", "p1", "completed", "b.pdf")
+        nid = db.add_notification("file", "f3", "p1", "completed", "c.pdf")
+        db.mark_notifications_read([nid])
+        assert db.mark_all_notifications_read() == 2  # 只清未读
+        assert db.list_unread_notifications() == []
+        assert db.mark_all_notifications_read() == 0  # 幂等
+
+    def test_list_endpoint_offset_and_limit_clamp(self, db):
+        for i in range(3):
+            db.add_notification("file", f"f{i}", "p1", "completed", f"a{i}.pdf")
+        result = asyncio.run(activities_router.list_notifications(offset=0, limit=2))
+        assert result["total"] == 3
+        assert len(result["items"]) == 2
+        # limit 钳制：>200 取 200（此处 3 条全量）；<1 取 1（防误用拉爆）
+        result_all = asyncio.run(activities_router.list_notifications(offset=0, limit=9999))
+        assert len(result_all["items"]) == 3
+        result_min = asyncio.run(activities_router.list_notifications(offset=0, limit=0))
+        assert len(result_min["items"]) == 1
+
+    def test_read_all_endpoint(self, db):
+        db.add_notification("file", "f1", "p1", "completed", "a.pdf")
+        db.add_notification("task", "t1", None, "failed", "任务A")
+        result = asyncio.run(activities_router.read_all_notifications())
+        assert result == {"ok": True, "marked": 2}
+        assert db.list_unread_notifications() == []
+
+    def test_delete_endpoint_idempotent(self, db):
+        """单条删除端点（2.11 §3.4）：首次 deleted=1，重删幂等 deleted=0，total 同步收缩。"""
+        nid = db.add_notification("file", "f1", "p1", "completed", "a.pdf")
+        db.add_notification("task", "t1", None, "failed", "任务A")
+        result = asyncio.run(activities_router.delete_notification(nid))
+        assert result == {"ok": True, "deleted": 1}
+        result_again = asyncio.run(activities_router.delete_notification(nid))
+        assert result_again == {"ok": True, "deleted": 0}
+        _, total = db.list_notifications()
+        assert total == 1
+
+
 class TestContainerRouting:
     """基础库容器闭环（0.4 §3.6）：活跃项/终态通知携带 container，前端导航分流取数。"""
 
     def test_active_files_carry_container(self, db, project_id):
-        lib_id = db.create_base_lib(name="共享资料库")["id"]
+        lib_id = _insert_base_lib(db, "lib-test-1")
         f_proj = db.create_file(project_id, "a.pdf", ".pdf", 100, "h1")["id"]
         f_lib = db.create_file(lib_id, "b.pdf", ".pdf", 100, "h2")["id"]
         db.update_file_status(f_proj, "parsing")
@@ -258,7 +426,7 @@ class TestContainerRouting:
 
     def test_file_terminal_notification_carries_container(self, db, project_id):
         """file 终态通知经 activity_events 显式声明（E2，0.4 §6.4），JOIN projects.kind 取 container。"""
-        lib_id = db.create_base_lib(name="共享资料库")["id"]
+        lib_id = _insert_base_lib(db, "lib-test-1")
         f_lib = db.create_file(lib_id, "b.pdf", ".pdf", 100, "h2")["id"]
         db.update_file_status(f_lib, "done")
         activity_events.complete_file(db, f_lib)
@@ -269,7 +437,7 @@ class TestContainerRouting:
 
     def test_report_terminal_notification_carries_container(self, db, project_id):
         """报告终态通知经 activity_events 显式声明（E2，顺序 4），JOIN projects.kind 取 container。"""
-        lib_id = db.create_base_lib(name="共享资料库")["id"]
+        lib_id = _insert_base_lib(db, "lib-test-1")
         _insert_report(db, lib_id, "r_lib", "generating")
         activity_events.complete_report(db, "r_lib")
 
@@ -319,6 +487,7 @@ class TestOnboarding:
 ALL_OK = {
     "llm": {"status": "ok"},
     "vlm": {"status": "ok"},
+    "web_search": {"status": "ok"},
     "embedding": {"status": "ok"},
     "parsing": {"status": "ok"},
 }
@@ -391,6 +560,8 @@ class TestEnsureReady:
             readiness.ensure_ready("file_parsing")
 
     def test_optional_vlm_never_blocks(self, monkeypatch):
+        """功能面不变：vlm 仍是 file_parsing 可选依赖，ensure_ready 仅缺可选 → 放行
+        （必配升级仅影响提示面红条/状态点，不改入口拦截）。"""
         self._patch_features(monkeypatch, {**ALL_OK, "vlm": {"status": "error"}})
         readiness.ensure_ready("file_parsing")  # 仅缺可选 → 放行
 
@@ -406,6 +577,28 @@ class TestComputeServiceStatus:
         db.save_settings({"api_key": "sk-x", "api_url": "https://example.com", "model": "glm-4"})
         services = readiness.compute_service_status()
         assert services["llm"]["status"] == "ok"
+
+    def test_web_search_error_when_not_configured(self, db):
+        """网络搜索必配（2026-10-19 全必配统一）：未选供应商/Key 空 = error，进 OVERALL_REQUIRED_SERVICES。"""
+        db.save_settings({"web_search_provider": "", "tavily_key": "", "zhipu_search_key": ""})
+        services = readiness.compute_service_status()
+        assert services["web_search"]["status"] == "error"
+        assert services["web_search"]["code"] == "WEB_SEARCH_NOT_CONFIGURED"
+        assert services["web_search"]["action"] == "settings:webSearch"
+
+    def test_web_search_ok_with_provider_and_key(self, db):
+        db.save_settings({"web_search_provider": "tavily", "tavily_key": "tvly-x"})
+        services = readiness.compute_service_status()
+        assert services["web_search"]["status"] == "ok"
+
+    def test_health_overall_degraded_on_missing_web_search(self, monkeypatch):
+        """overall 全必配聚合：缺网络搜索打 degraded（2026-10-19 必配统一）。"""
+        from routers import health as health_router
+
+        services = {**ALL_OK, "web_search": {"status": "error", "code": "WEB_SEARCH_NOT_CONFIGURED"}}
+        monkeypatch.setattr(health_router, "compute_service_status", lambda: services)
+        result = asyncio.run(health_router.health_check())
+        assert result["status"] == "degraded"
 
     def test_model_manager_missing_reports_unavailable(self, monkeypatch):
         monkeypatch.setattr(deps, "model_manager", None, raising=False)
@@ -423,7 +616,26 @@ class TestComputeServiceStatus:
         assert result["status"] == "ok"
         assert set(result["features"].keys()) == {
             "file_parsing", "wiki_compile", "report", "task", "knowledge_search",
+            "form_fill", "form_analysis",
         }
+
+    def test_health_overall_degraded_on_missing_vlm(self, monkeypatch):
+        """overall 全必配聚合：缺 VLM 打 degraded（2026-10-19 必配统一）。"""
+        from routers import health as health_router
+
+        services = {**ALL_OK, "vlm": {"status": "error", "code": "VLM_NOT_CONFIGURED"}}
+        monkeypatch.setattr(health_router, "compute_service_status", lambda: services)
+        result = asyncio.run(health_router.health_check())
+        assert result["status"] == "degraded"
+
+    def test_health_overall_degraded_on_required_missing(self, monkeypatch):
+        """必需服务（embedding）缺失仍打 degraded。"""
+        from routers import health as health_router
+
+        services = {**ALL_OK, "embedding": {"status": "error"}}
+        monkeypatch.setattr(health_router, "compute_service_status", lambda: services)
+        result = asyncio.run(health_router.health_check())
+        assert result["status"] == "degraded"
 
 
 # ── F. /activities/stream SSE（0.4 §6.4 E3）──────────────────

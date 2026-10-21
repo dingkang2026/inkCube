@@ -13,7 +13,8 @@ vi.mock('react-i18next', () => ({
 }))
 
 vi.mock('../src/features/settings/useSettings', () => ({
-  useSettings: () => ({ settings: { tavily_key: 'tv-key' } }),
+  // 网络搜索已选 tavily 且 Key 非空 → 互联网总闸可用（供应商化判定，2026-10-19）
+  useSettings: () => ({ settings: { web_search_provider: 'tavily', tavily_key: 'tv-key', zhipu_search_key: '' } }),
 }))
 
 // ReportWizard 消费 useToast（必填变量校验提示）；无 Provider 会 throw，统一 mock 捕获调用

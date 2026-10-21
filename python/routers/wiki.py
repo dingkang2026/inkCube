@@ -5,11 +5,13 @@ Implements all Wiki REST APIs per §4/§5/§7 of 2.6wiki-design.md.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from readiness import ensure_ready
+from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
+from wiki.review_id import compute_review_id  # review_id 唯一实现(H-1:必须项目作用域)
 
 logger = logging.getLogger(__name__)
 
@@ -97,20 +99,6 @@ class EnrichWikilinksRequest(BaseModel):
     page_key: str
 
 
-# ── Helper ──
-
-
-def _compute_review_id(review_type: str, title: str) -> str:
-    """Compute a stable review ID based on type+title (FNV-1a hash, per §3.5)."""
-    normalized = f"{review_type}::{title.strip().lower()}"
-    # FNV-1a 32-bit
-    h = 0x811C9DC5
-    for byte in normalized.encode("utf-8"):
-        h ^= byte
-        h = (h * 0x01000193) & 0xFFFFFFFF
-    return f"review_{h:08x}"
-
-
 # ── Intelligence: Ledger entries (3.1 §4.3, phase 4) ──
 #
 # /ledger/latest 声明在 /projects/{project_id}/... 之前(affairs.py /due 同款防遮蔽惯例)。
@@ -129,15 +117,20 @@ async def list_latest_ledger_entries():
 
 
 @router.get("/projects/{project_id}/ledger/entries")
-async def list_ledger_entries(project_id: str, limit: int = 20):
-    """单项目台账条目时间轴(知识首页时间轴卡,3.1 §5.3);limit 1-100。"""
+async def list_ledger_entries(project_id: str, limit: int = 20, offset: int = Query(0, ge=0)):
+    """单项目台账条目时间轴(知识首页时间轴卡,3.1 §5.3);limit 1-100,offset 翻页。"""
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit must be 1-100")
     try:
         db = get_db()
         if not db.get_project(project_id):
             raise HTTPException(status_code=404, detail="Project not found")
-        return {"entries": db.list_ledger_entries(project_id, limit)}
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+        entries = db.list_ledger_entries(project_id, limit + 1, offset)
+        has_more = len(entries) > limit
+        if has_more:
+            entries = entries[:limit]
+        return {"entries": entries, "has_more": has_more}
     except HTTPException:
         raise
     except Exception as e:
@@ -149,7 +142,11 @@ async def list_ledger_entries(project_id: str, limit: int = 20):
 
 
 @router.get("/projects/{project_id}/pages")
-async def list_wiki_pages(project_id: str):
+async def list_wiki_pages(
+    project_id: str,
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
     """List all Wiki pages for a project, ordered by schema position."""
     try:
         db = get_db()
@@ -157,15 +154,26 @@ async def list_wiki_pages(project_id: str):
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        pages = db.list_wiki_pages(project_id)
-        schemas = db.get_wiki_schemas(project.get("type", "general"))
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+        pages = db.list_wiki_pages(
+            project_id, limit=limit + 1 if limit > 0 else 0, offset=offset)
+        has_more = limit > 0 and len(pages) > limit
+        if has_more:
+            pages = pages[:limit]
 
-        # Build schema map for missing pages
-        existing_keys = {p["page_key"] for p in pages}
+        # missing_pages 必须基于全量 page_key 集计算（key-only 轻量查询），
+        # 不能基于当前页——分页后当前页缺 key 不代表项目缺页
+        schemas = db.get_wiki_schemas(project.get("type", "general"))
+        existing_keys = set(db.list_wiki_page_keys(project_id))
         missing_schemas = [s for s in schemas if s["page_key"] not in existing_keys]
 
         return {
             "pages": pages,
+            "has_more": has_more,
+            "total": db.conn.execute(
+                "SELECT COUNT(*) AS cnt FROM wiki_pages WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()["cnt"],
             "missing_pages": [
                 {"page_key": s["page_key"], "title": s["title"], "position": s["position"]}
                 for s in missing_schemas
@@ -379,6 +387,9 @@ async def get_compile_status(project_id: str):
         task = db.get_latest_compile_task(project_id)
         result = {"task": task}
         if task:
+            # 2.10 §4.5：该次编译作业端到端消耗（entity_id=compile_task_id 聚合，
+            # 仅 ingest 链路；lint/dedup/enrich 属独立操作不计入）
+            task["usage"] = db.get_usage_by_entities([task["id"]]).get(task["id"])
             summaries = db.get_ingest_summaries(task["id"])
             result["ingest_summaries"] = summaries
             # Detect crash recovery: task is 'queued' but has prior ingest progress
@@ -396,12 +407,35 @@ async def get_compile_status(project_id: str):
 
 
 @router.get("/projects/{project_id}/reviews")
-async def list_reviews(project_id: str, resolved: Optional[bool] = None):
-    """List Wiki reviews (compilation findings) for a project."""
+async def list_reviews(
+    project_id: str,
+    resolved: Optional[bool] = None,
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
+    """List Wiki reviews (compilation findings) for a project.
+
+    响应附 counts（按 type 分型计数）与 total：reviews 分页后数组不再完整，
+    PulseBar/详情页徽章计数改消费 counts，不再客户端全量计数。
+    """
     try:
         db = get_db()
-        reviews = db.list_wiki_reviews(project_id, resolved=resolved)
-        return {"reviews": reviews}
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+        reviews = db.list_wiki_reviews(
+            project_id, resolved=resolved,
+            limit=limit + 1 if limit > 0 else 0, offset=offset)
+        has_more = limit > 0 and len(reviews) > limit
+        if has_more:
+            reviews = reviews[:limit]
+        return {
+            "reviews": reviews,
+            "has_more": has_more,
+            "total": db.conn.execute(
+                "SELECT COUNT(*) AS cnt FROM wiki_reviews WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()["cnt"],
+            "counts": db.count_wiki_reviews_by_type(project_id),
+        }
     except Exception as e:
         logger.error("Failed to list reviews: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -418,7 +452,7 @@ async def resolve_review(project_id: str, review_id: str, req: ReviewResolveRequ
         if review["project_id"] != project_id:
             raise HTTPException(status_code=403, detail="Review belongs to different project")
 
-        db.resolve_wiki_review(review_id, req.action)
+        db.resolve_wiki_review(project_id, review_id, req.action)
         return {"success": True}
     except HTTPException:
         raise
@@ -499,7 +533,7 @@ async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudica
                 all_ok = False
 
         if all_ok:
-            db.resolve_wiki_review(review_id, "adjudicated")
+            db.resolve_wiki_review(project_id, review_id, "adjudicated")
             return {"success": True, "details": details}
 
         # 部分失配：保留发现项待人工，返回逐侧明细供前端提示（§4.4 宁可留待人工不误归档）
@@ -549,7 +583,7 @@ async def trigger_lint(project_id: str, req: LintRequest = None):
 
         def _store_findings(findings):
             for finding in findings:
-                review_id = _compute_review_id(finding["type"], finding["title"])
+                review_id = compute_review_id(project_id, finding["type"], finding["title"])
                 # Build description with optional metadata
                 desc = finding.get("description", "")
                 # Append severity for semantic lint findings
@@ -586,14 +620,20 @@ async def trigger_lint(project_id: str, req: LintRequest = None):
             from wiki.semantic_lint import run_semantic_lint
             from wiki.detect_language import detect_wiki_language, get_language_hint
             from llm import LLMClient
-            settings = db.get_settings()
+            from llm.routing import get_task_settings
+            # 档位制：lint 档解析写入 model 键（2026-10-20 补齐——漏路由时
+            # 直构 client 缺 model 键，靠 semantic_lint 内部重建碰巧掩益）
+            settings = get_task_settings(db.get_settings(), "lint")
             llm_client = LLMClient(settings)
             # Auto-detect Wiki language for output matching
             lang_code = detect_wiki_language(db, project_id)
             language_hint = get_language_hint(lang_code)
-            semantic_findings = await run_semantic_lint(
-                db, project_id, llm_client, settings, language_hint=language_hint,
-            )
+            # 2.10 §4.3: 用量环境（source=wiki / purpose=lint）
+            with push_context(UsageContext(
+                    source="wiki", purpose="lint", project_id=project_id)):
+                semantic_findings = await run_semantic_lint(
+                    db, project_id, llm_client, settings, language_hint=language_hint,
+                )
             _store_findings(semantic_findings)
             total_findings += len(semantic_findings)
 
@@ -621,16 +661,22 @@ async def sweep_project_reviews(project_id: str):
 
         # Try to use LLM for Stage 2 if available
         llm_client = None
-        llm_settings = None
         try:
             from llm import LLMClient
+            from llm.routing import resolve_model
+            # 档位制：Stage 2 LLM 判断用标准档（无专用路由键，2026-10-20 补齐——
+            # 旧直构缺 model 键，此 client 被 sweep_reviews 直接消费无内建重建）
             settings = db.get_settings()
+            settings["model"] = resolve_model(settings, "standard")
             llm_client = LLMClient(settings)
-            llm_settings = settings
         except Exception as e:
             logger.info("Sweep reviews: LLM not available for Stage 2: %s", e)
 
-        result = await sweep_reviews(db, project_id, llm_client, llm_settings)
+        # 2.10 §4.3: 用量环境（source=wiki / purpose=sweep；llm_client 为 None
+        # 时无 LLM 调用，push 无副作用）
+        with push_context(UsageContext(
+                source="wiki", purpose="sweep", project_id=project_id)):
+            result = await sweep_reviews(db, project_id, llm_client)
         return {"success": True, **result}
     except HTTPException:
         raise
@@ -864,15 +910,28 @@ async def get_page_backlinks(project_id: str, page_key: str):
 
 
 @router.get("/projects/{project_id}/changelog")
-async def get_project_changelog(project_id: str, limit: int = 50):
+async def get_project_changelog(
+    project_id: str,
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
     """Get project-wide change log (for log.md timeline view)."""
     try:
         db = get_db()
         project = db.get_project(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        logs = db.list_wiki_change_log(project_id, limit=limit)
-        return {"changelog": logs}
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+        logs = db.list_wiki_change_log(
+            project_id, limit=limit + 1 if limit > 0 else 0, offset=offset)
+        has_more = limit > 0 and len(logs) > limit
+        if has_more:
+            logs = logs[:limit]
+        total = db.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM wiki_change_log WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()["cnt"]
+        return {"changelog": logs, "has_more": has_more, "total": total}
     except HTTPException:
         raise
     except Exception as e:
@@ -881,22 +940,6 @@ async def get_project_changelog(project_id: str, limit: int = 50):
 
 
 # ── Wiki Purpose / Overview (§3.6) ──
-
-
-@router.get("/projects/{project_id}/purpose")
-async def get_wiki_purpose(project_id: str):
-    """Get the Wiki purpose (purpose.md equivalent) for a project."""
-    try:
-        db = get_db()
-        project = db.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        return {"purpose": db.get_wiki_purpose(project_id)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get wiki purpose: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/projects/{project_id}/purpose")
@@ -913,22 +956,6 @@ async def update_wiki_purpose(project_id: str, req: PurposeRequest):
         raise
     except Exception as e:
         logger.error("Failed to update wiki purpose: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/projects/{project_id}/overview")
-async def get_wiki_overview(project_id: str):
-    """Get the Wiki overview (overview.md equivalent) for a project."""
-    try:
-        db = get_db()
-        project = db.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        return {"overview": db.get_wiki_overview(project_id)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get wiki overview: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -949,54 +976,38 @@ async def update_wiki_overview(project_id: str, req: OverviewRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Source Pages (ingestion tracking, §3.7) ──
-
-
-@router.get("/projects/{project_id}/source-pages")
-async def list_source_pages(project_id: str):
-    """List all source pages (ingestion tracking) for a project."""
-    try:
-        db = get_db()
-        project = db.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        return {"source_pages": db.list_source_pages(project_id)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to list source pages: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/projects/{project_id}/source-pages/{file_id}")
-async def get_source_page(project_id: str, file_id: str):
-    """Get a single source page by file_id."""
-    try:
-        db = get_db()
-        sp = db.get_source_page(project_id, file_id)
-        if not sp:
-            raise HTTPException(status_code=404, detail="Source page not found")
-        return {"source_page": sp}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get source page: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ── Wiki Page Versions ──
 
 
 @router.get("/projects/{project_id}/pages/{page_key}/versions")
-async def list_page_versions(project_id: str, page_key: str, limit: int = 20):
+async def list_page_versions(
+    project_id: str,
+    page_key: str,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
     """List version history for a wiki page."""
     try:
         db = get_db()
         page = db.get_wiki_page(project_id, page_key)
         if not page:
             raise HTTPException(status_code=404, detail="Wiki page not found")
-        versions = db.list_wiki_page_versions(page["id"], limit=limit)
-        return {"versions": versions, "current_version": page.get("compile_version", 0)}
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+        versions = db.list_wiki_page_versions(
+            page["id"], limit=limit + 1, offset=offset)
+        has_more = len(versions) > limit
+        if has_more:
+            versions = versions[:limit]
+        total = db.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM wiki_page_versions WHERE wiki_page_id = ?",
+            (page["id"],),
+        ).fetchone()["cnt"]
+        return {
+            "versions": versions,
+            "has_more": has_more,
+            "total": total,
+            "current_version": page.get("compile_version", 0),
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1038,7 +1049,7 @@ async def detect_duplicate_pages(project_id: str):
             raise HTTPException(status_code=404, detail="Project not found")
 
         from wiki.dedup import extract_entity_summaries, detect_duplicates
-        from wiki.llm_routing import get_task_settings
+        from llm.routing import get_task_settings
         from llm import LLMClient
 
         settings = db.get_settings()
@@ -1046,12 +1057,16 @@ async def detect_duplicate_pages(project_id: str):
         if len(summaries) < 2:
             return {"groups": [], "summaries_count": len(summaries)}
 
-        llm = LLMClient(settings)
+        # 档位制：先解析后构造一次（旧「先建全局 client 再比较重建」依赖
+        # settings 缺 model 键的 None≠名字比较，恒重建且首构是死对象——
+        # 2026-10-20 档位制漏网清理）
         effective_settings = get_task_settings(settings, "dedup")
-        if effective_settings.get("model") != settings.get("model"):
-            llm = LLMClient(effective_settings)
+        llm = LLMClient(effective_settings)
 
-        groups = await detect_duplicates(summaries, llm, effective_settings)
+        # 2.10 §4.3: 用量环境（source=wiki / purpose=dedup）
+        with push_context(UsageContext(
+                source="wiki", purpose="dedup", project_id=project_id)):
+            groups = await detect_duplicates(summaries, llm)
         return {"groups": groups, "summaries_count": len(summaries)}
     except HTTPException:
         raise
@@ -1075,22 +1090,23 @@ async def merge_duplicate_pages(project_id: str, req: DedupMergeRequest):
             raise HTTPException(status_code=404, detail="Project not found")
 
         from wiki.dedup import merge_pages
-        from wiki.llm_routing import get_task_settings
+        from llm.routing import get_task_settings
         from llm import LLMClient
 
         settings = db.get_settings()
-        llm = LLMClient(settings)
+        # 档位制：先解析后构造一次（同 dedup/detect 清理，2026-10-20）
         effective_settings = get_task_settings(settings, "dedup")
-        if effective_settings.get("model") != settings.get("model"):
-            llm = LLMClient(effective_settings)
+        llm = LLMClient(effective_settings)
 
-        result = await merge_pages(
-            db, project_id,
-            canonical_key=req.canonical_key,
-            duplicate_keys=req.duplicate_keys,
-            llm_client=llm,
-            llm_settings=effective_settings,
-        )
+        # 2.10 §4.3: 用量环境（source=wiki / purpose=dedup）
+        with push_context(UsageContext(
+                source="wiki", purpose="dedup", project_id=project_id)):
+            result = await merge_pages(
+                db, project_id,
+                canonical_key=req.canonical_key,
+                duplicate_keys=req.duplicate_keys,
+                llm_client=llm,
+            )
         return result
     except HTTPException:
         raise
@@ -1122,19 +1138,24 @@ async def enrich_page_wikilinks(project_id: str, req: EnrichWikilinksRequest):
 
         from wiki.wiki_enrich import enrich_wikilinks
         from llm import LLMClient
+        from llm.routing import get_task_settings
 
         settings = db.get_settings()
-        llm_client = LLMClient(settings)
+        effective_settings = get_task_settings(settings, "enrich")
+        llm_client = LLMClient(effective_settings)
         all_pages = db.list_wiki_pages(project_id)
         all_pages_brief = [{"page_key": p["page_key"], "title": p.get("title", "")} for p in all_pages]
 
-        enriched_content, link_count = await enrich_wikilinks(
-            content=page.get("content", ""),
-            page_key=req.page_key,
-            all_pages=all_pages_brief,
-            llm_client=llm_client,
-            llm_settings=settings,
-        )
+        # 2.10 §4.3: 用量环境（source=wiki / purpose=enrich）
+        with push_context(UsageContext(
+                source="wiki", purpose="enrich", project_id=project_id,
+                entity_id=page["id"])):
+            enriched_content, link_count = await enrich_wikilinks(
+                content=page.get("content", ""),
+                page_key=req.page_key,
+                all_pages=all_pages_brief,
+                llm_client=llm_client,
+            )
 
         # Save enriched content if links were added
         if link_count > 0:

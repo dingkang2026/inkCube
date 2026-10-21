@@ -56,7 +56,9 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     loadTasks()
   }, [loadTasks])
 
-  const handleCreateTask = useCallback(async (mode: 'coding' | 'general' = 'coding') => {
+  /** 返回新任务 id：欢迎页「发送即建任务」链路（0.5 §4.4）需立即以新 id
+   *  发送首条消息，不等渲染回流的 activeTaskId；失败返回 undefined（toast 已反馈） */
+  const handleCreateTask = useCallback(async (mode: 'coding' | 'general' = 'coding'): Promise<string | undefined> => {
     if (creating) return
     setCreating(true)
     try {
@@ -69,6 +71,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
       setTasks((prev) => [res, ...prev])
       setActiveTaskId(res.id)
       setActiveTab('active')
+      return res.id
     } catch (err) {
       console.error('Create task failed:', err)
       const code = (err as { errorCode?: string })?.errorCode

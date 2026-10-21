@@ -31,8 +31,14 @@ vi.mock('../src/components/ConfirmDialog', () => ({
 
 // 稳定引用（返回新 vi.fn() 会因 useCallback 依赖失效触发无限重渲染）
 const handleErrorMock = vi.hoisted(() => vi.fn())
+const toastMock = vi.hoisted(() => vi.fn())
 vi.mock('../src/hooks/useErrorHandler', () => ({
   useErrorHandler: () => handleErrorMock,
+}))
+
+// 列表加载失败提示：组件渲染期直接调用 useToast（原先仅操作回调间接经 useErrorHandler）→ 需 mock 掉
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => toastMock,
 }))
 
 // V2 §8.3：重新登录 = 导航内嵌 BrowserPanel（不再走 weblogin:open 独立窗口）

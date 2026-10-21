@@ -2,10 +2,10 @@
 
 覆盖：
   - data_sources 通道装配：仅 knowledge / knowledge+internet / wiki+db /
-    tavily_key 空时跳过 internet / db 为 None 时跳过 wiki
+    web_search_cfg.key 空时跳过 internet / db 为 None 时跳过 wiki
   - data_sources=None 默认 ["knowledge"]
   - report_depth → 知识库 top_k（full 20 / brief 10），显式 top_k 覆盖
-  - internet 通道收到 tavily_api_key
+  - internet 通道收到 web_search_cfg（provider/key 归一产物，双供应商）
   - 空结果降级：optional→skip / 非 optional→is_degraded
   - usage 累计
 
@@ -13,18 +13,32 @@
 async 用例统一用 asyncio.run 驱动。
 """
 import asyncio
+import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 # Ensure python/ is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from report_generator.retrieval import retrieve_for_section  # noqa: E402
+import report_generator.retrieval as retrieval_mod  # noqa: E402
+from report_generator.retrieval import (  # noqa: E402
+    _tavily_search,
+    _zhipu_search,
+    retrieve_for_section,
+    web_search_cfg_from_settings,
+)
 
 _ZERO = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 _STRATEGY_USAGE = {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}
 _CARD_USAGE = {"prompt_tokens": 2, "completion_tokens": 0, "total_tokens": 2}
+
+# web_search_cfg 归一对象（web_search_cfg_from_settings 产物形态）
+_WS_CFG = {"provider": "tavily", "key": "sk-secret", "engine": "search_pro"}
+_WS_CFG_EMPTY = {"provider": "", "key": "", "engine": "search_pro"}
 
 
 def _patches(know_ret=None, inet_ret=None, wiki_ret=None, inet_warn=None):
@@ -81,30 +95,30 @@ def _run(section=None, **kwargs):
 
 class TestChannelAssembly:
     def test_knowledge_only(self):
-        _, _, m = _run(data_sources=["knowledge"], tavily_api_key="key")
+        _, _, m = _run(data_sources=["knowledge"], web_search_cfg=_WS_CFG)
         assert m["know"].call_count == 1
         assert m["inet"].call_count == 0
 
     def test_knowledge_and_internet(self):
-        _, _, m = _run(data_sources=["knowledge", "internet"], tavily_api_key="key")
+        _, _, m = _run(data_sources=["knowledge", "internet"], web_search_cfg=_WS_CFG)
         assert m["know"].call_count == 1
         assert m["inet"].call_count == 1
 
     def test_internet_skipped_without_key(self):
-        """请求 internet 但 tavily_key 为空 → 优雅跳过，不调用 internet 通道。"""
-        _, _, m = _run(data_sources=["knowledge", "internet"], tavily_api_key="")
+        """请求 internet 但 key 为空 → 优雅跳过，不调用 internet 通道。"""
+        _, _, m = _run(data_sources=["knowledge", "internet"], web_search_cfg=_WS_CFG_EMPTY)
         assert m["know"].call_count == 1
         assert m["inet"].call_count == 0
 
     def test_default_data_sources_is_knowledge(self):
-        _, _, m = _run(data_sources=None, tavily_api_key="key")
+        _, _, m = _run(data_sources=None, web_search_cfg=_WS_CFG)
         assert m["know"].call_count == 1
         assert m["inet"].call_count == 0
 
-    def test_internet_receives_tavily_key(self):
-        _, _, m = _run(data_sources=["knowledge", "internet"], tavily_api_key="sk-secret")
-        # _search_internet_channel(queries, tavily_api_key, top_k, query_parallelism)
-        assert m["inet"].call_args.args[1] == "sk-secret"
+    def test_internet_receives_cfg(self):
+        _, _, m = _run(data_sources=["knowledge", "internet"], web_search_cfg=_WS_CFG)
+        # _search_internet_channel(queries, web_search_cfg, top_k, query_parallelism)
+        assert m["inet"].call_args.args[1] == _WS_CFG
 
 
 # ── wiki 通道 ────────────────────────────────────────────────
@@ -206,14 +220,15 @@ class TestDegradation:
 class TestWarnings:
     def test_channel_warnings_propagate(self):
         """internet 通道的显式降级警告 → RetrievalResult.warnings（0.4 §7.3 v3.6）。"""
+        warn = "互联网检索未生效：智谱 API Key 无效或已失效，本次报告仅使用项目内材料。请前往 设置 > 基础配置 > 网络搜索 更新 Key。"
         result, _, _ = _run(
-            data_sources=["knowledge", "internet"], tavily_api_key="key",
-            _inet_warn=["互联网检索未生效：Tavily API Key 无效或已失效"],
+            data_sources=["knowledge", "internet"], web_search_cfg=_WS_CFG,
+            _inet_warn=[warn],
         )
-        assert result.warnings == ["互联网检索未生效：Tavily API Key 无效或已失效"]
+        assert result.warnings == [warn]
 
     def test_no_warnings_by_default(self):
-        result, _, _ = _run(data_sources=["knowledge", "internet"], tavily_api_key="key")
+        result, _, _ = _run(data_sources=["knowledge", "internet"], web_search_cfg=_WS_CFG)
         assert result.warnings == []
 
 
@@ -226,3 +241,196 @@ class TestUsage:
     def test_skip_path_only_strategy_usage(self):
         _, usage, _ = _run(data_sources=["knowledge"], _know_ret=[])
         assert usage["total_tokens"] == 1  # 仅策略，未建卡
+
+
+# ── internet 通道 HTTP 直测（MockTransport）────────────────────
+# 上方装配用例 mock 掉了通道函数；此处直测 retrieval 内 HTTP 实现与
+# 归一入口（review 🟡-5 盲区补齐）：请求体 / 429 退避 / 序号加权 /
+# answer 伪 URL 语义 / 白名单归一逐字段锁定，不触网。
+
+
+def _direct_client(handler):
+    """构造注入 MockTransport 的 AsyncClient（retrieval 函数接收外部 client）。"""
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=30.0)
+
+
+class TestWebSearchCfgNormalization:
+    """web_search_cfg_from_settings：provider→key 归一（唯一入口）。"""
+
+    def test_no_provider_key_empty_even_with_keys(self):
+        cfg = web_search_cfg_from_settings({
+            "web_search_provider": "", "tavily_key": "tvly", "zhipu_search_key": "zp",
+        })
+        assert cfg == {"provider": "", "key": "", "engine": "search_pro"}
+
+    def test_unknown_provider_key_empty(self):
+        cfg = web_search_cfg_from_settings({"web_search_provider": "bogus"})
+        assert cfg["key"] == ""
+
+    def test_tavily_provider_and_key_stripped(self):
+        cfg = web_search_cfg_from_settings({
+            "web_search_provider": " tavily ", "tavily_key": "  tvly-1  ",
+        })
+        assert cfg == {"provider": "tavily", "key": "tvly-1", "engine": "search_pro"}
+
+    def test_zhipu_provider_key_and_engine(self):
+        cfg = web_search_cfg_from_settings({
+            "web_search_provider": "zhipu", "zhipu_search_key": "zp-1",
+            "zhipu_search_engine": "search_std",
+        })
+        assert cfg == {"provider": "zhipu", "key": "zp-1", "engine": "search_std"}
+
+    def test_engine_defaults_to_search_pro(self):
+        cfg = web_search_cfg_from_settings(
+            {"web_search_provider": "zhipu", "zhipu_search_key": "k"})
+        assert cfg["engine"] == "search_pro"
+
+
+class TestZhipuSearchDirect:
+    def test_request_shape_scoring_and_date(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"search_result": [
+                {"title": "S1", "content": "K1", "link": "https://b/1",
+                 "publish_date": "2026-10-01"},
+                {"title": "S2", "content": "K2", "link": "https://b/2"},
+            ]})
+
+        cfg = {"provider": "zhipu", "key": "zp-x", "engine": "search_std"}
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _zhipu_search("智能制造 招商", cfg, client, max_results=5)
+
+        results = asyncio.run(run())
+        body = seen[0]
+        assert body["search_query"] == "智能制造 招商"
+        assert body["search_engine"] == "search_std"
+        assert body["search_intent"] is False
+        assert body["count"] == 5
+        assert body["content_size"] == "high"
+        # 序号倒序加权（引擎已排序保序）+ publish_date 映射 + link→url
+        assert results[0]["score"] == 2.0
+        assert results[1]["score"] == 1.0
+        assert results[0]["published_date"] == "2026-10-01"
+        assert results[0]["url"] == "https://b/1"
+
+    def test_query_truncated_to_70_chars(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"search_result": []})
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _zhipu_search(
+                    "长" * 100, {"key": "k", "engine": "search_pro"}, client)
+
+        asyncio.run(run())
+        assert seen[0]["search_query"] == "长" * 70
+
+    def test_engine_whitelist_fallback(self):
+        """脏 engine（settings:save 可透传任意值）→ 白名单回落 search_pro。"""
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"search_result": []})
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _zhipu_search(
+                    "q", {"key": "k", "engine": "bogus"}, client)
+
+        asyncio.run(run())
+        assert seen[0]["search_engine"] == "search_pro"
+
+    def test_429_backoff_then_success(self, monkeypatch):
+        """429 指数退避（2s / 4s，最多 2 次）后成功；等待不真实 sleep。"""
+        waits = []
+
+        async def fake_sleep(sec):
+            waits.append(sec)
+
+        monkeypatch.setattr(retrieval_mod.asyncio, "sleep", fake_sleep)
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(429 if len(calls) <= 2 else 200,
+                                  json={"search_result": []})
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _zhipu_search(
+                    "q", {"key": "k", "engine": "search_pro"}, client)
+
+        asyncio.run(run())
+        assert len(calls) == 3
+        assert waits == [2, 4]
+
+    def test_429_exhausted_raises(self, monkeypatch):
+        """退避耗尽仍 429 → raise_for_status 上抛（通道层捕获转警告文案）。"""
+        async def fake_sleep(sec):
+            pass
+
+        monkeypatch.setattr(retrieval_mod.asyncio, "sleep", fake_sleep)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, json={})
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _zhipu_search(
+                    "q", {"key": "k", "engine": "search_pro"}, client)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(run())
+
+
+class TestTavilySearchDirect:
+    def test_cjk_answer_off_and_pseudo_url_and_depth_fallback(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={
+                "answer": "AI summary",
+                "results": [{"title": "T1", "content": "C1",
+                             "url": "https://a/1", "score": 0.9}],
+            })
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _tavily_search(
+                    "智能制造 招商政策", "tvly-x", client,
+                    max_results=5, search_depth="bogus")
+
+        results = asyncio.run(run())
+        body = seen[0]
+        # CJK 查询关闭 include_answer（与工具层同判，c2f24e5c）；非法 depth 回落 basic
+        assert body["include_answer"] is False
+        assert body["language"] == "zh-cn"
+        assert body["search_depth"] == "basic"
+        assert body["max_results"] == 5
+        # answer 段以伪 URL 首条进入且 score=1.0（恒置顶语义）
+        assert results[0]["url"].startswith("tavily://answer/")
+        assert results[0]["score"] == 1.0
+        assert results[1]["url"] == "https://a/1"
+
+    def test_non_cjk_query_includes_answer(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"answer": None, "results": []})
+
+        async def run():
+            async with _direct_client(handler) as client:
+                return await _tavily_search("python news", "tvly-x", client)
+
+        asyncio.run(run())
+        assert seen[0]["include_answer"] is True

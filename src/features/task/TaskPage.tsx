@@ -30,7 +30,7 @@ interface TaskPageProps {
   planData?: PlanData | null
   pendingShellConfirm?: ShellConfirmData | null
   pendingSkillConfirm?: SkillConfirmData | null
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string) => void | Promise<void>
   onStopGenerate: () => void
   onPauseTask?: () => void
   onShellConfirm?: (confirmed: boolean) => void

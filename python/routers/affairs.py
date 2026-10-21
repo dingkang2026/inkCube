@@ -6,7 +6,7 @@ IPC 通道前缀 affairs:*(裁决:tasks:* 已被 TaskAgent 长任务占用)。
 import logging
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 import deps
@@ -52,8 +52,24 @@ async def list_due_tasks(horizon_days: int = 7):
 
 
 @router.get("/{project_id}/tasks")
-async def list_phase_tasks(project_id: str):
-    return {"tasks": _db().list_phase_tasks(project_id)}
+async def list_phase_tasks(
+    project_id: str,
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
+    """时期任务列表（看板/节奏分页；日历视图前端传 limit=0 全量，分页不截断日历）。"""
+    db = _db()
+    # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+    tasks = db.list_phase_tasks(
+        project_id, limit=limit + 1 if limit > 0 else 0, offset=offset)
+    has_more = limit > 0 and len(tasks) > limit
+    if has_more:
+        tasks = tasks[:limit]
+    total = db.conn.execute(
+        "SELECT COUNT(*) AS cnt FROM phase_tasks WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()["cnt"]
+    return {"tasks": tasks, "has_more": has_more, "total": total}
 
 
 @router.post("/{project_id}/tasks")
@@ -119,9 +135,26 @@ async def delete_phase_task(project_id: str, task_id: str):
 
 
 @router.get("/{project_id}/suggestions")
-async def list_suggestions(project_id: str, status: str = "pending"):
+async def list_suggestions(
+    project_id: str,
+    status: str = "pending",
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
+    """建议列表（建议卡分页拉取；脉搏徽章传 limit=1 消费 total，与 reviews counts 桶同款最小负载）。"""
     db = _db()
-    return {"suggestions": db.list_suggestions(project_id, status)}
+    # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+    suggestions = db.list_suggestions(
+        project_id, status, limit=limit + 1 if limit > 0 else 0, offset=offset)
+    has_more = limit > 0 and len(suggestions) > limit
+    if has_more:
+        suggestions = suggestions[:limit]
+    total = db.conn.execute(
+        "SELECT COUNT(*) AS cnt FROM task_suggestions"
+        " WHERE project_id = ? AND status = ?",
+        (project_id, status),
+    ).fetchone()["cnt"]
+    return {"suggestions": suggestions, "has_more": has_more, "total": total}
 
 
 @router.post("/{project_id}/suggestions/{suggestion_id}/accept")

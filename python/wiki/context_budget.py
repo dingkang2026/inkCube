@@ -13,10 +13,14 @@ Single-page truncation:
 """
 import logging
 
+from llm.budget import CHARS_PER_TOKEN, MIN_CONTEXT_WINDOW
+
 logger = logging.getLogger(__name__)
 
-# Default context window (characters, ~128k tokens ≈ ~400k chars for CJK)
-DEFAULT_CONTEXT_WINDOW = 400_000
+# Fallback context window (chars) = MIN_CONTEXT_WINDOW × CHARS_PER_TOKEN
+# (131072 tok × 1.5 = 196,608)。旧值 400_000 隐含私设 3.1 chars/tok（低估中文
+# token 占用），曾致 wiki 400k 超窗事故——兜底值只能经 budget 常量推导（D2）
+DEFAULT_CONTEXT_WINDOW = int(MIN_CONTEXT_WINDOW * CHARS_PER_TOKEN)
 
 # Budget ratios
 INDEX_RATIO = 0.05

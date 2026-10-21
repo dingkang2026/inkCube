@@ -15,6 +15,7 @@ from typing import Any
 from skills.context import SkillContext
 from skills.protocol import BaseSkill
 from tools.base import BaseTool
+from tools.proc_priority import low_priority_kwargs
 from tools.venv_manager import (
     UvExclusionRequired,
     ensure_venv_blocking,
@@ -403,6 +404,7 @@ class AgentSkillAdapter(BaseSkill):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=context.workspace_path,
                 env=spawn_env,
+                **low_priority_kwargs(),   # 2.11 §5.6 R3：低优先级（前台交互天然抢占）
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),

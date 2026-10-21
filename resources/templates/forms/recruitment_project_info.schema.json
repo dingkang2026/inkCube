@@ -1,0 +1,738 @@
+{
+ "preset_schema_version": 1,
+ "field_count": 19,
+ "file_hash": "8842ba3bd7c2ad1e44034247a87bde2ebf98283891932c10eeeb959622430f18",
+ "template_schema": {
+  "schema_version": "2.0",
+  "template_name": "招商引资项目信息表",
+  "doc_stats": {
+   "top_tables": 1,
+   "nested_tables": 0
+  },
+  "fields": [
+   {
+    "field_key": "project_name",
+    "label": "项目名称",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r0c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目名称",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目名称 企业全称"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "project_no",
+    "label": "项目编号",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r0c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目编号",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目编号 立项编号"
+    ],
+    "length_hint": null,
+    "confidence": "low"
+   },
+   {
+    "field_key": "investor_name",
+    "label": "投资方企业名称",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r1c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "投资方企业名称",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "投资方企业名称 公司名称"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "credit_code",
+    "label": "统一社会信用代码",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r1c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "统一社会信用代码",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "统一社会信用代码 营业执照"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "industry",
+    "label": "所属行业",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r2c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "所属行业",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "所属行业 主营业务 行业方向"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false,
+    "options": [
+     "新一代信息技术",
+     "高端装备",
+     "生物医药",
+     "新能源",
+     "新材料",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "investor_type",
+    "label": "投资方性质",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r3c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "投资方性质",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "投资方性质 企业性质 股东背景"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false,
+    "options": [
+     "民营企业",
+     "国有企业",
+     "外资企业",
+     "合资企业",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "project_leader",
+    "label": "项目负责人",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目负责人",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目负责人 团队负责人"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "contact_phone",
+    "label": "联系电话",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "联系电话",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "联系电话 联系方式"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "site_intention",
+    "label": "拟选址意向",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r5c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "拟选址意向",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "选址意向 落地区域 厂房选址"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "land_demand_type",
+    "label": "用地用房需求",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r7c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "用地用房需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "用地用房需求 拿地 租赁 购置"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": true,
+    "options": [
+     "拿地",
+     "租赁",
+     "购置"
+    ]
+   },
+   {
+    "field_key": "land_acreage",
+    "label": "拿地(亩)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r7c1#blank1",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "用地用房需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "用地需求 面积 亩"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "unit": "亩"
+   },
+   {
+    "field_key": "rental_area",
+    "label": "租赁(平方米)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r7c1#blank2",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "用地用房需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "租赁厂房 面积 平方米"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "unit": "平方米"
+   },
+   {
+    "field_key": "purchase_area",
+    "label": "购置(平方米)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r7c1#blank3",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "用地用房需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "购置厂房 面积 平方米"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "unit": "平方米"
+   },
+   {
+    "field_key": "construction_content",
+    "label": "请说明项目建设内容、生产规模与建设周期（分期建设请注明各期安排）",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请说明项目建设内容、生产规模与建设周期（分期建设请注明各期安排）"
+    },
+    "kb_query": [
+     "项目建设内容 生产规模",
+     "建设周期 分期建设计划"
+    ],
+    "length_hint": 500,
+    "confidence": "high",
+    "instruction": "请说明项目建设内容、生产规模与建设周期（分期建设请注明各期安排）"
+   },
+   {
+    "field_key": "project_progress",
+    "label": "项目进展",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r9c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目进展",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目进展 签约 开工 投产状态"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false,
+    "options": [
+     "意向洽谈",
+     "已签约",
+     "已开工",
+     "已投产"
+    ]
+   },
+   {
+    "field_key": "production_time",
+    "label": "计划投产时间",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r11c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "计划投产时间",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "计划投产时间 投产安排"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "business_intro",
+    "label": "请介绍项目主营业务、核心产品、技术优势及主要客户或订单情况（不少于200字）",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r12c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请介绍项目主营业务、核心产品、技术优势及主要客户或订单情况（不少于200字）"
+    },
+    "kb_query": [
+     "主营业务 核心产品",
+     "技术优势 核心竞争力",
+     "主要客户 订单情况"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "instruction": "请介绍项目主营业务、核心产品、技术优势及主要客户或订单情况（不少于200字）"
+   },
+   {
+    "field_key": "support_demand",
+    "label": "请列示项目落地所需的政策、资金、人才、载体等支持事项及具体诉求",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r13c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请列示项目落地所需的政策、资金、人才、载体等支持事项及具体诉求"
+    },
+    "kb_query": [
+     "政策支持诉求 资金需求",
+     "人才引进需求 载体支持"
+    ],
+    "length_hint": 400,
+    "confidence": "high",
+    "instruction": "请列示项目落地所需的政策、资金、人才、载体等支持事项及具体诉求"
+   },
+   {
+    "field_key": "remark",
+    "label": "备注",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r14c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "备注",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目备注 特殊说明"
+    ],
+    "length_hint": null,
+    "confidence": "low"
+   }
+  ],
+  "batches": [
+   {
+    "seq": 1,
+    "name": "基本信息",
+    "field_keys": [
+     "project_name",
+     "project_no",
+     "investor_name",
+     "credit_code",
+     "industry",
+     "investor_type",
+     "project_leader",
+     "contact_phone",
+     "site_intention"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 2,
+    "name": "用地需求与建设进展",
+    "field_keys": [
+     "land_demand_type",
+     "land_acreage",
+     "rental_area",
+     "purchase_area",
+     "construction_content",
+     "project_progress",
+     "production_time"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 3,
+    "name": "业务介绍与支持诉求",
+    "field_keys": [
+     "business_intro",
+     "support_demand",
+     "remark"
+    ],
+    "depends_on": []
+   }
+  ],
+  "unmapped_cells": []
+ },
+ "llm_mapping": {
+  "fields": [
+   {
+    "index": 0,
+    "field_key": "project_name",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目名称 企业全称"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 1,
+    "field_key": "project_no",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目编号 立项编号"
+    ],
+    "length_hint": null,
+    "confidence": "low",
+    "multi_select": null
+   },
+   {
+    "index": 2,
+    "field_key": "investor_name",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "投资方企业名称 公司名称"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 3,
+    "field_key": "credit_code",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "统一社会信用代码 营业执照"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 4,
+    "field_key": "industry",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "所属行业 主营业务 行业方向"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false
+   },
+   {
+    "index": 5,
+    "field_key": "investor_type",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "投资方性质 企业性质 股东背景"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false
+   },
+   {
+    "index": 6,
+    "field_key": "project_leader",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目负责人 团队负责人"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 7,
+    "field_key": "contact_phone",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "联系电话 联系方式"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 8,
+    "field_key": "site_intention",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "选址意向 落地区域 厂房选址"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 9,
+    "field_key": "land_demand_type",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "用地用房需求 拿地 租赁 购置"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": true
+   },
+   {
+    "index": 10,
+    "field_key": "land_acreage",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "用地需求 面积 亩"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 11,
+    "field_key": "rental_area",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "租赁厂房 面积 平方米"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 12,
+    "field_key": "purchase_area",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "购置厂房 面积 平方米"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 13,
+    "field_key": "construction_content",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目建设内容 生产规模",
+     "建设周期 分期建设计划"
+    ],
+    "length_hint": 500,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 14,
+    "field_key": "project_progress",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目进展 签约 开工 投产状态"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false
+   },
+   {
+    "index": 15,
+    "field_key": "production_time",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "计划投产时间 投产安排"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 16,
+    "field_key": "business_intro",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "主营业务 核心产品",
+     "技术优势 核心竞争力",
+     "主要客户 订单情况"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 17,
+    "field_key": "support_demand",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "政策支持诉求 资金需求",
+     "人才引进需求 载体支持"
+    ],
+    "length_hint": 400,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 18,
+    "field_key": "remark",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目备注 特殊说明"
+    ],
+    "length_hint": null,
+    "confidence": "low",
+    "multi_select": null
+   }
+  ],
+  "batches": [
+   {
+    "seq": 1,
+    "name": "基本信息",
+    "field_keys": [
+     "project_name",
+     "project_no",
+     "investor_name",
+     "credit_code",
+     "industry",
+     "investor_type",
+     "project_leader",
+     "contact_phone",
+     "site_intention"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 2,
+    "name": "用地需求与建设进展",
+    "field_keys": [
+     "land_demand_type",
+     "land_acreage",
+     "rental_area",
+     "purchase_area",
+     "construction_content",
+     "project_progress",
+     "production_time"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 3,
+    "name": "业务介绍与支持诉求",
+    "field_keys": [
+     "business_intro",
+     "support_demand",
+     "remark"
+    ],
+    "depends_on": []
+   }
+  ],
+  "skipped_indexes": []
+ }
+}

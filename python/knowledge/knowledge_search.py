@@ -1,10 +1,16 @@
 """python/knowledge/knowledge_search.py"""
 import asyncio
+import logging
 from typing import Optional, List
+
+import numpy as np
+
 from db.database import Database
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
 from knowledge.hybrid_retriever import HybridRetriever
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeSearchTool:
@@ -115,7 +121,7 @@ class KnowledgeSearchTool:
         
         return fused_results
     
-    def _embed_query(self, query: str) -> List[float]:
+    def _embed_query(self, query: str) -> Optional[List[float]]:
         """
         Embed query using bge-m3 model via VectorStore's embedding function.
         Reuses the already-loaded model to avoid duplicate memory usage.
@@ -124,12 +130,22 @@ class KnowledgeSearchTool:
             query: Query text
         
         Returns:
-            1024-dimensional embedding vector
+            1024-dimensional embedding vector; None when fp16 inference
+            yields non-finite values (2026-10-14/15 事故：NaN 查询向量会让
+            全部 cosine 距离变 NaN 并在响应序列化时 500)——caller degrades
+            to FTS-only retrieval.
         """
         # Reuse VectorStore's embedding model (handles nested HF cache paths)
         model = self.vector_store._get_embedding_model()
         result = model.encode([query], batch_size=1, max_length=512)
-        return result['dense_vecs'][0].tolist()
+        vec = np.asarray(result['dense_vecs'][0], dtype=np.float32)
+        if not np.isfinite(vec).all():
+            logger.warning(
+                "Query embedding for %r is non-finite (fp16 overflow) — "
+                "degrading to FTS-only retrieval", query[:40],
+            )
+            return None
+        return vec.tolist()
     
     def list_projects(self) -> List[dict]:
         """

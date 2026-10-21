@@ -21,6 +21,11 @@ vi.mock('../src/hooks/useErrorHandler', () => ({
   useErrorHandler: () => handleErrorMock,
 }))
 
+// m9 新增删除流引入 useConfirm；本文件用例不涉删除，恒真确认即可
+vi.mock('../src/components/ConfirmDialog', () => ({
+  useConfirm: () => async () => true,
+}))
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }))

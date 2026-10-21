@@ -48,7 +48,6 @@ async def generate_search_queries(
     section: dict,
     digests: list[dict],
     llm_client: Any,
-    llm_settings: dict,
 ) -> tuple[list[str], dict]:
     """为章节生成搜索关键词。
 
@@ -56,7 +55,6 @@ async def generate_search_queries(
         section: 归一化后的章节 dict，包含 title, description, prompt_hint
         digests: 前文摘要列表 [{"section_id": str, "title": str, "digest": str}, ...]
         llm_client: LLMClient 实例
-        llm_settings: 应用设置 dict
 
     Returns:
         (queries, usage): 搜索关键词列表 + API usage dict
@@ -91,7 +89,7 @@ async def generate_search_queries(
 
     # 调用 LLM
     try:
-        result = await llm_client.chat_full(messages, llm_settings)
+        result = await llm_client.chat_full(messages)
         content = result["content"]
         usage = result["usage"]
 

@@ -131,17 +131,23 @@ def render_mermaid_to_png(electron: str, code: str) -> bytes | None:
     return png if png.startswith(b'\x89PNG') else None
 
 
-def preprocess_mermaid(input_file: Path) -> tuple[Path, str | None]:
+def preprocess_mermaid(input_file: Path,
+                       image_dir: Path | None = None) -> tuple[Path, str | None]:
     """Replace ```mermaid blocks with image references.
 
     Args:
         input_file: 待预处理的 Markdown 文件路径
+        image_dir: 重绘 PNG 落点（可选）。缺省落临时目录——md 内引用为临时
+            目录绝对路径，仅供「用完即弃」的导出链（doc_generator，用后
+            cleanup_temp_dir）；指定时 PNG 持久化到该目录且 md 原地改写，
+            引用随所在工作区长期有效（ppt 素材就位：staged md 被 agent
+            持续读取，临时目录被系统清理后引用会断裂）。
 
     Returns:
         (actual_input_path, temp_dir_or_None)。
         无 mermaid 块 / Electron 不可用 / 全部渲染失败时返回原 input_file 与
-        None——调用方直接使用 input_file；成功时 pandoc 应使用 actual_input，
-        并在结束后调用 cleanup_temp_dir(temp_dir)。
+        None——调用方直接使用 input_file；缺省模式成功时 pandoc 应使用
+        actual_input，并在结束后调用 cleanup_temp_dir(temp_dir)。
     """
     content = input_file.read_text(encoding='utf-8')
     if not MERMAID_RE.search(content):
@@ -149,6 +155,20 @@ def preprocess_mermaid(input_file: Path) -> tuple[Path, str | None]:
 
     electron = find_electron()
     if not electron:
+        return input_file, None
+
+    if image_dir is not None:
+        try:
+            image_dir.mkdir(parents=True, exist_ok=True)
+            modified, count = _render_blocks(content, image_dir, electron)
+            if count:
+                input_file.write_text(modified, encoding='utf-8')
+                logger.info('Mermaid: rendered %d diagram(s) to PNG', count)
+        except OSError:
+            # 写盘异常（磁盘满/权限/杀软锁文件）：降级保留原文件，
+            # 不让预处理异常阻断调用方主链路（降级纪律）
+            logger.warning('Mermaid preprocess IO failed, keeping original markdown',
+                           exc_info=True)
         return input_file, None
 
     tmp_dir = tempfile.mkdtemp(prefix='inkcube_mmd_')
@@ -163,11 +183,9 @@ def preprocess_mermaid(input_file: Path) -> tuple[Path, str | None]:
         return input_file, None
 
 
-def _render_blocks_to_file(input_file: Path, content: str,
-                           tmp_dir: Path, electron: str) -> tuple[Path, str | None]:
-    image_dir = tmp_dir / 'images'
-    image_dir.mkdir()
-
+def _render_blocks(content: str, image_dir: Path,
+                   electron: str) -> tuple[str, int]:
+    """逐块重绘 mermaid 为 PNG（落 image_dir）并替换引用；返回 (新内容, 成功数)。"""
     success_count = 0
 
     def _replace_block(m: re.Match) -> str:
@@ -182,7 +200,14 @@ def _render_blocks_to_file(input_file: Path, content: str,
         logger.warning('Mermaid block render failed, keeping as code')
         return m.group(0)  # leave block unchanged on failure
 
-    modified = MERMAID_RE.sub(_replace_block, content)
+    return MERMAID_RE.sub(_replace_block, content), success_count
+
+
+def _render_blocks_to_file(input_file: Path, content: str,
+                           tmp_dir: Path, electron: str) -> tuple[Path, str | None]:
+    image_dir = tmp_dir / 'images'
+    image_dir.mkdir()
+    modified, success_count = _render_blocks(content, image_dir, electron)
 
     if success_count == 0:
         # All renders failed — no change

@@ -11,6 +11,7 @@ from errors import (
     VLMNotConfigured, VLMInvalidKey, VLMNetworkError,
     VLMRateLimited, VLMCallFailed,
 )
+from llm import usage as usage_record  # 2.10 §4.2 VLM 出口收口（零 DB 依赖）
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,9 @@ class VLMClient:
         )
     
     # Valid categories for auto-classification
-    CATEGORIES = ("chart", "photo", "diagram", "table", "formula", "logo", "qr_code", "signature", "seal", "other")
+    # invoice/certificate 为内容类（进报告插图池，不自动归档）；
+    # qr_code/signature/seal 为修饰类（AUTO_ARCHIVE）
+    CATEGORIES = ("chart", "photo", "diagram", "table", "formula", "logo", "invoice", "certificate", "qr_code", "signature", "seal", "other")
 
     # Categories that should be auto-archived (not useful for report illustration)
     AUTO_ARCHIVE_CATEGORIES = ("qr_code", "signature", "seal")
@@ -83,6 +86,10 @@ class VLMClient:
 
         logger.info("VLM describe_image: path=%s, has_context=%s", image_path, context_text is not None)
         result = await self._call_external_api(image_path, context_text)
+        # 2.10 §4.2: VLM 出口收口记录（API 返回的精确 usage；响应无 usage
+        # 字段时 record 内部忽略不落库）。pop 保持返回形状 {description, category}
+        # 不变，对既有消费方零影响
+        usage_record.record(self.model, "vlm", result.pop("usage", None))
         logger.info("VLM result: category=%s, desc_len=%d", result.get("category", ""), len(result.get("description", "")))
         return result
     
@@ -152,7 +159,16 @@ class VLMClient:
 
                     data = await resp.json()
                     raw = data["choices"][0]["message"]["content"]
-                    return self._parse_vlm_response(raw)
+                    result = self._parse_vlm_response(raw)
+                    # 2.10 §4.2: 提取 API 返回的精确 usage（原被丢弃），随结果
+                    # 返回交由 describe_image 收口记录；无 usage 字段时置 None
+                    api_usage = data.get("usage") or {}
+                    result["usage"] = {
+                        "prompt_tokens": api_usage.get("prompt_tokens", 0),
+                        "completion_tokens": api_usage.get("completion_tokens", 0),
+                        "total_tokens": api_usage.get("total_tokens", 0),
+                    } if api_usage else None
+                    return result
             except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError) as e:
                 logger.error("VLM network error: %s", str(e))
                 raise VLMNetworkError(detail=str(e))

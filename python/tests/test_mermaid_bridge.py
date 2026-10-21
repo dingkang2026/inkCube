@@ -195,6 +195,41 @@ class TestPreprocessMermaid:
         assert tmp_dir is None
         assert "```mermaid" in src.read_text(encoding="utf-8")
 
+    def test_image_dir_persists_png_in_place(self, tmp_path):
+        """指定 image_dir：PNG 持久化到该目录且 md 原地改写（ppt 素材就位模式）。
+
+        M3 回归：缺省临时目录模式下 staged md 的引用指向 %TEMP% 绝对路径，
+        临时目录被系统清理后引用断裂，且每次创建泄漏一个临时目录。
+        """
+        src = tmp_path / "staging" / "report.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("前文\n\n```mermaid\ngraph TD\nA-->B\n```\n\n后文",
+                       encoding="utf-8")
+        image_dir = tmp_path / "staging" / "mermaid"
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"), \
+             patch("tools.mermaid_bridge.render_mermaid_to_png",
+                   return_value=_PNG):
+            actual, tmp_dir = preprocess_mermaid(src, image_dir=image_dir)
+        assert actual == src          # 原地改写，无临时 md
+        assert tmp_dir is None        # 无临时目录需清理
+        out = src.read_text(encoding="utf-8")
+        assert "```mermaid" not in out
+        img_ref = out.split("![diagram](")[1].split(")")[0]
+        assert Path(img_ref).is_relative_to(image_dir)  # 引用落在工作区内
+        assert Path(img_ref).read_bytes() == _PNG
+
+    def test_image_dir_all_failed_keeps_original(self, tmp_path):
+        """指定 image_dir 且全部渲染失败：md 原样保留（降级纪律）。"""
+        src = tmp_path / "report.md"
+        src.write_text("```mermaid\ngraph TD\nA-->B\n```", encoding="utf-8")
+        image_dir = tmp_path / "mermaid"
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"), \
+             patch("tools.mermaid_bridge.render_mermaid_to_png", return_value=None):
+            actual, tmp_dir = preprocess_mermaid(src, image_dir=image_dir)
+        assert actual == src
+        assert tmp_dir is None
+        assert "```mermaid" in src.read_text(encoding="utf-8")
+
 
 # ── cleanup_temp_dir ────────────────────────────────────────
 

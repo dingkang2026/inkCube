@@ -15,27 +15,7 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
     <div className={styles.section}>
       <h3 className={styles.heading}>{t('settings.task.title')}</h3>
 
-      {/* Task Model */}
-      <label className={styles.label}>{t('settings.task.model')}</label>
-      <input
-        type="text"
-        className={styles.input}
-        placeholder={settings?.model || 'glm-4-flash'}
-        value={settings?.task_model ?? ''}
-        onChange={(e) => onUpdate?.('task_model', e.target.value)}
-      />
-      <p className={styles.hint}>{t('settings.task.modelHint')}</p>
-
-      {/* Planner Model (dual-model architecture) */}
-      <label className={styles.label}>{t('settings.task.plannerModel')}</label>
-      <input
-        type="text"
-        className={styles.input}
-        placeholder={t('settings.task.plannerModelPlaceholder')}
-        value={settings?.task_planner_model ?? ''}
-        onChange={(e) => onUpdate?.('task_planner_model', e.target.value)}
-      />
-      <p className={styles.hint}>{t('settings.task.plannerModelHint')}</p>
+      {/* 任务模型/规划模型已移至「模型路由」section（0.3 §4.4：路由语义集中） */}
 
       {/* Execution Timeout */}
       <label className={styles.label}>{t('settings.task.timeout')}</label>
@@ -44,8 +24,8 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
         min={5}
         max={300}
         className={styles.input}
-        value={settings?.task_timeout ?? 30}
-        onChange={(e) => onUpdate?.('task_timeout', parseInt(e.target.value) || 30)}
+        value={settings?.task_timeout ?? 300}
+        onChange={(e) => onUpdate?.('task_timeout', parseInt(e.target.value) || 300)}
       />
       <p className={styles.hint}>{t('settings.task.timeoutHint')}</p>
 
@@ -56,8 +36,8 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
         min={1}
         max={200}
         className={styles.input}
-        value={settings?.task_max_iterations ?? 25}
-        onChange={(e) => onUpdate?.('task_max_iterations', parseInt(e.target.value) || 25)}
+        value={settings?.task_max_iterations ?? 60}
+        onChange={(e) => onUpdate?.('task_max_iterations', parseInt(e.target.value) || 60)}
       />
       <p className={styles.hint}>{t('settings.task.maxIterationsHint')}</p>
 
@@ -137,7 +117,7 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
       />
       <p className={styles.hint}>{t('settings.task.autoArchiveDaysHint')}</p>
 
-      {/* External Dependencies Detection */}
+      {/* External Dependencies Detection（捆绑工具链状态已删：随应用分发必有，无需展示） */}
       <ExternalDepsSettings />
     </div>
   )

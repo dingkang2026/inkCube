@@ -40,15 +40,15 @@
 .toggleLabel {
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   letter-spacing: 1px;
 }
 
 .toggleBadge {
-  font-size: 9px;
+  font-size: var(--text-xs);
   padding: 0 3px;
-  border-radius: 5px;
+  border-radius: 999px;
   background: var(--bg-tertiary);
   color: var(--text-muted);
   line-height: 1.5;
@@ -59,7 +59,7 @@
 .backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--bg-overlay);
   z-index: 199; /* Below panel (200), above preview (100) & toggleTab (150) */
   animation: backdropFade 0.16s ease-out;
 }
@@ -105,7 +105,7 @@
   background: transparent;
   z-index: 10;
   transition: background 0.15s;
-  border-radius: 4px;
+  border-radius: 999px;
 }
 
 .dragHandle:hover,
@@ -130,7 +130,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   flex: 1;
@@ -146,8 +146,8 @@
 
 .scopeBadge {
   padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
+  border-radius: 2px;
+  font-size: var(--text-xs);
   font-weight: 500;
   background: var(--bg-muted);
   color: var(--text-secondary);
@@ -233,15 +233,15 @@
 .message {
   max-width: 90%;
   padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
   line-height: 1.5;
 }
 
 .messageUser {
   align-self: flex-end;
   background: var(--accent);
-  color: #fff;
+  color: var(--text-inverse);
   border-bottom-right-radius: 2px;
 }
 
@@ -280,28 +280,29 @@
 }
 
 .sourceTag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: 2px;
   background: rgba(0, 0, 0, 0.06);
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .messageUser .sourceTag {
-  background: rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.85);
+  background: color-mix(in srgb, var(--text-inverse) 20%, transparent);
+  color: color-mix(in srgb, var(--text-inverse) 85%, transparent);
 }
 
-/* ── Empty chat & typing indicator ── */
+/* ── Empty chat (hint + template panel) & typing indicator ── */
 .emptyChat {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
   height: 100%;
+  overflow-y: auto;
   color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
+  font-size: var(--text-base);
   padding: 20px;
 }
 
@@ -309,6 +310,8 @@
   margin: 0;
   line-height: 1.6;
   white-space: pre-line;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 .typing {
@@ -335,7 +338,7 @@
   flex: 1;
   min-width: 0;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -348,6 +351,48 @@
   border-color: var(--accent);
 }
 
+/* ── Placeholder form (0.5 §4.4:变量按名去重,填一次全量替换) ── */
+.phForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 16px 0;
+  flex-shrink: 0;
+}
+
+.phItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.phName {
+  font-size: var(--text-xs);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.phInput {
+  width: 140px;
+  padding: 3px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.phInput:focus {
+  border-color: var(--accent);
+}
+
+.phHint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
 .sendBtn {
   width: 32px;
   height: 32px;
@@ -357,7 +402,7 @@
   border: none;
   border-radius: var(--radius-sm);
   background: var(--accent);
-  color: #fff;
+  color: var(--text-inverse);
   cursor: pointer;
   transition: opacity 0.15s;
   flex-shrink: 0;
@@ -385,11 +430,11 @@
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
@@ -411,9 +456,9 @@
   flex: 1;
   min-width: 100px;
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-primary);
   outline: none;
@@ -425,12 +470,12 @@
 
 .archiveConfirmBtn {
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
-  color: #fff;
+  color: var(--text-inverse);
   background: var(--accent);
   border: none;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: opacity 0.12s;
 }
@@ -446,11 +491,11 @@
 
 .archiveCancelBtn {
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: color 0.12s, border-color 0.12s;
 }
@@ -464,14 +509,14 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: var(--text-success, #16a34a);
+  font-size: var(--text-xs);
+  color: var(--text-success);
 }
 
 .archiveError {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: var(--text-danger, #dc2626);
+  font-size: var(--text-xs);
+  color: var(--text-danger);
 }

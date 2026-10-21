@@ -52,8 +52,10 @@ describe('UpcomingCalendar (3.0 三期 Task 4)', () => {
     expect(onOpenProject).toHaveBeenCalledWith('pa', 'affairs')
   })
 
-  it('renders nothing when no tasks within range', () => {
+  it('keeps section with empty state when no tasks in range (Ruling 4 空数据保留)', () => {
     const { container } = render(<UpcomingCalendar tasks={[mk('b', '2026-10-08')]} onOpenProject={vi.fn()} />)
-    expect(container.querySelector('section')).toBeNull()
+    const text = container.textContent!
+    expect(text).toContain('homeTodo.calendarTitle')
+    expect(text).toContain('homeTodo.calendarEmpty')
   })
 })

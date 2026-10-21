@@ -64,7 +64,7 @@ afterEach(() => {
 describe('FileUploader parsing pause toggle', () => {
   it('renders the pause button only when wired via onToggleParsingPause', () => {
     mount(190)
-    expect(screen.queryByTitle('knowledge.pauseParsing')).toBeNull()
+    expect(screen.queryByTitle('knowledge.stopParsing')).toBeNull()
     render(
       <FileUploader
         projectId="p1"
@@ -75,7 +75,7 @@ describe('FileUploader parsing pause toggle', () => {
         onToggleParsingPause={() => {}}
       />,
     )
-    expect(screen.getByTitle('knowledge.pauseParsing')).toBeTruthy()
+    expect(screen.getByTitle('knowledge.stopParsing')).toBeTruthy()
   })
 
   it('shows resume title while paused and invokes the callback on click', () => {

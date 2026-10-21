@@ -37,8 +37,10 @@ class TestDeleteTaskScopedCleanup:
         db.initialize()
         return db, str(data_dir)
 
-    def test_auto_task_dir_removed(self, tmp_path):
+    def test_auto_task_dir_removed(self, tmp_path, monkeypatch):
         db, data_dir = self._make_db(tmp_path)
+        # managed 判据锚 get_data_dir()（与 create_task 数据目录同源）
+        monkeypatch.setattr("paths.get_data_dir", lambda: str(data_dir))
         task = db.create_task("t", data_dir, workspace_path="")
         task_dir = Path(data_dir) / "tasks" / task["id"]
         assert task_dir.is_dir()
@@ -46,10 +48,12 @@ class TestDeleteTaskScopedCleanup:
         db.delete_task(task["id"])
         assert not task_dir.exists()
 
-    def test_external_workspace_parent_preserved(self, tmp_path):
+    def test_external_workspace_parent_preserved(self, tmp_path, monkeypatch):
         # Regression: user-provided workspace → dirname(workspace) is the
         # user's parent dir; delete_task must NOT rmtree it.
         db, data_dir = self._make_db(tmp_path)
+        # 同口径 patch：确保「不删」来自锚外保护判定，而非 managed_root 指向别处
+        monkeypatch.setattr("paths.get_data_dir", lambda: str(data_dir))
         ext_parent = tmp_path / "proj"
         ext_ws = ext_parent / "ws"
         ext_ws.mkdir(parents=True)

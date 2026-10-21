@@ -44,7 +44,7 @@ class _Harness:
         self.round_queries: list[list[str]] = []
         self.build_calls: list[dict] = []
 
-        async def fake_strategy(section, digests, llm_client, llm_settings):
+        async def fake_strategy(section, digests, llm_client):
             return ["q1"], dict(_ZERO)
 
         async def fake_channel_k(queries, *args, **kwargs):
@@ -57,7 +57,7 @@ class _Harness:
         async def fake_channel_i(queries, *args, **kwargs):
             return [], dict(_ZERO), []
 
-        async def fake_build(new_raw, section, llm_client, llm_settings,
+        async def fake_build(new_raw, section, llm_client,
                              existing_cards=None, used_queries=None):
             self.build_calls.append({
                 "new_raw_from": [r["source_from"] for r in new_raw],

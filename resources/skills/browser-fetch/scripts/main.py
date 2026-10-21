@@ -41,7 +41,7 @@ ACTIONS: dict[str, dict] = {
                 "oneof": [("--text", "text"), ("--text-file", "text_file")],
                 "flags": ["--submit"]},
     "select":  {"required": ["--selector", "--value"]},
-    "scroll":  {"optional": {"--direction": "direction", "--amount": "amount"}},
+    "scroll":  {"optional": {"--direction": "direction", "--amount": "amount", "--to": "to"}},
     "extract": {"optional": {"--selector": "selector", "--wait-for": "wait_for",
                              "--save-to": "save_to"}},
     "close":   {},
@@ -51,7 +51,7 @@ _V2_CONTRACT = (
     "browser-fetch V2 为 action 模式: open <url> [--wait-for CSS] [--timeout 秒] | "
     "click --text 文本|--selector CSS [--timeout 秒] | "
     "type --selector CSS (--text 文本|--text-file 相对路径) [--submit] | "
-    "select --selector CSS --value 值 | scroll [--direction up|down] [--amount 像素] | "
+    "select --selector CSS --value 值 | scroll [--direction up|down] [--amount 像素] | scroll --to top|bottom | "
     "extract [--selector CSS] [--wait-for CSS] [--save-to 名.md] | close"
 )
 
@@ -60,7 +60,7 @@ _EXAMPLES = {
     "click": 'click --text "登录"',
     "type": 'type --selector input[name=q] --text "inkcube" --submit',
     "select": 'select --selector select#size --value "M"',
-    "scroll": "scroll --direction down --amount 800",
+    "scroll": "scroll --to bottom  # 懒加载/无限流收敛滚动后提取全文",
     "extract": "extract --selector article --save-to result.md",
     "close": "close",
 }
@@ -92,6 +92,7 @@ def parse_action(argv: list[str]) -> tuple[str | None, dict, dict | None]:
             f"未知 action: {action}（合法: open/click/type/select/scroll/extract/close）")
     spec = ACTIONS[action]
     opts: dict = {}
+    last_flag: str | None = None  # 最近一个取值 flag：未加引号的含空格值合并目标
     i = 0
     while i < len(rest):
         tok = rest[i]
@@ -101,7 +102,18 @@ def parse_action(argv: list[str]) -> tuple[str | None, dict, dict | None]:
                 opts["url"] = tok
                 i += 1
                 continue
-            return action, opts, _usage_error(action, f"无法识别的位置参数: {tok}（本工具只接受 --flag 参数）")
+            # 含空格值容错合并（2026-10-16 天眼查任务实证）：LLM 照抄快照
+            # selector/name 时常漏引号（`--selector div > div > input`、
+            # `--text 知识产权 78` 各报一轮「无法识别的位置参数」再自纠）。
+            # 本工具除 open 的 url 外无位置参数，未识别 token 并入上一 flag
+            # 值是唯一合理解释——直接合并，不再消耗一轮报错自纠
+            if last_flag:
+                opts[last_flag] = f"{opts[last_flag]} {tok}"
+                i += 1
+                continue
+            return action, opts, _usage_error(action, (
+                f"无法识别的位置参数: {tok}（用 --text/--selector 等 flag 传值，"
+                "含空格的值请整体加引号）"))
         if tok in spec.get("flags", []):
             opts[_norm(tok)] = True
             i += 1
@@ -116,6 +128,7 @@ def parse_action(argv: list[str]) -> tuple[str | None, dict, dict | None]:
         if _norm(tok) in opts:
             return action, opts, _usage_error(action, f"参数 {tok} 重复")
         opts[_norm(tok)] = rest[i + 1]
+        last_flag = _norm(tok)
         i += 2
     # 必填校验
     if spec.get("url_required") and not opts.get("url"):
@@ -136,12 +149,19 @@ def parse_action(argv: list[str]) -> tuple[str | None, dict, dict | None]:
             return action, opts, _usage_error(action, f"{names} 只能二选一")
     # 值域校验
     if action == "scroll":
-        d = opts.get("direction", "down")
-        if d not in ("up", "down"):
-            return action, opts, _usage_error(action, f"--direction 只支持 up|down，收到: {d}")
-        opts.setdefault("direction", d)  # 默认值写入契约层，LLM 可见
-        if "amount" in opts and not opts["amount"].isdigit():
-            return action, opts, _usage_error(action, f"--amount 必须为正整数，收到: {opts['amount']}")
+        if "to" in opts:
+            # --to 是直达/收敛语义（懒加载/无限流），与逐屏滚动参数互斥
+            if opts["to"] not in ("top", "bottom"):
+                return action, opts, _usage_error(action, f"--to 只支持 top|bottom，收到: {opts['to']}")
+            if "direction" in opts or "amount" in opts:
+                return action, opts, _usage_error(action, "--to 与 --direction/--amount 互斥（--to 自带收敛/直达语义，无需逐屏参数）")
+        else:
+            d = opts.get("direction", "down")
+            if d not in ("up", "down"):
+                return action, opts, _usage_error(action, f"--direction 只支持 up|down，收到: {d}")
+            opts.setdefault("direction", d)  # 默认值写入契约层，LLM 可见
+            if "amount" in opts and not opts["amount"].isdigit():
+                return action, opts, _usage_error(action, f"--amount 必须为正整数，收到: {opts['amount']}")
     for int_flag in ("timeout",):
         if int_flag in opts and not opts[int_flag].isdigit():
             return action, opts, _usage_error(action, f"--{int_flag} 必须为正整数，收到: {opts[int_flag]}")

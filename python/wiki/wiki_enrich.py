@@ -30,7 +30,6 @@ async def enrich_wikilinks(
     page_key: str,
     all_pages: list[dict],
     llm_client: Any,
-    llm_settings: dict,
 ) -> tuple[str, int]:
     """Add wiki-links to content for unlinked terms.
 
@@ -39,7 +38,6 @@ async def enrich_wikilinks(
         page_key: The page's own key (don't self-link).
         all_pages: All wiki pages (list of {page_key, title}).
         llm_client: LLM client instance.
-        llm_settings: LLM settings dict.
 
     Returns:
         (enriched_content, link_count)
@@ -100,7 +98,7 @@ async def enrich_wikilinks(
     ]
 
     try:
-        output = await llm_client.chat(messages, llm_settings)
+        output = (await llm_client.chat_full(messages))["content"]
     except Exception as e:
         logger.warning("Wiki-link enrichment LLM call failed: %s", e)
         return content, 0

@@ -1,0 +1,43 @@
+/* StatusBar（2.10 §6.2/线框 1）：高 26px、字号 11px、上边框 --border、背景 --bg-secondary */
+.bar {
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.seg {
+  background: none;
+  border: none;
+  padding: 0 8px;
+  font-size: var(--text-xs);
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 26px;
+}
+
+.seg:hover {
+  color: var(--text-primary);
+}
+
+/* 版本段：右端静态展示，点击打开关于 */
+.version {
+  margin-left: auto;
+  padding: 0 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 26px;
+}
+
+.version:hover {
+  color: var(--text-primary);
+}

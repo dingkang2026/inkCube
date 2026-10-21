@@ -1,3 +1,5 @@
+/* src/features/project/tabs/FormsTab.module.css — 项目「填表」Tab（2.4 §5.1 实例管理两视图） */
+
 .container {
   display: flex;
   flex-direction: column;
@@ -18,9 +20,9 @@
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
-  color: white;
+  color: var(--text-inverse);
   background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
@@ -28,67 +30,16 @@
   transition: opacity 0.15s;
 }
 
-.primaryBtn:hover {
-  opacity: 0.9;
-}
+.primaryBtn:hover { opacity: 0.9; }
 
-/* Sections */
-.section {
-  margin-bottom: 24px;
-}
-
-.sectionTitle {
-  margin: 0 0 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-/* Template chips */
-.templateList {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.templateChip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.templateChip:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 4%, transparent);
-}
-
-.templateIcon {
-  color: var(--accent);
-}
-
-.templateName {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.templateFormat {
-  font-size: 10px;
-  font-weight: 600;
+.emptyState {
+  padding: 40px 16px;
+  text-align: center;
+  font-size: var(--text-base);
   color: var(--text-muted);
-  background: var(--bg-muted);
-  padding: 1px 5px;
-  border-radius: 3px;
 }
 
-/* Form list */
+/* ── 实例卡 ── */
 .formList {
   display: flex;
   flex-direction: column;
@@ -106,9 +57,7 @@
   transition: border-color 0.15s;
 }
 
-.formCard:hover {
-  border-color: var(--text-muted);
-}
+.formCard:hover { border-color: var(--text-muted); }
 
 .formIcon {
   color: var(--text-muted);
@@ -121,43 +70,65 @@
 }
 
 .formTitle {
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 500;
   color: var(--text-primary);
   margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .formMeta {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.dot {
-  color: var(--text-muted);
+.dot { color: var(--text-muted); }
+
+/* 状态角标（§5.3：pending/filling 蓝脉冲 + 进度 / success 绿 / failed 红） */
+.formStatus { flex-shrink: 0; }
+
+.statusPending,
+.statusFilling {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-sm);
+  color: var(--accent);
+  font-weight: 500;
 }
 
-.formStatus {
-  flex-shrink: 0;
+.pulseDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: forms-pulse 1.2s ease-in-out infinite;
 }
 
 .statusCompleted {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
-  color: var(--success, #22c55e);
+  font-size: var(--text-sm);
+  color: var(--success);
 }
 
-.statusFilling {
+.statusFailed {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
-  color: var(--accent);
-  font-weight: 500;
+  font-size: var(--text-sm);
+  color: var(--error);
+}
+
+@keyframes forms-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 
 .formActions {
@@ -167,8 +138,11 @@
 }
 
 .actionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   background: none;
   border: 1px solid var(--border);
@@ -177,140 +151,172 @@
   transition: background 0.12s, color 0.12s;
 }
 
-.actionBtn:hover {
-  background: var(--bg-muted);
-  color: var(--text-primary);
+.actionBtn:hover:not(:disabled) { background: var(--bg-muted); color: var(--text-primary); }
+.actionBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── Load more — dashed secondary（对齐 TaskList.loadMoreBtn 家族，§列表分页统一约定）── */
+.loadMoreBtn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-/* ── Filling flow styles ── */
+.loadMoreBtn:hover:not(:disabled) {
+  background: rgba(var(--accent-rgb), 0.06);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── preview 视图 ── */
+.previewHead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.headRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.headLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.headRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .backBtn {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .backBtn:hover { background: var(--bg-hover); }
 
 .headerTitle {
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.fillContent {
+/* 报告徽条（§5.1 preview：绿已填 / 橙待补填 / 红失败，点击滚动到首字段） */
+.badgeBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  font-size: var(--text-sm);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  background: var(--bg-primary);
+}
+
+.badgeFilled {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+  background: color-mix(in srgb, var(--success) 7%, transparent);
+}
+
+.badgeNoData {
+  color: var(--text-warning);
+  border-color: color-mix(in srgb, var(--text-warning) 40%, transparent);
+  background: color-mix(in srgb, var(--text-warning) 7%, transparent);
+}
+
+.badgeFailed {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+  background: color-mix(in srgb, var(--error) 7%, transparent);
+}
+
+/* failed 实例错误横幅（§5.3：打开详情显示 error + [重新填写]） */
+.errorBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: var(--text-base);
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 6%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.errorBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.errorTitle {
+  margin: 0 0 2px;
+  font-weight: 600;
+}
+
+.errorText {
+  margin: 0;
+  word-break: break-word;
+}
+
+.formBody {
   flex: 1;
   overflow-y: auto;
+  min-height: 0;
 }
 
-/* Fill progress */
-.fillProgress {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 48px 24px;
-  gap: 12px;
-}
-
-.spinIcon {
-  color: var(--accent);
-  animation: spin 1s linear infinite;
-}
-
-.fillStatus {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0;
-}
-
-.progressBar {
-  width: 240px;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--bg-tertiary);
-  overflow: hidden;
-}
-
-.progressFill {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--accent);
-  transition: width 0.2s ease;
-}
-
-.progressText {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin: 0;
-}
-
-/* Fill preview */
-.fillPreview {
-  padding: 16px 0;
-}
-
-.fillComplete {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--success, #22c55e);
-  margin-bottom: 16px;
-}
-
-.fieldList {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-.fieldRow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.fieldLabel {
-  width: 140px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-  text-align: right;
-}
-
-.fieldInput {
-  flex: 1;
-  padding: 8px 12px;
-  font-size: 13px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  outline: none;
-}
-
-.fieldInput:focus {
-  border-color: var(--accent);
-}
-
-.fillActions {
+.footerActions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding-top: 16px;
+  padding-top: 12px;
+  margin-top: 16px;
   border-top: 1px solid var(--border);
 }
 
 .cancelBtn {
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border);
@@ -320,14 +326,14 @@
 
 .cancelBtn:hover { background: var(--bg-hover); }
 
-.exportBtn {
-  display: flex;
+.saveBtn {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 8px 20px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
-  color: #fff;
+  color: var(--text-inverse);
   background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
@@ -335,9 +341,135 @@
   transition: opacity 0.15s;
 }
 
-.exportBtn:hover { opacity: 0.9; }
+.saveBtn:hover:not(:disabled) { opacity: 0.9; }
+.saveBtn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-@keyframes spin {
+.spinIcon {
+  color: var(--accent);
+  animation: forms-spin 1s linear infinite;
+}
+
+@keyframes forms-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* ── 发起填表弹窗（§5.1：模板卡单选仅 success 可选 + 标题输入）── */
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog {
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.dialogTitle {
+  margin: 0;
+  padding: 14px 16px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+}
+
+.dialogBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sectionLabel {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.tplList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tplCard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+}
+
+.tplCard:hover:not(.tplDisabled) { border-color: var(--accent); }
+
+.tplSelected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.tplDisabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tplName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tplHint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.emptyInline {
+  padding: 12px;
+  font-size: var(--text-base);
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.titleInput {
+  padding: 7px 10px;
+  font-size: var(--text-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.titleInput:focus { border-color: var(--accent); }
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
 }

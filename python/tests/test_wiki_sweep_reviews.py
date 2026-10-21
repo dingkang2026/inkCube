@@ -99,3 +99,33 @@ class TestStage1Orphan:
         assert result["stage1_resolved"] == 0
         assert result["remaining"] == 1
         assert len(db.list_wiki_reviews(project_id, resolved=False)) == 1
+
+
+class TestSweepEndpointSignature:
+    """router → sweep_reviews 签名漂移回归（P1 漏网：函数级单测的调用
+    形态掩盖了端点层四参调用，端点必 500 而单测全绿——端点层必须有
+    直接覆盖）"""
+
+    def test_endpoint_invokes_sweep_with_three_args(self, monkeypatch):
+        import routers.wiki as wiki_router
+
+        class _FakeDB:
+            def get_project(self, pid):
+                return {"id": pid, "name": "P"}
+
+            def get_settings(self):
+                raise RuntimeError("no llm configured")  # 走 llm_client=None 分支
+
+        captured = []
+
+        async def fake_sweep(db, project_id, llm_client):
+            captured.append((project_id, llm_client))
+            return {"stage1_resolved": 0, "remaining": 0}
+
+        monkeypatch.setattr(wiki_router, "get_db", lambda: _FakeDB())
+        monkeypatch.setattr("wiki.sweep_reviews.sweep_reviews", fake_sweep)
+
+        result = _run(wiki_router.sweep_project_reviews("p1"))
+
+        assert result == {"success": True, "stage1_resolved": 0, "remaining": 0}
+        assert captured == [("p1", None)]

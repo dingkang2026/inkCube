@@ -81,7 +81,6 @@ async def build_knowledge_cards(
     raw_results: list[dict],
     section: dict,
     llm_client: Any,
-    llm_settings: dict,
     existing_cards: Optional[list[dict]] = None,
     used_queries: Optional[list[str]] = None,
 ) -> tuple[list[dict], dict, dict]:
@@ -92,7 +91,6 @@ async def build_knowledge_cards(
             {source_type, source_title, source_from, source_date, content, score?}
         section: 归一化后的章节 dict
         llm_client: LLMClient 实例
-        llm_settings: 应用设置 dict
         existing_cards: 已有卡片（补搜轮传入）——原样保留返回，LLM 仅为新增
             raw 提卡，充足性评估针对累计材料整体判断
         used_queries: 已执行的检索关键词全量清单（补搜轮传入）——prompt 硬约束
@@ -155,7 +153,7 @@ async def build_knowledge_cards(
     ]
 
     try:
-        result = await llm_client.chat_full(messages, llm_settings)
+        result = await llm_client.chat_full(messages)
         content = result["content"]
         usage = result["usage"]
 

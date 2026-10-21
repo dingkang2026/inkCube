@@ -24,8 +24,10 @@ vi.mock('../src/hooks/useErrorHandler', () => ({
   useErrorHandler: () => vi.fn(),
 }))
 
+const confirmState = { value: true }
+
 vi.mock('../src/components/ConfirmDialog', () => ({
-  useConfirm: () => async () => true,
+  useConfirm: () => async () => confirmState.value,
 }))
 
 vi.mock('../src/features/knowledge/ImageGallery.module.css', () => ({
@@ -56,6 +58,7 @@ const flush = async () => {
 beforeEach(() => {
   vi.useFakeTimers()
   activityState.items = []
+  confirmState.value = true
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
     if (channel === 'knowledge:getProjectImages') return { images: [], total: 0 }
@@ -106,10 +109,10 @@ describe('ImageGallery describe pause toggle', () => {
   it('renders the pause button only when wired via onToggleDescribePause', async () => {
     render(<ImageGallery projectId="p1" />)
     await flush()
-    expect(screen.queryByTitle('knowledge.pauseDescribe')).toBeNull()
+    expect(screen.queryByTitle('knowledge.stopDescribe')).toBeNull()
     render(<ImageGallery projectId="p1" describePaused={false} onToggleDescribePause={() => {}} />)
     await flush()
-    expect(screen.getByTitle('knowledge.pauseDescribe')).toBeTruthy()
+    expect(screen.getByTitle('knowledge.stopDescribe')).toBeTruthy()
   })
 
   it('shows resume title while paused and invokes the callback on click', async () => {
@@ -148,5 +151,56 @@ describe('ImageGallery all-tab counts', () => {
     render(<ImageGallery projectId="p1" />)
     await flush()
     expect(screen.getByText('knowledge.category_seal')).toBeTruthy()
+  })
+
+  it('renders invoice/certificate category tabs (content categories)', async () => {
+    render(<ImageGallery projectId="p1" />)
+    await flush()
+    expect(screen.getByText('knowledge.category_invoice')).toBeTruthy()
+    expect(screen.getByText('knowledge.category_certificate')).toBeTruthy()
+  })
+})
+
+describe('ImageGallery delete image', () => {
+  const ONE = {
+    images: [{ id: 'i1', status: 'done', local_path: '/x.png', category: 'chart' }],
+    total: 1,
+  }
+
+  async function renderOne() {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:getProjectImages') return ONE
+      return {}
+    })
+    render(<ImageGallery projectId="p1" />)
+    await flush()
+  }
+
+  it('confirm 后经 knowledge:deleteImage 删除并从列表移除', async () => {
+    await renderOne()
+    expect(screen.getByTitle('knowledge.deleteImage')).toBeTruthy()
+    fireEvent.click(screen.getByTitle('knowledge.deleteImage'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('knowledge:deleteImage', { projectId: 'p1', imageId: 'i1' })
+    // 列表已空 → 无图无删除按钮
+    expect(screen.queryByTitle('knowledge.deleteImage')).toBeNull()
+  })
+
+  it('取消确认不发起删除', async () => {
+    confirmState.value = false
+    await renderOne()
+    fireEvent.click(screen.getByTitle('knowledge.deleteImage'))
+    await flush()
+    expect(invokeMock.mock.calls.filter(([c]) => c === 'knowledge:deleteImage').length).toBe(0)
+  })
+
+  it('删除 lightbox 打开中的图 → lightbox 一并关闭', async () => {
+    await renderOne()
+    fireEvent.click(document.querySelector('[class*="thumbImage"]')!)
+    expect(document.querySelector('[class*="lightboxContent"]')).toBeTruthy()
+    fireEvent.click(screen.getByTitle('knowledge.deleteImage'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('knowledge:deleteImage', { projectId: 'p1', imageId: 'i1' })
+    expect(document.querySelector('[class*="lightboxContent"]')).toBeNull()
   })
 })

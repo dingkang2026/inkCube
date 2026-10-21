@@ -109,14 +109,21 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
   const showToast = useToast()
   const { settings } = useSettings()
   const guard = useFeatureGuard()
-  const internetConfigured = Boolean(settings?.tavily_key)
+  // 互联网总开关可用性与后端 web_search_cfg_from_settings 同口径：
+  // 已选供应商且所选 Key 非 strip 后空串才算已配置（2026-10-19 供应商化；
+  // trim 对齐后端 .strip()，纯空格 Key 不放行总闸）
+  const wsProvider = settings?.web_search_provider ?? ''
+  const wsKey =
+    wsProvider === 'zhipu' ? settings?.zhipu_search_key ?? ''
+    : wsProvider === 'tavily' ? settings?.tavily_key ?? ''
+    : ''
+  const internetConfigured = wsKey.trim().length > 0
   const [step, setStep] = useState(1)
   const [searchQuery, setSearchQuery] = useState('')
   const [templates, setTemplates] = useState<BackendTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedTemplate, setSelectedTemplate] = useState<FullTemplate | null>(null)
   const [checkedSources, setCheckedSources] = useState<Set<string>>(new Set())
-  const [customBaseLibs, setCustomBaseLibs] = useState<{ id: string; name: string }[]>([])
   const [supplementaryNotes, setSupplementaryNotes] = useState('')
   const [variableValues, setVariableValues] = useState<Record<string, string>>({})
   const [internetEnabled, setInternetEnabled] = useState(false)
@@ -144,22 +151,6 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     return () => { cancelled = true }
   }, [projectType])
 
-  // Load custom base libraries from backend
-  useEffect(() => {
-    async function loadCustomLibs() {
-      try {
-        const result: any = await window.electronAPI.invoke('baseLib:list')
-        const libs = (result.base_libs || [])
-          .filter((lib: any) => !lib.lib_type?.startsWith('preset_'))
-          .map((lib: any) => ({ id: lib.id, name: lib.name }))
-        setCustomBaseLibs(libs)
-      } catch (err) {
-        console.error('Failed to load custom base libs:', err)
-      }
-    }
-    loadCustomLibs()
-  }, [])
-
   // Initialize knowledge sources from the project's real base-lib
   // associations (2.7 §5.5): links may have been auto-created at project
   // creation or edited by the user since — a projectType hard-match would
@@ -179,9 +170,6 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
             initial.add(ks.id)
           }
         })
-        customBaseLibs.forEach(lib => {
-          if (linkedIds.has(lib.id)) initial.add(`ks-custom-${lib.id}`)
-        })
       } catch (err) {
         console.error('Failed to load project base-lib associations:', err)
         // Fallback: only the project KB stays checked
@@ -190,26 +178,10 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
     }
     loadAssociations()
     return () => { cancelled = true }
-  }, [projectId, customBaseLibs])
+  }, [projectId])
 
-  // Build dynamic knowledge sources list
-  const knowledgeSources = useMemo(() => {
-    const sources: { id: string; nameKey: string; alwaysChecked: boolean; autoMatched: boolean; matchType?: ProjectType; baseLibId?: string; isCustom?: boolean }[] = [
-      ...STATIC_SOURCE_ENTRIES,
-    ]
-    // Add custom base libs
-    for (const lib of customBaseLibs) {
-      sources.push({
-        id: `ks-custom-${lib.id}`,
-        nameKey: '',  // will use lib.name directly
-        alwaysChecked: false,
-        autoMatched: false,
-        baseLibId: lib.id,
-        isCustom: true,
-      })
-    }
-    return sources
-  }, [customBaseLibs])
+  // 基础库收敛后仅剩预置静态源（2.9 D3），无自定义库可拼接
+  const knowledgeSources = STATIC_SOURCE_ENTRIES
 
   // User-sourced variables that require manual input in the wizard
   const userVariables = useMemo<TemplateVariable[]>(
@@ -517,9 +489,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
                       disabled={ks.alwaysChecked}
                     />
                     <span className={s.checkboxLabel}>
-                      {ks.isCustom
-                        ? customBaseLibs.find(lib => `ks-custom-${lib.id}` === ks.id)?.name || ks.id
-                        : t(ks.nameKey)}
+                      {t(ks.nameKey)}
                     </span>
                     {ks.alwaysChecked && <span className={s.autoTag}>{t('project.report.wizard.autoIncluded')}</span>}
                     {ks.autoMatched && ks.matchType === projectType && !ks.alwaysChecked && (
@@ -546,7 +516,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
             <div className={s.rightPanel}>
               <div className={s.section}>
                 <div className={s.sectionTitle}>{t('project.report.wizard.outline')}</div>
-                {/* 报告级互联网总开关（总闸）：未配置 Tavily key 时置灰 */}
+                {/* 报告级互联网总开关（总闸）：网络搜索未配置时置灰 */}
                 <label
                   className={`${s.internetToggle} ${s.masterInternetToggle} ${!internetConfigured ? s.internetToggleDisabled : ''}`}
                   title={t('project.report.wizard.masterInternet')}

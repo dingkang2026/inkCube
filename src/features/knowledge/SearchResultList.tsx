@@ -1,6 +1,7 @@
 /** src/features/knowledge/SearchResultList.tsx */
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Heading, Image, List, Pilcrow, Table, TextQuote, type LucideIcon } from 'lucide-react'
 import type { SearchResult } from './types'
 import { Markdown } from '../../components/Markdown'
 import s from './SearchResultList.module.css'
@@ -10,14 +11,14 @@ interface SearchResultListProps {
   isRecent?: boolean
 }
 
-/** Content type icons for left-side indicator */
-const CONTENT_TYPE_ICONS: Record<string, string> = {
-  heading: 'H',
-  paragraph: '¶',
-  table: '⊞',
-  figure: '🖼',
-  caption: '◎',
-  list: '≡',
+/** Content type icons for left-side indicator（lucide，2026-10-19 图标语言统一） */
+const CONTENT_TYPE_ICONS: Record<string, LucideIcon> = {
+  heading: Heading,
+  paragraph: Pilcrow,
+  table: Table,
+  figure: Image,
+  caption: TextQuote,
+  list: List,
 }
 
 /** Content type label keys — resolved via i18n at render time */
@@ -58,7 +59,7 @@ export function SearchResultList({ results, isRecent }: SearchResultListProps) {
           const contentPreview = previewBody.length > 300
             ? previewBody.slice(0, 300) + '…'
             : previewBody
-          const typeIcon = CONTENT_TYPE_ICONS[result.metadata?.content_type] || ''
+          const ContentTypeIcon = CONTENT_TYPE_ICONS[result.metadata?.content_type]
           // Markdown rendering: expanded shows the full body; collapsed search
           // tables show a markdown preview; recent chunks stay plain text.
           const renderMarkdownBody = !!mdContent && (isExpanded || (!isRecent && isTable))
@@ -69,7 +70,7 @@ export function SearchResultList({ results, isRecent }: SearchResultListProps) {
             <div key={result.id} className={s.card}>
               <div className={s.cardLeft}>
                 <span className={s.typeIcon} title={result.metadata?.content_type}>
-                  {typeIcon}
+                  {ContentTypeIcon ? <ContentTypeIcon size={13} /> : ''}
                 </span>
               </div>
               <div className={s.cardBody}>

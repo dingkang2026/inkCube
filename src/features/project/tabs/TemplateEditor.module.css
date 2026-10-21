@@ -25,8 +25,9 @@
 
 .tab {
   padding: 10px 14px;
-  font-size: 13px;
-  color: var(--text-muted);
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-secondary);
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -39,7 +40,6 @@
 .tabActive {
   color: var(--accent);
   border-bottom-color: var(--accent);
-  font-weight: 500;
 }
 
 .saveBtn {
@@ -47,9 +47,9 @@
   align-items: center;
   gap: 6px;
   padding: 5px 14px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
-  color: #fff;
+  color: var(--text-inverse);
   background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
@@ -67,9 +67,9 @@
   gap: 6px;
   margin: 8px 16px 0;
   padding: 8px 12px;
-  font-size: 12px;
-  color: var(--danger, #e53e3e);
-  background: rgba(229, 62, 62, 0.06);
+  font-size: var(--text-sm);
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 6%, transparent);
   border-radius: var(--radius-sm);
 }
 
@@ -78,7 +78,7 @@
   padding: 2px;
   background: transparent;
   border: none;
-  color: var(--danger, #e53e3e);
+  color: var(--error);
   cursor: pointer;
   opacity: 0.7;
 }
@@ -98,8 +98,8 @@
   height: 100%;
   min-height: 320px;
   padding: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -123,7 +123,7 @@
 }
 
 .sectionTitle {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 12px;
@@ -145,7 +145,7 @@
 }
 
 .field label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   font-weight: 500;
 }
@@ -154,7 +154,7 @@
 .field textarea,
 .field select {
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -180,7 +180,7 @@
 }
 
 .fieldRow > label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   font-weight: 500;
   min-width: 70px;
@@ -190,7 +190,7 @@
 .fieldRow input,
 .fieldRow select {
   padding: 5px 8px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -210,7 +210,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   cursor: pointer;
 }
@@ -219,15 +219,15 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-primary);
   cursor: pointer;
   min-width: 0 !important;
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -250,7 +250,7 @@
   flex: 1;
   min-width: 0;
   padding: 4px 8px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -268,8 +268,8 @@
 .modeBadge, .optBadge {
   display: inline-block;
   padding: 1px 7px;
-  font-size: 10px;
-  border-radius: 9px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-muted);
   background: var(--bg-tertiary);
@@ -298,17 +298,17 @@
   background: var(--bg-hover);
 }
 
-.nodeFields .field label { font-size: 11px; }
+.nodeFields .field label { font-size: var(--text-xs); }
 
 .nodeFields .field input,
 .nodeFields .field textarea,
 .nodeFields .field select {
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .nodeFields .fieldRow { margin-top: 0; }
-.nodeFields .fieldRow > label { font-size: 11px; min-width: 64px; }
+.nodeFields .fieldRow > label { font-size: var(--text-xs); min-width: 64px; }
 
 .nodeChildren {
   padding: 6px 10px 8px;
@@ -320,7 +320,7 @@
   padding: 3px 5px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 2px;
   color: var(--text-muted);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
@@ -344,25 +344,25 @@
   padding: 3px 5px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 2px;
   color: var(--text-muted);
   cursor: pointer;
   transition: color 0.12s;
 }
 
-.dangerBtn:hover { color: var(--danger, #e53e3e); }
+.dangerBtn:hover { color: var(--error); }
 
 .dangerBtnSmall {
   padding: 2px 4px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: 2px;
   color: var(--text-muted);
   cursor: pointer;
   transition: color 0.12s;
 }
 
-.dangerBtnSmall:hover { color: var(--danger, #e53e3e); }
+.dangerBtnSmall:hover { color: var(--error); }
 
 /* ── Add buttons ── */
 .addBtn {
@@ -373,16 +373,16 @@
   width: 100%;
   padding: 8px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--accent);
-  background: rgba(37, 99, 235, 0.04);
+  background: rgba(var(--accent-rgb), 0.04);
   border: 1px dashed var(--accent);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background 0.12s;
 }
 
-.addBtn:hover { background: rgba(37, 99, 235, 0.1); }
+.addBtn:hover { background: rgba(var(--accent-rgb), 0.1); }
 
 .addBtnSmall {
   display: inline-flex;
@@ -390,7 +390,7 @@
   gap: 4px;
   padding: 4px 10px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--accent);
   background: transparent;
   border: 1px dashed var(--accent);
@@ -399,7 +399,7 @@
   transition: background 0.12s;
 }
 
-.addBtnSmall:hover { background: rgba(37, 99, 235, 0.06); }
+.addBtnSmall:hover { background: rgba(var(--accent-rgb), 0.06); }
 
 /* ── Global requirements list ── */
 .listRow {
@@ -412,7 +412,7 @@
 .listRow input {
   flex: 1;
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -424,7 +424,7 @@
 
 /* ── Section hint ── */
 .sectionHint {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   line-height: 1.5;
   margin: -6px 0 12px;
@@ -449,7 +449,7 @@
   flex: 1;
   min-width: 0;
   padding: 4px 8px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -462,7 +462,7 @@
 
 .varSourceSelect {
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -480,17 +480,17 @@
   background: var(--bg-hover);
 }
 
-.varFields .field label { font-size: 11px; }
+.varFields .field label { font-size: var(--text-xs); }
 
 .varFields .field input,
 .varFields .field textarea,
 .varFields .field select {
   padding: 5px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .varFields .fieldRow { margin-top: 0; }
-.varFields .fieldRow > label { font-size: 11px; min-width: 64px; }
+.varFields .fieldRow > label { font-size: var(--text-xs); min-width: 64px; }
 
 .chipGroup {
   display: flex;
@@ -502,7 +502,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-primary);
   cursor: pointer;
 }

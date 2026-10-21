@@ -112,6 +112,7 @@ class Database:
                 title TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active',
                 workspace_path TEXT NOT NULL,
+                origin TEXT NOT NULL DEFAULT 'chat',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -203,6 +204,10 @@ class Database:
         # Migrate: tasks table - mode for coding/general mode
         self._migrate_add_column("tasks", "mode", "TEXT DEFAULT 'coding'")
 
+        # Migrate: tasks table - origin (chat / ppt, 2.3 §3.1 形态分离；
+        # ppt 任务不进任务 Tab，由报告 Tab PPT 区块承载)
+        self._migrate_add_column("tasks", "origin", "TEXT DEFAULT 'chat'")
+
         # Migrate: projects table - type/stage for project classification
         self._migrate_add_column("projects", "type", "TEXT DEFAULT 'general'")
         self._migrate_add_column("projects", "stage", "TEXT DEFAULT 'none'")
@@ -214,6 +219,10 @@ class Database:
         # Migrate: projects table - kind/lib_type for base library support
         self._migrate_add_column("projects", "kind", "TEXT DEFAULT 'project'")
         self._migrate_add_column("projects", "lib_type", "TEXT DEFAULT NULL")
+
+        # Migrate: projects table - archived_at for project archive (归档=生命周期软关闭，
+        # 删除准入 = 已归档；NULL = 有效，非空 = 已归档且时间戳兼作展示字段)
+        self._migrate_add_column("projects", "archived_at", "DATETIME DEFAULT NULL")
 
         # Project-BaseLib association table
         self.conn.executescript("""
@@ -237,7 +246,7 @@ class Database:
                 entity_id TEXT NOT NULL,
                 project_id TEXT,             -- 所属项目（任务/模型下载无项目时为 NULL）
                 container TEXT DEFAULT 'project', -- 挂载容器 project / baselib（0.4 §3.6，前端导航分流）
-                kind TEXT NOT NULL,          -- completed / failed
+                kind TEXT NOT NULL,          -- 终态 completed/failed/paused/awaiting_input；信息类 file_changed/due/overdue/info/warning（2.11）
                 entity_title TEXT NOT NULL,  -- 展示名（用户数据，不翻译）
                 detail TEXT,
                 read_at TEXT,
@@ -330,7 +339,13 @@ class Database:
         # _migrate_add_column silently skips missing tables — the column would
         # never be added (broke confirm_skill_by_name with "no such column").
         self._migrate_add_column("skills", "needs_confirm", "INTEGER DEFAULT 1")
-        self._migrate_add_column("reports", "token_usage", "TEXT")
+        # 2.10 单源迁移：reports.token_usage（旧 TokenTracker 产物，前端无消费）
+        # 由 llm_usage 表取代；存量库删列（SQLite ≥3.35），新库本就无此列
+        try:
+            self.conn.execute("ALTER TABLE reports DROP COLUMN token_usage")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 列不存在（新库/已迁移）
         self._migrate_add_column("reports", "error_message", "TEXT")
 
         # Web logins table (2.8 §3.2)：设置页「网页登录态」管理列表。
@@ -341,6 +356,34 @@ class Database:
                 note TEXT,
                 created_at TEXT NOT NULL
             );
+        """)
+        self.conn.commit()
+
+        # ── Token usage ledger (2.10 §3.1) ──
+        # append-only：client 收口层单点写入（llm/usage.py sink → insert_llm_usage），
+        # 聚合查询现算（无缓存层，刷新机制因此无需失效管理，§5.4）
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS llm_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,                   -- ISO 本地时间，按天分组用 date(ts)
+                source TEXT NOT NULL,               -- task / chat / vlm / wiki / report / form / system / other
+                purpose TEXT,                       -- 调用用途细分（2.10 §3.3）
+                task_id TEXT,
+                round_id TEXT,                      -- 任务「每次对话」= agent 一次 run 的 uuid
+                project_id TEXT,
+                entity_id TEXT,                     -- report_id / compile_task_id / fill_id / image_id / file_id
+                model TEXT NOT NULL,
+                mode TEXT NOT NULL,                 -- full / stream / vlm
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                detail TEXT                         -- JSON 扩展位（如报告 section_id）
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_source ON llm_usage(source, ts);
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_task ON llm_usage(task_id, round_id);
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_project ON llm_usage(project_id, ts);
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_entity ON llm_usage(entity_id);
         """)
         self.conn.commit()
         # 报告级暂停请求标志（2.5 §3.1 修订）：pause 端点写入，Runner 在章节边界
@@ -371,6 +414,45 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_report_logs_report ON report_logs(report_id, created_at);
         """)
         self.conn.commit()
+
+        # ── PPT deliverables (2.3 §5.1)：交付物登记簿——执行态权威在 tasks，
+        # 产物文件权威在 workspace，本表只做登记与索引 ──
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS ppts (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,               -- 引擎句柄：tasks.id（origin='ppt'）
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'deck',   -- deck=生成 / enhanced=增强
+                status TEXT NOT NULL DEFAULT 'running',
+                    -- running / awaiting_input / paused / completed / failed / cancelled
+                stage TEXT,                          -- intake / strategy / authoring / export
+                progress REAL NOT NULL DEFAULT 0,    -- 0-1（authoring 按页计）
+                page_count INTEGER,                  -- 规划页数
+                page_done INTEGER,                   -- 已完成页数
+                source_report_id TEXT,               -- 内容源报告（可空=自由主题）
+                source_images_json TEXT,             -- 图片库选中项 ["<image_id>", ...]
+                style_ref TEXT,                      -- 内置 style 名或 library 模板名
+                workspace_path TEXT,                 -- ppt-master 项目目录（任务 workspace 内）
+                export_path TEXT,                    -- 最终 PPTX 相对路径
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ppts_project ON ppts(project_id, created_at DESC);
+        """)
+        self.conn.commit()
+
+        # Migrate: ppts — 模板工坊任务字段（2.3 §4.2，E2）：kind='template' 行记录
+        # 目标模板的类型与 id（完成判定 = 对应索引出现该 id；project_id 传空串
+        # 表示全局资产，活动/通知层 LEFT JOIN 后按 kind 分流 container）
+        self._migrate_add_column("ppts", "template_kind", "TEXT")
+        self._migrate_add_column("ppts", "template_id", "TEXT")
+
+        # Migrate: ppts — 成品增强源（2.3 §4.3，E3）：kind='enhanced' 行记录
+        # staging 后的源 PPTX 相对路径（init 的输入，apply 产物在 exports/）
+        self._migrate_add_column("ppts", "enhance_source_path", "TEXT")
 
         # ── Wiki tables (§3 of 2.6wiki-design.md) ──
         self.conn.executescript("""
@@ -625,6 +707,127 @@ class Database:
         self._migrate_add_column("projects", "pulse_ai_status_at", "TEXT")
         self._migrate_add_column("wiki_schemas", "is_ledger", "INTEGER DEFAULT 0")
 
+        # ── Forms: form_templates & form_fills (2.4 §3) ──
+        # form_templates: 填表模板（全局资产，模板不可变——上传重传=新记录、
+        #   预置仅 reanalyze）；form_fills: 填表实例（项目作用域，产物 docx 落盘
+        #   data/form_fills/{id}.docx）。模板删除不阻断：实例 template_id 悬空容错
+        #   （2026-10-16 摘除外键，2.4 §5.4 不变量 11）。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS form_templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'upload',
+                file_path TEXT NOT NULL,
+                template_schema TEXT,
+                llm_mapping TEXT,
+                user_hint TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT,
+                field_count INTEGER,
+                file_hash TEXT,                  -- SHA-256（分析成功时写入；用于启动/列表时检测文件变更，2.4 §2.4）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_form_templates_status
+                ON form_templates(status);
+
+            CREATE TABLE IF NOT EXISTS form_fills (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                template_id TEXT NOT NULL,       -- 无外键（2.4 §5.4 不变量 11：
+                                                 --   模板随时可删，悬空容错）
+                title TEXT NOT NULL,
+                output_path TEXT,
+                report TEXT,
+                filled_values TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                progress INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_form_fills_project
+                ON form_fills(project_id);
+        """)
+        # 存量库补 file_hash（分析成功后写入；NULL=未知不参与变更提示）
+        self._migrate_add_column("form_templates", "file_hash", "TEXT")
+        self.conn.commit()
+
+        # ── Task Templates (0.5 §5, E2) ──
+        # 自定义任务模板持久化；内置模板不落库（始终以 i18n 为准），表只存
+        # 自定义行 + 内置置顶态记录行（builtin=1，id='tpl_builtin_<name>'）
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS task_templates (
+                id          TEXT PRIMARY KEY,      -- 'tpl_custom_<hex8>'；内置置顶记录为 'tpl_builtin_<name>'
+                scope       TEXT NOT NULL,         -- 'global' | 'project'
+                project_id  TEXT,                  -- scope='project' 时必填
+                category    TEXT NOT NULL,         -- info_gather|monitor|industry|report_invest|office
+                title       TEXT NOT NULL,
+                prompt      TEXT NOT NULL,         -- 含 {占位符}
+                builtin     INTEGER NOT NULL DEFAULT 0,
+                pinned      INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_templates_scope
+                ON task_templates(scope, project_id);
+        """)
+        self.conn.commit()
+
+        # ── Task Schedules (2.11 §3, E3) ──
+        # 订阅式情报采集：task_schedules 订阅 + task_schedule_runs 执行历史
+        # （阅读层数据源）；tasks.schedule_id 迁移列使影子任务走 agent 既有
+        # 执行链而与人任务列表隔离（D2：服务端排除）。外键依赖 PRAGMA
+        # foreign_keys=ON（本文件初始化已开）：删订阅级联删 runs、任务行
+        # schedule_id 置 NULL（历史保留可读）。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS task_schedules (
+                id          TEXT PRIMARY KEY,            -- 'sch_<hex8>'
+                name        TEXT NOT NULL,               -- 用户可读名
+                prompt      TEXT NOT NULL,               -- 填好占位符的完整 prompt（含产出结构约定，2.11 §8.3）
+                mode        TEXT NOT NULL DEFAULT 'general',
+                category    TEXT NOT NULL DEFAULT 'general',
+                interval_type  TEXT NOT NULL,            -- daily | weekly | monthly
+                interval_value TEXT NOT NULL,            -- "09:00" | "MON,THU 09:00" | "1,15 09:00"
+                target_type TEXT,                        -- 'project' | 'baselib' | NULL（不自动沉淀）
+                target_id   TEXT,                        -- target_type 非空时必填
+                archive_file_id TEXT,                    -- 档案在目标容器的 file id 锚点（2.11 §6）
+                archive_last_run_id TEXT,                -- 档案已合并到的最近 run id（失败补并锚点）
+                auto_import INTEGER NOT NULL DEFAULT 1,
+                enabled     INTEGER NOT NULL DEFAULT 1,  -- 0 = 已暂停（含连续失败自动暂停）
+                next_run_at TEXT,                        -- ISO；enabled=0 时为 NULL
+                last_run_at TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,  -- ≥3 自动暂停（2.11 §5.5）
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS task_schedule_runs (
+                id          TEXT PRIMARY KEY,            -- 'run_<hex8>'
+                schedule_id TEXT NOT NULL REFERENCES task_schedules(id) ON DELETE CASCADE,
+                task_id     TEXT REFERENCES tasks(id) ON DELETE SET NULL,  -- 任务被删后历史仍可读
+                status      TEXT NOT NULL,               -- running | done | failed | skipped | missed
+                report_path TEXT,                        -- 报告副本 data/schedules/{run_id}.md（D5）
+                summary     TEXT,                        -- 摘要要点 JSON 数组（解析自报告「## 摘要」节）
+                error       TEXT,                        -- 失败原因（§8.4 ReadView 失败态；done 恒 NULL）
+                read_at     TEXT,                        -- NULL=未读（收件箱/红点/摘要行计数数据源）
+                started_at  TEXT,
+                finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runs_schedule
+                ON task_schedule_runs(schedule_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_schedules_next
+                ON task_schedules(enabled, next_run_at);
+            CREATE INDEX IF NOT EXISTS idx_runs_inbox
+                ON task_schedule_runs(status, finished_at DESC);
+        """)
+        # Migrate: tasks.schedule_id（影子任务归属，D2；订阅删除后任务行保留）
+        self._migrate_add_column(
+            "tasks", "schedule_id",
+            "TEXT REFERENCES task_schedules(id) ON DELETE SET NULL")
+        # Migrate: task_schedule_runs.error（§8.4 失败原因，旧库由迁移补列）
+        self._migrate_add_column("task_schedule_runs", "error", "TEXT")
+        self.conn.commit()
+
         # Migrate: suggestions 幂等约束补项目作用域(整体 review C1)
         self._migrate_task_suggestions_unique()
 
@@ -736,9 +939,18 @@ class Database:
         defaults = {
             "api_url": "https://open.bigmodel.cn/api/paas/v4/",
             "api_key": "",
-            "model": "glm-4-flash",
+            # 模型档位槽（2026-10-19 档位制，替代原单一 model 键）：
+            # standard = 标准模型（默认档），high = 高配模型；路由键存档位（standard/high），
+            # 由 llm/routing.get_task_settings 解析为最终模型名写入 model 键（client 契约不变）。
+            # 两槽互为回退；开箱默认 glm-5.3-flash / glm-5.3，清空后全空时 model 为
+            # 空串，请求将被网关拒（入口已被 readiness 拦截）。
+            "standard_model": "glm-5.3-flash",
+            "high_model": "glm-5.3",
             "temperature": 0.7,
-            "max_tokens": 8192,
+            # 预算两键（llm/budget.py floor 读取时抬升）：默认值 = 现代模型实际
+            # 下限（上下文 128K / 输出 32K），显示值即生效值；手填 0 = 自动（同样落下限）
+            "max_tokens": 32768,
+            "context_window": 131072,
             "top_p": 0.9,
             # Reasoning params (settings page 思考深度/高级覆盖) — must stay in
             # this whitelist or get_settings() silently drops saved values
@@ -746,9 +958,14 @@ class Database:
             "reasoning_override": "",
             "system_prompt": "",
             "tavily_key": "",
+            # 网络搜索供应商化（2026-10-19）：tavily | zhipu 二选一；空 = 未选择（必配未完成）；
+            # 两把 Key 并存，切换供应商不丢配置
+            "web_search_provider": "",
+            "zhipu_search_key": "",
+            "zhipu_search_engine": "search_pro",  # search_std | search_pro（智谱引擎档位）
             "vlm_api_url": "https://open.bigmodel.cn/api/paas/v4/",
             "vlm_api_key": "",
-            "vlm_model": "glm-4v",
+            "vlm_model": "glm-4.6v",
             "max_concurrent_file_parsing": 2,
             "max_concurrent_image_description": 2,
             # Wiki compile settings（默认 2：并发单位是项目，项目内文件本就串行，
@@ -757,11 +974,17 @@ class Database:
             # LLM timeout settings
             "llm_connect_timeout": 30,
             "llm_read_timeout": 300,
-            # Task-specific settings
-            "task_model": "",
+            # Task-specific settings（路由键值 = 档位 standard/high；
+            # planner 空串 = 不启用规划阶段（单模型模式，双模型架构语义保留））
+            "task_model": "standard",
             "task_planner_model": "",
-            "task_timeout": 30,
-            "task_max_iterations": 25,  # FC loop max iterations (TaskSettings UI)
+            "task_timeout": 30,  # chat 单命令护栏；ppt 长命令由 ORIGIN_PRESETS 落地 600（2.3 §3.2），不在此放大
+            "task_max_iterations": 60,  # FC loop max iterations (TaskSettings UI)
+            # PPT 任务专用参数（2.3 §3.2 ORIGIN_PRESETS）：None = 未设置，运行时
+            # 落地预设值；显式设置即覆盖。通用键（上面两键）恒有默认值，以
+            # 「get 为 None」判定未设置只对专用键成立——ORIGIN_PRESETS 必须用专用键
+            "task_ppt_max_iterations": None,  # model-exempt: 无设置页 UI（全量 PUT 会覆盖用户值），覆盖走后端 API
+            "task_ppt_timeout": None,  # model-exempt: 同上
             "task_shell_confirm_mode": "smart",  # strict | smart | auto
             "task_auto_confirm_shell": False,  # legacy, kept for backward compat
             "task_shell_domain_whitelist": "",  # newline-separated domains auto-approved in smart mode
@@ -769,14 +992,38 @@ class Database:
             "task_workspace_max_mb": 1024,
             "task_max_count": 50,
             "task_auto_archive_days": 30,
+            # 存储保留策略（2026-10-20 数据管理审计，maintenance 启动清扫消费；
+            # 0 = 永不清理，设置页 DataManagement 面板可改）
+            "archived_task_cleanup_days": 30,
+            "llm_usage_retention_days": 90,
+            "schedule_runs_retention_days": 90,
+            # Notification settings (2.11 §2.3)：OS 系统通知与提示音；
+            # 设置页 UI 可改键，入全量保存白名单（ActivityMonitor 消费）
+            "os_notify_enabled": True,
+            "os_notify_sound": True,
+            "affair_reminder_enabled": True,  # 事务到期/逾期提醒扫描开关（2.11 §3.2）
+            # R4 订阅完成通知（review P2-7 提前落地，原 T11 项）：默认 False =
+            # 静默（通知中心可见+静默已读，管理台红点是完成态消费入口）；开启后
+            # completed 走正常 Toast/OS 通道（ActivityMonitor 即时重读）
+            "schedule_notify": False,
             # Report-specific settings
             "report_max_concurrent": 2,  # model-exempt: 预留位暂无 UI，后端消费（reports.py）；最大并发生成报告数
+            # Form fill settings (2.4 §4.2)
+            "form_fill_max_concurrent": 2,  # model-exempt: 预留位暂无 UI，后端消费（forms.py）；最大并发填表数
             "report_channel_parallelism": 4,  # model-exempt: 预留位暂无 UI，后端消费（runner.py）；通道内多 query 并行数
-            # Wiki LLM task routing (§12.2.13)
-            "wiki_ingest_model": "",  # empty = use global model
-            "wiki_lint_model": "",
-            "wiki_dedup_model": "",
-            "wiki_ledger_parse_model": "",  # 3.1 §4.2 台账解析(轻模型;empty = 全局默认)
+            # LLM task routing（llm/routing.py 唯一入口；值 = 档位 standard/high，
+            # 空值按 standard 处理；除 ppt 默认 high 外全部默认 standard）
+            "wiki_ingest_model": "standard",
+            "wiki_lint_model": "standard",
+            "wiki_dedup_model": "standard",
+            "wiki_ledger_parse_model": "standard",  # 3.1 §4.2 台账解析（轻量）
+            "report_model": "standard",  # 报告生成（长文写作）
+            "report_extract_model": "standard",  # 报告模板提取（样例结构识别）
+            "form_analyze_model": "standard",  # 填表模板分析（结构提取与语义映射）
+            "form_fill_model": "standard",  # 填表执行（按检索资料生成字段值）
+            "rag_model": "standard",  # 知识库问答
+            "wiki_enrich_model": "standard",  # wiki 链接补全（轻量结构化）
+            "ppt_model": "high",  # PPT 生成（逐页 SVG 创作，唯一默认高配）
             # 队列暂停开关（0.4 §队列暂停）：持久化于 settings，重启保持；
             # 经 POST /knowledge/queue/pause 写入（set_flag），运行时由 worker 闸门消费。
             # wiki 编译无队列暂停（0.4 §6.7 修订）：任务级「停止」+ 断点续传已覆盖；
@@ -860,16 +1107,46 @@ class Database:
             "seeded_tasks_count": seeded,
         }
 
-    def list_projects(self) -> list[dict]:
+    def list_projects(self, archived: bool = False) -> list[dict]:
+        """列出项目（kind='project'），按 archived_at 分流：False=有效，True=已归档。"""
         cursor = self.conn.execute(
             """SELECT p.*, COUNT(f.id) as file_count
                FROM projects p
                LEFT JOIN files f ON p.id = f.project_id
-               WHERE p.kind = 'project'
+               WHERE p.kind = 'project' AND (p.archived_at IS NOT NULL) = ?
                GROUP BY p.id
-               ORDER BY p.updated_at DESC"""
+               ORDER BY p.updated_at DESC""",
+            (1 if archived else 0,),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def count_archived_projects(self) -> int:
+        """已归档项目计数（侧边栏归档 tab 徽记）。"""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM projects "
+            "WHERE kind = 'project' AND archived_at IS NOT NULL"
+        )
+        return cursor.fetchone()["cnt"]
+
+    def archive_project(self, proj_id: str) -> bool:
+        """归档项目（写 archived_at，数据零清理）。仅 kind='project'，返回是否生效。"""
+        cursor = self.conn.execute(
+            """UPDATE projects SET archived_at = ?, updated_at = ?
+               WHERE id = ? AND kind = 'project' AND archived_at IS NULL""",
+            (self._now(), self._now(), proj_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def unarchive_project(self, proj_id: str) -> bool:
+        """恢复归档项目（清 archived_at）。仅 kind='project'，返回是否生效。"""
+        cursor = self.conn.execute(
+            """UPDATE projects SET archived_at = NULL, updated_at = ?
+               WHERE id = ? AND kind = 'project' AND archived_at IS NOT NULL""",
+            (self._now(), proj_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def get_project(self, proj_id: str) -> dict | None:
         cursor = self.conn.execute("SELECT * FROM projects WHERE id = ?", (proj_id,))
@@ -977,7 +1254,7 @@ class Database:
         )
         self.conn.commit()
 
-        # 终态事件已解耦（E2，0.4 §6.4 / §8.5 顺序 3）：done / error 的通知由调用方
+        # 终态事件已解耦（E2，0.4 §6.4）：done / error 的通知由调用方
         # （pipeline / task_queue）经 activity_events.complete_file / fail_file 显式声明，
         # DB 层回归纯状态写入（写入位置盘点见 0.4 §8.2）。
 
@@ -1196,7 +1473,7 @@ class Database:
 
     # ── Tasks ──
 
-    def create_task(self, title: str, data_dir: str, workspace_path: str = "", mode: str = "coding") -> dict:
+    def create_task(self, title: str, data_dir: str, workspace_path: str = "", mode: str = "coding", origin: str = "chat", schedule_id: str | None = None) -> dict:
         now = self._now()
         task_id = self._uuid()
 
@@ -1220,8 +1497,8 @@ class Database:
             venv_path = os.path.join(task_dir, ".venv")
 
         self.conn.execute(
-            "INSERT INTO tasks (id, title, status, workspace_path, venv_path, mode, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?, ?)",
-            (task_id, title, workspace_path, venv_path, mode, now, now),
+            "INSERT INTO tasks (id, title, status, workspace_path, venv_path, mode, origin, schedule_id, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, title, workspace_path, venv_path, mode, origin, schedule_id, now, now),
         )
         self.conn.commit()
         return {
@@ -1231,15 +1508,22 @@ class Database:
             "workspace_path": workspace_path,
             "venv_path": venv_path,
             "mode": mode,
+            "origin": origin,
+            "schedule_id": schedule_id,
             "created_at": now,
             "updated_at": now,
         }
 
     def list_tasks(
         self, status: str | None = None, limit: int = 0, offset: int = 0,
+        origin: str | None = None,
     ) -> tuple[list[dict], bool]:
         """List tasks. If status is None, return all non-deleted tasks.
         If status='active', return only active. If status='archived', return only archived.
+        origin 过滤（2.3 §3.1 形态分离）：任务 Tab 固定传 'chat'；None 不过滤
+        （崩溃恢复等内部扫描需要全量）。PPT 任务永不进任务 Tab。
+        影子任务恒排除（2.11 D2：定时订阅执行不进人工任务列表，服务端排除
+        前端零特判；get_task 直查仍可回放）。
         limit=0 → no pagination (backward compatible); limit>0 → fetch limit+1 rows
         to detect has_more without a COUNT query. Returns (tasks, has_more)."""
         if status == "archived":
@@ -1248,13 +1532,17 @@ class Database:
             where = "t.status = 'active'"
         else:
             where = "t.status != 'deleted'"
+        where += " AND t.schedule_id IS NULL"
+        params: list = []
+        if origin is not None:
+            where += " AND t.origin = ?"
+            params.append(origin)
         sql = f"""SELECT t.*, COUNT(m.id) as message_count
                FROM tasks t
                LEFT JOIN task_messages m ON t.id = m.task_id
                WHERE {where}
                GROUP BY t.id
                ORDER BY t.updated_at DESC"""
-        params: list = []
         if limit > 0:
             sql += " LIMIT ? OFFSET ?"
             params.extend([limit + 1, offset])
@@ -1286,9 +1574,12 @@ class Database:
             # task dirs (data_dir/tasks/{task_id}). For user-provided workspaces
             # the parent dir belongs to the user; rmtree'ing it would wipe the
             # directory the user chose (or worse, its parent).
+            # 锚点与 create_task 同源（get_data_dir）：曾锚 db_path 同级，
+            # 两个数据目录推导并存会在布局迁移时互不一致（2026-10-20 审计）。
+            from paths import get_data_dir
             workspace = task["workspace_path"]
             task_dir = os.path.dirname(workspace)
-            managed_root = os.path.join(os.path.dirname(self.db_path), "tasks")
+            managed_root = os.path.join(get_data_dir(), "tasks")
             if task_dir.startswith(managed_root + os.sep) and os.path.isdir(task_dir):
                 shutil.rmtree(task_dir, ignore_errors=True)
         self.conn.execute("DELETE FROM task_messages WHERE task_id = ?", (task_id,))
@@ -1396,13 +1687,458 @@ class Database:
         self.conn.commit()
         return cursor.rowcount
 
+    # ── Task Templates (0.5 §5, E2) ──
+
+    def list_task_templates(self, scope: str | None = None,
+                            project_id: str | None = None) -> list[dict]:
+        """自定义行 + builtin=1 置顶记录行；scope/project_id 过滤
+        （scope='project' 时须匹配 project_id）。"""
+        sql = "SELECT * FROM task_templates"
+        where, params = [], []
+        if scope:
+            where.append("scope = ?")
+            params.append(scope)
+        if scope == "project" and project_id:
+            where.append("project_id = ?")
+            params.append(project_id)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY pinned DESC, updated_at DESC"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def upsert_task_template(self, tpl_id: str | None, scope: str,
+                             project_id: str | None, category: str,
+                             title: str, prompt: str,
+                             pinned: bool = False) -> dict:
+        """tpl_id 为 None 则新建（'tpl_custom_<hex8>'），否则更新；返回完整行。"""
+        now = self._now()
+        if tpl_id is None:
+            tpl_id = f"tpl_custom_{uuid.uuid4().hex[:8]}"
+            self.conn.execute(
+                "INSERT INTO task_templates (id, scope, project_id, category, title,"
+                " prompt, builtin, pinned, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                (tpl_id, scope, project_id, category, title, prompt,
+                 int(pinned), now, now))
+        else:
+            self.conn.execute(
+                "UPDATE task_templates SET scope = ?, project_id = ?, category = ?,"
+                " title = ?, prompt = ?, pinned = ?, updated_at = ? WHERE id = ?",
+                (scope, project_id, category, title, prompt, int(pinned), now, tpl_id))
+        self.conn.commit()
+        return dict(self.conn.execute(
+            "SELECT * FROM task_templates WHERE id = ?", (tpl_id,)).fetchone())
+
+    def delete_task_template(self, tpl_id: str) -> bool:
+        """删除自定义行；内置置顶记录行也可删（= 取消置顶，路由层同语义）。"""
+        cur = self.conn.execute("DELETE FROM task_templates WHERE id = ?", (tpl_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def set_task_template_pinned(self, tpl_id: str, pinned: bool) -> bool:
+        """自定义行直接 UPDATE；内置 id（'builtin_*' 前缀）映射为
+        'tpl_builtin_<name>' 记录行：置顶 upsert 一行 builtin=1，取消置顶删行
+        （0.5 §5 读写行为：内置模板不落库，记录行仅存置顶态）。"""
+        if tpl_id.startswith("builtin_"):
+            record_id = f"tpl_builtin_{tpl_id[len('builtin_'):]}"
+            if pinned:
+                now = self._now()
+                self.conn.execute(
+                    "INSERT INTO task_templates (id, scope, project_id, category,"
+                    " title, prompt, builtin, pinned, created_at, updated_at)"
+                    " VALUES (?, 'global', NULL, '', '', '', 1, 1, ?, ?)"
+                    " ON CONFLICT(id) DO UPDATE SET pinned = 1, updated_at = ?",
+                    (record_id, now, now, now))
+                self.conn.commit()
+            else:
+                self.delete_task_template(record_id)
+            return True
+        cur = self.conn.execute(
+            "UPDATE task_templates SET pinned = ?, updated_at = ? WHERE id = ?",
+            (int(pinned), self._now(), tpl_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # ── Task Schedules (2.11 §3, E3) ──
+
+    _SCHEDULE_FIELDS = (
+        "name", "prompt", "category", "interval_type", "interval_value",
+        "target_type", "target_id", "auto_import", "archive_file_id",
+        "archive_last_run_id", "enabled", "next_run_at",
+    )
+
+    def create_schedule(self, name: str, prompt: str, mode: str, category: str,
+                        interval_type: str, interval_value: str,
+                        target_type: str | None = None,
+                        target_id: str | None = None,
+                        auto_import: int = 1, next_run_at: str | None = None,
+                        enabled: int = 1) -> dict:
+        now = self._now()
+        sch_id = f"sch_{uuid.uuid4().hex[:8]}"
+        self.conn.execute(
+            "INSERT INTO task_schedules (id, name, prompt, mode, category,"
+            " interval_type, interval_value, target_type, target_id, auto_import,"
+            " enabled, next_run_at, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (sch_id, name, prompt, mode, category, interval_type, interval_value,
+             target_type, target_id, int(auto_import), int(enabled),
+             next_run_at, now, now))
+        self.conn.commit()
+        return self.get_schedule(sch_id)
+
+    def update_schedule(self, schedule_id: str, fields: dict) -> bool:
+        """白名单字段更新（2.11 §4.1 PATCH 语义）；白名单外键忽略，空集返回 False。"""
+        sets, params = [], []
+        for key in self._SCHEDULE_FIELDS:
+            if key not in fields:
+                continue
+            value = fields[key]
+            if key in ("auto_import", "enabled"):
+                value = int(value)
+            sets.append(f"{key} = ?")
+            params.append(value)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.extend([self._now(), schedule_id])
+        cur = self.conn.execute(
+            f"UPDATE task_schedules SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def clear_schedules_target(self, target_type: str, target_id: str) -> list:
+        """目标容器删除联动（验收-P2 对称置空，2.11 §6）：指向该容器的订阅
+        target_type/target_id 置空（auto_import 保留——重新绑定后偏好不变），
+        返回受影响订阅行（id/name）供通知合并。与「删订阅时 tasks.schedule_id
+        外键 SET NULL」同构——target_id 无外键，此为手动等价。"""
+        rows = self.conn.execute(
+            "SELECT id, name FROM task_schedules"
+            " WHERE target_type = ? AND target_id = ?",
+            (target_type, target_id)).fetchall()
+        if not rows:
+            return []
+        self.conn.execute(
+            "UPDATE task_schedules SET target_type = NULL, target_id = NULL,"
+            " updated_at = ? WHERE target_type = ? AND target_id = ?",
+            (self._now(), target_type, target_id))
+        self.conn.commit()
+        return [dict(r) for r in rows]
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        """删订阅；runs 外键 CASCADE 级联删，tasks.schedule_id 外键 SET NULL。"""
+        cur = self.conn.execute(
+            "DELETE FROM task_schedules WHERE id = ?", (schedule_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_schedule(self, schedule_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM task_schedules WHERE id = ?",
+            (schedule_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_schedules(self, category: str | None = None,
+                       enabled: int | None = None,
+                       q: str | None = None,
+                       limit: int = 0, offset: int = 0) -> list[dict]:
+        """管理台左列 / 速览同源；各行附 latest_done（最新 done run 摘要，无则 None）
+        与 is_running（存在 running run，§8.4 行呼吸点数据源）。
+        limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more）。"""
+        sql = (
+            "SELECT s.*, r.id AS _ld_run_id, r.finished_at AS _ld_finished_at,"
+            " r.summary AS _ld_summary, r2.id AS _lr_run_id"
+            " FROM task_schedules s"
+            " LEFT JOIN task_schedule_runs r ON r.id = ("
+            "   SELECT id FROM task_schedule_runs"
+            "   WHERE schedule_id = s.id AND status = 'done'"
+            "   ORDER BY finished_at DESC LIMIT 1)"
+            " LEFT JOIN task_schedule_runs r2 ON r2.id = ("
+            "   SELECT id FROM task_schedule_runs"
+            "   WHERE schedule_id = s.id AND status = 'running'"
+            "   ORDER BY started_at DESC LIMIT 1)")
+        where, params = [], []
+        if category:
+            where.append("s.category = ?")
+            params.append(category)
+        if enabled is not None:
+            where.append("s.enabled = ?")
+            params.append(int(enabled))
+        if q:
+            where.append("s.name LIKE ?")
+            params.append(f"%{q}%")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY s.created_at DESC"
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        rows = []
+        for r in self.conn.execute(sql, params).fetchall():
+            row = dict(r)
+            ld_id = row.pop("_ld_run_id")
+            row["is_running"] = row.pop("_lr_run_id") is not None
+            if ld_id:
+                row["latest_done"] = {
+                    "run_id": ld_id,
+                    "finished_at": row.pop("_ld_finished_at"),
+                    "summary": self._load_json_list(row.pop("_ld_summary")),
+                }
+            else:
+                row.pop("_ld_finished_at")
+                row.pop("_ld_summary")
+                row["latest_done"] = None
+            rows.append(row)
+        return rows
+
+    def count_schedules(self, category: str | None = None,
+                        enabled: int | None = None,
+                        q: str | None = None) -> int:
+        """订阅计数（与 list_schedules 同口径：category/enabled/q 筛选后计数）。"""
+        sql = "SELECT COUNT(*) AS cnt FROM task_schedules"
+        where, params = [], []
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        if enabled is not None:
+            where.append("enabled = ?")
+            params.append(int(enabled))
+        if q:
+            where.append("name LIKE ?")
+            params.append(f"%{q}%")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        return self.conn.execute(sql, params).fetchone()["cnt"]
+
+    def list_due_schedules(self, now_iso: str) -> list[dict]:
+        """调度 tick 扫描：enabled=1 AND next_run_at <= now（idx_schedules_next）。"""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM task_schedules"
+            " WHERE enabled = 1 AND next_run_at <= ?"
+            " ORDER BY next_run_at ASC", (now_iso,)).fetchall()]
+
+    def set_schedule_state(self, schedule_id: str,
+                           next_run_at: str | None = None,
+                           last_run_at: str | None = None,
+                           consecutive_failures: int | None = None,
+                           enabled: int | None = None) -> None:
+        """调度器 tick 后进度更新；None = 不动该字段（熔断时 next_run_at 保留）。"""
+        sets, params = [], []
+        if next_run_at is not None:
+            sets.append("next_run_at = ?")
+            params.append(next_run_at)
+        if last_run_at is not None:
+            sets.append("last_run_at = ?")
+            params.append(last_run_at)
+        if consecutive_failures is not None:
+            sets.append("consecutive_failures = ?")
+            params.append(int(consecutive_failures))
+        if enabled is not None:
+            sets.append("enabled = ?")
+            params.append(int(enabled))
+        if not sets:
+            return
+        params.append(schedule_id)
+        self.conn.execute(
+            f"UPDATE task_schedules SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+
+    def _run_row(self, row) -> dict:
+        """run 行 dict 化 + summary JSON 解析（TEXT → list[str] | None）。"""
+        d = dict(row)
+        d["summary"] = self._load_json_list(d.get("summary"))
+        return d
+
+    def insert_schedule_run(self, run_id: str, schedule_id: str,
+                            task_id: str | None, status: str = "running") -> None:
+        self.conn.execute(
+            "INSERT INTO task_schedule_runs (id, schedule_id, task_id, status, started_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (run_id, schedule_id, task_id, status, self._now()))
+        self.conn.commit()
+
+    def update_schedule_run(self, run_id: str, status: str,
+                            report_path: str | None = None,
+                            summary: list | None = None,
+                            error: str | None = None) -> None:
+        """终态回填；summary（list）落库 JSON；error 记失败原因（§8.4）；
+        status != 'running' 时记 finished_at。"""
+        sets = ["status = ?"]
+        params: list = [status]
+        if report_path is not None:
+            sets.append("report_path = ?")
+            params.append(report_path)
+        if summary is not None:
+            sets.append("summary = ?")
+            params.append(json.dumps(summary, ensure_ascii=False))
+        if error is not None:
+            sets.append("error = ?")
+            params.append(error)
+        if status != "running":
+            sets.append("finished_at = ?")
+            params.append(self._now())
+        params.append(run_id)
+        self.conn.execute(
+            f"UPDATE task_schedule_runs SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+
+    def mark_run_read(self, run_id: str) -> bool:
+        """ReadView 打开即已读：回填 read_at；不存在 False，已读再读幂等 True。"""
+        cur = self.conn.execute(
+            "UPDATE task_schedule_runs SET read_at = ?"
+            " WHERE id = ? AND read_at IS NULL", (self._now(), run_id))
+        self.conn.commit()
+        if cur.rowcount > 0:
+            return True
+        row = self.conn.execute(
+            "SELECT 1 FROM task_schedule_runs WHERE id = ?", (run_id,)).fetchone()
+        return row is not None
+
+    def delete_schedule_run(self, run_id: str) -> bool:
+        """单条删除期次行（路由层先行终态守卫与产物清理：报告副本 unlink /
+        cancelled 半成品 workspace rmtree / 锚点悬空防护，2026-10-20 审计补齐）。
+        done/failed 的 workspace 不在此入口删（保留期 keep=10 治理）。"""
+        cur = self.conn.execute(
+            "DELETE FROM task_schedule_runs WHERE id = ?", (run_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def list_schedule_runs(self, schedule_id: str, limit: int = 20,
+                           offset: int = 0) -> list[dict]:
+        """订阅期次历史（started_at DESC）；带订阅名与档案锚点（ReadView 沉淀态）；
+        offset 翻页（路由层传 limit+1 探测 has_more）；limit=-1 → 全部
+        （SQLite 语义，delete_schedule 级联清理用）。"""
+        return [self._run_row(r) for r in self.conn.execute(
+            "SELECT r.*, s.name AS schedule_name, s.archive_last_run_id"
+            " FROM task_schedule_runs r JOIN task_schedules s ON s.id = r.schedule_id"
+            " WHERE r.schedule_id = ? ORDER BY r.started_at DESC LIMIT ? OFFSET ?",
+            (schedule_id, limit, offset)).fetchall()]
+
+    def get_run(self, run_id: str) -> dict | None:
+        """按 id 查单个期次（report 端点 / ReadView 入口）。"""
+        row = self.conn.execute(
+            "SELECT r.*, s.name AS schedule_name, s.archive_last_run_id"
+            " FROM task_schedule_runs r JOIN task_schedules s ON s.id = r.schedule_id"
+            " WHERE r.id = ?", (run_id,)).fetchone()
+        return self._run_row(row) if row else None
+
+    def list_run_inbox(self, unread_only: bool = False,
+                       limit: int = 50, offset: int = 0) -> list[dict]:
+        """跨订阅收件箱流：done、未读优先（read_at IS NULL 前置）finished_at DESC；
+        offset 翻页（路由层传 limit+1 探测 has_more）。"""
+        sql = (
+            "SELECT r.*, s.name AS schedule_name FROM task_schedule_runs r"
+            " JOIN task_schedules s ON s.id = r.schedule_id"
+            " WHERE r.status = 'done'")
+        params: list = []
+        if unread_only:
+            sql += " AND r.read_at IS NULL"
+        sql += " ORDER BY (r.read_at IS NULL) DESC, r.finished_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        return [self._run_row(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def list_run_digest(self) -> list[dict]:
+        """首页情报速览（T9 修订①）：每订阅最新 1 条 run（含 running/failed，
+        COALESCE(finished_at, started_at) 排序 + rowid 兼同微秒序）+ 订阅
+        enabled —— §8.4 速览行三态（运行呼吸/失败红/暂停灰）数据可达。"""
+        return [self._run_row(r) for r in self.conn.execute(
+            "SELECT r.*, s.name AS schedule_name, s.enabled AS schedule_enabled"
+            " FROM task_schedule_runs r"
+            " JOIN task_schedules s ON s.id = r.schedule_id"
+            " WHERE r.id = ("
+            "   SELECT id FROM task_schedule_runs"
+            "   WHERE schedule_id = r.schedule_id"
+            "   ORDER BY COALESCE(finished_at, started_at) DESC, rowid DESC LIMIT 1)"
+            " ORDER BY COALESCE(r.finished_at, r.started_at) DESC, r.rowid DESC").fetchall()]
+
+    def schedule_unread_count(self) -> dict:
+        """侧栏摘要行计数：total=未读 done run 数；abnormal=禁用订阅数；n=订阅总数。"""
+        unread = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM task_schedule_runs"
+            " WHERE status = 'done' AND read_at IS NULL").fetchone()["c"]
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n,"
+            " COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS abnormal"
+            " FROM task_schedules").fetchone()
+        return {"total": unread, "abnormal": row["abnormal"], "n": row["n"]}
+
+    def count_running_runs(self) -> int:
+        """R1 定时单并发：全局 running 计数。"""
+        return self.conn.execute(
+            "SELECT COUNT(*) AS c FROM task_schedule_runs"
+            " WHERE status = 'running'").fetchone()["c"]
+
+    def fail_stale_running_runs(self, error: str) -> list[str]:
+        """启动清扫（2.11 §5.4，review P0-1）：进程中断残留的 running run 行
+        批量置 failed（error 落库供 ReadView 显示），返回被清扫的 run id。
+        仅调度器启动路径调用（此刻无在途 _execute，running 必为残留）——
+        否则 R1 全局闸门被永久占住，全部订阅 deferred。"""
+        ids = [r["id"] for r in self.conn.execute(
+            "SELECT id FROM task_schedule_runs"
+            " WHERE status = 'running'").fetchall()]
+        for run_id in ids:
+            self.update_schedule_run(run_id, "failed", error=error)
+        return ids
+
+    def schedule_last_run_running(self, schedule_id: str) -> bool:
+        """2.11 §5.2 防重入：该订阅最新一条 run 是否仍 running（rowid 兼同微秒序）。"""
+        row = self.conn.execute(
+            "SELECT status FROM task_schedule_runs WHERE schedule_id = ?"
+            " ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (schedule_id,)).fetchone()
+        return bool(row) and row["status"] == "running"
+
+    def last_done_run_report(self, schedule_id: str) -> str | None:
+        """增量注入（2.11 §6）：上期 done run 的 report_path。"""
+        row = self.conn.execute(
+            "SELECT report_path FROM task_schedule_runs"
+            " WHERE schedule_id = ? AND status = 'done'"
+            " ORDER BY finished_at DESC LIMIT 1", (schedule_id,)).fetchone()
+        return row["report_path"] if row else None
+
+    def pending_archive_runs(self, schedule_id: str) -> list[dict]:
+        """档案待合并期次：archive_last_run_id 之后的 done 副本（升序；锚点空=全部 done）。"""
+        row = self.conn.execute(
+            "SELECT archive_last_run_id FROM task_schedules WHERE id = ?",
+            (schedule_id,)).fetchone()
+        anchor = row["archive_last_run_id"] if row else None
+        if anchor:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT * FROM task_schedule_runs"
+                " WHERE schedule_id = ? AND status = 'done'"
+                " AND started_at > (SELECT started_at FROM task_schedule_runs"
+                "                    WHERE id = ?)"
+                " ORDER BY started_at ASC",
+                (schedule_id, anchor)).fetchall()]
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM task_schedule_runs"
+            " WHERE schedule_id = ? AND status = 'done'"
+            " ORDER BY started_at ASC", (schedule_id,)).fetchall()]
+
+    def count_schedule_workspaces_keep(self, schedule_id: str,
+                                       keep: int = 10) -> list[str]:
+        """保留期清理（2.11 §6）：超出最近 keep 期终态 run（done/failed，
+        review P2-8：failed 亦占 workspace 目录，永久累积泄漏磁盘）的 workspace。"""
+        rows = self.conn.execute(
+            "SELECT t.workspace_path FROM task_schedule_runs r"
+            " JOIN tasks t ON t.id = r.task_id"
+            " WHERE r.schedule_id = ? AND r.status IN ('done', 'failed')"
+            "   AND t.workspace_path != ''"
+            " ORDER BY r.started_at DESC LIMIT -1 OFFSET ?",
+            (schedule_id, keep)).fetchall()
+        return [r["workspace_path"] for r in rows]
+
     # ── Skills ──
 
-    def list_skills(self) -> list[dict]:
-        cursor = self.conn.execute(
-            "SELECT * FROM skills ORDER BY created_at DESC"
-        )
-        return [dict(row) for row in cursor.fetchall()]
+    def list_skills(self, limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量（默认，向后兼容：install 查重/delete/toggle 内部调用）；
+        limit>0 → 至多 limit 行（路由层传 limit+1 探测 has_more）。"""
+        sql = "SELECT * FROM skills ORDER BY created_at DESC"
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def create_skill(
         self, name: str, description: str, source_type: str,
@@ -1462,11 +2198,15 @@ class Database:
 
     # ── Web Logins (2.8 §3.2) ──
 
-    def list_web_logins(self) -> list[dict]:
-        cursor = self.conn.execute(
-            "SELECT domain, note, created_at FROM web_logins ORDER BY created_at DESC"
-        )
-        return [dict(row) for row in cursor.fetchall()]
+    def list_web_logins(self, limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more，对齐 list_tasks 先例）。"""
+        sql = "SELECT domain, note, created_at FROM web_logins ORDER BY created_at DESC"
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def add_web_login(self, domain: str, note: str | None) -> dict:
         """登记站点（幂等）：已存在时保留原行（note 也不覆盖——避免任务卡片
@@ -1489,6 +2229,199 @@ class Database:
         cursor = self.conn.execute("DELETE FROM web_logins WHERE domain = ?", (domain,))
         self.conn.commit()
         return cursor.rowcount > 0
+
+    # ── Token Usage (2.10 §3.1/§4.5) ──
+
+    _USAGE_AGG = (
+        "COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, "
+        "COALESCE(SUM(completion_tokens), 0) AS completion_tokens, "
+        "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+        "COUNT(*) AS calls"
+    )
+
+    def insert_llm_usage(self, row: dict):
+        """llm/usage.py sink 目标：一调用一行（append-only，无 UPDATE）。"""
+        self.conn.execute(
+            """INSERT INTO llm_usage
+               (ts, source, purpose, task_id, round_id, project_id, entity_id,
+                model, mode, prompt_tokens, completion_tokens, total_tokens, detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["ts"], row["source"], row.get("purpose"),
+                row.get("task_id"), row.get("round_id"),
+                row.get("project_id"), row.get("entity_id"),
+                row["model"], row["mode"],
+                row.get("prompt_tokens", 0), row.get("completion_tokens", 0),
+                row.get("total_tokens", 0),
+                json.dumps(row["detail"], ensure_ascii=False) if row.get("detail") else None,
+            ),
+        )
+        self.conn.commit()
+
+    def attach_usage_to_last_assistant(self, task_id: str, usage: dict):
+        """轮次收尾：该轮 usage 汇总写进最后一条 assistant 消息 metadata.usage
+        （气泡历史回放数据源，§4.5；只改 metadata 不动 content）。"""
+        row = self.conn.execute(
+            "SELECT id, metadata FROM task_messages "
+            "WHERE task_id = ? AND role = 'assistant' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            if not isinstance(meta, dict):
+                meta = {}
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+        meta["usage"] = usage
+        self.conn.execute(
+            "UPDATE task_messages SET metadata = ? WHERE id = ?",
+            (json.dumps(meta, ensure_ascii=False), row["id"]),
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def _usage_range_start(range_key: str):
+        """range_key → 本地时间起点（None = 全部）；today = 本地自然日零点。"""
+        now = datetime.now()
+        if range_key == "today":
+            return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        if range_key == "7d":
+            return (now - timedelta(days=7)).isoformat()
+        if range_key == "30d":
+            return (now - timedelta(days=30)).isoformat()
+        return None  # all
+
+    def _usage_agg_rows(self, conds: list[str], params: list,
+                        group: str | None = None) -> list[dict]:
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        sql = f"SELECT {self._USAGE_AGG}"
+        if group:
+            sql += f", {group} AS grp"
+        sql += f" FROM llm_usage {where}"
+        if group:
+            sql += f" GROUP BY {group} ORDER BY total_tokens DESC"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def get_usage_summary(self, range_key: str = "all",
+                          project_id: str | None = None) -> dict:
+        """聚合总览（后端实时计算无缓存——任何重取天然正确，§5.4 自愈根因）。
+
+        today/total 两组固定（状态栏一次请求拿全）；range 段与 by_* 明细
+        随 range_key 窗口变化（统计页汇总卡与三表数据源）。
+        """
+        def _scoped_conds(scope_range: str | None):
+            conds, params = [], []
+            start = self._usage_range_start(scope_range) if scope_range else None
+            if start:
+                conds.append("ts >= ?")
+                params.append(start)
+            if project_id:
+                conds.append("project_id = ?")
+                params.append(project_id)
+            return conds, params
+
+        today_conds, today_params = _scoped_conds("today")
+        total_conds, total_params = _scoped_conds(None)
+        range_conds, range_params = _scoped_conds(
+            range_key if range_key in ("today", "7d", "30d") else None)
+
+        today_agg = self._usage_agg_rows(today_conds, today_params)
+        total_agg = self._usage_agg_rows(total_conds, total_params)
+        range_agg = self._usage_agg_rows(range_conds, range_params)
+        by_day = self._usage_agg_rows(
+            range_conds, range_params, group="date(ts)")
+        by_source = self._usage_agg_rows(
+            range_conds, range_params, group="source")
+        by_model = self._usage_agg_rows(
+            range_conds, range_params, group="model")
+        by_project = self._usage_agg_rows(
+            range_conds, range_params, group="project_id")
+        # by_project 补名称（列表展示；无关联行如 task 场景为 NULL → 显示原 id）
+        names = {r["id"]: r["name"] for r in self.conn.execute(
+            "SELECT id, name FROM projects").fetchall()}
+        for r in by_project:
+            r["project_name"] = names.get(r["grp"]) if r["grp"] else None
+        empty = {"prompt_tokens": 0, "completion_tokens": 0,
+                 "total_tokens": 0, "calls": 0}
+        models_count = self.conn.execute(
+            f"SELECT COUNT(DISTINCT model) AS n FROM llm_usage "
+            f"{f'WHERE {" AND ".join(total_conds)}' if total_conds else ''}",
+            total_params,
+        ).fetchone()["n"]
+        return {
+            "today": today_agg[0] if today_agg else empty,
+            "total": dict(total_agg[0] if total_agg else empty,
+                          models_count=models_count),
+            "range": range_agg[0] if range_agg else empty,
+            "range_key": range_key,
+            "by_day": by_day,
+            "by_source": by_source,
+            "by_model": by_model,
+            "by_project": by_project,
+        }
+
+    def get_usage_task_rounds(self, task_id: str, limit: int = 0,
+                              offset: int = 0) -> list[dict]:
+        """任务轮次聚合（GET /usage/task/{id}）：每轮 = 同 round_id 的全部调用。
+
+        limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 轮
+        （路由层传 limit+1 探测 has_more；分页作用于 GROUP BY 之后的轮次行）。
+        """
+        sql = f"""SELECT round_id,
+                       MIN(ts) AS started_at,
+                       {self._USAGE_AGG},
+                       GROUP_CONCAT(DISTINCT model) AS models
+                FROM llm_usage
+                WHERE task_id = ? AND round_id IS NOT NULL
+                GROUP BY round_id ORDER BY started_at"""
+        params: list = [task_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_usage_by_round(self, round_id: str) -> dict:
+        """单轮聚合（SSE usage 事件 / metadata.usage 轮次收尾，§4.5）。
+
+        models 为该轮去重模型列表（GROUP_CONCAT，供气泡 tooltip 多模型显示）；
+        无记录（流式端点不支持 include_usage 等）返回空 dict，调用方跳过。
+        """
+        row = self.conn.execute(
+            f"SELECT {self._USAGE_AGG}, GROUP_CONCAT(DISTINCT model) AS models "
+            "FROM llm_usage WHERE round_id = ?",
+            (round_id,),
+        ).fetchone()
+        if row is None or row["calls"] == 0:
+            return {}
+        return dict(row)
+
+    def _usage_group_by(self, col: str, ids: list[str]) -> dict[str, dict]:
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT {col} AS grp, {self._USAGE_AGG} FROM llm_usage "
+            f"WHERE {col} IN ({placeholders}) GROUP BY {col}",
+            list(ids),
+        ).fetchall()
+        return {r["grp"]: {k: v for k, v in dict(r).items() if k != "grp"}
+                for r in rows}
+
+    def get_usage_by_tasks(self, task_ids: list[str]) -> dict[str, dict]:
+        """任务列表行聚合（GET /tasks 附加字段）。"""
+        return self._usage_group_by("task_id", task_ids)
+
+    def get_usage_by_projects(self, project_ids: list[str]) -> dict[str, dict]:
+        """项目列表行聚合（listProjects 附加字段）。"""
+        return self._usage_group_by("project_id", project_ids)
+
+    def get_usage_by_entities(self, entity_ids: list[str]) -> dict[str, dict]:
+        """实体行聚合（报告/填表/编译列表行内消耗）。"""
+        return self._usage_group_by("entity_id", entity_ids)
 
     # ── Agent State (Pause/Resume) ──
 
@@ -1574,12 +2507,15 @@ class Database:
             "updated_at": now,
         }
 
-    def list_reports(self, project_id: str) -> list[dict]:
-        cursor = self.conn.execute(
-            "SELECT * FROM reports WHERE project_id = ? ORDER BY created_at DESC",
-            (project_id,),
-        )
-        return [dict(row) for row in cursor.fetchall()]
+    def list_reports(self, project_id: str, limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more，对齐 list_tasks 先例）。"""
+        sql = "SELECT * FROM reports WHERE project_id = ? ORDER BY created_at DESC"
+        params: list = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def get_report(self, report_id: str) -> dict | None:
         cursor = self.conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,))
@@ -1587,7 +2523,7 @@ class Database:
         return dict(row) if row else None
 
     def update_report_status(self, report_id: str, status: str, progress: int | None = None):
-        # 纯状态更新：终态通知由调用方经 activity_events 显式声明（0.4 §6.4 E2，顺序 4）；
+        # 纯状态更新：终态通知由调用方经 activity_events 显式声明（0.4 §6.4 E2）；
         # 崩溃恢复为 SQL 直写不走本方法，其通知由 main.py 启动扫描显式补发（0.4 §2.4）。
         updates = ["status = ?", "updated_at = ?"]
         params = [status, self._now()]
@@ -1603,14 +2539,6 @@ class Database:
 
     def delete_report(self, report_id: str):
         self.conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
-        self.conn.commit()
-
-    def update_report_token_usage(self, report_id: str, token_usage: dict):
-        """保存报告生成的 token 统计（JSON 格式）。"""
-        self.conn.execute(
-            "UPDATE reports SET token_usage = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(token_usage, ensure_ascii=False), self._now(), report_id),
-        )
         self.conn.commit()
 
     def update_report_error(self, report_id: str, error_message: str):
@@ -1727,6 +2655,167 @@ class Database:
         rows.reverse()
         return rows
 
+    # ── PPTs (2.3 §5.1)：交付物登记簿 ──
+
+    def create_ppt(
+        self,
+        project_id: str,
+        task_id: str,
+        title: str,
+        kind: str = "deck",
+        source_report_id: str | None = None,
+        source_images: list[str] | None = None,
+        style_ref: str | None = None,
+        workspace_path: str | None = None,
+        template_kind: str | None = None,
+        template_id: str | None = None,
+        enhance_source_path: str | None = None,
+    ) -> dict:
+        now = self._now()
+        ppt_id = self._uuid()
+        self.conn.execute(
+            """INSERT INTO ppts (id, project_id, task_id, title, kind, status,
+               source_report_id, source_images_json, style_ref, workspace_path,
+               template_kind, template_id, enhance_source_path, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ppt_id, project_id, task_id, title, kind, source_report_id,
+             json.dumps(source_images or [], ensure_ascii=False),
+             style_ref, workspace_path, template_kind, template_id,
+             enhance_source_path, now, now),
+        )
+        self.conn.commit()
+        return self.get_ppt(ppt_id)  # type: ignore[return-value]
+
+    def list_ppts(self, project_id: str, limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more，对齐 list_tasks 先例）。"""
+        sql = "SELECT * FROM ppts WHERE project_id = ? ORDER BY created_at DESC"
+        params: list = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def get_ppt(self, ppt_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM ppts WHERE id = ?", (ppt_id,)).fetchone()
+        if not row:
+            return None
+        ppt = dict(row)
+        try:
+            ppt["source_images"] = json.loads(ppt.pop("source_images_json") or "[]")
+        except (ValueError, TypeError):
+            ppt["source_images"] = []
+        return ppt
+
+    def get_ppt_by_task(self, task_id: str) -> dict | None:
+        row = self.conn.execute("SELECT id FROM ppts WHERE task_id = ?", (task_id,)).fetchone()
+        return self.get_ppt(row["id"]) if row else None
+
+    def update_ppt_progress(
+        self, ppt_id: str, *, stage: str | None = None,
+        page_count: int | None = None, page_done: int | None = None,
+    ) -> None:
+        """推进阶段/页级进度（progress 由 page_done/page_count 派生，
+        authoring 之外的阶段由调用方传 stage 边界；非法页比静默夹取）。"""
+        updates = ["updated_at = ?"]
+        params: list = [self._now()]
+        if stage is not None:
+            updates.append("stage = ?")
+            params.append(stage)
+        if page_count is not None:
+            updates.append("page_count = ?")
+            params.append(page_count)
+        if page_done is not None:
+            updates.append("page_done = ?")
+            params.append(page_done)
+        row = self.conn.execute(
+            "SELECT page_count, page_done FROM ppts WHERE id = ?", (ppt_id,)
+        ).fetchone()
+        if row:
+            total = page_count if page_count is not None else row["page_count"]
+            done = page_done if page_done is not None else row["page_done"]
+            if total and done is not None:
+                progress = max(0.0, min(1.0, done / total))
+                updates.append("progress = ?")
+                params.append(progress)
+        params.append(ppt_id)
+        self.conn.execute(
+            f"UPDATE ppts SET {', '.join(updates)} WHERE id = ?", params
+        )
+        self.conn.commit()
+
+    def update_ppt_status(
+        self, ppt_id: str, status: str, *,
+        error: str | None = None, export_path: str | None = None,
+    ) -> None:
+        updates = ["status = ?", "updated_at = ?"]
+        params: list = [status, self._now()]
+        if error is not None:
+            updates.append("error = ?")
+            params.append(error[:2000])
+        if export_path is not None:
+            updates.append("export_path = ?")
+            params.append(export_path)
+        params.append(ppt_id)
+        self.conn.execute(
+            f"UPDATE ppts SET {', '.join(updates)} WHERE id = ?", params
+        )
+        self.conn.commit()
+
+    def delete_ppt(self, ppt_id: str) -> dict | None:
+        """删除登记行，返回删除前的行（调用方负责级联任务/工作区清理）。"""
+        ppt = self.get_ppt(ppt_id)
+        if not ppt:
+            return None
+        self.conn.execute("DELETE FROM ppts WHERE id = ?", (ppt_id,))
+        self.conn.commit()
+        return ppt
+
+    def list_active_ppts(self) -> list[dict]:
+        """活跃 PPT（活动注册表 source 与启动崩溃恢复扫描共用）。"""
+        cursor = self.conn.execute(
+            "SELECT * FROM ppts WHERE status IN ('running', 'awaiting_input') "
+            "ORDER BY created_at DESC"
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def list_template_jobs(self, limit: int = 20, offset: int = 0) -> tuple[list[dict], bool]:
+        """模板创建任务（2.3 §4.2）：活跃段全量（进度轮询/门禁不可截断，天然小）
+        + 终态段至多 limit 行；返回 (jobs, has_more)——has_more 只看终态段
+        （limit>0 时终态段多取 1 行探测，对齐 list_tasks 先例；limit<=0 → 终态段全量）。
+        """
+        active = [dict(r) for r in self.conn.execute(
+            "SELECT * FROM ppts WHERE kind = 'template' "
+            "AND status IN ('running', 'awaiting_input') "
+            "ORDER BY created_at DESC"
+        ).fetchall()]
+        probe = limit + 1 if limit > 0 else 0
+        terminal_sql = (
+            "SELECT * FROM ppts WHERE kind = 'template' "
+            "AND status NOT IN ('running', 'awaiting_input') "
+            "ORDER BY created_at DESC"
+        )
+        terminal_params: list = []
+        if probe > 0:
+            terminal_sql += " LIMIT ? OFFSET ?"
+            terminal_params.extend([probe, offset])
+        terminal = [dict(r) for r in self.conn.execute(
+            terminal_sql, terminal_params).fetchall()]
+        has_more = probe > 0 and len(terminal) > limit
+        if has_more:
+            terminal = terminal[:limit]
+        return active + terminal, has_more
+
+    def list_ppts_by_template(self, template_kind: str, template_id: str) -> list[dict]:
+        """指定模板的创建任务登记行（6b 删除连带清理的数据源）。"""
+        cursor = self.conn.execute(
+            "SELECT * FROM ppts WHERE kind = 'template' "
+            "AND template_kind = ? AND template_id = ? "
+            "ORDER BY created_at DESC",
+            (template_kind, template_id),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     # ── Notifications (Activity Hub, 0.4 §3.2) ──
 
     def add_notification(
@@ -1763,6 +2852,42 @@ class Database:
         self.conn.commit()
         return cursor.lastrowid
 
+    def add_notification_daily(
+        self,
+        entity_type: str,
+        entity_id: str,
+        project_id: str | None,
+        kind: str,
+        entity_title: str,
+        detail: str | None = None,
+        container: str = "project",
+    ) -> int | None:
+        """写入一条按天查重通知（提醒语义，2.11 D9）：同 (entity_type, entity_id, kind)
+        存在未读记录、或本地日期当天（date(created_at)）已有记录则跳过。
+
+        与 add_notification 的差异：终态语义「未读期间只一条」对提醒不够——
+        用户已读昨天的逾期提醒后今天仍逾期应再提醒（D1 跨天重发）；
+        未读优先于按天（未读期间不重复轰炸）。现有 11 个 emit 调用方语义不动（D9）。
+
+        Returns:
+            新通知 id；被查重跳过时返回 None。
+        """
+        dup = self.conn.execute(
+            "SELECT id FROM notifications WHERE entity_type = ? AND entity_id = ? "
+            "AND kind = ? AND (read_at IS NULL OR date(created_at) = ?)",
+            (entity_type, entity_id, kind, date.today().isoformat()),
+        ).fetchone()
+        if dup:
+            return None
+        cursor = self.conn.execute(
+            """INSERT INTO notifications
+               (entity_type, entity_id, project_id, container, kind, entity_title, detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (entity_type, entity_id, project_id, container, kind, entity_title, detail, self._now()),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
     def list_unread_notifications(self) -> list[dict]:
         """未读通知（按时间正序，逐条弹出）。"""
         cursor = self.conn.execute(
@@ -1778,6 +2903,25 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    def list_notifications(self, offset: int = 0, limit: int = 50) -> tuple[list[dict], int]:
+        """分页全量通知（含已读，通知中心历史面，2.11 §3.4）。返回 (items, total)。"""
+        total = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM notifications"
+        ).fetchone()["cnt"]
+        cursor = self.conn.execute(
+            "SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        return [dict(row) for row in cursor.fetchall()], total
+
+    def mark_all_notifications_read(self) -> int:
+        """全部标记已读（通知中心一键操作，2.11 §3.4）。返回标记条数。"""
+        cursor = self.conn.execute(
+            "UPDATE notifications SET read_at = ? WHERE read_at IS NULL", (self._now(),)
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def mark_notifications_read(self, ids: list[int]) -> int:
         """批量标记已读（弹出即已读，0.4 §5.5）。"""
         if not ids:
@@ -1786,6 +2930,14 @@ class Database:
         cursor = self.conn.execute(
             f"UPDATE notifications SET read_at = ? WHERE id IN ({placeholders}) AND read_at IS NULL",
             [self._now()] + list(ids),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def delete_notification(self, notification_id: int) -> int:
+        """单条删除通知（通知中心行内删除，2.11 §3.4）。返回删除条数（幂等：不存在为 0）。"""
+        cursor = self.conn.execute(
+            "DELETE FROM notifications WHERE id = ?", (notification_id,)
         )
         self.conn.commit()
         return cursor.rowcount
@@ -1880,13 +3032,6 @@ class Database:
         """清空报告的章节行（restart 全量重跑前重置，防旧行残留）。"""
         self.conn.execute("DELETE FROM report_sections WHERE report_id = ?", (report_id,))
         self.conn.commit()
-
-    def list_report_sections(self, report_id: str) -> list[dict]:
-        cursor = self.conn.execute(
-            "SELECT * FROM report_sections WHERE report_id = ? ORDER BY created_at ASC",
-            (report_id,),
-        )
-        return [dict(row) for row in cursor.fetchall()]
 
     def update_section_content(self, section_pk: str, content: str, status: str = "completed", word_count: int | None = None):
         if word_count is not None:
@@ -1997,35 +3142,20 @@ class Database:
                 )
         self.conn.commit()
 
-    def create_base_lib(self, name: str, description: str = "", lib_type: str = "custom") -> dict:
-        now = self._now()
-        lib_id = self._uuid()
-        self.conn.execute(
-            "INSERT INTO projects (id, name, description, kind, lib_type, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'base_lib', ?, ?, ?)",
-            (lib_id, name, description, lib_type, now, now),
-        )
-        self.conn.commit()
-        return {
-            "id": lib_id,
-            "name": name,
-            "description": description,
-            "kind": "base_lib",
-            "lib_type": lib_type,
-            "created_at": now,
-            "updated_at": now,
-        }
-
-    def list_base_libs(self) -> list[dict]:
-        cursor = self.conn.execute(
-            """SELECT p.*, COUNT(f.id) as file_count
+    def list_base_libs(self, limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more）。"""
+        sql = """SELECT p.*, COUNT(f.id) as file_count
                FROM projects p
                LEFT JOIN files f ON p.id = f.project_id
                WHERE p.kind = 'base_lib'
                GROUP BY p.id
                ORDER BY p.created_at ASC"""
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
     def get_base_lib(self, lib_id: str) -> dict | None:
         cursor = self.conn.execute(
@@ -2033,44 +3163,6 @@ class Database:
         )
         row = cursor.fetchone()
         return dict(row) if row else None
-
-    def update_base_lib(self, lib_id: str, name: str | None = None, description: str | None = None) -> bool:
-        """Update a custom base library. Returns True if updated."""
-        lib = self.get_base_lib(lib_id)
-        if not lib:
-            return False
-        if lib.get("lib_type", "").startswith("preset_"):
-            return False  # Preset libs cannot be renamed
-        updates = []
-        params: list = []
-        if name is not None:
-            updates.append("name = ?")
-            params.append(name)
-        if description is not None:
-            updates.append("description = ?")
-            params.append(description)
-        if not updates:
-            return False
-        updates.append("updated_at = ?")
-        params.append(self._now())
-        params.append(lib_id)
-        self.conn.execute(
-            f"UPDATE projects SET {', '.join(updates)} WHERE id = ? AND kind = 'base_lib'",
-            params,
-        )
-        self.conn.commit()
-        return True
-
-    def delete_base_lib(self, lib_id: str) -> bool:
-        """Delete a custom base library. Returns True if deleted. Preset libs cannot be deleted."""
-        lib = self.get_base_lib(lib_id)
-        if not lib:
-            return False
-        if lib.get("lib_type", "").startswith("preset_"):
-            return False  # Preset libs cannot be deleted
-        self.conn.execute("DELETE FROM projects WHERE id = ? AND kind = 'base_lib'", (lib_id,))
-        self.conn.commit()
-        return True
 
     # ── Project-BaseLib Association ──
 
@@ -2265,6 +3357,310 @@ class Database:
         except Exception as e:
             logger.warning("Failed to notify schema change: %s", e)
 
+    # ── Forms: Templates & Fills (2.4 §3) ──
+
+    def seed_form_templates(self, templates: list[dict]) -> list[str]:
+        """Seed 预置填表模板（幂等：按 id 已存在则跳过，2.4 §3.1）。
+
+        与 wiki/playbook 的 INSERT OR REPLACE 不同：模板分析产物
+        （schema/mapping/status）是耗时 LLM 结果，重种子不得覆盖——
+        只在不存在时插入。带出厂预解析产物（template_schema，随包
+        分发）的条目直接落 status=success，新用户零 LLM 调用开箱即用；
+        无产物条目落 pending 由启动拾取分析。已存在的预置记录仅对齐
+        file_path（预置文件随版本移动/改名时迁移路径，不重分析），
+        返回新插入的 id。
+        """
+        seeded: list[str] = []
+        migrated = False
+        for t in templates:
+            row = self.conn.execute(
+                "SELECT id, file_path FROM form_templates WHERE id = ?", (t["id"],)
+            ).fetchone()
+            if row:
+                if row["file_path"] != t["file_path"]:
+                    self.conn.execute(
+                        "UPDATE form_templates SET file_path = ?, updated_at = ? WHERE id = ?",
+                        (t["file_path"], self._now(), t["id"]),
+                    )
+                    migrated = True
+                continue
+            now = self._now()
+            has_schema = bool(t.get("template_schema"))
+            self.conn.execute(
+                """INSERT INTO form_templates
+                   (id, name, source, file_path, template_schema, llm_mapping,
+                    field_count, file_hash, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (t["id"], t["name"], t["source"], t["file_path"],
+                 t.get("template_schema"), t.get("llm_mapping"),
+                 t.get("field_count"), t.get("file_hash"),
+                 "success" if has_schema else "pending", now, now),
+            )
+            seeded.append(t["id"])
+        if seeded or migrated:
+            self.conn.commit()
+        return seeded
+
+    def create_form_template(self, template_id: str, name: str,
+                             source: str, file_path: str) -> dict:
+        """上传模板落库（status=pending，由后台分析任务拾取）。"""
+        now = self._now()
+        self.conn.execute(
+            """INSERT INTO form_templates
+               (id, name, source, file_path, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+            (template_id, name, source, file_path, now, now),
+        )
+        self.conn.commit()
+        return {"id": template_id, "name": name, "status": "pending"}
+
+    def list_form_templates(
+        self, q: str | None = None, status: str | None = None,
+        limit: int = 0, offset: int = 0,
+    ) -> list[dict]:
+        """模板列表（列表页轻量视图：不含 schema/mapping 大列；含
+        file_path/file_hash 供路由层动态比对 file_changed，两者不出路由层）。
+        q 模糊匹配 name、status 精确过滤（服务端筛选下沉，对齐 knowledge files 范式）；
+        limit=0 → 全量（选择器默认），limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more）。"""
+        sql = (
+            """SELECT id, name, source, status, error, field_count, user_hint,
+                      file_path, file_hash, created_at, updated_at
+               FROM form_templates"""
+        )
+        where, params = [], []
+        if q:
+            where.append("name LIKE ?")
+            params.append(f"%{q}%")
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC"
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def count_form_templates(self, q: str | None = None,
+                             status: str | None = None) -> int:
+        """模板计数（与 list_form_templates 同口径：q/status 筛选后计数）。"""
+        sql = "SELECT COUNT(*) AS cnt FROM form_templates"
+        where, params = [], []
+        if q:
+            where.append("name LIKE ?")
+            params.append(f"%{q}%")
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        return self.conn.execute(sql, params).fetchone()["cnt"]
+
+    def get_form_template(self, template_id: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM form_templates WHERE id = ?", (template_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_form_template_status(self, template_id: str, status: str,
+                                    error: str | None = None):
+        """状态流转（仅后台分析任务调用）。error 随 failed/invalid 落库，成功清空。"""
+        self.conn.execute(
+            "UPDATE form_templates SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+            (status, error, self._now(), template_id),
+        )
+        self.conn.commit()
+
+    def update_form_template_schema(self, template_id: str, schema: dict,
+                                    llm_mapping: dict, field_count: int,
+                                    file_hash: str | None = None):
+        """分析成功：schema/mapping/file_hash 落盘 + status=success。
+
+        file_hash 与 schema 同源（同一份文件内容），列表/详情据此动态比对
+        file_changed；NULL（存量/历史失败）不参与比对。
+        """
+        self.conn.execute(
+            """UPDATE form_templates SET template_schema = ?, llm_mapping = ?,
+               field_count = ?, file_hash = ?, status = 'success', error = NULL,
+               updated_at = ? WHERE id = ?""",
+            (json.dumps(schema, ensure_ascii=False),
+             json.dumps(llm_mapping, ensure_ascii=False),
+             field_count, file_hash, self._now(), template_id),
+        )
+        self.conn.commit()
+
+    def update_form_template_hint(self, template_id: str, user_hint: str):
+        """重解析：写入用户补充说明并回到 pending（由后台任务拾取，2.4 §2.3）。"""
+        self.conn.execute(
+            "UPDATE form_templates SET user_hint = ?, status = 'pending', "
+            "error = NULL, updated_at = ? WHERE id = ?",
+            (user_hint, self._now(), template_id),
+        )
+        self.conn.commit()
+
+    def delete_form_template(self, template_id: str) -> bool:
+        cursor = self.conn.execute(
+            "DELETE FROM form_templates WHERE id = ?", (template_id,)
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def list_form_template_ids_by_status(self, status: str) -> list[str]:
+        cursor = self.conn.execute(
+            "SELECT id FROM form_templates WHERE status = ?", (status,)
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    def recover_stale_form_templates(self) -> list[str]:
+        """崩溃恢复（2.4 §2.4）：analyzing 残留 → pending，由启动拾取重新分析。
+
+        分析任务跑在本进程内，重启后必然不存在，任何 analyzing 均为孤儿
+        （同 recover_stale_generating_reports 不设时间阈值的裁决）。
+        返回被重置的 id（启动拾取自动重新拉起，分析产物幂等覆盖）。
+        """
+        cursor = self.conn.execute(
+            "SELECT id FROM form_templates WHERE status = 'analyzing'"
+        )
+        ids = [row["id"] for row in cursor.fetchall()]
+        if ids:
+            self.conn.execute(
+                "UPDATE form_templates SET status = 'pending', updated_at = ? "
+                "WHERE status = 'analyzing'",
+                (self._now(),),
+            )
+            self.conn.commit()
+        return ids
+
+    def create_form_fill(self, project_id: str, template_id: str, title: str) -> dict:
+        now = self._now()
+        fill_id = self._uuid()
+        self.conn.execute(
+            """INSERT INTO form_fills
+               (id, project_id, template_id, title, status, progress, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)""",
+            (fill_id, project_id, template_id, title, now, now),
+        )
+        self.conn.commit()
+        return {
+            "id": fill_id,
+            "project_id": project_id,
+            "template_id": template_id,
+            "title": title,
+            "status": "pending",
+            "progress": 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_form_fills(self, project_id: str, limit: int = 0,
+                        offset: int = 0) -> list[dict]:
+        """实例列表（列表页轻量视图：不含 report/filled_values 大列，附模板名）。
+
+        LEFT JOIN：模板随时可删（2.4 不变量 11），悬空实例可见，template_name 为 NULL。
+        limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more）。
+        """
+        sql = (
+            """SELECT f.id, f.project_id, f.template_id, f.title, f.output_path,
+                      f.status, f.progress, f.error, f.created_at, f.updated_at,
+                      t.name AS template_name
+               FROM form_fills f LEFT JOIN form_templates t ON t.id = f.template_id
+               WHERE f.project_id = ? ORDER BY f.created_at DESC"""
+        )
+        params: list = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def get_form_fill(self, fill_id: str) -> dict | None:
+        cursor = self.conn.execute(
+            "SELECT * FROM form_fills WHERE id = ?", (fill_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_form_fill_status(self, fill_id: str, status: str,
+                                progress: int | None = None,
+                                error: str | None = None):
+        """状态/进度流转（仅后台填表任务调用）。
+
+        progress 单调递增（SQL MAX 保护，不因批次失败回退，2.4 §5.4 不变量 4）。
+        """
+        if progress is not None:
+            self.conn.execute(
+                "UPDATE form_fills SET status = ?, progress = MAX(progress, ?), "
+                "error = ?, updated_at = ? WHERE id = ?",
+                (status, progress, error, self._now(), fill_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE form_fills SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                (status, error, self._now(), fill_id),
+            )
+        self.conn.commit()
+
+    def update_form_fill_result(self, fill_id: str, report: list,
+                                filled_values: dict, output_path: str):
+        """填表完成：产物路径 + 值集/报告落库 + success/progress=100。"""
+        self.conn.execute(
+            """UPDATE form_fills SET output_path = ?, report = ?, filled_values = ?,
+               status = 'success', progress = 100, error = NULL, updated_at = ?
+               WHERE id = ?""",
+            (output_path, json.dumps(report, ensure_ascii=False),
+             json.dumps(filled_values, ensure_ascii=False),
+             self._now(), fill_id),
+        )
+        self.conn.commit()
+
+    def update_form_fill_values(self, fill_id: str, filled_values: dict,
+                                report: list, output_path: str):
+        """人工修订（2.4 §4.2 路径 C）：值集/报告/产物更新，status 保持 success。"""
+        self.conn.execute(
+            """UPDATE form_fills SET output_path = ?, report = ?, filled_values = ?,
+               updated_at = ? WHERE id = ?""",
+            (output_path, json.dumps(report, ensure_ascii=False),
+             json.dumps(filled_values, ensure_ascii=False),
+             self._now(), fill_id),
+        )
+        self.conn.commit()
+
+    def count_active_form_fills(self) -> int:
+        """排队/填写中的实例数（并发限制，2.4 §4.2）。"""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM form_fills WHERE status IN ('pending', 'filling')"
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def list_form_fill_ids_by_status(self, status: str) -> list[str]:
+        cursor = self.conn.execute(
+            "SELECT id FROM form_fills WHERE status = ?", (status,)
+        )
+        return [row["id"] for row in cursor.fetchall()]
+
+    def recover_stale_form_fills(self) -> list[str]:
+        """崩溃恢复（2.4 §2.4）：filling 残留 → pending，由启动拾取自动重跑
+        （对齐 task_queue 中断恢复模式）。返回被重置的 id。"""
+        cursor = self.conn.execute(
+            "SELECT id FROM form_fills WHERE status = 'filling'"
+        )
+        ids = [row["id"] for row in cursor.fetchall()]
+        if ids:
+            self.conn.execute(
+                "UPDATE form_fills SET status = 'pending', updated_at = ? "
+                "WHERE status = 'filling'",
+                (self._now(),),
+            )
+            self.conn.commit()
+        return ids
+
+    def delete_form_fill(self, fill_id: str):
+        self.conn.execute("DELETE FROM form_fills WHERE id = ?", (fill_id,))
+        self.conn.commit()
+
     # ── Affairs: Playbook templates (3.0 §4.1, phase 2) ──
 
     def seed_playbook_templates(self, templates: list[dict]) -> None:
@@ -2382,12 +3778,17 @@ class Database:
                 logger.warning("backfill playbooks failed for %s", r["id"], exc_info=True)
         return n
 
-    def list_phase_tasks(self, project_id: str) -> list[dict]:
-        cursor = self.conn.execute(
-            "SELECT * FROM phase_tasks WHERE project_id = ? "
-            "ORDER BY phase ASC, task_type ASC, due_date ASC, created_at ASC",
-            (project_id,),
-        )
+    def list_phase_tasks(self, project_id: str, limit: int = 0,
+                         offset: int = 0) -> list[dict]:
+        """limit=0 → 全量(默认,内部 35+ 调用方兼容);limit>0 → 至多 limit 行
+        (路由层传 limit+1 探测 has_more,对齐 list_tasks 先例)。"""
+        sql = ("SELECT * FROM phase_tasks WHERE project_id = ? "
+               "ORDER BY phase ASC, task_type ASC, due_date ASC, created_at ASC")
+        params: list = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        cursor = self.conn.execute(sql, params)
         rows = []
         for row in cursor.fetchall():
             d = dict(row)
@@ -2485,7 +3886,7 @@ class Database:
             """SELECT pt.*, p.name AS project_name, p.stage AS project_stage
                FROM phase_tasks pt
                JOIN projects p ON p.id = pt.project_id
-               WHERE p.kind = 'project' AND pt.status = 'open'
+               WHERE p.kind = 'project' AND p.archived_at IS NULL AND pt.status = 'open'
                  AND pt.due_date IS NOT NULL AND pt.due_date <= ?
                ORDER BY pt.due_date ASC, pt.created_at ASC""",
             (limit,),
@@ -2512,13 +3913,15 @@ class Database:
 
     # ── Intelligence: Ledger entries (3.1 §3.1, phase 4) ──
 
-    def list_ledger_entries(self, project_id: str, limit: int = 20) -> list[dict]:
-        """台账条目时间轴(3.1 §4.3):entry_date 倒序,NULL 日期置尾。"""
+    def list_ledger_entries(self, project_id: str, limit: int = 20,
+                            offset: int = 0) -> list[dict]:
+        """台账条目时间轴(3.1 §4.3):entry_date 倒序,NULL 日期置尾;offset 翻页
+        (路由层传 limit+1 探测 has_more;1≤limit≤100 校验在路由层)。"""
         cursor = self.conn.execute(
             """SELECT * FROM ledger_entries WHERE project_id = ?
                ORDER BY (entry_date IS NULL), entry_date DESC, created_at DESC
-               LIMIT ?""",
-            (project_id, limit),
+               LIMIT ? OFFSET ?""",
+            (project_id, limit, offset),
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -2539,12 +3942,17 @@ class Database:
 
     # ── Intelligence: Task suggestions (3.1 §3.2, phase 4) ──
 
-    def list_suggestions(self, project_id: str, status: str = "pending") -> list[dict]:
-        cursor = self.conn.execute(
-            """SELECT * FROM task_suggestions WHERE project_id = ? AND status = ?
-               ORDER BY created_at ASC""",
-            (project_id, status),
-        )
+    def list_suggestions(self, project_id: str, status: str = "pending",
+                         limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量（默认，脉搏徽章等内部调用方兼容）；limit>0 → 至多 limit 行
+        （路由层传 limit+1 探测 has_more，对齐 list_phase_tasks 先例）。"""
+        sql = ("SELECT * FROM task_suggestions WHERE project_id = ? AND status = ?"
+               " ORDER BY created_at ASC")
+        params: list = [project_id, status]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        cursor = self.conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
 
     def get_suggestion(self, suggestion_id: str) -> dict | None:
@@ -2759,18 +4167,29 @@ class Database:
                 d[field] = []
         return d
 
-    def list_wiki_pages(self, project_id: str) -> list[dict]:
-        cursor = self.conn.execute(
-            """SELECT wp.*, ws.position
+    def list_wiki_pages(self, project_id: str, limit: int = 0,
+                        offset: int = 0) -> list[dict]:
+        """limit=0 → 全量(默认,内部调用方兼容);limit>0 → 至多 limit 行
+        (路由层传 limit+1 探测 has_more)。"""
+        sql = """SELECT wp.*, ws.position
                FROM wiki_pages wp
                LEFT JOIN wiki_schemas ws ON ws.project_type = (
                    SELECT type FROM projects WHERE id = ?
                ) AND ws.page_key = wp.page_key
                WHERE wp.project_id = ?
-               ORDER BY COALESCE(ws.position, 999) ASC, wp.page_key ASC""",
-            (project_id, project_id),
-        )
-        return [self._parse_wiki_page_json_fields(dict(row)) for row in cursor.fetchall()]
+               ORDER BY COALESCE(ws.position, 999) ASC, wp.page_key ASC"""
+        params: list = [project_id, project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [self._parse_wiki_page_json_fields(dict(row)) for row in self.conn.execute(sql, params).fetchall()]
+
+    def list_wiki_page_keys(self, project_id: str) -> list[str]:
+        """全量 page_key 集(key-only 轻量查询):pages 分页后 missing_pages
+        仍须基于全量 key 集计算,不得基于当前页。"""
+        return [row["page_key"] for row in self.conn.execute(
+            "SELECT page_key FROM wiki_pages WHERE project_id = ?",
+            (project_id,)).fetchall()]
 
     def search_wiki_pages(self, project_id: str, query: str, top_k: int = 5) -> list[dict]:
         """Search wiki pages by keyword matching on title/page_key/content.
@@ -2933,14 +4352,16 @@ class Database:
             "version": version,
         }
 
-    def list_wiki_page_versions(self, page_id: str, limit: int = 20) -> list[dict]:
-        """List version history for a wiki page."""
+    def list_wiki_page_versions(self, page_id: str, limit: int = 20,
+                                offset: int = 0) -> list[dict]:
+        """List version history for a wiki page (offset 翻页,路由层
+        传 limit+1 探测 has_more)。"""
         cursor = self.conn.execute(
             """SELECT id, wiki_page_id, page_key, title, version, change_summary, created_at
                FROM wiki_page_versions
                WHERE wiki_page_id = ?
-               ORDER BY version DESC LIMIT ?""",
-            (page_id, limit),
+               ORDER BY version DESC LIMIT ? OFFSET ?""",
+            (page_id, limit, offset),
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -3107,17 +4528,22 @@ class Database:
         self.conn.commit()
         return log_id
 
-    def list_wiki_change_log(self, project_id: str, wiki_page_id: str | None = None, limit: int = 50) -> list[dict]:
+    def list_wiki_change_log(self, project_id: str, wiki_page_id: str | None = None,
+                             limit: int = 50, offset: int = 0) -> list[dict]:
+        """limit<=0 → 全量(新增语义);limit>0 → LIMIT+OFFSET(路由层
+        传 limit+1 探测 has_more)。默认 limit=50 向后兼容既有调用方。"""
         if wiki_page_id:
-            cursor = self.conn.execute(
-                "SELECT * FROM wiki_change_log WHERE project_id = ? AND wiki_page_id = ? ORDER BY created_at DESC LIMIT ?",
-                (project_id, wiki_page_id, limit),
-            )
+            sql = ("SELECT * FROM wiki_change_log WHERE project_id = ? "
+                   "AND wiki_page_id = ? ORDER BY created_at DESC")
+            params: list = [project_id, wiki_page_id]
         else:
-            cursor = self.conn.execute(
-                "SELECT * FROM wiki_change_log WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
-                (project_id, limit),
-            )
+            sql = ("SELECT * FROM wiki_change_log WHERE project_id = ? "
+                   "ORDER BY created_at DESC")
+            params = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        cursor = self.conn.execute(sql, params)
         rows = []
         for row in cursor.fetchall():
             d = dict(row)
@@ -3177,6 +4603,9 @@ class Database:
         evidence：矛盾证据结构化 [{page_key, quote}]（§3.5），随内容幂等更新；
         传入 None 时保留旧值（COALESCE）——Lint 重跑落库不传 evidence，
         不得抹除摄入产出的结构化证据（§4.4）。
+        project_id 随 ON CONFLICT 同步覆盖（review H-1 兑底）：review_id 已按
+        项目作用域哈希（wiki.review_id），正常不会撞行；万一撞行也不允许
+        B 的写入留在 A 的行上（内容串台）。
         """
         now = self._now()
         ids_json = json.dumps(affected_page_ids, ensure_ascii=False) if affected_page_ids else None
@@ -3185,6 +4614,7 @@ class Database:
             """INSERT INTO wiki_reviews (id, project_id, type, title, description, affected_page_ids, evidence, source_file_id, resolved, resolved_action, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
+                   project_id=excluded.project_id,
                    description=excluded.description, affected_page_ids=excluded.affected_page_ids,
                    evidence=COALESCE(excluded.evidence, wiki_reviews.evidence),
                    source_file_id=excluded.source_file_id""",
@@ -3203,17 +4633,21 @@ class Database:
             return d
         return None
 
-    def list_wiki_reviews(self, project_id: str, resolved: bool | None = None) -> list[dict]:
+    def list_wiki_reviews(self, project_id: str, resolved: bool | None = None,
+                          limit: int = 0, offset: int = 0) -> list[dict]:
+        """limit=0 → 全量(默认,向后兼容);limit>0 → 至多 limit 行
+        (路由层传 limit+1 探测 has_more)。"""
         if resolved is not None:
-            cursor = self.conn.execute(
-                "SELECT * FROM wiki_reviews WHERE project_id = ? AND resolved = ? ORDER BY created_at DESC",
-                (project_id, 1 if resolved else 0),
-            )
+            sql = ("SELECT * FROM wiki_reviews WHERE project_id = ? AND resolved = ? "
+                   "ORDER BY created_at DESC")
+            params: list = [project_id, 1 if resolved else 0]
         else:
-            cursor = self.conn.execute(
-                "SELECT * FROM wiki_reviews WHERE project_id = ? ORDER BY created_at DESC",
-                (project_id,),
-            )
+            sql = "SELECT * FROM wiki_reviews WHERE project_id = ? ORDER BY created_at DESC"
+            params = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        cursor = self.conn.execute(sql, params)
         rows = []
         for row in cursor.fetchall():
             d = dict(row)
@@ -3222,10 +4656,28 @@ class Database:
             rows.append(d)
         return rows
 
-    def resolve_wiki_review(self, review_id: str, action: str) -> bool:
+    def count_wiki_reviews_by_type(self, project_id: str) -> dict:
+        """按 type 分型计数(徽章数据源):reviews 分页后数组不再完整,
+        PulseBar/详情页计数改用本查询,替代全量数组客户端计数。
+        返回 {type: {pending, resolved, total}}。"""
+        counts: dict = {}
+        for row in self.conn.execute(
+            "SELECT type, resolved, COUNT(*) AS cnt FROM wiki_reviews "
+            "WHERE project_id = ? GROUP BY type, resolved", (project_id,)
+        ).fetchall():
+            bucket = counts.setdefault(
+                row["type"], {"pending": 0, "resolved": 0, "total": 0})
+            bucket["resolved" if row["resolved"] else "pending"] += row["cnt"]
+            bucket["total"] += row["cnt"]
+        return counts
+
+    def resolve_wiki_review(self, project_id: str, review_id: str, action: str) -> bool:
+        """核销发现项。project_id 条件是纵深防御（review L-1）：sweep/RESOLVES
+        链路的 id 若来自 LLM 输出错配，跨项目核销在 DB 层被挡下。"""
         cursor = self.conn.execute(
-            "UPDATE wiki_reviews SET resolved = 1, resolved_action = ? WHERE id = ?",
-            (action, review_id),
+            "UPDATE wiki_reviews SET resolved = 1, resolved_action = ? "
+            "WHERE id = ? AND project_id = ?",
+            (action, review_id, project_id),
         )
         self.conn.commit()
         return cursor.rowcount > 0
@@ -3298,8 +4750,8 @@ class Database:
             params,
         )
         self.conn.commit()
-        # 纯状态更新：终态通知由调用方经 activity_events 显式声明（0.4 §6.4 E2，
-        # 顺序 4）；stopped / queued / ingesting 等中间态静默（用户主动停止不算事件）。
+        # 纯状态更新：终态通知由调用方经 activity_events 显式声明（0.4 §6.4 E2）；
+        # stopped / queued / ingesting 等中间态静默（用户主动停止不算事件）。
 
     def start_compile_task(self, task_id: str):
         """Record compile task start time. Status is managed by the caller."""

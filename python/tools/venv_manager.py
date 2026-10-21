@@ -20,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 
+from tools.proc_priority import low_priority_kwargs
 from tools.tool_resolver import resolve_python, resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,12 @@ PREINSTALLED_PACKAGES = [
     "pillow",                # Image processing
     "html2text",             # HTML→Markdown（browser-fetch 内置 skill，纯 Python）
     "playwright",            # browser-fetch CDP 客户端（2.8 §5.5，~40MB wheel）
+    # ppt-master 内置 skill 运行依赖（2.3.1 §8.5 + 包内 requirements.txt）
+    "flask",                 # confirm_ui 本地服务
+    "python-pptx", "lxml",   # svg_to_pptx 生成与 XML 处理
+    "XlsxWriter",            # svg_to_pptx --native-charts-and-tables 原生图表
+    "skia-pathops", "uharfbuzz",  # finalize_svg 路径/文字整形
+    "defusedxml",            # 安全 XML 解析
 ]
 
 
@@ -134,6 +141,7 @@ def create_venv(task_dir: str) -> str:
                 encoding="utf-8", errors="replace",
                 timeout=60,
                 check=True,
+                **low_priority_kwargs(),   # 2.11 §5.6 R3
             )
             logger.info("venv created with uv: %s", venv_path)
             return venv_path
@@ -149,6 +157,7 @@ def create_venv(task_dir: str) -> str:
             encoding="utf-8", errors="replace",
             timeout=300,
             check=True,
+            **low_priority_kwargs(),   # 2.11 §5.6 R3
         )
         logger.info("venv created with stdlib: %s", venv_path)
         return venv_path
@@ -160,8 +169,6 @@ def create_venv(task_dir: str) -> str:
 # 预装安装链（2.8 §12 F4）——cached（镜像+缓存）重试收敛 → mirror（--no-cache）兑底：
 # 1) cached：镜像源 + 带缓存，rename 竞态失败自动重试（共 2 尝试）。
 #    前置条件：白名单已验证（is_uv_exclusion_verified）。
-#    - 源选镜像：官方源慢网下 resolve 28s~1m37s + 冷缓存下载 300s 超时
-#      （2026-10-12 三轮实测），腾讯云源 resolve+全装 ~15-32s。
 #    - 重试收敛：rename 竞态（os error 5）死包随机（certifi/pillow 各死
 #      过）、每轮死 1~2 但缓存增量推进 2~4 个（实测 archive 3→16→18）。
 #      保留 2 次重试：全冷机器每任务渐进推进缓存；稳态（小包全缓存后）
@@ -170,9 +177,15 @@ def create_venv(task_dir: str) -> str:
 #      稳态下 6 次全败零推进，2 次即足够）。
 # 2) mirror：--no-cache 完全绕开 archive rename 路径——既是 cached 链
 #    全败时的永成功兑底，也是大包必死场景的快速通道（4s vs 必败重试）。
-#    腾讯云源：曾用清华源，实测其对 packages 路径 wheel 下载间歇性 403
-#    （index 可达、下载被拒），换腾讯云源规避。
-_PYPI_MIRROR = "https://mirrors.cloud.tencent.com/pypi/simple"
+#
+# 跨模块共享的装包镜像源：预装链（下方）与 package_manager 工具（LLM 主动
+# 装包，tools/package_manager.py）共用同一常量，保证「推荐 uv + 镜像」从
+# 意图变成事实（2026-10-16 装包路径统一）。
+# 源选镜像：官方源慢网下 resolve 28s~1m37s + 冷缓存下载 300s 超时
+# （2026-10-12 三轮实测），腾讯云源 resolve+全装 ~15-32s。
+# 曾用清华源，实测其对 packages 路径 wheel 下载间歇性 403
+# （index 可达、下载被拒），换腾讯云源规避。
+PYPI_MIRROR = "https://mirrors.cloud.tencent.com/pypi/simple"
 
 # rename 竞态瞬态错误特征（uv#1491）：单包概率性失败，重试可收敛；
 # 超时/网络类错误不重试（增量无益且烧 300s 预算），直接降级 mirror。
@@ -194,6 +207,7 @@ def _run_preinstall(cmd: list[str]) -> tuple[bool, str]:
             capture_output=True,
             encoding="utf-8", errors="replace",
             timeout=300,  # playwright ~40MB wheel，冷缓存下载需较长时间
+            **low_priority_kwargs(),   # 2.11 §5.6 R3
         )
     except Exception as e:
         return False, str(e)
@@ -237,14 +251,14 @@ def preinstall_packages(venv_python: str) -> bool:
     uv = resolve_tool("uv")
     if uv:
         cached_cmd = [uv, "pip", "install", "--python", venv_python,
-                      "--default-index", _PYPI_MIRROR,
+                      "--default-index", PYPI_MIRROR,
                       *PREINSTALLED_PACKAGES]
         mirror_cmd = [*cached_cmd, "--no-cache"]
     else:
         cached_cmd = [venv_python, "-m", "pip", "install", "--quiet",
-                      "-i", _PYPI_MIRROR, *PREINSTALLED_PACKAGES]
+                      "-i", PYPI_MIRROR, *PREINSTALLED_PACKAGES]
         mirror_cmd = [venv_python, "-m", "pip", "install", "--quiet",
-                      "-i", _PYPI_MIRROR, *PREINSTALLED_PACKAGES]
+                      "-i", PYPI_MIRROR, *PREINSTALLED_PACKAGES]
 
     for attempt in range(2):  # 稳态下大包必死零推进，2 次足够；mirror 兼做绕行
         ok, err = _run_preinstall(cached_cmd)

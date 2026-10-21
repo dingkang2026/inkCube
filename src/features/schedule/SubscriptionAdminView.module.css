@@ -1,0 +1,365 @@
+/* 2.11 E3 T7:订阅管理台两列布局（§8.1：左列 350px 列表 / 右列收件箱·详情） */
+.page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 350px;
+  flex-shrink: 0;
+  padding: 12px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.newBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-inverse, #fff);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  flex: 1;
+  padding: 5px 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.tabActive {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.filters {
+  display: flex;
+  gap: 6px;
+}
+
+.select {
+  flex-shrink: 0;
+  padding: 5px 6px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.searchBox {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.searchBox input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.batchBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.batchBar span {
+  flex: 1;
+}
+
+.batchBar button {
+  padding: 3px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.dangerBtn {
+  color: var(--error);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.empty {
+  padding: 24px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── Load more — dashed secondary（对齐 TaskList.loadMoreBtn 家族，§列表分页统一约定，
+   左列订阅/收件箱/期次历史共用）── */
+.loadMoreBtn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.loadMoreBtn:hover:not(:disabled) {
+  background: rgba(var(--accent-rgb), 0.06);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.schedRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.schedRow:hover {
+  background: var(--bg-muted);
+}
+
+.schedRowActive {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.schedMain {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stateDot {
+  position: absolute;
+  top: 6px;
+  left: -2px;
+  width: 7px;
+  height: 7px;
+  background: var(--text-muted);
+  border-radius: 50%;
+}
+
+.dotRunning {
+  background: var(--accent);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.dotAbnormal {
+  background: var(--error);
+}
+
+.dotPaused {
+  opacity: 0.45;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.schedName {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedPeriod {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.unreadDot {
+  position: absolute;
+  top: 7px;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  background: var(--error);
+  border-radius: 50%;
+}
+
+.rowActions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.schedRow:hover .rowActions {
+  opacity: 1;
+}
+
+.rowActions button {
+  display: flex;
+  padding: 4px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.rowActions button:hover {
+  color: var(--text-primary);
+  background: var(--bg-muted);
+}
+
+.right {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+
+.paneTitle {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.runList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.detailCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.detailHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.detailName {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.detailPeriod {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.detailMeta {
+  display: flex;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.abnormalText {
+  color: var(--error);
+}
+
+.detailPrompt {
+  margin: 0;
+  padding: 8px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border-radius: var(--radius-sm);
+  max-height: 96px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.detailActions {
+  display: flex;
+  gap: 8px;
+}
+
+.detailActions button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.detailActions button:hover {
+  border-color: var(--accent);
+}

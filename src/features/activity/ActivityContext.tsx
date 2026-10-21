@@ -26,6 +26,8 @@ interface ActivityContextValue {
   applyStatus: (status: ActivityStatus) => void
   /** 批量标记已读（弹出即已读 / 点击动态条目时调用，乐观更新） */
   markRead: (ids: number[]) => Promise<void>
+  /** 全部标记已读（通知中心一键操作，2.11 §6.4；readAll 一次 IPC + feed/徽章乐观全清） */
+  markAllRead: () => Promise<void>
 }
 
 const ActivityContext = createContext<ActivityContextValue | null>(null)
@@ -55,6 +57,21 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     setFeed((prev) => prev.map((n) => (idSet.has(n.id) && !n.read_at ? { ...n, read_at: now } : n)))
   }, [])
 
+  const markAllRead = useCallback(async () => {
+    try {
+      await window.electronAPI.invoke('notifications:readAll')
+    } catch {
+      // best-effort：失败不影响 UI，下次轮询会重新同步
+    }
+    const now = new Date().toISOString()
+    setFeed((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: now })))
+    // 徽章数据源同步归零（review m-1）：NavTabs unreadCount 读的是
+    // status.notifications.unread，仅清 feed 要等下一轮心跳才归零
+    setStatus((prev) => (prev
+      ? { ...prev, notifications: { ...prev.notifications, unread: [] } }
+      : prev))
+  }, [])
+
   const summary = status?.summary ?? EMPTY_SUMMARY
 
   const byProject = useMemo(() => {
@@ -71,6 +88,8 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
           imageDescribing: 0,
           compiles: 0,
           reports: 0,
+          forms: 0,
+          ppts: 0,
         }
         map.set(a.project_id, p)
       }
@@ -81,6 +100,10 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
         p.compiles += 1
       } else if (a.entity_type === 'report') {
         p.reports += 1
+      } else if (a.entity_type === 'form_fill') {
+        p.forms += 1
+      } else if (a.entity_type === 'ppt') {
+        p.ppts += 1
       }
     }
     return map
@@ -89,14 +112,14 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   const activeProjectIds = useMemo(() => {
     const set = new Set<string>()
     for (const p of byProject.values()) {
-      if (p.files > 0 || p.compiles > 0 || p.reports > 0) set.add(p.projectId)
+      if (p.files > 0 || p.compiles > 0 || p.reports > 0 || p.forms > 0 || p.ppts > 0) set.add(p.projectId)
     }
     return set
   }, [byProject])
 
   const value = useMemo(
-    () => ({ status, summary, byProject, activeProjectIds, feed, applyStatus, markRead }),
-    [status, summary, byProject, activeProjectIds, feed, applyStatus, markRead],
+    () => ({ status, summary, byProject, activeProjectIds, feed, applyStatus, markRead, markAllRead }),
+    [status, summary, byProject, activeProjectIds, feed, applyStatus, markRead, markAllRead],
   )
 
   return <ActivityContext.Provider value={value}>{children}</ActivityContext.Provider>

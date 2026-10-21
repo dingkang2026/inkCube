@@ -20,18 +20,19 @@ describe('index.html 启动加载屏', () => {
     expect(splashStart).toBeGreaterThan(rootStart)
   })
 
-  it('包含 spinner、品牌名与双语静态提示', () => {
-    expect(html).toContain('bootstrap-splash-spinner')
+  it('包含品牌墨字、墨渍带与双语静态提示', () => {
+    expect(html).toContain('bootstrap-splash-inkchar')
+    expect(html).toContain('bootstrap-splash-ink')
     expect(html).toContain('墨方 InkCube')
     expect(html).toContain('正在启动')
     expect(html).toContain('Loading')
   })
 
-  it('样式内联自足：视口撑满 + spinner 动画定义存在', () => {
+  it('样式内联自足：视口撑满 + 品牌呼吸动画定义存在', () => {
     // global.css 随 bundle 加载，加载屏期间必须自带关键样式
     expect(html).toContain('html, body, #root { height: 100%;')
-    expect(html).toContain('@keyframes bootstrap-splash-spin')
-    expect(html).toContain('animation: bootstrap-splash-spin')
+    expect(html).toContain('@keyframes bootstrap-splash-breathe')
+    expect(html).toContain('animation: bootstrap-splash-breathe')
   })
 
   it('CSP 合规：无内联脚本（script-src 仅允许 self 外链）', () => {

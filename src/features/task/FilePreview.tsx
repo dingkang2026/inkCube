@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Eye, FileText, ImageOff, Package, Upload, X } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Markdown } from '../../components/Markdown'
 import { formatSize } from './utils'
+import { ImportTargetDialog } from './ImportTargetDialog'
 import styles from './FilePreview.module.css'
 
 interface FilePreviewProps {
@@ -76,6 +78,7 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
   const [imageError, setImageError] = useState(false)
   const [absPath, setAbsPath] = useState<string>('')
   const [mdRendered, setMdRendered] = useState(true)
+  const [importing, setImporting] = useState(false)
 
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const isMarkdown = ext === 'md'
@@ -130,11 +133,16 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
             onClick={() => setMdRendered(!mdRendered)}
             title={mdRendered ? t('task.viewSource') : t('task.viewRendered')}
           >
-            {mdRendered ? '📄' : '👁'}
+            {mdRendered ? <FileText size={14} /> : <Eye size={14} />}
+          </button>
+        )}
+        {taskId && (
+          <button className={styles.toggleBtn} onClick={() => setImporting(true)} title={t('task.import.title')}>
+            <Upload size={14} />
           </button>
         )}
         <button className={styles.closeBtn} onClick={onClose} title={t('task.closePreview')}>
-          ✕
+          <X size={14} />
         </button>
       </div>
       <div className={styles.body}>
@@ -146,7 +154,7 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
           <div className={styles.imageWrap}>
             {imageError ? (
               <div className={styles.binaryInfo}>
-                <div className={styles.binaryIcon}>🖼️</div>
+                <div className={styles.binaryIcon}><ImageOff size={40} /></div>
                 <div>{t('task.imageLoadFailed')}</div>
                 <div className={styles.binarySize}>{imageMime} · {formatSize(fileSize)}</div>
               </div>
@@ -163,7 +171,7 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
           </div>
         ) : fileType === 'binary' ? (
           <div className={styles.binaryInfo}>
-            <div className={styles.binaryIcon}>📦</div>
+            <div className={styles.binaryIcon}><Package size={40} /></div>
             <div>{t('task.binaryFileHint')}</div>
             <div className={styles.binarySize}>{formatSize(fileSize)}</div>
             <button className={styles.openFolderBtn} onClick={handleOpenFolder}>
@@ -188,12 +196,22 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
               minHeight: '100%',
               overflow: 'auto',
             }}
-            lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1em', color: '#636d83' }}
+            lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1em', color: 'var(--text-muted)' }}
           >
             {content}
           </SyntaxHighlighter>
         )}
       </div>
+
+      {importing && taskId && (
+        <ImportTargetDialog
+          taskId={taskId}
+          path={filePath}
+          filename={fileName}
+          onDone={() => setImporting(false)}
+          onClose={() => setImporting(false)}
+        />
+      )}
     </div>
   )
 }

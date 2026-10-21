@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { Settings } from 'lucide-react'
 import { useActivity } from '../../features/activity/ActivityContext'
 import styles from './UserBar.module.css'
 
@@ -12,13 +13,9 @@ export function UserBar({ onOpenSettings }: UserBarProps) {
 
   return (
     <div className={styles.bar}>
-      <div className={styles.user}>
-        <span className={styles.avatar}>K</span>
-        <span className={styles.name}>Kelvin</span>
-      </div>
       <div className={styles.settingsWrap}>
         <button className={styles.settingsBtn} onClick={() => onOpenSettings()} title={t('userBar.settings')}>
-          ⚙
+          <Settings size={16} />
         </button>
         {summary.downloading_models > 0 && (
           <span className={styles.downloadDot} title={t('activity.badge.downloading')} />

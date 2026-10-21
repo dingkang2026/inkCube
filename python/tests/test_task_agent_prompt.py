@@ -50,10 +50,11 @@ def _patch_optional_sources(monkeypatch, git_ctx="", project_ctx="", repo_summar
 
 
 def _patch_tokens(monkeypatch, tokens):
+    # count_tokens 已迁至 llm/budget.py（D2）；task_agent 模块级导入名是截断循环的实际消费点
     monkeypatch.setattr(
-        task_agent_module.ContextManager,
+        task_agent_module,
         "count_tokens",
-        staticmethod(lambda _text: tokens),
+        lambda _text: tokens,
     )
 
 

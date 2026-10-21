@@ -34,6 +34,15 @@ def report_id(db):
     return db.create_report(proj["id"], "tpl-1", "测试报告")["id"]
 
 
+def _rows(db, report_id):
+    """直查章节行作断言手段（list_report_sections 读接口已随孤儿通道 reports:getReport 清理移除）。"""
+    cursor = db.conn.execute(
+        "SELECT * FROM report_sections WHERE report_id = ? ORDER BY created_at ASC",
+        (report_id,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
 # ── UPSERT 幂等（restart/resume 防重复行）───────────────────
 
 
@@ -43,7 +52,7 @@ class TestCreateReportSectionUpsert:
         first = db.create_report_section(report_id, "s1", "标题v1")
         second = db.create_report_section(report_id, "s1", "标题v2")
         assert first["id"] == second["id"]
-        rows = db.list_report_sections(report_id)
+        rows = _rows(db, report_id)
         assert len(rows) == 1
         # 冲突语义：刷新标题 + 重置 pending
         assert rows[0]["title"] == "标题v2"
@@ -56,7 +65,7 @@ class TestCreateReportSectionUpsert:
         rec = db.create_report_section(report_id, "s1", "T")
         db.update_section_content(rec["id"], "正文内容", status="done", word_count=120)
         db.create_report_section(report_id, "s1", "T")
-        rows = db.list_report_sections(report_id)
+        rows = _rows(db, report_id)
         assert rows[0]["status"] == "pending"
         assert rows[0]["word_count"] == 0
         # UPSERT 不清 content：restart 主路径先 delete_report_sections 清表，
@@ -78,7 +87,7 @@ class TestCreateReportSectionUpsert:
         db.create_report_section(report_id, "s1", "A")
         db.create_report_section(report_id, "s2", "B")
         db.delete_report_sections(report_id)
-        assert db.list_report_sections(report_id) == []
+        assert _rows(db, report_id) == []
 
 
 # ── 存量库迁移（UNIQUE 补齐 + 去重重建）─────────────────────
@@ -119,7 +128,7 @@ class TestMigrateReportSectionsUnique:
 
         db._migrate_report_sections_unique()
 
-        rows = db.list_report_sections(report_id)
+        rows = _rows(db, report_id)
         s1 = [r for r in rows if r["section_id"] == "s1"]
         assert len(s1) == 1
         assert s1[0]["id"] == "pk2"       # 保留最新
@@ -128,7 +137,7 @@ class TestMigrateReportSectionsUnique:
 
         # 迁移幂等：二次调用安全（唯一索引已存在 → 早退）
         db._migrate_report_sections_unique()
-        assert len(db.list_report_sections(report_id)) == 2
+        assert len(_rows(db, report_id)) == 2
 
         # 迁移后约束生效：直插重复行失败
         with pytest.raises(sqlite3.IntegrityError):

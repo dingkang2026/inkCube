@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Plus } from 'lucide-react'
 import type { ProjectStage, ProjectType } from '../types'
 import { STAGE_MAP } from '../types'
 import { daysOverdue, dueWithin, isOverdue } from './types'
@@ -101,8 +101,7 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
         )}
         <div className={s.headActions}>
           <span className={s.headMeta}>
-            {stage !== 'none' && <span>{t(phaseLabelKey(stage as PhaseKey))} · </span>}
-            {t('affairs.board.headCount', headCount)}
+            {t('affairs.headCount', headCount)}
           </span>
           {hasSkipped && (
             <label className={s.skippedToggle}>
@@ -110,12 +109,16 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
               <span>{t('affairs.showSkipped')}</span>
             </label>
           )}
-          <button className={s.addBtn} onClick={onCreateTask} title={t('affairs.addTask')}>
+          <button
+            className={s.addBtn}
+            onClick={onCreateTask}
+            title={t('affairs.addTask')}
+          >
             <Plus size={14} /><span>{t('affairs.addTask')}</span>
           </button>
         </div>
       </div>
-      {hasRecurring && <div className={s.recurringHint}>{t('affairs.board.recurringHint')}</div>}
+      {hasRecurring && <div className={s.recurringHint}>{t('affairs.recurringHint')}</div>}
       {visible.length === 0 && <div className={s.empty}>{t('affairs.boardEmpty')}</div>}
       {PHASES.map((p) => {
         const group = visible
@@ -133,7 +136,7 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
               <button className={s.groupHead} aria-expanded={open} onClick={() => togglePhase(p)}>
                 <span>{t(phaseLabelKey(p))}</span>
                 <span className={s.groupCount}>{group.length}</span>
-                <span className={s.caret}>{open ? '▾' : '▸'}</span>
+                <span className={s.caret}>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
               </button>
             )}
             {open && (

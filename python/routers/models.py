@@ -62,6 +62,22 @@ async def download_model(name: str):
     return {"ok": True, "message": f"开始下载 {name}", "code": "DOWNLOAD_STARTED"}
 
 
+@router.delete("/models/{name}")
+async def delete_model(name: str):
+    """删除单个已下载模型（2026-10-20 删除功能审计补齐：此前模型只有
+    数据管理面板的全局清理，无法按需释放单个模型空间）。
+    业务失败（捆绑/下载中/删失败）以 200 + ok:false 返回，与同文件
+    download 端点风格一致；未知模型 404。"""
+    if name not in MODELS:
+        raise HTTPException(status_code=404, detail=f"Unknown model: {name}")
+    result = get_manager().delete_model(name)
+    if not result.get("ok"):
+        return {"ok": False, "message": result.get("message", "删除失败"),
+                "code": result.get("code", "MODEL_DELETE_FAILED")}
+    return {"ok": True, "message": f"已删除 {name}", "code": "MODEL_DELETED",
+            "cleaned_bytes": result.get("cleaned_bytes", 0)}
+
+
 @router.post("/models/download-all")
 async def download_all():
     started = get_manager().start_download_all()

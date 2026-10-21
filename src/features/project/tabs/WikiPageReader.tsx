@@ -1,13 +1,27 @@
 /** src/features/project/tabs/WikiPageReader.tsx — Wiki page reader with frontmatter, backlinks, sources */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Link2, FileText, Clock, Tag, Edit3, ExternalLink,
+  Trash2, Wand2, History, Loader2, X,
 } from 'lucide-react'
 import { Markdown } from '../../../components/Markdown'
 import { parseFrontmatter, PAGE_TYPE_LABEL_KEYS, formatChangelogTime, ACTION_LABEL_KEYS } from './wikiUtils'
 import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
+
+/** 版本行（wiki:listVersions → db.list_wiki_page_versions 行结构，不含 content） */
+interface PageVersionRow {
+  id: string
+  version: number
+  change_summary: string | null
+  created_at: string
+}
+
+/** 版本快照（wiki:getVersion → db.get_wiki_page_version 全行，含 content） */
+interface PageVersionSnapshot extends PageVersionRow {
+  content: string | null
+}
 
 interface WikiPageReaderProps {
   projectId: string
@@ -25,16 +39,42 @@ interface WikiPageReaderProps {
   sourcePages?: Array<{ source_page_key: string | null; file_id: string; filename?: string | null }>
   onEdit: () => void
   onNavigateToPage: (pageKey: string) => void
+  /** 页面删除后回调（§5.3）：父级关预览 + 刷新列表（此刻页面已不存在） */
+  onDeleted: (pageKey: string) => void
+  /** 页面内容变化后回调（§7.1 富化）：父级重拉 pageDetail */
+  onRefresh?: () => void
 }
 
 export function WikiPageReader({
-  projectId, pageDetail, sourcePages, onEdit, onNavigateToPage,
+  projectId, pageDetail, sourcePages, onEdit, onNavigateToPage, onDeleted, onRefresh,
 }: WikiPageReaderProps) {
   const { t, i18n } = useTranslation()
   const toast = useToast()
   const page = pageDetail.page
   const { meta, body } = parseFrontmatter(page.content || '')
   const [backlinks, setBacklinks] = useState<Array<{ page_key: string; title: string; page_type: string }>>([])
+  // 删除（§5.3）/富化（§7.1）/版本历史（§7.1）状态
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  // 删除确认：Esc = 取消（删除请求在途不可关，与点蒙板同语义）
+  useEffect(() => {
+    if (!showDeleteConfirm) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !deleting) setShowDeleteConfirm(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showDeleteConfirm, deleting])
+  const [enriching, setEnriching] = useState(false)
+  // 版本历史分页（0.1dev-guide 统一约定）：懒加载哨兵（null=未展开）+ limit 递增全量重拉，
+  // 不适配 usePagedList（它挂载即首拉，与「展开才拉」语义冲突）
+  const versionsLimitRef = useRef(20)
+  const [versions, setVersions] = useState<PageVersionRow[] | null>(null)
+  const [versionsLoading, setVersionsLoading] = useState(false)
+  const [versionsHasMore, setVersionsHasMore] = useState(false)
+  const [versionsTotal, setVersionsTotal] = useState<number | null>(null)
+  const [versionsLoadingMore, setVersionsLoadingMore] = useState(false)
+  const [snapshot, setSnapshot] = useState<PageVersionSnapshot | null>(null)
+  // 快照请求序号：快速连点多版本时以最后一次点击为准（晚到的旧响应不覆盖/不误弹错）
+  const snapshotReqRef = useRef(0)
 
   // Load backlinks
   const loadBacklinks = useCallback(async () => {
@@ -91,6 +131,95 @@ export function WikiPageReader({
     }
   }, [projectId, toast, t])
 
+  // 切页复位：父级以 key=page_key 强制逐页重挂载，版本/快照/确认框随实例生命周期天然复位
+  // 删除页面（§5.3）：后端级联清理（来源/变更日志/审查项/他页反链），成功后回调父级关预览
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await window.electronAPI.invoke('wiki:deletePage', { projectId, pageKey: page.page_key })
+      toast(t('project.wiki.deleteDone', { defaultValue: '页面已删除' }), 'success')
+      setShowDeleteConfirm(false)
+      onDeleted(page.page_key)
+    } catch (err) {
+      console.error('Failed to delete page:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      toast(t('project.wiki.deleteFailed', { reason, defaultValue: '删除失败: {{reason}}' }), 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  // 富化 Wiki 链接（§7.2.4 四步安全补全）：LLM 建议 + 代码替换，links_added>0 才写回
+  const handleEnrich = async () => {
+    setEnriching(true)
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:enrichWikilinks', {
+        projectId, pageKey: page.page_key,
+      })
+      const added = result?.links_added ?? 0
+      if (added > 0) {
+        toast(t('project.wiki.enrichDone', { count: added, defaultValue: '已补全 {{count}} 个链接' }), 'success')
+        onRefresh?.()
+      } else {
+        toast(t('project.wiki.enrichNone', { defaultValue: '未发现可补全的链接' }), 'info')
+      }
+    } catch (err) {
+      console.error('Failed to enrich wikilinks:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      toast(t('project.wiki.enrichFailed', { reason, defaultValue: '补全失败: {{reason}}' }), 'error')
+    } finally {
+      setEnriching(false)
+    }
+  }
+
+  // 版本列表（§7.1）：面板首次展开时懒加载（DB 查询轻量，不预取）；20/页「加载更多」
+  const loadVersions = useCallback(async (opts?: { more?: boolean }) => {
+    if (opts?.more) {
+      if (!versionsHasMore || versionsLoadingMore) return
+      setVersionsLoadingMore(true)
+      versionsLimitRef.current += 20
+    } else {
+      setVersionsLoading(true)
+    }
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:listVersions', {
+        projectId, pageKey: page.page_key, limit: versionsLimitRef.current,
+      })
+      setVersions(result.versions || [])
+      setVersionsHasMore(!!result.has_more)
+      setVersionsTotal(typeof result.total === 'number' ? result.total : null)
+    } catch (err) {
+      console.error('Failed to load versions:', err)
+      if (!opts?.more) setVersions([])
+    } finally {
+      setVersionsLoading(false)
+      setVersionsLoadingMore(false)
+    }
+  }, [projectId, page.page_key, versionsHasMore, versionsLoadingMore])
+
+  // 查看版本快照（wiki:getVersion 全行含 content）：只读展示，再点收起
+  const handleViewVersion = async (versionId: string) => {
+    if (snapshot?.id === versionId) {
+      setSnapshot(null)
+      return
+    }
+    const reqId = ++snapshotReqRef.current
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:getVersion', { projectId, versionId })
+      if (snapshotReqRef.current !== reqId) return
+      if (!result?.version) {
+        toast(t('project.wiki.versionLoadFailed', { defaultValue: '快照加载失败' }), 'error')
+        return
+      }
+      setSnapshot(result.version)
+    } catch (err) {
+      console.error('Failed to load version snapshot:', err)
+      if (snapshotReqRef.current === reqId) {
+        toast(t('project.wiki.versionLoadFailed', { defaultValue: '快照加载失败' }), 'error')
+      }
+    }
+  }
+
   return (
     <div className={s.readerPage}>
       {/* Header */}
@@ -118,6 +247,25 @@ export function WikiPageReader({
           )}
           <button className={s.editBtn} onClick={onEdit}>
             <Edit3 size={12} /> {t('project.wiki.edit', { defaultValue: '编辑' })}
+          </button>
+          {/* 富化链接（§7.2.4）：LLM 建议候选 + 确定性文本替换 */}
+          <button
+            className={s.editBtn}
+            onClick={() => void handleEnrich()}
+            disabled={enriching}
+            title={t('project.wiki.enrichHint', { defaultValue: '让 AI 识别可建立关联的页面并自动补全 [[链接]]' })}
+          >
+            {enriching ? <Loader2 size={12} className={s.spin} /> : <Wand2 size={12} />}
+            {t('project.wiki.enrichBtn', { defaultValue: '补全链接' })}
+          </button>
+          {/* 删除页面（§5.3）：级联清理 + 不可撤销，二次确认 */}
+          <button
+            className={s.readerDeleteBtn}
+            onClick={() => setShowDeleteConfirm(true)}
+            disabled={deleting}
+            title={t('project.wiki.deleteBtn', { defaultValue: '删除' })}
+          >
+            <Trash2 size={12} /> {t('project.wiki.deleteBtn', { defaultValue: '删除' })}
           </button>
         </div>
       </div>
@@ -230,6 +378,100 @@ export function WikiPageReader({
             ))}
           </div>
         </details>
+      )}
+
+      {/* Version history panel（§7.1，listVersions/getVersion）：展开懒加载，行内查看只读快照 */}
+      <details
+        className={s.pageChangelog}
+        onToggle={(e) => {
+          if ((e.currentTarget as HTMLDetailsElement).open && versions === null) void loadVersions()
+        }}
+      >
+        <summary className={s.collapsibleSummary}>
+          <History size={12} />
+          {t('project.wiki.versionsTitle', { defaultValue: '历史版本' })}
+          {versions !== null && ` (${versionsTotal ?? versions.length})`}
+        </summary>
+        {versionsLoading && versions === null && (
+          <div className={s.versionsHint}><Loader2 size={14} className={s.spin} /></div>
+        )}
+        {versions !== null && versions.length === 0 && (
+          <p className={s.versionsHint}>{t('project.wiki.versionsEmpty', { defaultValue: '暂无版本记录' })}</p>
+        )}
+        {versions !== null && versions.length > 0 && (
+          <div className={s.miniTimeline}>
+            {versions.map((v) => (
+              <div key={v.id} className={s.versionItem}>
+                <span className={s.versionBadge}>v{v.version}</span>
+                <span className={s.versionItemTime}>{formatChangelogTime(v.created_at, i18n.language)}</span>
+                <span className={s.versionItemSummary}>{v.change_summary || '—'}</span>
+                <button
+                  className={s.versionViewBtn}
+                  onClick={() => void handleViewVersion(v.id)}
+                >
+                  {snapshot?.id === v.id
+                    ? t('project.wiki.versionHide', { defaultValue: '收起' })
+                    : t('project.wiki.versionView', { defaultValue: '查看' })}
+                </button>
+              </div>
+            ))}
+            {versionsHasMore && (
+              <button
+                className={s.loadMoreBtn}
+                onClick={() => void loadVersions({ more: true })}
+                disabled={versionsLoadingMore}
+              >
+                {versionsLoadingMore ? t('common.loading') : t('common.loadMore')}
+              </button>
+            )}
+          </div>
+        )}
+        {snapshot && (
+          <div className={s.versionSnapshot}>
+            <div className={s.versionSnapshotHeader}>
+              <span>
+                {t('project.wiki.versionSnapshotTitle', { version: snapshot.version, defaultValue: 'v{{version}} 快照（只读）' })}
+              </span>
+              <button
+                className={s.versionSnapshotClose}
+                onClick={() => setSnapshot(null)}
+                title={t('common.close', { defaultValue: '关闭' })}
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <div className={s.versionSnapshotBody}>
+              <Markdown content={parseFrontmatter(snapshot.content || '').body} />
+            </div>
+          </div>
+        )}
+      </details>
+
+      {/* 删除确认（§5.3：级联清理不可撤销，recompile 确认框同款） */}
+      {showDeleteConfirm && (
+        <div className={s.confirmOverlay} onClick={() => !deleting && setShowDeleteConfirm(false)}>
+          <div className={s.confirmDialog} onClick={(e) => e.stopPropagation()}>
+            <div className={s.confirmHeader}>
+              <Trash2 size={16} />
+              <span>{t('project.wiki.deleteConfirmTitle', { defaultValue: '删除页面' })}</span>
+            </div>
+            <div className={s.confirmBody}>
+              {t('project.wiki.deleteConfirmBody', {
+                title: page.title,
+                defaultValue: `将删除「${page.title}」及其反向链接条目、版本历史等关联数据。此操作不可撤销，确定删除？`,
+              })}
+            </div>
+            <div className={s.confirmActions}>
+              <button className={s.confirmCancelBtn} onClick={() => setShowDeleteConfirm(false)}>
+                {t('common.cancel', { defaultValue: '取消' })}
+              </button>
+              <button className={s.confirmDangerBtn} onClick={() => void handleDelete()} disabled={deleting}>
+                {deleting && <Loader2 size={13} className={s.spin} />}
+                {t('project.wiki.deleteBtn', { defaultValue: '删除' })}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

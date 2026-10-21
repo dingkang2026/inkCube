@@ -1,7 +1,7 @@
 /** src/features/knowledge/ImageGallery.tsx */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
+import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Pause, Play, Trash2, X } from 'lucide-react'
 import type { ImageRecord, KnowledgeIpcChannels } from './types'
 import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'
@@ -17,7 +17,8 @@ import { translateStoredError } from '../../i18n/errorCodes'
 interface ImageGalleryProps {
   projectId: string
   fileId?: string
-  /** 图片描述队列暂停态（0.4 §队列暂停）：暂停 = 不再开始新描述，pending 排队等恢复 */
+  /** 图片描述队列停止态（0.4 §队列暂停，UI 呈现为停止/继续）：
+   *  停止 = 不再开始新描述 + 清空内存队列积压；DB pending 不动，恢复后 Scanner 补投递断点续传 */
   describePaused?: boolean
   onToggleDescribePause?: () => void
   ipcChannels?: Partial<KnowledgeIpcChannels>
@@ -259,6 +260,28 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
     }
   }, [projectId, t, confirmDialog, handleError])
 
+  // 删除：向量（ChromaDB）+ 磁盘文件 + DB 记录由后端一并清除（2.2 §10.1）；
+  // confirm 不传 danger → 默认红色确认钮（破坏性操作）
+  const handleDelete = useCallback(async (img: ImageItem) => {
+    if (!(await confirmDialog({ title: t('knowledge.deleteImage'), message: t('knowledge.confirmDeleteImage') }))) return
+    try {
+      await window.electronAPI.invoke(ipc.deleteImage, {
+        projectId,
+        imageId: img.id,
+      })
+      setImages(prev => prev.filter(i => i.id !== img.id))
+      setTotal(prev => Math.max(0, prev - 1))
+      if (lightboxImg?.id === img.id) {
+        setLightboxImg(null)
+        setLightboxIndex(-1)
+        setLightboxZoom(1)
+      }
+      showToast(t('knowledge.deleteSuccess'), 'success')
+    } catch (err) {
+      handleError(err)
+    }
+  }, [projectId, ipc, t, confirmDialog, handleError, lightboxImg])
+
   if (loading && images.length === 0) {
     return (
       <div className={s.container}>
@@ -279,12 +302,12 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
       <div className={s.searchBar}>
         <div className={s.totalWrap}>
           <span className={s.total}>{t('knowledge.imageTotal', { count: total })}</span>
-          {/* 描述队列暂停开关（0.4 §队列暂停）：仅当父组件接入 useQueuePause 时显示 */}
+          {/* 描述队列停止开关（0.4 §队列暂停，UI 语义停止/继续）：仅当父组件接入 useQueuePause 时显示 */}
           {onToggleDescribePause && (
             <button
               className={`${s.pauseBtn} ${describePaused ? s.pauseBtnActive : ''}`}
               onClick={onToggleDescribePause}
-              title={describePaused ? t('knowledge.resumeDescribe') : t('knowledge.pauseDescribe')}
+              title={describePaused ? t('knowledge.resumeDescribe') : t('knowledge.stopDescribe')}
             >
               {describePaused ? <Play size={13} /> : <Pause size={13} />}
             </button>
@@ -412,7 +435,7 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
                       className={s.thumbActionBtn}
                       onClick={(e) => { e.stopPropagation(); handleRetry(img, true) }}
                       title={t('knowledge.retry')}
-                    >↻</button>
+                    ><RotateCcw size={13} /></button>
                   )}
                   {/* Archive button: visible for non-archived images */}
                   {img.status !== 'archived' && (
@@ -422,6 +445,12 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
                       title={t('knowledge.archiveImage')}
                     ><Package size={13} /></button>
                   )}
+                  {/* Delete: all statuses，确认后向量/磁盘/记录一并清除 */}
+                  <button
+                    className={s.thumbActionBtn}
+                    onClick={(e) => { e.stopPropagation(); handleDelete(img) }}
+                    title={t('knowledge.deleteImage')}
+                  ><Trash2 size={13} /></button>
                 </div>
               </div>
             </div>
@@ -509,7 +538,7 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
       {lightboxImg && (
         <div className={s.lightbox} onClick={closeLightbox}>
           <div className={s.lightboxContent} onClick={(e) => e.stopPropagation()}>
-            <button className={s.lightboxClose} onClick={closeLightbox}>×</button>
+            <button className={s.lightboxClose} onClick={closeLightbox}><X size={16} /></button>
             {/* Nav arrows */}
             {filteredImages.length > 1 && (
               <>

@@ -19,6 +19,8 @@ import threading
 import time
 import unicodedata
 
+from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
+
 logger = logging.getLogger(__name__)
 
 # 进程内进行中标记:project_id -> {"started_at": epoch}(并发守卫 + 活动快照源)
@@ -105,7 +107,11 @@ def _run(db, project_id: str, settings: dict) -> None:
              if p["page_key"] in ledger_keys and (p.get("content") or "").strip()]
     if not pages:
         return
-    entries = _parse_entries(pages, settings)        # raise → 上层吞,旧条目保持
+    # 2.10 §4.3: 用量环境（source=wiki / purpose=ledger_parse）——本函数运行于
+    # run_in_executor 线程，contextvar 不跨线程传播，须在线程体内自行 push
+    with push_context(UsageContext(
+            source="wiki", purpose="ledger_parse", project_id=project_id)):
+        entries = _parse_entries(pages, settings)        # raise → 上层吞,旧条目保持
     _store_entries(db, project_id, entries)
     try:
         generate_suggestions(db, project_id)
@@ -191,7 +197,11 @@ def update_pulse_status(db, project_id: str, settings: dict) -> None:
         if not entries and not reviews_count:
             db.set_pulse_ai_status(project_id, "")   # 无素材:回落规则句,不浪费调用
             return
-        sentence = _pulse_sentence(entries, reviews_count, settings)
+        # 2.10 §4.3: 用量环境（source=wiki / purpose=ledger_pulse，AI 状态句）——
+        # 同为 executor 线程上下文，体内自行 push
+        with push_context(UsageContext(
+                source="wiki", purpose="ledger_pulse", project_id=project_id)):
+            sentence = _pulse_sentence(entries, reviews_count, settings)
         if sentence:
             db.set_pulse_ai_status(project_id, sentence.strip()[:_PULSE_MAX_CHARS])
     except Exception:
@@ -202,7 +212,7 @@ def _pulse_sentence(entries: list[dict], reviews_count: int, settings: dict) -> 
     """轻模型生成一句中文状态句(句式=台账动态+建议,§7 决策 6);
     routing 同 'ledger_parse'(未配专用模型则全局默认)。"""
     from llm import LLMClient
-    from wiki.llm_routing import get_task_settings
+    from llm.routing import get_task_settings
 
     effective = get_task_settings(settings, "ledger_parse")
     lines = [f"- [{e.get('entry_date') or '?'}] {e['entry_type']}: {e['content']}"
@@ -216,7 +226,7 @@ def _pulse_sentence(entries: list[dict], reviews_count: int, settings: dict) -> 
         {"role": "user", "content":
             f"最近台账动态:\n{material}{reviews_note}\n请写状态句。"},
     ]
-    raw = asyncio.run(LLMClient(effective).chat(messages, effective))
+    raw = asyncio.run(LLMClient(effective).chat_full(messages))["content"]
     # 空白输出 splitlines 为空列表,直接 [0] 会 IndexError(靠上层吞异常幸存的
     # 异常控制流,整体 review S2)→ 显式判空返回空句
     lines = (raw or "").strip().splitlines()
@@ -259,7 +269,7 @@ def _parse_entries(pages: list[dict], settings: dict) -> list[dict]:
     v1 不提取 source_file_id(表列留 NULL,3.1 §3.1)。
     """
     from llm import LLMClient
-    from wiki.llm_routing import get_task_settings
+    from llm.routing import get_task_settings
 
     effective = get_task_settings(settings, "ledger_parse")
     material = "\n\n".join(
@@ -269,7 +279,7 @@ def _parse_entries(pages: list[dict], settings: dict) -> list[dict]:
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": _PROMPT_TEMPLATE.format(material=material)},
     ]
-    raw = asyncio.run(LLMClient(effective).chat(messages, effective))
+    raw = asyncio.run(LLMClient(effective).chat_full(messages))["content"]
     return _clean_entries(raw, {p["page_key"] for p in pages})
 
 

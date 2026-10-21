@@ -9,7 +9,7 @@ import logging
 import socket
 from urllib.parse import urlparse
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 import deps
@@ -56,9 +56,19 @@ def normalize_domain(raw: str) -> str | None:
 
 
 @router.get("/web-logins")
-async def list_web_logins():
-    """列出已登记站点。"""
-    return {"logins": deps.db.list_web_logins()}
+async def list_web_logins(
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
+    """列出已登记站点（limit=0 → 全量）。"""
+    rows = deps.db.list_web_logins(limit=limit + 1 if limit > 0 else 0, offset=offset)
+    has_more = limit > 0 and len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+    total = deps.db.conn.execute(
+        "SELECT COUNT(*) AS n FROM web_logins"
+    ).fetchone()["n"]
+    return {"logins": rows, "has_more": has_more, "total": total}
 
 
 @router.post("/web-logins")

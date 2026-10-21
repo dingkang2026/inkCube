@@ -29,7 +29,7 @@
 }
 
 .headerTitle {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -38,7 +38,7 @@
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
@@ -49,6 +49,16 @@
 .iconBtn:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.iconBtn:disabled:hover {
+  background: none;
+  color: var(--text-muted);
 }
 
 /* ── Tree section ── */
@@ -63,7 +73,7 @@
 .empty {
   padding: 24px 16px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
@@ -99,7 +109,7 @@
   gap: 4px;
   padding: 3px 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
   transition: background 0.1s;
 }
 
@@ -112,15 +122,15 @@
 }
 
 .fileRow:hover {
-  background: rgba(var(--accent-rgb, 59, 130, 246), 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .fileRow:active {
-  background: rgba(var(--accent-rgb, 59, 130, 246), 0.15);
+  background: rgba(var(--accent-rgb), 0.15);
 }
 
 .fileRowSelected {
-  background: rgba(var(--accent-rgb, 59, 130, 246), 0.12) !important;
+  background: rgba(var(--accent-rgb), 0.12) !important;
   border-right: 2px solid var(--accent);
 }
 
@@ -132,13 +142,26 @@
 .arrow {
   width: 12px;
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
 .icon {
-  font-size: 13px;
+  font-size: var(--text-base);
   flex-shrink: 0;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .name {
@@ -150,7 +173,7 @@
 }
 
 .size {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   flex-shrink: 0;
 }

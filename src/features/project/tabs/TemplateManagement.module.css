@@ -20,9 +20,51 @@
 
 .title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* ── 页内分区 Tab：报告模板 | 填表模板（2.4 §5.1 全局页扩展）── */
+.pageTabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 20px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+  flex-shrink: 0;
+}
+
+/* 页内 PPT 模板 Tab 活跃指示（2.3 §4.2）：running 旋转 spinner / awaiting_input 醒目呼吸点 */
+.pptTabDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  animation: tm-pulse 1.5s ease-in-out infinite;
+}
+
+.pptTabDotAlert {
+  background: var(--text-warning);
+}
+
+.pptTabSpinnerWrap {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.pptTabSpinner {
+  color: var(--accent);
+  animation: tm-spin 1s linear infinite;
+}
+
+@keyframes tm-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
 }
 
 /* ── Full-width scrollable list area ── */
@@ -58,7 +100,7 @@
   flex: 1;
   min-width: 0;
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -75,7 +117,7 @@
 
 .filters select {
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -83,13 +125,31 @@
   cursor: pointer;
 }
 
+/* ── Refresh button (filter bar tail, reports section only) ── */
+.refreshBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: var(--text-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.refreshBtn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.refreshBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
 /* ── Section ── */
 .section {
   margin-bottom: 32px;
 }
 
 .sectionTitle {
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 12px;
@@ -115,7 +175,7 @@
 
 .tableHeader {
   background: var(--bg-tertiary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
@@ -134,7 +194,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--text-primary);
   min-width: 0;
@@ -162,7 +222,7 @@
 .colCell {
   display: flex;
   align-items: center;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   min-width: 0;
   white-space: nowrap;
@@ -173,8 +233,8 @@
 .typeBadge {
   display: inline-block;
   padding: 1px 8px;
-  font-size: 11px;
-  border-radius: 10px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-secondary);
   background: var(--bg-tertiary);
@@ -188,9 +248,9 @@
 }
 
 .typeBadge[data-type='investment'] {
-  color: #2563eb;
-  border-color: rgba(37, 99, 235, 0.4);
-  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 /* Badge for custom templates that need schema upgrade / repair */
@@ -200,11 +260,11 @@
   gap: 4px;
   margin-left: 6px;
   padding: 1px 8px;
-  font-size: 11px;
-  border-radius: 10px;
-  border: 1px solid rgba(217, 119, 6, 0.4);
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.1);
+  font-size: var(--text-xs);
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--text-warning) 40%, transparent);
+  color: var(--text-warning);
+  background: color-mix(in srgb, var(--text-warning) 10%, transparent);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -219,7 +279,7 @@
   padding: 4px 6px;
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 2px;
   color: var(--text-muted);
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
@@ -231,8 +291,8 @@
 }
 
 .actionBtnDanger:hover {
-  color: #ef4444;
-  border-color: #ef4444;
+  color: var(--error);
+  border-color: var(--error);
 }
 
 /* ── Pagination ── */
@@ -243,7 +303,7 @@
   gap: 12px;
   margin-top: 12px;
   padding: 8px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
 }
 
@@ -264,7 +324,7 @@
 .emptyState {
   padding: 32px;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-muted);
 }
 
@@ -280,7 +340,7 @@
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: var(--text-base);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background 0.12s;
@@ -288,11 +348,11 @@
 
 .createBtn {
   color: var(--accent);
-  background: rgba(37, 99, 235, 0.06);
+  background: rgba(var(--accent-rgb), 0.06);
   border: 1px dashed var(--accent);
 }
 
-.createBtn:hover { background: rgba(37, 99, 235, 0.12); }
+.createBtn:hover { background: rgba(var(--accent-rgb), 0.12); }
 
 .importBtn {
   color: var(--text-secondary);
@@ -310,9 +370,9 @@
   gap: 6px;
   margin-top: 12px;
   padding: 10px 12px;
-  font-size: 12px;
-  color: var(--danger, #e53e3e);
-  background: rgba(229, 62, 62, 0.06);
+  font-size: var(--text-sm);
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 6%, transparent);
   border-radius: var(--radius-sm);
 }
 
@@ -320,7 +380,7 @@
 .drawerBackdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--bg-overlay);
   z-index: 20;
   animation: tm-fade 0.16s ease-out;
 }
@@ -372,7 +432,7 @@
 
 .drawerHeader h4 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -420,8 +480,9 @@
 
 .tab {
   padding: 6px 14px;
-  font-size: 13px;
-  color: var(--text-muted);
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-secondary);
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -434,12 +495,11 @@
 .tabActive {
   color: var(--accent);
   border-bottom-color: var(--accent);
-  font-weight: 500;
 }
 
 /* ── Detail content ── */
 .detailMeta {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-muted);
   margin: 0 0 12px;
   line-height: 1.5;
@@ -460,27 +520,27 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   min-width: 0;
   overflow-wrap: break-word;
 }
 
 .fieldLabel {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
 .detailBlock { margin-bottom: 16px; }
 
 .detailSectionTitle {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0 0 8px;
@@ -489,7 +549,7 @@
 .reqList {
   margin: 0;
   padding-left: 18px;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: 1.6;
 }
@@ -528,8 +588,8 @@
 .modeBadge, .optBadge {
   display: inline-block;
   padding: 1px 7px;
-  font-size: 10px;
-  border-radius: 9px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-muted);
   background: var(--bg-tertiary);
@@ -547,8 +607,8 @@
 .srcBadge {
   display: inline-block;
   padding: 1px 7px;
-  font-size: 10px;
-  border-radius: 9px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-muted);
   background: var(--bg-tertiary);
@@ -557,9 +617,9 @@
 }
 
 .srcBadge[data-src='user'] {
-  color: #2563eb;
-  border-color: rgba(37, 99, 235, 0.4);
-  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .srcBadge[data-src='derived'] {
@@ -579,7 +639,7 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-primary);
   min-width: 0;
 }
@@ -600,7 +660,7 @@
 }
 
 .emptyChapters {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-muted);
   font-style: italic;
   margin: 8px 0;
@@ -610,8 +670,8 @@
 .jsonView {
   margin: 0;
   padding: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -634,7 +694,7 @@
   align-items: center;
   gap: 6px;
   padding: 5px 14px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -642,7 +702,7 @@
 }
 
 .primaryBtn {
-  color: #fff;
+  color: var(--text-inverse);
   background: var(--accent);
   border: none;
 }
@@ -650,12 +710,12 @@
 .primaryBtn:hover { opacity: 0.9; }
 
 .dangerBtn {
-  color: #fff;
-  background: #ef4444;
+  color: var(--text-inverse);
+  background: var(--error);
   border: none;
 }
 
-.dangerBtn:hover { background: #dc2626; }
+.dangerBtn:hover { background: var(--text-danger); }
 
 /* ── Embedded editor wrapper ── */
 .editorWrapper {
@@ -674,4 +734,519 @@
 @keyframes tm-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* ══ PPT 模板工坊分区（PptTemplatePanel / PptTemplateWizard，2.3 §4.2）══ */
+
+/* ── 创建中任务卡 ── */
+.pptJobCard {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  background: var(--bg-secondary);
+}
+
+.pptJobCard[data-status='completed'],
+.pptJobCard[data-status='failed'],
+.pptJobCard[data-status='cancelled'] { opacity: 0.75; }
+
+.pptJobHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary);
+}
+
+.pptJobHead:hover { color: var(--text-primary); }
+
+.pptJobGate { color: var(--text-warning); flex-shrink: 0; }
+
+.pptJobTitle {
+  flex: 1;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pptJobStatus {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pptJobError {
+  margin: 0;
+  padding: 0 12px 8px;
+  font-size: var(--text-sm);
+  color: var(--text-danger)
+}
+
+.pptJobBody {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pptJobMsgs {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+/* brief 提案置顶区（awaiting 时最后一条 assistant 消息 Markdown） */
+.pptJobProposal {
+  border: 1px solid var(--text-warning);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--text-warning) 6%, transparent);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.pptJobProposalTitle {
+  margin: 0 0 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-warning);
+}
+
+.pptJobProposalBody {
+  font-size: var(--text-sm);
+}
+
+.pptJobActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pptJobHint {
+  width: 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-warning);
+}
+
+.pptJobNotes {
+  flex: 1;
+  min-width: 160px;
+  padding: 5px 8px;
+  font-size: var(--text-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.pptJobNotes:focus { outline: none; border-color: var(--accent); }
+
+/* ── 模板卡片网格 ── */
+.pptTplGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.pptTplCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.pptTplCard:hover { border-color: var(--accent); }
+
+.pptTplSwatch {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pptTplMeta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pptTplName {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pptTplNameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pptTplNameRow .pptTplName { flex: 0 1 auto; }
+
+/* 内置徽标（与 FormTemplatePanel sourceBadge 同风格）*/
+.pptTplBadge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  white-space: nowrap;
+}
+
+.pptTplSummary {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pptTplSub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.pptTplActions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ── 详情抽屉附加 ── */
+.pptPreviewRow {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+/* 模板规范正文（design_spec.md 渲染，收紧一档字号） */
+.pptSpecBody {
+  font-size: var(--text-sm);
+}
+
+/* 详情主色字段（色块 + 色值） */
+.pptColorCell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pptColorSwatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pptPageGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.pptPageCell {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-primary);
+  cursor: zoom-in;
+  transition: border-color 0.12s;
+}
+
+.pptPageCell:hover { border-color: var(--accent); }
+
+.pptPageThumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #fff;
+}
+
+.pptPageName {
+  padding: 3px 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 原型放大查看（lightbox：SVG 矢量无损，点击任意处/ESC 关闭） */
+.pptSvgLightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000; /* 全屏遮罩惯例（Toast 同级，低于确认框 3000） */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+  animation: tm-fade 0.16s ease-out;
+}
+
+.pptSvgLightboxImg {
+  max-width: min(92vw, 1600px);
+  max-height: 82vh;
+  object-fit: contain;
+  background: #fff;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+}
+
+.pptSvgLightboxName {
+  font-size: var(--text-sm);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* 品牌资产网格（images/：logo 等，任意比例） */
+.pptAssetGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.pptAssetThumb {
+  display: block;
+  width: 100%;
+  height: 72px;
+  object-fit: contain;
+  background: #fff;
+}
+
+/* 包内文件清单（零盲区盘点：可预览的图片行可点击放大） */
+.pptFileList {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.pptFileRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+}
+
+.pptFileRow + .pptFileRow { border-top: 1px solid var(--border); }
+
+.pptFileRow[data-viewable='true'] {
+  cursor: zoom-in;
+}
+
+.pptFileRow[data-viewable='true']:hover {
+  background: var(--bg-hover);
+}
+
+.pptFileExt {
+  flex-shrink: 0;
+  min-width: 38px;
+  padding: 0 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+}
+
+.pptFilePath {
+  flex: 1;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pptFileSize {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Create Template 向导 ── */
+.pptWizardHint {
+  margin: 0 0 12px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.pptTplKindGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pptTplKindCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s;
+}
+
+.pptTplKindCard:hover { border-color: var(--accent); }
+
+.pptTplKindActive {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.pptTplKindName {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pptTplKindDesc {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.pptWizardField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.pptWizardInput {
+  padding: 6px 10px;
+  font-size: var(--text-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.pptWizardInput:focus { outline: none; border-color: var(--accent); }
+
+.pptWizardTextarea { resize: vertical; }
+
+.pptWizardFieldHint {
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.pptWizardRefs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.pptWizardRef {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.pptWizardRefName {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pptWizardRefRemove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pptWizardRefRemove:hover { background: var(--bg-hover); color: var(--text-danger); }
+
+/* ── PPT 分区根容器：与 .listArea/.panel 同边距（分区内边距 20px）；
+   保留 position:relative 作为详情抽屉（absolute）的定位锚 ── */
+.pptPanel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* ── Load more（0.1dev-guide 列表分页统一约定；PptTemplatePanel jobs 终态段）── */
+.loadMoreBtn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.loadMoreBtn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

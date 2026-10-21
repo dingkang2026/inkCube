@@ -561,14 +561,14 @@ export function WikiGraphView({ projectId, onNavigateToPage, highlightNode }: Wi
               </span>
             ))}
             <span className={s.legendItem}>
-              <span className={s.legendDot} style={{ backgroundColor: '#ef4444' }} />
+              <span className={s.legendDot} style={{ backgroundColor: 'var(--error)' }} />
               {t('project.wiki.graphView.orphan')}
             </span>
           </>
         ) : (
           <span className={s.legendHint}>{t('project.wiki.graphView.legendHint')}</span>
         )}
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
           {t('project.wiki.graphView.mouseHints')}
         </span>
       </div>

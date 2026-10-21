@@ -57,7 +57,8 @@ def _seed_report(patched, template_id: str, title: str) -> str:
 
 
 def _list_stages(patched) -> dict[str, dict]:
-    result = asyncio.run(reports_router.list_reports(patched._project_id))
+    result = asyncio.run(
+        reports_router.list_reports(patched._project_id, limit=0, offset=0))
     return {r["template_id"]: r for r in result["reports"]}
 
 

@@ -7,7 +7,8 @@
   3. 多通道并行检索（每轮）：
      - knowledge 通道：KnowledgeSearchTool（Vector + BM25 + RRF）
      - wiki 通道：项目已编译 Wiki 页面（关键词 + 图谱扩展，高权重骨架上下文）
-     - internet 通道：Tavily API（Bearer 认证 / language 加权 / 轮 2+ search_depth 可配）
+     - internet 通道：网络搜索（Tavily / 智谱二选一，按 web_search_cfg 分发；
+       Bearer 认证 / language 加权 / 轮 2+ Tavily search_depth 可配）
   4. 知识卡片构建（LLM 提取 + 去重 + 归因；补搜轮增量建卡 + 跨轮两级去重）
   5. 注册到全局 CitationRegistry
   6. 降级策略（候选池为空时的处理）
@@ -21,6 +22,7 @@ from typing import Any, Optional
 import httpx
 
 from knowledge.knowledge_search import KnowledgeSearchTool
+from tools.web_search import DEFAULT_ZHIPU_ENGINE, ZHIPU_ENGINES, has_cjk
 from report_generator.card_builder import build_knowledge_cards
 from report_generator.registry import CitationRegistry
 from report_generator.search_strategy import generate_search_queries
@@ -48,7 +50,7 @@ class RetrievalResult:
         # 三字段 {level, reason, follow_up_queries}（§3.3 迭代循环）
         self.sufficiency = sufficiency or {"level": "unknown", "reason": "", "follow_up_queries": []}
         self.raw_results = raw_results or []  # 各轮累计原始结果（调试用）
-        # 检索通道降级/失败显式警告（如 Tavily Key 缺失/无效/额度用尽/网络不通），
+        # 检索通道降级/失败显式警告（如网络搜索 Key 缺失/无效/额度用尽/网络不通），
         # runner 转为 ProgressEvent("warning") → 报告日志，用户在报告详情页可见（0.4 §7.3 v3.6）
         self.warnings = warnings or []
         # 每轮明细（§3.8 检索摘要落库用）：{round_no, queries, channel_stats,
@@ -66,7 +68,7 @@ async def retrieve_for_section(
     llm_client: Any,
     llm_settings: dict,
     digests: list[dict],
-    tavily_api_key: str = "",
+    web_search_cfg: dict | None = None,
     base_project_ids: Optional[list[str]] = None,
     top_k: Optional[int] = None,
     query_parallelism: int = 4,
@@ -90,7 +92,7 @@ async def retrieve_for_section(
         llm_client: LLMClient 实例
         llm_settings: 应用设置 dict
         digests: 前文摘要列表
-        tavily_api_key: Tavily API Key（internet 通道）
+        web_search_cfg: 网络搜索配置 {"provider","key","engine"}（internet 通道，web_search_cfg_from_settings 归一产物）
         base_project_ids: 关联基础库项目 ID 列表（可选）
         top_k: 每通道返回片段数（None → 按 report_depth 推算：full 20 / brief 10）
         query_parallelism: 通道内多 query 并行数（默认 4）
@@ -113,21 +115,22 @@ async def retrieve_for_section(
         total_usage["completion_tokens"] += usage.get("completion_tokens", 0)
         total_usage["total_tokens"] += usage.get("total_tokens", 0)
 
-    # 轮次上限（§3.3）：settings 可配，默认 3，钾制 1-5
+    # 轮次上限（§3.3）：settings 可配，默认 3，钳制 1-5
     try:
         max_rounds = int(llm_settings.get("report_retrieval_max_rounds", 3))
     except (TypeError, ValueError):
         max_rounds = 3
     max_rounds = max(1, min(max_rounds, 5))
 
-    # 补搜轮（2+）Tavily search_depth 可配（默认 basic；轮 1 恒 basic，§3.3）
+    # 补搜轮（2+）Tavily search_depth 可配（Tavily 专属设置，智谱引擎档位由
+    # web_search_cfg.engine 承载；默认 basic；轮 1 恒 basic，§3.3）
     followup_search_depth = str(
         llm_settings.get("report_tavily_search_depth", "basic") or "basic"
     )
 
     # ① LLM 检索策略：生成轮 1 搜索关键词
     queries, strategy_usage = await generate_search_queries(
-        section, digests, llm_client, llm_settings,
+        section, digests, llm_client,
     )
     _add_usage(strategy_usage)
     used_queries: list[str] = list(queries)
@@ -152,7 +155,7 @@ async def retrieve_for_section(
             query_parallelism=query_parallelism,
             db=db,
             data_sources=data_sources,
-            tavily_api_key=tavily_api_key,
+            web_search_cfg=web_search_cfg,
             search_depth="basic" if round_no == 1 else followup_search_depth,
             section_id=section_id,
         )
@@ -198,7 +201,7 @@ async def retrieve_for_section(
 
         # ④ 建卡 + 充足性评估（补搜轮针对累计材料，同时产出 follow_up_queries）
         cards, sufficiency, card_usage = await build_knowledge_cards(
-            new_results, section, llm_client, llm_settings,
+            new_results, section, llm_client,
             existing_cards=cards if round_no > 1 else None,
             used_queries=used_queries if round_no > 1 else None,
         )
@@ -250,7 +253,7 @@ async def _run_retrieval_round(
     query_parallelism: int,
     db: Any,
     data_sources: list[str],
-    tavily_api_key: str,
+    web_search_cfg: dict,
     search_depth: str,
     section_id: str = "unknown",
 ) -> tuple[list[dict], dict, list[str], dict]:
@@ -284,23 +287,23 @@ async def _run_retrieval_round(
         task_names.append("wiki")
 
     if "internet" in data_sources:
-        if tavily_api_key:
+        if web_search_cfg and web_search_cfg.get("key"):
             channel_tasks.append(
                 _search_internet_channel(
-                    queries, tavily_api_key, top_k, query_parallelism,
+                    queries, web_search_cfg, top_k, query_parallelism,
                     search_depth=search_depth,
                 )
             )
             task_names.append("internet")
         else:
             logger.info(
-                "Retrieval: section=%s internet 通道已请求但未配置 tavily_key，跳过",
+                "Retrieval: section=%s internet 通道已请求但网络搜索未配置，跳过",
                 section_id,
             )
-            # 显式降级警告（0.4 §7.3 v3.6）：请求了互联网通道但 Key 缺失，不能静默跳过
+            # 显式降级警告（0.4 §7.3 v3.6）：请求了互联网通道但网络搜索未配置，不能静默跳过
             channel_warnings.append(
-                "互联网检索未生效：未配置 Tavily API Key，本次报告仅使用项目内材料。"
-                "请前往 设置 > 外部模型 配置后重试。"
+                "互联网检索未生效：未配置网络搜索，本次报告仅使用项目内材料。"
+                "请前往 设置 > 基础配置 > 网络搜索 配置后重试。"
             )
 
     # 并行执行所有通道
@@ -395,47 +398,65 @@ def _format_knowledge_source(metadata: dict) -> str:
 # ── internet 通道 ──────────────────────────────────────────
 
 
-def _tavily_failure_warning(e: Exception) -> str:
-    """Tavily 检索失败 → 面向用户的显式警告文案（自带修正指引，0.4 §7.3 v3.6）。
+def web_search_cfg_from_settings(llm_settings: dict) -> dict:
+    """从应用设置归一网络搜索配置（provider 二选一，两把 Key 并存，2026-10-19）。
+
+    未选供应商时 key 为空——消费方（_search_internet_channel / 工具层）按
+    未配置处理，不猜意图。runner / variable_resolver 共用唯一归一入口。
+    """
+    provider = str(llm_settings.get("web_search_provider") or "").strip()
+    if provider == "zhipu":
+        key = str(llm_settings.get("zhipu_search_key") or "").strip()
+    elif provider == "tavily":
+        key = str(llm_settings.get("tavily_key") or "").strip()
+    else:
+        key = ""
+    return {
+        "provider": provider,
+        "key": key,
+        "engine": str(llm_settings.get("zhipu_search_engine") or "search_pro"),
+    }
+
+
+def _search_failure_warning(e: Exception, provider: str) -> str:
+    """网络搜索失败 → 面向用户的显式警告文案（自带修正指引，0.4 §7.3 v3.6）。
 
     降级显式呈现：互联网通道失败时报告仍会用项目内材料完成，但用户必须被告知
-    「本次未使用互联网材料」及修正路径，不能静默降级。
+    「本次未使用互联网材料」及修正路径，不能静默降级。文案按供应商区分。
     """
+    name = "智谱" if provider == "zhipu" else "Tavily"
+    goto = "设置 > 基础配置 > 网络搜索"
     status = getattr(getattr(e, "response", None), "status_code", None)
     if status in (401, 403):
-        return ("互联网检索未生效：Tavily API Key 无效或已失效，本次报告仅使用项目内材料。"
-                "请前往 设置 > 外部模型 更新 Tavily Key。")
+        return (f"互联网检索未生效：{name} API Key 无效或已失效，本次报告仅使用项目内材料。"
+                f"请前往 {goto} 更新 Key。")
     if status == 402:
-        return ("互联网检索未生效：Tavily 账户额度已用尽，本次报告仅使用项目内材料。"
-                "请检查 Tavily 用量，或在 设置 > 外部模型 更换 API Key。")
+        return (f"互联网检索未生效：{name} 账户额度已用尽，本次报告仅使用项目内材料。"
+                f"请检查 {name} 用量，或在 {goto} 更换 API Key。")
     if status == 429:
-        return ("互联网检索未生效：Tavily 调用频率或用量超限，本次报告仅使用项目内材料。"
-                "请稍后重试或检查 Tavily 账户用量限额。")
+        return (f"互联网检索未生效：{name} 调用频率或用量超限，本次报告仅使用项目内材料。"
+                f"请稍后重试或检查 {name} 账户用量限额。")
     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
-        return "互联网检索未生效：无法连接 Tavily 服务，本次报告仅使用项目内材料。请检查网络连接。"
-    return ("互联网检索未生效：Tavily 服务暂时异常，本次报告仅使用项目内材料。可稍后重新生成。")
+        return f"互联网检索未生效：无法连接 {name} 服务，本次报告仅使用项目内材料。请检查网络连接。"
+    return (f"互联网检索未生效：{name} 服务暂时异常，本次报告仅使用项目内材料。可稍后重新生成。")
 
 
 async def _search_internet_channel(
     queries: list[str],
-    tavily_api_key: str,
+    web_search_cfg: dict,
     top_k: int,
     query_parallelism: int = 4,
     search_depth: str = "basic",
 ) -> tuple[list[dict], dict, list[str]]:
-    """互联网通道：使用 Tavily API 搜索。
-    
-    支持多 query 并行执行，通过 semaphore 控制并发数。
-    复用 httpx 连接池，内置 429 速率限制退避。
-    返回 (results, usage, warnings)：warnings 为显式降级警告（去重后，0.4 §7.3 v3.6）。
-    """
+    """互联网通道：网络搜索（Tavily / 智谱，按 web_search_cfg.provider 分发）。"""
     empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    provider = web_search_cfg.get("provider", "")
 
-    if not tavily_api_key:
-        logger.warning("Internet channel: tavily_api_key not configured, skipping")
+    if not web_search_cfg.get("key"):
+        logger.warning("Internet channel: web_search not configured, skipping")
         return [], empty_usage, [
-            "互联网检索未生效：未配置 Tavily API Key，本次报告仅使用项目内材料。"
-            "请前往 设置 > 外部模型 配置后重试。"
+            "互联网检索未生效：未配置网络搜索，本次报告仅使用项目内材料。"
+            "请前往 设置 > 基础配置 > 网络搜索 配置后重试。"
         ]
 
     all_results: dict[str, dict] = {}  # url -> result dict
@@ -450,13 +471,13 @@ async def _search_internet_channel(
             """执行单次搜索并收集结果（含 429 退避）。"""
             async with sem:
                 try:
-                    results = await _tavily_search(
-                        query, tavily_api_key, client,
+                    results = await _web_search_api(
+                        query, web_search_cfg, client,
                         max_results=5, search_depth=search_depth,
                     )
                     return results
                 except Exception as e:
-                    warning = _tavily_failure_warning(e)
+                    warning = _search_failure_warning(e, provider)
                     if warning:
                         warning_set.add(warning)
                     logger.warning("Internet search failed for query='%s': %s", query, e)
@@ -484,6 +505,70 @@ async def _search_internet_channel(
     return sorted_results[:top_k], empty_usage, list(warning_set)
 
 
+async def _web_search_api(
+    query: str, cfg: dict, client: httpx.AsyncClient,
+    max_results: int = 5, search_depth: str = "basic",
+) -> list[dict]:
+    """按 provider 分发的单次网络搜索，返回统一结构 [{title, content, url, score, published_date}]。"""
+    if cfg.get("provider") == "zhipu":
+        return await _zhipu_search(query, cfg, client, max_results=max_results)
+    return await _tavily_search(
+        query, cfg.get("key", ""), client,
+        max_results=max_results, search_depth=search_depth,
+    )
+
+
+async def _zhipu_search(
+    query: str, cfg: dict, client: httpx.AsyncClient,
+    max_results: int = 5, max_retries: int = 2,
+) -> list[dict]:
+    """直接调用智谱 Web Search API（open.bigmodel.cn /paas/v4/web_search）。
+
+    Bearer 认证与智谱 LLM 同平台（同一个 API Key 体系）；search_query 上限
+    70 字符（API 硬限，超长截断）；search_intent=False（工具场景显式搜索，
+    必填字段）；content_size=high（摘要详细档，信息密度优先）。
+    响应无 score——以返回序号为相关性权重（引擎已排序，倒序计分保序）；
+    无 answer 段（无 Tavily 中文摘要翻译失真问题，c2f24e5c）。
+    内置 429 速率限制退避（指数等待），复用传入的 httpx 客户端连接池。
+    """
+    for attempt in range(max_retries + 1):
+        response = await client.post(
+            "https://open.bigmodel.cn/api/paas/v4/web_search",
+            json={
+                "search_query": query[:70],
+                "search_engine": (
+                    cfg.get("engine") if cfg.get("engine") in ZHIPU_ENGINES
+                    else DEFAULT_ZHIPU_ENGINE
+                ),
+                "search_intent": False,
+                "count": max_results,
+                "content_size": "high",
+            },
+            headers={"Authorization": f"Bearer {cfg.get('key', '')}"},
+        )
+        if response.status_code == 429 and attempt < max_retries:
+            wait = 2 ** (attempt + 1)  # 2s, 4s
+            logger.warning("Zhipu web_search rate limited, retrying in %ds (attempt %d/%d)",
+                           wait, attempt + 1, max_retries)
+            await asyncio.sleep(wait)
+            continue
+        response.raise_for_status()
+        break  # 成功响应，退出重试循环
+
+    data = response.json()
+    raw = data.get("search_result") or []
+    results = []
+    for i, r in enumerate(raw):
+        results.append({
+            "title": r.get("title", ""),
+            "content": r.get("content", ""),
+            "url": r.get("link", ""),
+            "score": float(len(raw) - i),  # 序号即权重（引擎已排序）
+            "published_date": r.get("publish_date", ""),
+        })
+    return results
+
+
 async def _tavily_search(
     query: str, api_key: str, client: httpx.AsyncClient,
     max_results: int = 5, search_depth: str = "basic", max_retries: int = 2,
@@ -491,8 +576,10 @@ async def _tavily_search(
     """直接调用 Tavily API 获取结构化搜索结果。
 
     认证走 Authorization: Bearer header（官方推荐，Key 不进请求体）；
-    language=zh-cn 中文命中加权（纯加权不丢结果）；search_depth 白名单归一
-    （advanced 2 credits，轮 2+ 补搜经 settings report_tavily_search_depth 传入）。
+    language=zh-cn 中文命中加权（纯加权不丢结果）；include_answer 仅非 CJK
+    query 开启（与工具层 tools/web_search.py 同判，c2f24e5c 中文摘要失真回归）；
+    search_depth 白名单归一（advanced 2 credits，轮 2+ 补搜经 settings
+    report_tavily_search_depth 传入）。
     内置 429 速率限制退避（指数等待），复用传入的 httpx 客户端连接池。
     """
     if search_depth not in ("advanced", "basic", "fast", "ultra-fast"):
@@ -503,7 +590,7 @@ async def _tavily_search(
             json={
                 "query": query,
                 "max_results": max_results,
-                "include_answer": True,
+                "include_answer": not has_cjk(query),
                 "language": "zh-cn",
                 "search_depth": search_depth,
             },

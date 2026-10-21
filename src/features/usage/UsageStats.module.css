@@ -1,0 +1,241 @@
+/* 设置-用量统计 tab（2.10 §6.5 线框 7）：四区布局 */
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ① 筛选行 */
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rangeGroup {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.rangeBtn {
+  border: 1px solid var(--border);
+  background: none;
+  padding: 3px 10px;
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.rangeBtn:hover {
+  color: var(--text-primary);
+}
+
+.rangeBtnActive {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-inverse);
+}
+
+.rangeBtnActive:hover {
+  color: var(--text-inverse);
+}
+
+.projectFilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.projectSelect {
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+  max-width: 200px;
+}
+
+/* ② 汇总卡 ×4 */
+.summaryCards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.cardLabel {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.cardValue {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ③ 按天趋势 */
+.trendSection {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.sectionTitle {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-left: 12px;
+  font-weight: 400;
+}
+
+.legendDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.trendSvg {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+
+.trendAxis {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.trendEmpty {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: 20px 0;
+  text-align: center;
+}
+
+/* ④ 三明细表 */
+.tables {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.tableCard {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.tableBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tableRow {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tableRowHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 20px;
+}
+
+.rowName {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowNameClickable {
+  cursor: pointer;
+}
+
+.rowNameClickable:hover {
+  color: var(--accent);
+}
+
+.rowActive {
+  color: var(--accent);
+}
+
+.rowNums {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.shareBar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 2px 0;
+}
+
+.shareBarFill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.emptyState {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: center;
+  padding: 32px 0;
+}
+
+/* 加载中骨架（§6.3/线框 7：汇总卡灰块、趋势块、表格行占位；区别于空态——
+   空态 = 确认无数据才渲染 empty 文案，加载中 = 尚未得知，不闪假空态） */
+.skeleton,
+.skeletonBlock,
+.skeletonRow {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.skeleton {
+  height: 22px;
+}
+
+.skeletonBlock {
+  height: 64px;
+}
+
+.skeletonRow {
+  height: 20px;
+  margin: 2px 0;
+}

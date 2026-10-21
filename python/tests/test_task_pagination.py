@@ -78,3 +78,44 @@ class TestListTasksPagination:
         db.save_task_message(ids[0], "user", "hello")
         tasks, _ = db.list_tasks(limit=10)
         assert tasks[0]["message_count"] == 1
+
+
+class TestListTasksOriginFilter:
+    """origin 过滤（2.3 §3.1 形态分离，2026-10-16）。
+
+    回归背景：db.list_tasks 支持 origin 参数但 GET /tasks 未透传、
+    tasks:listFiltered IPC 未传 'chat' —— PPT 任务会泄漏进任务 Tab
+    （违反「PPT 任务永不进任务 Tab」不变量）。
+    """
+
+    def test_default_no_filter_includes_ppt(self, db, tmp_path):
+        """origin=None（崩溃恢复等内部扫描）→ 全量含 ppt 任务。"""
+        chat = db.create_task("chat", str(tmp_path), "", "coding")
+        ppt = db.create_task("ppt-runner", "", "", "coding", origin="ppt")
+        tasks, _ = db.list_tasks()
+        ids = [t["id"] for t in tasks]
+        assert chat["id"] in ids and ppt["id"] in ids
+
+    def test_origin_chat_excludes_ppt(self, db, tmp_path):
+        """任务 Tab（origin='chat'）→ PPT 任务不出现。"""
+        db.create_task("chat", str(tmp_path), "", "coding")
+        db.create_task("ppt-runner", "", "", "coding", origin="ppt")
+        tasks, _ = db.list_tasks(origin="chat")
+        assert [t["title"] for t in tasks] == ["chat"]
+
+    def test_origin_ppt_only_ppt(self, db, tmp_path):
+        db.create_task("chat", str(tmp_path), "", "coding")
+        db.create_task("ppt-runner", "", "", "coding", origin="ppt")
+        tasks, _ = db.list_tasks(origin="ppt")
+        assert [t["title"] for t in tasks] == ["ppt-runner"]
+
+    def test_origin_combined_with_pagination(self, db, tmp_path):
+        """origin 与分页组合（任务 Tab 实际形态）。"""
+        for i in range(3):
+            db.create_task(f"c{i}", str(tmp_path), "", "coding")
+        for i in range(2):
+            db.create_task(f"p{i}", "", "", "coding", origin="ppt")
+        tasks, has_more = db.list_tasks(origin="chat", limit=2)
+        assert len(tasks) == 2
+        assert has_more is True
+        assert all(t["origin"] == "chat" for t in tasks)

@@ -68,6 +68,15 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
     }
   }, [])
 
+  // Esc 关闭抽屉（模态面板语义 0.3 §5.2；busy 在途不可关，与点蒙板同语义）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [busy, onClose])
+
   const patch = async (fields: Record<string, unknown>) => {
     if (busy) return
     setBusy(true)

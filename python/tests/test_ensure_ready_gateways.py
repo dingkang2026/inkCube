@@ -120,7 +120,8 @@ class TestWikiGateways:
 class TestLintStructuralPassthrough:
     def test_structural_not_blocked_without_llm(self, no_llm, monkeypatch):
         """豁免代表：structural lint 纯本地，缺 LLM 必须照常执行（防误拦）。"""
-        monkeypatch.setattr(wiki, "get_db", lambda: MagicMock())
+        db = MagicMock()
+        monkeypatch.setattr(wiki, "get_db", lambda: db)
         monkeypatch.setattr("wiki.lint.run_structural_lint", lambda db, pid: [])
         result = _run(wiki.trigger_lint("p1", wiki.LintRequest(mode="structural")))
         assert result["success"] is True

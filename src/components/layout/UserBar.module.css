@@ -1,38 +1,9 @@
 .bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 8px 12px;
   border-top: 1px solid var(--border);
-}
-
-.user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.name {
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .settingsWrap {
@@ -41,13 +12,15 @@
 }
 
 .settingsBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
-  font-size: 16px;
   cursor: pointer;
   color: var(--text-secondary);
   padding: 4px;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   transition: color 0.15s, background 0.15s;
 }
 
@@ -64,7 +37,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent, #3b82f6);
+  background: var(--accent);
   pointer-events: none;
   animation: dot-pulse 1.5s ease-in-out infinite;
 }

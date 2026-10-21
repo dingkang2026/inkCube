@@ -127,11 +127,11 @@ describe('PhaseBoard', () => {
         mk({ id: 'm1' }),
         mk({ id: 'r1', task_type: 'recurring', recurrence_rule: { freq: 'monthly', due_day: 15 } }),
       ]} />)
-    expect(withRec.container.textContent).toContain('affairs.board.recurringHint')
+    expect(withRec.container.textContent).toContain('affairs.recurringHint')
     withRec.unmount()
 
     const noRec = render(<PhaseBoard {...base} tasks={[mk({ id: 'm1' })]} />)
-    expect(noRec.container.textContent).not.toContain('affairs.board.recurringHint')
+    expect(noRec.container.textContent).not.toContain('affairs.recurringHint')
   })
 
   it('renders skipped toggle only when a skipped board task exists; toggle reveals the row', () => {

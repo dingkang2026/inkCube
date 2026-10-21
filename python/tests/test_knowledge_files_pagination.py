@@ -100,7 +100,7 @@ class TestProjectFilesStatusFilter:
     def test_processing_includes_pending_and_parsing(self, routed):
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 3, "pending": 2, "parsing": 1, "error": 1})
-        result = asyncio.run(knowledge.get_project_files(pid, status="processing"))
+        result = asyncio.run(knowledge.get_project_files(pid, limit=20, status="processing"))
         statuses = {f["status"] for f in result["files"]}
         assert statuses == {"pending", "parsing"}
         assert result["total"] == 3
@@ -108,10 +108,10 @@ class TestProjectFilesStatusFilter:
     def test_literal_status_filters(self, routed):
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 3, "error": 1})
-        done = asyncio.run(knowledge.get_project_files(pid, status="done"))
+        done = asyncio.run(knowledge.get_project_files(pid, limit=20, status="done"))
         assert len(done["files"]) == 3
         assert done["total"] == 3
-        error = asyncio.run(knowledge.get_project_files(pid, status="error"))
+        error = asyncio.run(knowledge.get_project_files(pid, limit=20, status="error"))
         assert len(error["files"]) == 1
         assert error["total"] == 1
 
@@ -119,7 +119,7 @@ class TestProjectFilesStatusFilter:
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 2, "pending": 1})
         for status in (None, "all"):
-            result = asyncio.run(knowledge.get_project_files(pid, status=status))
+            result = asyncio.run(knowledge.get_project_files(pid, limit=20, status=status))
             assert result["total"] == 3
 
     def test_filter_combined_with_offset(self, routed):
@@ -154,7 +154,7 @@ class TestBaseLibFilesOffsetPagination:
         lib_id = "bl-test"
         _ensure_lib(routed, lib_id)
         _seed(routed, lib_id, {"done": 3, "pending": 2, "parsing": 1})
-        result = asyncio.run(knowledge.get_base_lib_files(lib_id, status="processing"))
+        result = asyncio.run(knowledge.get_base_lib_files(lib_id, limit=20, status="processing"))
         statuses = {f["status"] for f in result["files"]}
         assert statuses == {"pending", "parsing"}
         assert result["total"] == 3
@@ -164,7 +164,7 @@ class TestBaseLibFilesOffsetPagination:
         lib_id = "bl-test"
         _ensure_lib(routed, lib_id)
         _seed(routed, lib_id, {"done": 3})
-        result = asyncio.run(knowledge.get_base_lib_files(lib_id))
+        result = asyncio.run(knowledge.get_base_lib_files(lib_id, limit=20))
         assert len(result["files"]) == 3
         assert result["has_more"] is False
         assert result["total"] == 3
@@ -176,7 +176,7 @@ class TestFileListStatusCounts:
     def test_counts_not_affected_by_status_filter(self, routed):
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 3, "pending": 2, "parsing": 1, "error": 1})
-        result = asyncio.run(knowledge.get_project_files(pid, status="done"))
+        result = asyncio.run(knowledge.get_project_files(pid, limit=20, status="done"))
         assert result["status_counts"] == {
             "done": 3, "pending": 2, "parsing": 1, "error": 1,
         }
@@ -186,14 +186,14 @@ class TestFileListStatusCounts:
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 3, "error": 1})
         # _seed 文件名形如 done-0.pdf/error-3.pdf → 搜 done 只命中 3 个 done
-        result = asyncio.run(knowledge.get_project_files(pid, filename_search="done"))
+        result = asyncio.run(knowledge.get_project_files(pid, limit=20, filename_search="done"))
         assert result["status_counts"] == {"done": 3}
 
     def test_base_lib_status_counts(self, routed):
         lib_id = "bl-test"
         _ensure_lib(routed, lib_id)
         _seed(routed, lib_id, {"done": 2, "pending": 1})
-        result = asyncio.run(knowledge.get_base_lib_files(lib_id, status="done"))
+        result = asyncio.run(knowledge.get_base_lib_files(lib_id, limit=20, status="done"))
         assert result["status_counts"] == {"done": 2, "pending": 1}
         assert result["total"] == 2
 
@@ -206,7 +206,7 @@ class TestActiveFirstOrdering:
         # seq 递增 → done（fid000-004）在先、pending（fid005-006）在后；
         # 同秒 created_at 下组内 id DESC
         _seed(routed, pid, {"done": 5, "pending": 2})
-        result = asyncio.run(knowledge.get_project_files(pid))
+        result = asyncio.run(knowledge.get_project_files(pid, limit=20))
         ids = [f["id"] for f in result["files"]]
         assert ids[:2] == ["fid006", "fid005"]  # 活动置顶
         assert ids[2:] == ["fid004", "fid003", "fid002", "fid001", "fid000"]
@@ -215,14 +215,14 @@ class TestActiveFirstOrdering:
     def test_parsing_also_pinned(self, routed):
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 3, "parsing": 1})
-        result = asyncio.run(knowledge.get_project_files(pid))
+        result = asyncio.run(knowledge.get_project_files(pid, limit=20))
         assert result["files"][0]["status"] == "parsing"
 
     def test_all_done_keeps_time_order(self, routed):
         """无活动文件时排序与旧行为一致（created_at/id 倒序）。"""
         pid = routed.create_project("P")["id"]
         _seed(routed, pid, {"done": 5})
-        result = asyncio.run(knowledge.get_project_files(pid))
+        result = asyncio.run(knowledge.get_project_files(pid, limit=20))
         assert [f["id"] for f in result["files"]] == [
             "fid004", "fid003", "fid002", "fid001", "fid000",
         ]

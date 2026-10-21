@@ -168,8 +168,9 @@ class ProcessingPipeline:
 
         IMAGE 输入经 Docling OCR 提取文字后 doc.pictures 为空（原图是输入而非
         文档元素），不登记则图片文件在图片库不可见、VLM 语义描述链路缺失。
-        page=1：figure chunk id（img_{file_id}_{page_no}）命名空间避开内嵌图
-        idx 序列（2.2 §12.1-1）。尺寸读取失败不阻断登记（列为可空）。
+        page=1 与内嵌图共用 img_ 命名空间；向量 id 唯一性由尾部 image_id
+        保证（vector_store.image_doc_id，2.2 §5.3-5）。尺寸读取失败不阻断
+        登记（列为可空）。
         """
         if Path(filename).suffix.lower() not in _IMAGE_FILE_EXTS:
             return None

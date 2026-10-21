@@ -1,0 +1,621 @@
+{
+ "preset_schema_version": 1,
+ "field_count": 15,
+ "file_hash": "5eb2f19b4de43e59a6f2e10cc9eb80c85c47d67cda3c556eadb4fb35a7456add",
+ "template_schema": {
+  "schema_version": "2.0",
+  "template_name": "项目立项审批表",
+  "doc_stats": {
+   "top_tables": 1,
+   "nested_tables": 0
+  },
+  "fields": [
+   {
+    "field_key": "project_name",
+    "label": "项目名称",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r0c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目名称",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "企业全称 项目名称"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "apply_date",
+    "label": "申请日期",
+    "fill_type": "text",
+    "fill_mode": "rule_fill",
+    "target": "top0/r0c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "申请日期",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [],
+    "length_hint": null,
+    "confidence": "high",
+    "rule_hint": "today"
+   },
+   {
+    "field_key": "project_source",
+    "label": "项目来源",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r1c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目来源",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目来源 渠道 FA推荐 股东引荐"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": true,
+    "options": [
+     "主动开发",
+     "中介/FA推荐",
+     "政府/园区引导",
+     "老股东引荐",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "industry_track",
+    "label": "所属赛道",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r2c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "所属赛道",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "所属赛道 行业方向"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "invest_stage",
+    "label": "投资阶段",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r2c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "投资阶段",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "融资轮次 投资阶段"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": false,
+    "options": [
+     "天使轮",
+     "A轮",
+     "B轮",
+     "C轮及以后",
+     "并购"
+    ]
+   },
+   {
+    "field_key": "project_leader",
+    "label": "项目负责人",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目负责人",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目负责人 团队负责人"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "project_members",
+    "label": "项目组成员",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目组成员",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目组成员 投资团队"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "biz_model",
+    "label": "请阐述项目商业模式：产品或服务形态、收入来源、成本结构与盈利路径",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r5c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请阐述项目商业模式：产品或服务形态、收入来源、成本结构与盈利路径"
+    },
+    "kb_query": [
+     "商业模式 产品服务形态",
+     "收入来源 成本结构",
+     "盈利路径"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "instruction": "请阐述项目商业模式：产品或服务形态、收入来源、成本结构与盈利路径"
+   },
+   {
+    "field_key": "core_team",
+    "label": "请介绍创始人与核心成员背景、分工及与项目的匹配度",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r6c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请介绍创始人与核心成员背景、分工及与项目的匹配度"
+    },
+    "kb_query": [
+     "创始人背景 履历",
+     "核心成员 分工",
+     "团队与项目匹配度"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "instruction": "请介绍创始人与核心成员背景、分工及与项目的匹配度"
+   },
+   {
+    "field_key": "market_analysis",
+    "label": "请分析目标市场规模、竞争格局与本项目相对优劣势，可引用第三方数据",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r7c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请分析目标市场规模、竞争格局与本项目相对优劣势，可引用第三方数据"
+    },
+    "kb_query": [
+     "市场规模 第三方数据",
+     "竞争格局 竞品",
+     "项目优劣势"
+    ],
+    "length_hint": 800,
+    "confidence": "high",
+    "instruction": "请分析目标市场规模、竞争格局与本项目相对优劣势，可引用第三方数据"
+   },
+   {
+    "field_key": "financials",
+    "label": "请说明近两年营业收入、毛利率、净利润及现金流等主要财务数据（可另附报表）",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请说明近两年营业收入、毛利率、净利润及现金流等主要财务数据（可另附报表）"
+    },
+    "kb_query": [
+     "营业收入 毛利率 净利润",
+     "现金流 财务报表 近两年"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "instruction": "请说明近两年营业收入、毛利率、净利润及现金流等主要财务数据（可另附报表）"
+   },
+   {
+    "field_key": "financing_plan",
+    "label": "请说明融资金额、投前估值、老股东跟投安排及资金用途",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r9c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请说明融资金额、投前估值、老股东跟投安排及资金用途"
+    },
+    "kb_query": [
+     "融资金额 投前估值",
+     "老股东跟投安排",
+     "资金用途"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "instruction": "请说明融资金额、投前估值、老股东跟投安排及资金用途"
+   },
+   {
+    "field_key": "invest_thesis",
+    "label": "请阐述投资逻辑：赛道判断、核心壁垒、成长性与退出路径",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r10c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请阐述投资逻辑：赛道判断、核心壁垒、成长性与退出路径"
+    },
+    "kb_query": [
+     "投资逻辑 赛道判断",
+     "核心壁垒 成长性",
+     "退出路径"
+    ],
+    "length_hint": 800,
+    "confidence": "high",
+    "instruction": "请阐述投资逻辑：赛道判断、核心壁垒、成长性与退出路径"
+   },
+   {
+    "field_key": "risks_and_dd",
+    "label": "请列举主要风险（技术、市场、团队、合规等）及尽调需重点核实事项",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "target": "top0/r11c1",
+    "placeholder": null,
+    "context": {
+     "left_label": null,
+     "section_chain": [],
+     "table_header": null,
+     "instruction": "请列举主要风险（技术、市场、团队、合规等）及尽调需重点核实事项"
+    },
+    "kb_query": [
+     "主要风险 技术 市场 合规",
+     "尽调重点核实事项"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "instruction": "请列举主要风险（技术、市场、团队、合规等）及尽调需重点核实事项"
+   },
+   {
+    "field_key": "approval_suggestion",
+    "label": "立项建议",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r12c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "立项建议",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "立项建议 项目评估结论"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false,
+    "options": [
+     "建议立项，推进尽调",
+     "暂缓观察",
+     "不予立项"
+    ]
+   }
+  ],
+  "batches": [
+   {
+    "seq": 1,
+    "name": "头部信息",
+    "field_keys": [
+     "project_name",
+     "apply_date",
+     "project_source",
+     "industry_track",
+     "invest_stage",
+     "project_leader",
+     "project_members"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 2,
+    "name": "项目情况说明",
+    "field_keys": [
+     "biz_model",
+     "core_team",
+     "market_analysis",
+     "financials"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 3,
+    "name": "融资方案与立项结论",
+    "field_keys": [
+     "financing_plan",
+     "invest_thesis",
+     "risks_and_dd",
+     "approval_suggestion"
+    ],
+    "depends_on": [
+     1,
+     2
+    ]
+   }
+  ],
+  "unmapped_cells": []
+ },
+ "llm_mapping": {
+  "fields": [
+   {
+    "index": 0,
+    "field_key": "project_name",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "企业全称 项目名称"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 1,
+    "field_key": "apply_date",
+    "fill_type": "text",
+    "fill_mode": "rule_fill",
+    "kb_query": [],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null,
+    "rule_hint": "today"
+   },
+   {
+    "index": 2,
+    "field_key": "project_source",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目来源 渠道 FA推荐 股东引荐"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": true
+   },
+   {
+    "index": 3,
+    "field_key": "industry_track",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "所属赛道 行业方向"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 4,
+    "field_key": "invest_stage",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "融资轮次 投资阶段"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": false
+   },
+   {
+    "index": 5,
+    "field_key": "project_leader",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目负责人 团队负责人"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 6,
+    "field_key": "project_members",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目组成员 投资团队"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 7,
+    "field_key": "biz_model",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "商业模式 产品服务形态",
+     "收入来源 成本结构",
+     "盈利路径"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 8,
+    "field_key": "core_team",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "创始人背景 履历",
+     "核心成员 分工",
+     "团队与项目匹配度"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 9,
+    "field_key": "market_analysis",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "市场规模 第三方数据",
+     "竞争格局 竞品",
+     "项目优劣势"
+    ],
+    "length_hint": 800,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 10,
+    "field_key": "financials",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "营业收入 毛利率 净利润",
+     "现金流 财务报表 近两年"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 11,
+    "field_key": "financing_plan",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "融资金额 投前估值",
+     "老股东跟投安排",
+     "资金用途"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 12,
+    "field_key": "invest_thesis",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "投资逻辑 赛道判断",
+     "核心壁垒 成长性",
+     "退出路径"
+    ],
+    "length_hint": 800,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 13,
+    "field_key": "risks_and_dd",
+    "fill_type": "doc_section",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "主要风险 技术 市场 合规",
+     "尽调重点核实事项"
+    ],
+    "length_hint": 600,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 14,
+    "field_key": "approval_suggestion",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "立项建议 项目评估结论"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false
+   }
+  ],
+  "batches": [
+   {
+    "seq": 1,
+    "name": "头部信息",
+    "field_keys": [
+     "project_name",
+     "apply_date",
+     "project_source",
+     "industry_track",
+     "invest_stage",
+     "project_leader",
+     "project_members"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 2,
+    "name": "项目情况说明",
+    "field_keys": [
+     "biz_model",
+     "core_team",
+     "market_analysis",
+     "financials"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 3,
+    "name": "融资方案与立项结论",
+    "field_keys": [
+     "financing_plan",
+     "invest_thesis",
+     "risks_and_dd",
+     "approval_suggestion"
+    ],
+    "depends_on": [
+     1,
+     2
+    ]
+   }
+  ],
+  "skipped_indexes": [
+   15
+  ]
+ }
+}

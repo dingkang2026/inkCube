@@ -1,0 +1,148 @@
+/* 0.5 E1 T6:零项目三步引导卡(0.5 §4.3)；水平垂直居中由 KnowledgePage pageWelcome 承担；
+   容器宽度与任务欢迎页（TaskTemplatePanel）统一 720px */
+.guide {
+  width: 100%;
+  max-width: 720px;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.subtitle {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stepHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 步骤序号徽章：替代文案内嵌①②字符 */
+.stepNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.stepHint {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.typeCards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+/* 卡片规格与 TaskTemplatePanel card 同一规范：padding 16 / gap 5 / hover accent 边框+浮起 */
+.typeCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 16px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+
+.typeCard:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+.typeCardActive {
+  border-color: var(--accent);
+  background: var(--bg-selected);
+}
+
+.typeIcon {
+  color: var(--accent);
+}
+
+.typeLabel {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.typeDesc {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.nameInput {
+  padding: 10px 12px;
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.nameInput:focus {
+  border-color: var(--accent);
+}
+
+.createBtn {
+  padding: 10px;
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--text-inverse);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.createBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.createBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .typeCards {
+    grid-template-columns: 1fr;
+  }
+}

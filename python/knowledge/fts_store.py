@@ -159,7 +159,8 @@ class FTSStore:
         
         Uses LIKE pattern matching on chunk_id which follows patterns:
         - chunk_{file_id}_{idx} for text chunks
-        - img_{file_id}_{idx} for image chunks
+        - img_{file_id}_{page_no}_{image_id} for image chunks
+        (constructed via vector_store.image_doc_id)
         
         Args:
             file_id: File ID whose chunks to delete

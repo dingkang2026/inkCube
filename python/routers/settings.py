@@ -61,8 +61,13 @@ async def test_settings(settings: SettingsModel):
     设置项 reasoning_override（思考参数高级覆盖）适配。
     """
     from llm.client import LLMClient
+    from llm.routing import resolve_model
 
-    client = LLMClient(settings.model_dump())
+    # 能力探测用最强模型（高配，空则回退标准）——FC/reasoning/thinking 结论是
+    # 端点级的，对两档共享（同端点同凭据）
+    form = settings.model_dump()
+    form["model"] = resolve_model(form, "high")
+    client = LLMClient(form)
     capabilities = {
         "function_calling": None,
         "reasoning_effort": None,

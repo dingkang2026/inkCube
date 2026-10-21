@@ -1,6 +1,7 @@
 /** src/features/knowledge/SearchBar.tsx */
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Search, X } from 'lucide-react'
 import s from './SearchBar.module.css'
 
 interface SearchBarProps {
@@ -41,7 +42,7 @@ export function SearchBar({ onSearch, isSearching, placeholder }: SearchBarProps
   return (
     <form className={s.form} onSubmit={handleSubmit}>
       <div className={s.inputWrap}>
-        <span className={s.searchIcon}>🔍</span>
+        <span className={s.searchIcon}><Search size={14} /></span>
         <input
           ref={inputRef}
           type="text"
@@ -53,7 +54,7 @@ export function SearchBar({ onSearch, isSearching, placeholder }: SearchBarProps
         />
         {query && (
           <button type="button" className={s.clearBtn} onClick={handleClear}>
-            ×
+            <X size={12} />
           </button>
         )}
         <span className={s.shortcutHint} title={t('knowledge.searchShortcut')}>

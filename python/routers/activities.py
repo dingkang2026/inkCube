@@ -21,6 +21,10 @@ from pydantic import BaseModel
 import activities_registry as registry
 import activity_events
 import deps
+import ppt_service
+import scheduler
+from routers import forms
+from transfer import service as transfer_service
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +32,34 @@ router = APIRouter(tags=["system"])
 
 
 def _active_files(db) -> list[dict]:
-    """跨项目活跃文件（GROUP BY project_id，file 活跃定义含图片描述期，0.4 §8.1）。"""
+    """跨项目活跃文件（GROUP BY project_id，file 活跃定义含图片描述期，0.4 §8.1）。
+
+    停止态口径（0.4 §队列暂停修订）：排队中（pending）不算活跃，只有真正
+    在飞的（parsing / describing）保留——活跃标识精确反映队列状态，停止后
+    只剩收尾任务呼吸、跑完自然熄灭；恢复后心跳下一拍重新点亮。
+    """
     cursor = db.conn.execute(
         """
         SELECT f.project_id, p.name AS project_name,
                CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container,
                COUNT(*) AS cnt,
                SUM(CASE WHEN f.status = 'done'
-                        AND f.image_status IN ('pending', 'describing')
+                        AND (f.image_status = 'describing'
+                             OR (f.image_status = 'pending' AND NOT :describe_paused))
                         THEN 1 ELSE 0 END) AS image_cnt
         FROM files f
         JOIN projects p ON p.id = f.project_id
-        WHERE f.status IN ('pending', 'parsing')
-           OR (f.status = 'done' AND f.image_status IN ('pending', 'describing'))
+        WHERE f.status = 'parsing'
+           OR (f.status = 'pending' AND NOT :parsing_paused)
+           OR (f.status = 'done' AND (
+                f.image_status = 'describing'
+                OR (f.image_status = 'pending' AND NOT :describe_paused)))
         GROUP BY f.project_id, p.name, p.kind
-        """
+        """,
+        {
+            "parsing_paused": db.get_flag("parsing_paused"),
+            "describe_paused": db.get_flag("describe_paused"),
+        },
     )
     return [
         {
@@ -115,14 +132,24 @@ def _active_reports(db) -> list[dict]:
 
 
 def _active_tasks(db) -> list[dict]:
-    """运行中任务（复用 task_agent 内存 running 集，补标题）。"""
+    """运行中任务（复用 task_agent 内存 running 集，补标题）。
+
+    PPT 借道任务（origin='ppt'）不入 task 源：PPT 活动已由 ppt 源
+    （fetch_active，entity_type='ppt'）呈现，双源上报会造成首页
+    双条目与 running_tasks 假角标（2.3 审核项 #2）。
+    影子任务（schedule_id 非空，定时订阅执行）同口径排除：订阅执行由
+    schedule 源（scheduler.fetch_active）呈现（2.11 D2 复核）——影子
+    任务不进人工任务列表（服务端排除），混入 task 源会造成任务假角标
+    与点击落任务页扑空。
+    """
     agent = getattr(deps, "task_agent", None)
     if not agent:
         return []
     result = []
     for task_id in list(agent._running_task_ids):
         task = db.get_task(task_id)
-        if task:
+        if (task and task.get("origin") != "ppt"
+                and not task.get("schedule_id")):
             result.append({
                 "entity_type": "task",
                 "entity_id": task_id,
@@ -132,7 +159,7 @@ def _active_tasks(db) -> list[dict]:
 
 
 def _active_model_downloads() -> list[dict]:
-    """下载中模型（ModelManager 内存态，含 GPU 后端，无 DB 查询，0.4 §3.3）。"""
+    """下载中模型（ModelManager 内存态，仅 CPU 后端，无 DB 查询，0.4 §3.3）。"""
     mgr = getattr(deps, "model_manager", None)
     if not mgr:
         return []
@@ -152,21 +179,40 @@ def _active_model_downloads() -> list[dict]:
 
 
 def _active_ledger_parses() -> list[dict]:
-    """台账解析中(3.1 §4.2:编译后直调,进程内存态源;0.4 §8.5 新增 kind)。"""
+    """台账解析中(3.1 §4.2:编译后直调,进程内存态源;0.4 §8.1 台账新增 kind)。"""
     from wiki.ledger_service import fetch_running
     return fetch_running()
+
+
+# form_template / form_fill（2.4 §3.4）：fetch 实现在 routers/forms.py
+# （业务模块归属，本文件不再新增私有聚合函数）
 
 
 # ── 统一活动注册表（0.4 §2.2）：聚合端点的唯一活跃数据源 ──
 # fetch 均以 lambda 引用模块级函数（运行时名字查找），
 # 保证测试 monkeypatch _active_* 后注册表取到替换实现。
-# model_download 为首个收编 kind（0.4 §8.5 顺序 1），其余为存量函数包装待迁移。
+# 全部 kind 均已收编（0.4 §6.1 / §8.2）；新增长时活动一律实现 ActivitySource 后注册。
 registry.register(registry.FunctionSource("file", lambda: _active_files(deps.db)))
 registry.register(registry.FunctionSource("wiki_compile", lambda: _active_compiles(deps.db)))
 registry.register(registry.FunctionSource("report", lambda: _active_reports(deps.db)))
 registry.register(registry.FunctionSource("task", lambda: _active_tasks(deps.db)))
 registry.register(registry.FunctionSource("model_download", lambda: _active_model_downloads()))
 registry.register(registry.FunctionSource("ledger_parse", lambda: _active_ledger_parses()))
+registry.register(registry.FunctionSource("form_template",
+                                          lambda: forms.active_form_templates(deps.db)))
+registry.register(registry.FunctionSource("form_fill",
+                                          lambda: forms.active_form_fills(deps.db)))
+# project_export / project_import（2.9 §7）：fetch 实现在 transfer/service.py
+registry.register(registry.FunctionSource("project_export",
+                                          lambda: transfer_service.fetch_running("project_export")))
+registry.register(registry.FunctionSource("project_import",
+                                          lambda: transfer_service.fetch_running("project_import")))
+# ppt（2.3 §6）：fetch 实现在 ppt_service（业务模块归属）
+registry.register(registry.FunctionSource("ppt",
+                                          lambda: ppt_service.service.fetch_active(deps.db)))
+# schedule（2.11 §5）：fetch 实现在 scheduler（业务模块归属）
+registry.register(registry.FunctionSource("schedule",
+                                          lambda: scheduler.fetch_active(deps.db)))
 
 
 @router.get("/activities/status")
@@ -178,6 +224,12 @@ async def activities_status():
     # 复用既有心跳,不新增轮询端点;服务层自行兜底异常)
     import affairs_service
     affairs_service.maybe_roll_daily(db)
+
+    # 2.11 §3.3 模板文件变更扫描(每日一次,同日零开销;服务层自行兑底异常)
+    forms.maybe_scan_template_changes(db)
+
+    # 2.11 §3.2 事务到期/逾期提醒扫描(每日一次,同日零开销;服务层自行兑底异常)
+    affairs_service.maybe_scan_reminders(db)
 
     active = registry.snapshot()
 
@@ -192,6 +244,10 @@ async def activities_status():
         "generating_reports": _count("report"),
         "running_tasks": _count("task"),
         "downloading_models": _count("model_download"),
+        "analyzing_form_templates": _count("form_template"),
+        "filling_forms": _count("form_fill"),
+        "active_ppts": _count("ppt"),
+        "running_schedules": _count("schedule"),
     }
 
     return {
@@ -213,6 +269,27 @@ async def mark_notifications_read(req: MarkReadRequest):
     """批量标记通知已读（弹出即已读，0.4 §5.5）。"""
     count = deps.db.mark_notifications_read(req.ids)
     return {"ok": True, "marked": count}
+
+
+@router.get("/activities/notifications")
+async def list_notifications(offset: int = 0, limit: int = 50):
+    """分页全量通知（含已读，通知中心历史面，2.11 §3.4）；limit 上限 200。"""
+    items, total = deps.db.list_notifications(max(0, offset), min(max(1, limit), 200))
+    return {"items": items, "total": total}
+
+
+@router.post("/activities/notifications/read-all")
+async def read_all_notifications():
+    """全部标记已读（通知中心一键操作，2.11 §3.4）。"""
+    marked = deps.db.mark_all_notifications_read()
+    return {"ok": True, "marked": marked}
+
+
+@router.delete("/activities/notifications/{notification_id}")
+async def delete_notification(notification_id: int):
+    """单条删除通知（通知中心行内删除，2.11 §3.4）。幂等：不存在时 deleted=0。"""
+    deleted = deps.db.delete_notification(notification_id)
+    return {"ok": True, "deleted": deleted}
 
 
 # SSE 保活间隔：无事件时发注释行，防中间层掐空闲连接（同 task:stream 语义）

@@ -176,7 +176,6 @@ async def _stage2_llm_resolve(
     remaining_reviews: list[dict],
     page_index: list[dict],
     llm_client: Any,
-    llm_settings: dict,
 ) -> list[str]:
     """Stage 2: LLM-based batch resolution.
 
@@ -194,7 +193,7 @@ async def _stage2_llm_resolve(
         messages = _build_llm_prompt(batch, page_index)
 
         try:
-            output = await llm_client.chat(messages, llm_settings)
+            output = (await llm_client.chat_full(messages))["content"]
         except Exception as e:
             logger.warning("Stage2 LLM call failed for batch %d: %s, keeping pending", batch_count, e)
             break  # Conservative: stop processing on LLM failure
@@ -235,7 +234,6 @@ async def sweep_reviews(
     db: Any,
     project_id: str,
     llm_client: Any = None,
-    llm_settings: dict | None = None,
 ) -> dict:
     """Run two-stage review sweep for a project.
 
@@ -246,7 +244,6 @@ async def sweep_reviews(
         db: Database instance.
         project_id: Target project.
         llm_client: Optional LLMClient for Stage 2.
-        llm_settings: Optional LLM settings.
 
     Returns:
         {"stage1_resolved": int, "stage2_resolved": int, "remaining": int}
@@ -285,7 +282,7 @@ async def sweep_reviews(
     # Auto-resolve Stage 1 matches in DB
     for review_id in stage1_resolved:
         try:
-            db.resolve_wiki_review(review_id, "auto_resolved")
+            db.resolve_wiki_review(project_id, review_id, "auto_resolved")
         except Exception as e:
             logger.warning("Failed to auto-resolve review %s: %s", review_id, e)
 
@@ -293,13 +290,13 @@ async def sweep_reviews(
 
     # Stage 2: LLM judgment (if client available and remaining reviews exist)
     stage2_resolved: list[str] = []
-    if llm_client and llm_settings and remaining:
+    if llm_client and remaining:
         stage2_resolved = await _stage2_llm_resolve(
-            remaining, all_pages, llm_client, llm_settings or {},
+            remaining, all_pages, llm_client,
         )
         for review_id in stage2_resolved:
             try:
-                db.resolve_wiki_review(review_id, "auto_resolved")
+                db.resolve_wiki_review(project_id, review_id, "auto_resolved")
             except Exception as e:
                 logger.warning("Failed to auto-resolve review %s: %s", review_id, e)
 

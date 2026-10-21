@@ -115,8 +115,9 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
     }
   }
 
+  // 点蒙板不关闭（表单模态防丢输入，0.3 §5.2），仅取消按钮/保存流程关闭
   return (
-    <div className={s.overlay} onClick={saving ? undefined : onClose}>
+    <div className={s.overlay}>
       <div className={s.modal} onClick={(e) => e.stopPropagation()}>
         <h3 className={s.title}>{initial ? t('affairs.form.editTitle') : t('affairs.form.newTitle')}</h3>
         <input className={s.input} placeholder={t('affairs.form.titleLabel')}

@@ -84,8 +84,8 @@ def test_pulse_sentence_blank_output_returns_empty(monkeypatch):
         def __init__(self, *a, **k):
             pass
 
-        async def chat(self, *a, **k):
-            return "  \n  "
+        async def chat_full(self, *a, **k):
+            return {"content": "  \n  "}
     monkeypatch.setattr("llm.LLMClient", _BlankLLM)
     assert ledger_service._pulse_sentence(
         [{"entry_date": "2026-09", "entry_type": "milestone", "content": "投产"}],

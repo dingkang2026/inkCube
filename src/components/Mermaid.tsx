@@ -50,7 +50,7 @@ export function Mermaid({ chart }: MermaidProps) {
 
   if (error) {
     return (
-      <pre style={{ color: 'var(--error, #dc2626)', fontSize: '12px' }}>
+      <pre style={{ color: 'var(--error)', fontSize: 'var(--text-sm)' }}>
         Mermaid Error: {error}
       </pre>
     )

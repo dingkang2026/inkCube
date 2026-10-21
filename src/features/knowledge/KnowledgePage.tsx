@@ -1,7 +1,8 @@
 /** src/features/knowledge/KnowledgePage.tsx */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { BookOpen, Search, Image as ImageIcon, FileText } from 'lucide-react'
+import { Search, Image as ImageIcon, FileText } from 'lucide-react'
 import { FileUploader } from './FileUploader'
 import { ImageGallery } from './ImageGallery'
 import { SearchBar } from './SearchBar'
@@ -28,6 +29,8 @@ interface KnowledgePageProps {
   onFileSelect?: (fileId: string | null, filename: string | null) => void
   /** IPC channel name mapping — override to use different backend (e.g. baseLib:* channels) */
   ipcChannels?: Partial<KnowledgeIpcChannels>
+  /** 零项目欢迎态内容(0.5 §4.3 三步引导卡):嵌入场景 selectedProject 恒非空,此分支不可达 */
+  welcome?: ReactNode
 }
 
 type OutputTab = 'search' | 'images'
@@ -45,18 +48,18 @@ const STATUS_FILTERS: { key: FileStatusFilter; labelKey: string }[] = [
   { key: 'error', labelKey: 'knowledge.filterError' },
 ]
 
-export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipcChannels }: KnowledgePageProps) {
+export function KnowledgePage({ selectedProject, onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipcChannels, welcome }: KnowledgePageProps) {
   const channels = { ...DEFAULT_KNOWLEDGE_IPC_CHANNELS, ...ipcChannels }
   return (
-    <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} ipc={channels} />
+    <KnowledgePageInner selectedProject={selectedProject} onOpenSettings={onOpenSettings} onProjectDataChanged={onProjectDataChanged} compact={compact} onFileSelect={onFileSelect} ipc={channels} welcome={welcome} />
   )
 }
 
-function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipc }: KnowledgePageProps & { ipc: KnowledgeIpcChannels }) {
+function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, onProjectDataChanged, compact, onFileSelect, ipc, welcome }: KnowledgePageProps & { ipc: KnowledgeIpcChannels }) {
   const { t } = useTranslation()
   const showToast = useToast()
   const guard = useFeatureGuard()
-  // 队列暂停开关（0.4 §队列暂停）：解析/描述各自独立；基础库共用同一队列，
+  // 队列停止开关（0.4 §队列暂停，UI 呈现为停止/继续）：解析/描述各自独立；基础库共用同一队列，
   // 经 ipcChannels 覆写的页面同样受同一开关控制
   const parsingPause = useQueuePause('parsing')
   const describePause = useQueuePause('describe')
@@ -65,7 +68,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const [recentChunks, setRecentChunks] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
-  const [outputTab, setOutputTab] = useState<OutputTab>('search')
+  const [outputTab, setOutputTab] = useState<OutputTab>('images')
   const [fileTotal, setFileTotal] = useState(0)
   // 状态分布（搜索口径、不含状态筛选）——筛选 Tab 计数源；随每次 loadFiles 刷新
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
@@ -420,13 +423,10 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   }, [selectedFileId, selectedProject, loadRecentChunks])
 
   if (!selectedProject) {
+    // 零项目欢迎态:内容由调用方注入(0.5 §4.3 三步引导卡);嵌入场景(详情页/基础库)selectedProject 恒非空,此分支不可达
     return (
-      <div className={s.page}>
-        <div className={s.emptyState}>
-          <div className={s.emptyIcon}><BookOpen size={28} /></div>
-          <h3>{t('knowledge.welcomeTitle')}</h3>
-          <p>{t('knowledge.welcomeDesc')}</p>
-        </div>
+      <div className={`${s.page} ${s.pageWelcome}`}>
+        {welcome ?? null}
       </div>
     )
   }
@@ -563,16 +563,16 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
         <div className={s.outputPanel}>
           <div className={s.outputTabBar}>
             <button
-              className={`${s.outputTab} ${outputTab === 'search' ? s.outputTabActive : ''}`}
-              onClick={() => setOutputTab('search')}
-            >
-              <FileText size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />{t('knowledge.tabChunks')}
-            </button>
-            <button
               className={`${s.outputTab} ${outputTab === 'images' ? s.outputTabActive : ''}`}
               onClick={() => setOutputTab('images')}
             >
               <ImageIcon size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />{t('knowledge.tabImages')}
+            </button>
+            <button
+              className={`${s.outputTab} ${outputTab === 'search' ? s.outputTabActive : ''}`}
+              onClick={() => setOutputTab('search')}
+            >
+              <FileText size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />{t('knowledge.tabChunks')}
             </button>
             {selectedFileId && (
               <span className={s.scopeIndicator}>

@@ -1,12 +1,14 @@
 """python/knowledge/vector_store.py"""
 # CRITICAL: Set offline mode BEFORE any imports that might load transformers
 import logging
+import math
 import os
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
 
 import threading
 import chromadb
+from chromadb.errors import NotFoundError
 from chromadb.config import Settings as ChromaSettings
 from chromadb.utils import embedding_functions
 from pathlib import Path
@@ -111,14 +113,46 @@ def get_chroma_client(persist_dir: str):
 
 
 def drop_chroma_client(persist_dir: str) -> None:
-    """Evict the shared client for *persist_dir* from the process cache.
+    """Close and evict the shared client for *persist_dir*.
 
     Call before deleting the directory itself (e.g. knowledge-base wipe) so
     the cache never hands out a client whose backing files are gone.
+    stop() releases the on-disk sqlite/segment handles — popping the cache
+    alone left them open and the following rmtree silently kept locked
+    files behind on Windows (incident 2026-10-20: "Deleted ChromaDB
+    directory" logged while chroma/ survived). clear_system_cache() drops
+    chromadb's global (path, settings) registry entry so a later
+    get_chroma_client() re-registers cleanly (a bare PersistentClient
+    would poison it — incident 2026-10-07). stop runs inside the lock:
+    a concurrent get_chroma_client() between pop and stop would re-open
+    the directory and re-hold the very handles being released.
     """
     key = str(Path(persist_dir).resolve())
     with _chroma_clients_lock:
-        _chroma_clients.pop(key, None)
+        client = _chroma_clients.pop(key, None)
+        if client is None:
+            return
+        try:
+            client._system.stop()
+        except Exception:
+            logger.warning("chroma _system.stop failed: %s", key, exc_info=True)
+        try:
+            client.clear_system_cache()
+        except Exception:
+            logger.warning(
+                "chroma clear_system_cache failed: %s", key, exc_info=True)
+
+
+def image_doc_id(file_id: str, page_no, image_id: str) -> str:
+    """图片描述向量的唯一 id：img_{file_id}_{page_no}_{image_id}。
+
+    前缀 img_{file_id}_ 供文件级 LIKE 清理匹配（fts_store.delete_by_file_id、
+    task_queue 文件删除、routers 按前缀清理）；尾部 image_id（SQLite
+    images.id，UUID）保证同页多图 id 唯一。事故 2026-10-14：旧格式
+    img_{file_id}_{page_no} 同页碰撞，ChromaDB upsert 互相覆盖，498 张图
+    的 VLM 描述检索不到。写入与删除统一走本函数。
+    """
+    return f"img_{file_id}_{page_no if page_no is not None else 0}_{image_id}"
 
 
 # Serializes bge-m3 encode batches across threads. FlagEmbedding 1.3 moves
@@ -155,7 +189,24 @@ class BgeM3EmbeddingFunction(embedding_functions.EmbeddingFunction):
             result = model.encode(
                 texts, return_dense=True, batch_size=8, max_length=1024,
             )
-        return result['dense_vecs'].tolist()
+        # 入库边界 NaN 消毒（2026-10-14/15 事故根因修复）：fp16 CUDA 推理对
+        # 个别输入会溢出产生非有限值，裸入库即永久毒化——该 chunk 的 cosine
+        # 距离对任何查询恒为 NaN，检索响应 JSON 序列化直接 500。非有限行
+        # 替换为单位基向量 e0（有限、模长 1，cosine 可计算不毒化），该
+        # chunk 仍可经 FTS 腿命中；日志留痕提示重新入库该文件。
+        vecs = np.asarray(result['dense_vecs'], dtype=np.float32)
+        bad_rows = ~np.isfinite(vecs).all(axis=1)
+        if bad_rows.any():
+            vecs = vecs.copy()
+            vecs[bad_rows] = 0.0
+            vecs[bad_rows, 0] = 1.0
+            for i in np.flatnonzero(bad_rows):
+                logger.warning(
+                    "BgeM3 embedding produced a non-finite vector (text %d/%d "
+                    "%r); stored unit placeholder — re-ingest the source file",
+                    i + 1, len(texts), str(texts[i])[:40],
+                )
+        return vecs.tolist()
 
 
 class VectorStore:
@@ -314,6 +365,17 @@ class VectorStore:
         if results["ids"] and results["ids"][0]:
             for i, doc_id in enumerate(results["ids"][0]):
                 dist = results["distances"][0][i]
+                # 出口 NaN 守卫（纵深防御）：存量库若残留 fp16 毒化向量，其
+                # 距离恒为 NaN——跳过并留痕，绝不让 NaN 进入响应序列化
+                # （2026-10-14/15 json.dumps 500 事故）。根因消毒在
+                # BgeM3EmbeddingFunction.__call__；此处兜存量库遗留脏数据。
+                if not math.isfinite(dist):
+                    logger.warning(
+                        "Dense search returned non-finite distance for chunk "
+                        "%s (project %s) — skipped; re-ingest the source file",
+                        doc_id, project_id,
+                    )
+                    continue
                 formatted.append({
                     "id": doc_id,
                     "content": results["documents"][0][i],
@@ -349,6 +411,21 @@ class VectorStore:
                 metadata_map[doc_id] = meta or {}
         return metadata_map
 
+    def export_collection(self, project_id: str) -> dict:
+        """
+        Export the full project collection for transfer (2.9 §4.4).
+
+        collection.get 全量导出（向量 + 文本 + metadata），同时覆盖文本 chunk
+        与图片描述向量——后者只入 Chroma 不入 FTS，按 id 取向量的路线会漏导。
+        metadata 原样返回（markdown_content/section_path/page/chunk_index 是
+        rag.py / hybrid_retriever.py 的消费依赖，不可丢）。
+
+        Returns:
+            {"ids": [...], "documents": [...], "metadatas": [...], "embeddings": [...]}
+        """
+        collection = self.get_or_create_collection(project_id)
+        return collection.get(include=["embeddings", "documents", "metadatas"])
+
     def delete_project(self, project_id: str) -> None:
         """
         Delete entire project collection.
@@ -359,8 +436,11 @@ class VectorStore:
         collection_name = f"project_{project_id}"
         try:
             self.client.delete_collection(collection_name)
+        except NotFoundError:
+            # Collection doesn't exist, ignore（chromadb ≥1.x 抛 NotFoundError，
+            # 旧版为 ValueError；两皆容忍，避免删除无文件项目时 500）
+            pass
         except ValueError:
-            # Collection doesn't exist, ignore
             pass
 
     def delete_by_file_id(self, project_id: str, file_id: str) -> None:
@@ -386,3 +466,19 @@ class VectorStore:
             return
         collection = self.get_or_create_collection(project_id)
         collection.delete(ids=ids)
+
+    def delete_by_image_id(self, project_id: str, image_id: str) -> None:
+        """删除某张图片的全部向量块（按 metadata.image_id 过滤）。
+
+        id 格式无关：新旧格式向量的 metadata.image_id 均为同一 SQLite
+        images.id，metadata 过滤一次删净。避免 delete_by_ids 对不存在
+        id 静默 no-op——2026-10-15 review 发现：存量旧格式向量与
+        img_{file_id}_{page_no}_{image_id} 新 id 失配，删除/归档/重试后
+        旧向量残留且仍可被检索（dense 是图片描述唯一检索通道）。
+
+        Args:
+            project_id: Project ID (to locate collection)
+            image_id: SQLite images.id whose chunks to delete
+        """
+        collection = self.get_or_create_collection(project_id)
+        collection.delete(where={"image_id": image_id})

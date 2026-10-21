@@ -90,7 +90,7 @@ async def resolve_variables(
     llm_settings: dict,
     db: Any = None,
     base_project_ids: Optional[list[str]] = None,
-    tavily_api_key: str = "",
+    web_search_cfg: dict | None = None,
     internet_enabled: bool = True,
 ) -> tuple[dict, dict, dict]:
     """解析模板全部变量（隐式 + user + derived），返回可实例化的变量表。
@@ -113,7 +113,7 @@ async def resolve_variables(
         llm_settings: 应用设置 dict
         db: 数据库句柄（预留给检索通道）
         base_project_ids: 关联基础库项目 ID 列表
-        tavily_api_key: Tavily API Key（internet 通道）
+        web_search_cfg: 网络搜索配置 {"provider","key","engine"}（internet 通道，web_search_cfg_from_settings 归一产物）
         internet_enabled: 报告级互联网总开关（§1.1）；False 时强制派生变量仅走 knowledge，无视 data_sources
 
     Returns:
@@ -216,7 +216,7 @@ async def resolve_variables(
                 llm_client=llm_client,
                 llm_settings=llm_settings,
                 digests=[],
-                tavily_api_key=tavily_api_key,
+                web_search_cfg=web_search_cfg,
                 base_project_ids=base_project_ids,
                 db=db,
                 data_sources=var_sources,
@@ -250,7 +250,7 @@ async def resolve_variables(
         ]
 
         value, e_usage = await _extract_value(
-            derive_hint, deps, evidence_text, cardinality, llm_client, llm_settings,
+            derive_hint, deps, evidence_text, cardinality, llm_client,
         )
         _add_usage(e_usage)
         ctx[name] = value
@@ -336,7 +336,6 @@ async def _extract_value(
     evidence_text: str,
     cardinality: str,
     llm_client: Any,
-    llm_settings: dict,
 ) -> tuple[Any, dict]:
     """调用 LLM 从证据中抽取变量值（one-shot resolver）。
 
@@ -345,7 +344,7 @@ async def _extract_value(
     """
     messages = build_extract_value_prompt(derive_hint, deps, evidence_text, cardinality)
     try:
-        result = await llm_client.chat_full(messages, llm_settings)
+        result = await llm_client.chat_full(messages)
         content = result.get("content", "")
         usage = result.get("usage", _EMPTY_USAGE)
     except Exception as e:

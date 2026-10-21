@@ -23,8 +23,13 @@ async def list_tasks(
     status: str | None = Query(None, description="Filter: active, archived, or None for all"),
     limit: int = Query(0, ge=0, description="Page size; 0 = return all"),
     offset: int = Query(0, ge=0, description="Rows to skip"),
+    origin: str | None = Query(None, description="Filter by origin（2.3 §3.1 形态分离；任务 Tab 固定传 'chat'，None = 全量）"),
 ):
-    tasks, has_more = deps.db.list_tasks(status=status, limit=limit, offset=offset)
+    tasks, has_more = deps.db.list_tasks(status=status, limit=limit, offset=offset, origin=origin)
+    # 2.10 §4.5：任务列表行附加累计消耗（无记录为 null，前端不渲染小字）
+    usage_map = deps.db.get_usage_by_tasks([t["id"] for t in tasks])
+    for t in tasks:
+        t["usage"] = usage_map.get(t["id"])
     return {"tasks": tasks, "has_more": has_more}
 
 
@@ -195,6 +200,28 @@ async def task_chat(task_id: str, req: TaskChatRequest):
     logger.info("Task chat: task_id=%s, message_len=%d, resume=%s", task_id, len(req.message), req.resume)
     # 准入前置校验（0.4 §7.3）：缺 LLM 配置时结构化报错，而非运行中途失败
     ensure_ready("task")
+
+    # Resume 前置校验（review 2026-10-20 T-1）：任何早退必须发生在 try_acquire_task
+    # 之前——acquire 之后的早退不经过 run() 的 finally，_running_task_ids 永久残留
+    # 该任务（释放唯一位置在 run()），后果链：后续 chat 恒 409、并发槽被侵占、
+    # Activity 假报运行中、scheduler R2 永久让路，唯一恢复手段是重启进程。
+    # load_agent_state 对损坏 state_json 抛异常 → 500，同样属 acquire 前必须兑住的
+    # 早退路径。校验通过后到 acquire 之间无 state 消失路径（delete 仅发生在
+    # run() 内部与下方非 resume 分支，均被同任务互斥拦截），无 TOCTOU。
+    resume_state = None
+    if req.resume:
+        try:
+            resume_state = deps.db.load_agent_state(task_id)
+        except Exception:
+            logger.warning("Resume state unreadable: task %s", task_id, exc_info=True)
+        if not resume_state:
+            # 409 与同文件 TASK_RUNNING 先例一致：请求无法执行的结构化错误，
+            # Electron tasks:chat 桥按 !ok 抛错 → 前端 catch 复位生成态
+            return JSONResponse(
+                status_code=409,
+                content={"error": "没有可恢复的任务状态", "code": "NO_RESUMABLE_STATE"},
+            )
+
     # Atomic reserve (H4): rejects both the global limit AND a second chat
     # on a task that is already running (would corrupt its message history).
     if not deps.task_agent.try_acquire_task(task_id):
@@ -211,11 +238,8 @@ async def task_chat(task_id: str, req: TaskChatRequest):
         )
 
     if req.resume:
-        # Resume mode: check for saved state, skip saving user message
-        state = deps.db.load_agent_state(task_id)
-        if not state:
-            return {"error": "没有可恢复的任务状态", "code": "NO_RESUMABLE_STATE"}
-        logger.info("Resuming task %s from iteration %d", task_id, state.get("iteration", 0))
+        # Resume mode: skip saving user message (state already verified above)
+        logger.info("Resuming task %s from iteration %d", task_id, resume_state.get("iteration", 0))
     else:
         # Normal mode: save user message and update title
         # Clear any saved agent state so _run_inner builds fresh context
@@ -307,8 +331,12 @@ async def get_task_files(task_id: str):
 
 
 @router.get("/tasks/{task_id}/files/content")
-async def get_file_content(task_id: str, path: str = ""):
-    """Read file content from task workspace for preview."""
+async def get_file_content(task_id: str, path: str = "", b64: bool = Query(False)):
+    """Read file content from task workspace for preview.
+
+    b64=1（0.5 E2 T5 导入链路）：任意类型统一 base64 返回，与 upload 同款
+    50MB 上限；路径校验与不带 b64 完全一致。
+    """
     task = deps.db.get_task(task_id)
     if not task:
         return {"error": "任务不存在", "code": "TASK_NOT_FOUND"}
@@ -322,6 +350,12 @@ async def get_file_content(task_id: str, path: str = ""):
     if not file_path.exists() or not file_path.is_file():
         return {"error": "文件不存在", "code": "FILE_NOT_FOUND"}
     size = file_path.stat().st_size
+    if b64:
+        if size > 50 * 1024 * 1024:  # 50MB limit，与 upload_task_files 一致
+            return {"error": f"文件 {file_path.name} 超过 50MB 限制", "code": "FILE_TOO_LARGE"}
+        import base64
+        data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        return {"type": "file", "data": data, "size": size, "path": path, "filename": file_path.name}
     # Determine file category
     ext = file_path.suffix.lower()
     image_exts = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"}

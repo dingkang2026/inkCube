@@ -6,24 +6,21 @@ import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import { useActivity } from '../activity/ActivityContext'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
+import { useConfirm } from '../../components/ConfirmDialog'
 import styles from './InternalModelSettings.module.css'
 
 const CATEGORY_ORDER = ['embedding', 'document_parsing', 'ocr'] as const
 const POLL_INTERVAL = 1000
-
-interface LibreOfficeStatus {
-  available: boolean
-  tool: 'ms-office' | 'libreoffice' | null
-  path: string | null
-}
+// LibreOffice 状态卡已迁至外部依赖页 ExternalDepsSettings（2026-10-19：
+// 文档转换引擎属系统依赖，非内部模型；检测走同一 MODELS_IPC.libreofficeStatus 通道）
 
 export function InternalModelSettings() {
   const { t } = useTranslation()
   const handleError = useErrorHandler()
+  const confirmDialog = useConfirm()
   const [models, setModels] = useState<Record<string, ModelStatusInfo>>({})
   const [loading, setLoading] = useState(true)
   const [downloadingAll, setDownloadingAll] = useState(false)
-  const [libreoffice, setLibreOffice] = useState<LibreOfficeStatus | null>(null)
   // enabled 谓词从全局心跳派生（0.4lifecycle-design.md §6.2）：存在下载中模型时轮询明细，
   // 全部终态后自停；启动间隙由触发动作后的一次立即拉取接上（见 handleDownload）
   const { items: modelItems } = useActivity('model_download')
@@ -40,22 +37,12 @@ export function InternalModelSettings() {
     }
   }, [])
 
-  const fetchLibreOfficeStatus = useCallback(async () => {
-    try {
-      const res = await window.electronAPI.invoke(MODELS_IPC.libreofficeStatus)
-      setLibreOffice(res as LibreOfficeStatus)
-    } catch {
-      // ignore
-    }
-  }, [])
-
   useEffect(() => {
     fetchStatus().catch((err) => {
       setLoading(false)
       handleError(err)
     })
-    fetchLibreOfficeStatus()
-  }, [fetchStatus, fetchLibreOfficeStatus, handleError])
+  }, [fetchStatus, handleError])
 
   usePolling({
     name: 'internal-model-status',
@@ -65,8 +52,12 @@ export function InternalModelSettings() {
   })
 
   // 终态补拉（0.4 §6.3）：轮询随活动消失自停，最后一次快照可能停在完成前（toast 走
-  // 通知推送先于 status 上屏）→ modelsActive true→false 边沿补拉一次，立即渲染终态
-  useEdgeRefetch(modelsActive, () => { void fetchStatus().catch(() => {}) })
+  // 通知推送先于 status 上屏）→ modelsActive true→false 边沿补拉一次，立即渲染终态；
+  // 同时广播健康重查边沿：embedding/parsing 就绪后 SystemAlerts 红条即时消失
+  useEdgeRefetch(modelsActive, () => {
+    void fetchStatus().catch(() => {})
+    window.dispatchEvent(new CustomEvent('app:health-changed'))
+  })
 
   const handleDownload = async (name: string) => {
     try {
@@ -84,6 +75,31 @@ export function InternalModelSettings() {
     }
     // 后台线程已同步置 downloading，立即拉一次接上启动间隙（全局心跳 ≤5/15s 后接管谓词）
     await fetchStatus().catch(() => {})
+  }
+
+  const handleDelete = async (name: string) => {
+    const label = t(`settings.internalModel.modelNames.${name}`)
+    const ok = await confirmDialog({
+      title: t('settings.internalModel.deleteTitle'),
+      message: t('settings.internalModel.deleteMessage', { name: label }),
+    })
+    if (!ok) return
+    try {
+      // ok:False（bundled/下载中拒绝）为 200 响应体不抛错，显式检查避免「点了没反应」
+      const res = (await window.electronAPI.invoke(MODELS_IPC.delete, name)) as { ok?: boolean; message?: string; code?: string }
+      if (res && res.ok === false) {
+        const err = new Error(res.message || 'delete rejected')
+        ;(err as Error & { errorCode?: string }).errorCode = res.code
+        handleError(err)
+        return
+      }
+    } catch (err) {
+      handleError(err)
+      return
+    }
+    // 删除后立即拉取终态；同时广播健康重查边沿：就绪态失效，SystemAlerts 红条即时出现
+    await fetchStatus().catch(() => {})
+    window.dispatchEvent(new CustomEvent('app:health-changed'))
   }
 
   const handleDownloadAll = async () => {
@@ -153,32 +169,6 @@ export function InternalModelSettings() {
         <div className={styles.loading}>{t('settings.internalModel.verifying')}</div>
       ) : (
         <div className={styles.groups}>
-          {/* LibreOffice status card */}
-          {libreoffice && (
-            <div className={styles.group}>
-              <div className={styles.groupLabel}>{t('settings.internalModel.libreOffice.title')}</div>
-              <div className={styles.modelCard}>
-                <div className={styles.modelInfo}>
-                  <span className={styles.modelName}>{t('settings.internalModel.libreOffice.name')}</span>
-                  <span className={styles.modelMeta}>
-                    {libreoffice.tool === 'ms-office'
-                      ? t('settings.internalModel.libreOffice.msOffice')
-                      : libreoffice.tool === 'libreoffice'
-                      ? t('settings.internalModel.libreOffice.libreOffice')
-                      : t('settings.internalModel.libreOffice.notInstalled')}
-                  </span>
-                </div>
-                <div className={styles.modelStatus}>
-                  <span className={`${styles.statusBadge} ${!libreoffice.available ? styles.missing : ''}`}>
-                    {libreoffice.available
-                      ? t('settings.internalModel.libreOffice.installed')
-                      : t('settings.internalModel.libreOffice.installPrompt')}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
           {grouped.map(({ category, label, items }) =>
             items.length > 0 ? (
               <div key={category} className={styles.group}>
@@ -188,6 +178,7 @@ export function InternalModelSettings() {
                     key={model.name}
                     model={model}
                     onDownload={() => handleDownload(model.name)}
+                    onDelete={() => handleDelete(model.name)}
                     t={t}
                   />
                 ))}
@@ -205,10 +196,12 @@ export function InternalModelSettings() {
 function ModelCard({
   model,
   onDownload,
+  onDelete,
   t,
 }: {
   model: ModelStatusInfo
   onDownload: () => void
+  onDelete: () => void
   t: (key: string) => string
 }) {
   const isBundled = model.install_type === 'bundled'
@@ -234,7 +227,7 @@ function ModelCard({
             {isDownloaded ? t('settings.internalModel.bundledInstalled') : t('settings.internalModel.bundledMissing')}
           </span>
         ) : hasError ? (
-          <div className={styles.errorRow}>
+          <div className={styles.actionRow}>
             <span className={styles.errorText}>{model.error}</span>
             <button className="btn btn-secondary btn-sm" onClick={onDownload}>
               {t('settings.internalModel.download')}
@@ -248,7 +241,13 @@ function ModelCard({
             <span className={styles.progressText}>{progress}%</span>
           </div>
         ) : isDownloaded ? (
-          <span className={styles.statusBadge}>{t('settings.internalModel.downloaded')}</span>
+          // 非 bundled 已下载态（bundled 在前置分支拦截）：badge + 删除按钮释放磁盘
+          <div className={styles.actionRow}>
+            <span className={styles.statusBadge}>{t('settings.internalModel.downloaded')}</span>
+            <button className="btn btn-secondary btn-sm" onClick={onDelete}>
+              {t('settings.internalModel.delete')}
+            </button>
+          </div>
         ) : (
           <button className="btn btn-secondary btn-sm" onClick={onDownload}>
             {t('settings.internalModel.download')}

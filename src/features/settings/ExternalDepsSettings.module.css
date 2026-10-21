@@ -11,13 +11,13 @@
 }
 
 .title {
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
   margin: 0 0 4px;
 }
 
 .description {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin: 0;
 }
@@ -28,7 +28,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s;
@@ -61,18 +61,21 @@
 }
 
 .item.ok {
-  border-color: rgba(34, 197, 94, 0.3);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
 }
 
 .item.missing {
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: color-mix(in srgb, var(--error) 20%, transparent);
   opacity: 0.75;
 }
 
 .itemIcon {
-  font-size: 16px;
+  display: flex;
   flex-shrink: 0;
 }
+
+.item.ok .itemIcon { color: var(--success); }
+.item.missing .itemIcon { color: var(--error); }
 
 .itemInfo {
   flex: 1;
@@ -83,40 +86,40 @@
 }
 
 .itemName {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
 }
 
 .itemDesc {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
 }
 
 .itemVersion {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .itemPath {
-  font-size: 10px;
-  color: var(--text-tertiary, var(--text-secondary));
-  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .itemStatus {
-  font-size: 11px;
+  font-size: var(--text-xs);
   flex-shrink: 0;
   color: var(--text-secondary);
 }
 
 .item.ok .itemStatus {
-  color: #22c55e;
+  color: var(--success);
 }
 
 .item.missing .itemStatus {
-  color: #ef4444;
+  color: var(--error);
 }

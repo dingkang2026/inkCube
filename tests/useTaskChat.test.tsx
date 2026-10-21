@@ -16,14 +16,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 // V2 §8.2：browser-fetch 实时 action 弹 Compact 面板——spy 捕获，避免污染全局 store
 const showCompactSpy = vi.hoisted(() => vi.fn())
+// V2.1-R10：type 输入可见性——自动放大（action）+ 输入完成回小卡（observation）
+const expandForInputSpy = vi.hoisted(() => vi.fn())
+const collapseIfAutoSpy = vi.hoisted(() => vi.fn())
 vi.mock('../src/features/browser/browserPanelStore', () => ({
   browserPanelStore: {
     showCompact: showCompactSpy,
+    expandForInput: expandForInputSpy,
+    collapseIfAuto: collapseIfAutoSpy,
     navigate: vi.fn(),
     expand: vi.fn(),
     collapse: vi.fn(),
     hide: vi.fn(),
   },
+}))
+// 无 i18n 实例时 t 返回 key 本身——错误文案断言用 key 片段（见 T-2 用例）
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
 }))
 import { useTaskChat } from '../src/features/task/useTaskChat'
 
@@ -59,6 +68,8 @@ beforeEach(() => {
   invoke.mockClear()
   invoke.mockResolvedValue({ messages: [] })
   showCompactSpy.mockClear()
+  expandForInputSpy.mockClear()
+  collapseIfAutoSpy.mockClear()
   wireWindow()
 })
 
@@ -145,6 +156,32 @@ describe('useTaskChat stream protocol', () => {
     await emit('action', { tool: 'skill_runner', input: { skill: 'wiki-compiler' } })
     expect(showCompactSpy).toHaveBeenCalledTimes(2)
   })
+
+  it('type action auto-expands for input visibility; observation collapses back (V2.1-R10)', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    // 非 type 的 browser-fetch 只弹小卡，不放大
+    await emit('action', { tool: 'browser-fetch', input: { command: 'open https://example.com' } })
+    expect(expandForInputSpy).not.toHaveBeenCalled()
+
+    // type 命令 → 自动放大（输入框必须看得见）
+    await emit('action', { tool: 'browser-fetch', input: { command: 'type --selector "div > div > input" --text "上海旦迪" --submit' } })
+    expect(expandForInputSpy).toHaveBeenCalledTimes(1)
+
+    // observation 到达（输入完成）→ 回小卡
+    await emit('observation', { content: '{"action":"type"}' })
+    expect(collapseIfAutoSpy).toHaveBeenCalledTimes(1)
+
+    // skill_runner 备选路径同样感知 type
+    await emit('action', { tool: 'skill_runner', input: { skill: 'browser-fetch', input: { command: 'type --selector "input" --text "y"' } } })
+    expect(expandForInputSpy).toHaveBeenCalledTimes(2)
+
+    // action 本身仍正常入流式步骤（open / type / skill_runner-type 共 3 条）
+    const actions = result.current.streamSteps.filter((s) => s.type === 'action')
+    expect(actions).toHaveLength(3)
+    expect(actions[2].tool).toBe('skill_runner')
+  })
 })
 
 describe('useTaskChat — stream accumulation regression (drop-chars bug)', () => {
@@ -196,5 +233,236 @@ describe('useTaskChat — stream accumulation regression (drop-chars bug)', () =
     // 切回 t2，bg 缓存恢复
     await act(async () => { rerender({ id: 't2' }) })
     expect(result.current.streamContent).toBe('T2重试新内容')
+  })
+})
+
+describe('useTaskChat — hint-type thought & resume banner (P2 exhaustion recovery)', () => {
+  it('hint-type thought (no prior stream content) lands in the iteration card; later real thought appends', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    // 恢复场景：提示型 thought 先于首个 iteration 事件到达（此前被静默丢弃，
+    //「流内提示」从未可见——CodeReview M1）
+    const hint = '▶️ 从第 24 轮恢复执行（新一轮 25 轮预算）...'
+    await emit('thought', { content: hint })
+    expect(result.current.streamIterationThoughts.get(0)).toBe(hint)
+
+    // 随后轮 0 正常分析到达：流式内容优先，与提示同卡（换行追加）
+    await emit('iteration', { iteration: 0 })
+    await emit('answer_chunk', { content: '分析内容' })
+    await emit('thought', { content: '分析内容' })
+    expect(result.current.streamIterationThoughts.get(0)).toBe(`${hint}\n分析内容`)
+  })
+
+  it('background path captures hint-type thought as well', async () => {
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useTaskChat(id),
+      { initialProps: { id: 't2' as string | null } },
+    )
+    await settle()
+
+    // t2 前台仅建立轮边界（content 保持空）→ 切 t1 转后台 → 后台收到提示型 thought
+    await emit('iteration', { iteration: 0 }, 't2')
+    await act(async () => { rerender({ id: 't1' }) })
+    await emit('thought', { content: '⏸️ 已暂停，可点击恢复继续' }, 't2')
+    // 切回 t2，bg 缓存里的提示可见
+    await act(async () => { rerender({ id: 't2' }) })
+    expect(result.current.streamIterationThoughts.get(0)).toBe('⏸️ 已暂停，可点击恢复继续')
+  })
+
+  it('done refreshes canResume so the banner appears without switching tasks', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+    expect(result.current.canResume).toBe(false)
+
+    // 任务运行中断点产生（如迭代耗尽）：hasState 由 false 变 true
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:hasState'
+        ? Promise.resolve({ has_state: true })
+        : Promise.resolve({ messages: [] }),
+    )
+
+    await emit('iteration', { iteration: 0 })
+    await emit('answer_chunk', { content: '已连续执行 25 轮迭代仍未完成任务...' })
+    await emit('done', {})
+    await settle() // refreshCanResume 异步查询
+
+    // 此前 canResume 只在 loadMessages（切任务）时查询——前台看着任务耗尽
+    // 时横幅不出现，文案指路的「恢复」按钮缺失（CodeReview M2）
+    expect(result.current.canResume).toBe(true)
+  })
+})
+
+describe('useTaskChat — 发送即建任务 override（0.5 §4.4）', () => {
+  it('overrideTaskId 指定发送目标：tasks:chat payload 与 user 消息 task_id 均用 override', async () => {
+    const { result } = renderHook(() => useTaskChat(null))
+    await settle()
+    await act(async () => { await result.current.handleSendMessage('收集企业信息', 't-new') })
+    expect(invoke).toHaveBeenCalledWith('tasks:chat', { taskId: 't-new', message: '收集企业信息' })
+    expect(result.current.messages[0].task_id).toBe('t-new')
+  })
+
+  it('override 同步归属 ref：新 id 事件走前台流、其它 id 不串，done 合成消息落新 id', async () => {
+    // 回归背景：创建任务后立即发送时 activeTaskId prop/ref 尚未经渲染回流，
+    // 若不同步 ref，新任务的流事件会误走后台路径被丢弃，done 合成消息 task_id 为空
+    const { result } = renderHook(() => useTaskChat(null))
+    await settle()
+    await act(async () => { await result.current.handleSendMessage('第一条', 't-new') })
+    await emit('answer_chunk', { content: '新任务流' }, 't-new')
+    expect(result.current.streamContent).toBe('新任务流')
+    await emit('answer_chunk', { content: '别任务' }, 't-other')
+    expect(result.current.streamContent).toBe('新任务流')
+    await emit('done', {}, 't-new')
+    const assistant = result.current.messages.find((m) => m.role === 'assistant')
+    expect(assistant?.task_id).toBe('t-new')
+  })
+
+  it('零任务且无 override：静默不发送（原门控回归）', async () => {
+    const { result } = renderHook(() => useTaskChat(null))
+    await settle()
+    await act(async () => { await result.current.handleSendMessage('x') })
+    expect(invoke).not.toHaveBeenCalledWith('tasks:chat', expect.anything())
+  })
+
+  it('override 发送后的 activeTaskId prop 回流不重置生成态、不覆盖乐观消息（切换竞态回归）', async () => {
+    // 回归背景：handleCreateTask 的 setActiveTaskId 与发送的 setIsGenerating(true)
+    // 同批提交，切换 effect（null → t-new）以 else 分支重置 isGenerating（流式卡/
+    // 停止钮消失、sendingRef 提前释放），并经 loadMessages 用后端空列表覆盖乐观 user 消息
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useTaskChat(id),
+      { initialProps: { id: null as string | null } },
+    )
+    await settle()
+    await act(async () => { await result.current.handleSendMessage('第一条', 't-new') })
+    expect(result.current.isGenerating).toBe(true)
+
+    // beforeEach 的 invoke mock 对 tasks:getMessages 恒返回空列表 = 模拟后端尚未入库
+    await act(async () => { rerender({ id: 't-new' }) })
+    expect(result.current.isGenerating).toBe(true)
+    expect(result.current.messages.some((m) => m.role === 'user' && m.task_id === 't-new')).toBe(true)
+
+    // 后续流事件继续正常驱动（ref 归属未被打断）
+    await emit('answer_chunk', { content: '流式内容' }, 't-new')
+    expect(result.current.streamContent).toBe('流式内容')
+  })
+
+  it('suppress 一次性：override 回流跳过后，切走再切回仍走正常 bg 保存/恢复', async () => {
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useTaskChat(id),
+      { initialProps: { id: null as string | null } },
+    )
+    await settle()
+    await act(async () => { await result.current.handleSendMessage('第一条', 't-new') })
+    await act(async () => { rerender({ id: 't-new' }) })   // 冗余回流被抑制（标记消费）
+    await emit('answer_chunk', { content: '已生成一半' }, 't-new')
+
+    // 切走（t-new → null）：bg 保存生成态；null 分支清空 UI 态
+    await act(async () => { rerender({ id: null }) })
+    expect(result.current.isGenerating).toBe(false)
+
+    // 切回 t-new：bg 恢复生成态与流内容（既有机制不受 suppress 影响）
+    await act(async () => { rerender({ id: 't-new' }) })
+    expect(result.current.isGenerating).toBe(true)
+    expect(result.current.streamContent).toBe('已生成一半')
+  })
+})
+
+describe('useTaskChat — resume 早退与消息加载竞态回归（review 2026-10-20 T-2/T-3）', () => {
+  it('resume 返回 200+error body：isGenerating 复位并呈现错误，不卡死输入框（T-2）', async () => {
+    // tasks:chat 桥把 200 响应体当 SSE 流解析，dict 错误不抛错——
+    // 旧实现 await 正常返回且无 done 事件，isGenerating 恒 true
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:chat'
+        ? Promise.resolve({ error: '没有可恢复的任务状态', code: 'NO_RESUMABLE_STATE' })
+        : Promise.resolve({ messages: [], has_state: false }),
+    )
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    await act(async () => { await result.current.handleResumeTask() })
+
+    expect(result.current.isGenerating).toBe(false)
+    const last = result.current.messages[result.current.messages.length - 1]
+    expect(last.role).toBe('assistant')
+    // NO_RESUMABLE_STATE 命中 i18n 映射：t 恒等返回 key → 断言映射 key 片段
+    expect(last.content).toContain('noResumableState')
+  })
+
+  it('send 返回 200+error body：同样复位生成态（同族路径一次性防护）', async () => {
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:chat'
+        ? Promise.resolve({ error: '配额耗尽', code: 'QUOTA' })
+        : Promise.resolve({ messages: [], has_state: false }),
+    )
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    await act(async () => { await result.current.handleSendMessage('你好') })
+
+    expect(result.current.isGenerating).toBe(false)
+    const last = result.current.messages[result.current.messages.length - 1]
+    expect(last.role).toBe('assistant')
+    expect(last.content).toContain('配额耗尽')
+  })
+
+  it('快速切任务后，旧任务的慢响应不覆盖新任务消息列表（T-3）', async () => {
+    let resolveT1: (v: unknown) => void = () => {}
+    const t2Msg = { id: 'm2', task_id: 't2', role: 'user', content: 'T2 消息', created_at: '' }
+    invoke.mockImplementation((channel: string, taskId?: string) => {
+      if (channel === 'tasks:getMessages' && taskId === 't1') {
+        return new Promise((resolve) => { resolveT1 = resolve })
+      }
+      if (channel === 'tasks:getMessages' && taskId === 't2') {
+        return Promise.resolve({ messages: [t2Msg] })
+      }
+      return Promise.resolve({ messages: [], has_state: false })
+    })
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useTaskChat(id),
+      { initialProps: { id: 't1' as string | null } },
+    )
+    await settle() // t1 的 getMessages 仍挂起
+
+    await act(async () => { rerender({ id: 't2' }) })
+    await settle()
+    expect(result.current.messages.some((m) => m.task_id === 't2')).toBe(true)
+
+    // t1 的旧响应此时才到达：必须被归属守卫丢弃
+    const t1Msg = { id: 'm1', task_id: 't1', role: 'user', content: 'T1 消息', created_at: '' }
+    await act(async () => {
+      resolveT1({ messages: [t1Msg] })
+      await Promise.resolve()
+    })
+    expect(result.current.messages.some((m) => m.task_id === 't1')).toBe(false)
+    expect(result.current.messages.some((m) => m.task_id === 't2')).toBe(true)
+  })
+
+  it('canResume 查询乱序：切任务后旧任务的 hasState 响应不写入（同一竞态窗口）', async () => {
+    let resolveT1State: (v: unknown) => void = () => {}
+    invoke.mockImplementation((channel: string, taskId?: string) => {
+      if (channel === 'tasks:hasState' && taskId === 't1') {
+        return new Promise((resolve) => { resolveT1State = resolve })
+      }
+      if (channel === 'tasks:hasState' && taskId === 't2') {
+        return Promise.resolve({ has_state: false })
+      }
+      return Promise.resolve({ messages: [] })
+    })
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useTaskChat(id),
+      { initialProps: { id: 't1' as string | null } },
+    )
+    await settle()
+
+    await act(async () => { rerender({ id: 't2' }) })
+    await settle()
+    expect(result.current.canResume).toBe(false)
+
+    // t1 的 hasState=true 晚到：不得把 t2 的恢复横幅点亮
+    await act(async () => {
+      resolveT1State({ has_state: true })
+      await Promise.resolve()
+    })
+    expect(result.current.canResume).toBe(false)
   })
 })

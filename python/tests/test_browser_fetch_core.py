@@ -380,8 +380,44 @@ class TestSnapshotJs:
     def test_snapshot_js_is_arrow_function_source(self):
         assert core.snapshot_js().lstrip().startswith("() =>")
 
+    def test_snapshot_js_visible_definition_matches_playwright(self):
+        # 几何尺寸判定（rect.width>0）漏掉 visibility:hidden（保留布局、rect
+        # 有宽高）与 visibility:collapse——快照把隐藏副本列进 elements，agent
+        # 照用必撞 actionability 超时（2026-10-14 天眼查双搜索框实证）。快照
+        # 的可见定义必须对齐 Playwright（非空 bounding box + visibility 可见）
+        js = core.snapshot_js()
+        assert "getComputedStyle" in js
+        assert "visibility" in js
+
+    def test_snapshot_js_includes_scroll_progress(self):
+        # 懒加载/无限流（2026-10-14 用户提出）：agent 需要滚动位置信息判断
+        # 是否到底——scroll.remaining=0 即视觉到底，height 供收敛判断
+        js = core.snapshot_js()
+        assert "scrollY" in js and "scrollHeight" in js
+        assert "remaining" in js
+
+    def test_snapshot_js_selector_uniqueness_guard(self):
+        # 天眼查实证（2026-10-16）：3 层截断路径生成前缀歧义 selector
+        # （`div:nth-of-type(1) > div > a` 同时命中导航与搜索结果），
+        # locator.first 点错跳回首页。每级候选必须过 querySelectorAll
+        # 唯一性验证，路径级从 3 层起逐层延长至唯一
+        js = core.snapshot_js()
+        assert "document.querySelectorAll(sel).length" in js
+        assert "count(sel) === 1" in js
+        assert "depth <= 8" in js  # 路径延长上限（原 3 层硬截断已废除）
+        assert "a[href=\"'" in js or "a[href=\"' + escAttr(href)" in js  # href 优先定位
+
+    def test_snapshot_js_elements_carry_href(self):
+        # 天眼查实证（2026-10-16）：elements 只有 selector/name，LLM 拿不到
+        # 公司详情页 URL，绕道 web_search+extract 三轮全败。链接类元素
+        # 必须附 href，支持 open <href> 直达导航
+        js = core.snapshot_js()
+        assert "item.href = href" in js
+
     def test_mark_page_is_data_url_with_pool_title(self):
-        assert core.MARK_PAGE.startswith("data:text/html,")
+        # charset 必须显式声明：无 charset 的 data: URL 中文按 fallback 编码
+        # （GBK/windows-1252）解码乱码（2026-10-14 面板截图实证）
+        assert core.MARK_PAGE.startswith("data:text/html;charset=utf-8,")
         assert "inkcube-fetch-pool" in core.MARK_PAGE
         # data: URL 中裸 # 会被解析为 fragment 截断（2026-10-13 review 实证），
         # 待命页正文必须无裸 #（否则 body 后半段不渲染）

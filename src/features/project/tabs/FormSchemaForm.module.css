@@ -1,0 +1,277 @@
+/* src/features/project/tabs/FormSchemaForm.module.css — 动态表单渲染器（2.4 §5.2） */
+
+.group {
+  margin-bottom: 22px;
+}
+
+.groupTitle {
+  margin: 0 0 10px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+}
+
+.fieldRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.fieldLabel {
+  width: 160px;
+  flex-shrink: 0;
+  padding-top: 8px;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: right;
+  word-break: break-all;
+}
+
+.fieldControl {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fieldInput {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: var(--text-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  min-width: 0;
+}
+
+.fieldInput:focus {
+  border-color: var(--accent);
+}
+
+.fieldInput::placeholder {
+  color: var(--text-muted);
+}
+
+/* no_data 字段淡橙底提示（2.4 §5.1：AI 未查到资料，请补填） */
+.fieldInputNoData {
+  background: color-mix(in srgb, var(--text-warning) 8%, var(--bg-primary));
+}
+
+.fieldTextarea {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: var(--text-base);
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  resize: vertical;
+  min-height: 96px;
+  font-family: inherit;
+}
+
+.fieldTextarea:focus {
+  border-color: var(--accent);
+}
+
+.fieldTextareaNoData {
+  background: color-mix(in srgb, var(--text-warning) 8%, var(--bg-primary));
+}
+
+.fieldHint {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.noDataHint {
+  color: var(--text-warning);
+}
+
+.unitSuffix {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* 字段状态圆点（2.4 §5.4 状态色：绿已填 / 橙待补填 / 红失败） */
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 9px;
+}
+
+.dotFilled {
+  background: var(--success);
+}
+
+.dotNoData {
+  background: var(--text-warning);
+}
+
+.dotFailed {
+  background: var(--error);
+}
+
+.dotNone {
+  background: var(--border);
+}
+
+/* choice / checkbox 选项组 */
+.optionsCol {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.optionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.optionRow input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.otherInput {
+  margin-left: 20px;
+  padding: 4px 8px;
+  font-size: var(--text-sm);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  outline: none;
+  flex: 1;
+  min-width: 120px;
+}
+
+.otherInput:focus {
+  border-bottom-color: var(--accent);
+}
+
+/* label_group 子字段两列栅格 */
+.subGrid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+.subItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.subLabel {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* table_rows 可编辑表格 */
+.tableWrap {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.editorTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.editorTable th {
+  padding: 6px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.editorTable td {
+  padding: 2px;
+  border: 1px solid var(--border);
+}
+
+.cellInput {
+  width: 100%;
+  padding: 5px 7px;
+  font-size: var(--text-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.cellInput:focus {
+  background: var(--bg-primary);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.rowActions {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+}
+
+.rowBtn {
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.rowBtn:hover {
+  color: var(--error);
+  background: var(--bg-muted);
+}
+
+.addRowBtn {
+  margin-top: 6px;
+  padding: 4px 10px;
+  font-size: var(--text-sm);
+  color: var(--accent);
+  background: none;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.addRowBtn:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}

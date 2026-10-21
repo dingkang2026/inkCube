@@ -1,5 +1,5 @@
 /* BrowserPanel 三态（2.8 §8）：hidden 移出视口保布局（非 display:none，
-   §8.3——webview 布局尺寸保留，快照视口枚举与人工点击坐标有效） */
+   §8.3——占位 div 布局尺寸保留，快照视口枚举与人工点击坐标有效） */
 .panel {
   position: fixed;
   top: 48px;
@@ -8,10 +8,10 @@
   height: 480px;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary, #1e1e2e);
-  border: 1px solid var(--border, #333);
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
   z-index: 900;
   transition: width 0.18s ease, height 0.18s ease;
 }
@@ -37,16 +37,16 @@
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border, #333);
-  font-size: 12px;
-  color: var(--text-secondary, #aaa);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
 }
 
 .drivingDot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #e5484d;
+  background: var(--error);
   animation: pulse 1.2s ease-in-out infinite;
 }
 
@@ -61,18 +61,18 @@
   white-space: nowrap;
 }
 
-.crashHint { color: #f76b15; }
+.crashHint { color: var(--text-warning); }
 
 .iconBtn {
   border: none;
   background: transparent;
-  color: var(--text-secondary, #aaa);
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-base);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
-.iconBtn:hover { background: var(--bg-hover, #2a2a3a); }
+.iconBtn:hover { background: var(--bg-hover); }
 
-.webview { flex: 1; width: 100%; border: none; }
+.poolHost { flex: 1; width: 100%; border: none; }

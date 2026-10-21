@@ -32,7 +32,7 @@ export interface PhaseTask {
 export type AffairsView = 'board' | 'rhythm' | 'calendar'
 
 /** 本地时区当日 ISO(YYYY-MM-DD):toISOString 走 UTC 会造成边界日期偏一天,禁用 */
-function localISODate(now?: Date): string {
+export function localISODate(now?: Date): string {
   const d = now ?? new Date()
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')

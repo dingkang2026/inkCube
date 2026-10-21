@@ -16,9 +16,12 @@ import re
 from collections import defaultdict
 
 from errors import LLMNetworkError, LLMCallFailed, LLMInvalidKey
+from llm import budget
+from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
 from wiki.parser import parse_compile_output_v2, parse_resolves_blocks
 from wiki.prompts import build_ingest_analysis_prompt, build_ingest_generation_prompt
-from wiki.llm_routing import get_task_settings
+from wiki.review_id import compute_review_id  # review_id 唯一实现(H-1:必须项目作用域)
+from llm.routing import get_task_settings
 
 logger = logging.getLogger(__name__)
 
@@ -121,20 +124,19 @@ class WikiIngestor:
             project_type=project_type,
         )
 
-        # Stage 1 needs larger token budget for deep-thinking models
-        analysis_settings = dict(self.settings)
-        analysis_settings["max_tokens"] = max(
-            int(self.settings.get("max_tokens", 4096)), 32000,
-        )
+        # max_tokens 不在此覆写：LLMClient 构造期经 budget.output_tokens floor 抬升
+        # （≥32K，原 max(设置值, 32000) 在 floor 落地后为死代码，语义被 D1 吸收）；
         # reasoning_effort comes from user settings (no hard override — see settings page 思考深度)
         prompt_chars = sum(len(m.get("content", "")) for m in analysis_messages)
         logger.info(
             "Ingest [%s]: Stage 1 start — model=%s, max_tokens=%d, reasoning_effort=%s, prompt_chars=%d, timeout=%ds",
-            task_id, analysis_settings.get("model", "?"), analysis_settings["max_tokens"],
-            analysis_settings.get("reasoning_effort", "default"),
-            prompt_chars, int(analysis_settings.get("llm_read_timeout", 300)) + 60,
+            task_id, self.settings.get("model", "?"), budget.output_tokens(self.settings),
+            self.settings.get("reasoning_effort", "default"),
+            prompt_chars, int(self.settings.get("llm_read_timeout", 300)) + 60,
         )
-        analysis_report = await self._chat_with_retry(analysis_messages, analysis_settings, task_id, "stage1")
+        analysis_report = await self._chat_with_retry(
+            analysis_messages, self.settings, task_id, "stage1",
+            project_id=project_id)
         logger.info("Ingest [%s]: Stage 1 analysis done, len=%d", task_id, len(analysis_report))
 
         # Validate Stage 1 result — empty analysis means LLM failed silently
@@ -179,19 +181,16 @@ class WikiIngestor:
             open_gaps=open_gaps,
         )
 
-        generation_settings = dict(self.settings)
-        generation_settings["max_tokens"] = max(
-            int(self.settings.get("max_tokens", 4096)), 32000,
-        )
-        # reasoning_effort comes from user settings (no hard override — see settings page 思考深度)
         gen_prompt_chars = sum(len(m.get("content", "")) for m in generation_messages)
         logger.info(
             "Ingest [%s]: Stage 2 start — model=%s, max_tokens=%d, reasoning_effort=%s, prompt_chars=%d, timeout=%ds",
-            task_id, generation_settings.get("model", "?"), generation_settings["max_tokens"],
-            generation_settings.get("reasoning_effort", "default"),
-            gen_prompt_chars, int(generation_settings.get("llm_read_timeout", 300)) + 60,
+            task_id, self.settings.get("model", "?"), budget.output_tokens(self.settings),
+            self.settings.get("reasoning_effort", "default"),
+            gen_prompt_chars, int(self.settings.get("llm_read_timeout", 300)) + 60,
         )
-        generation_output = await self._chat_with_retry(generation_messages, generation_settings, task_id, "stage2")
+        generation_output = await self._chat_with_retry(
+            generation_messages, self.settings, task_id, "stage2",
+            project_id=project_id)
         logger.info("Ingest [%s]: Stage 2 generation done, len=%d", task_id, len(generation_output))
 
         # ── Step 4: Store & Trace ──
@@ -273,7 +272,7 @@ class WikiIngestor:
         reviews_count = 0
         for review_data in reviews:
             try:
-                review_id = self._compute_review_id(review_data["type"], review_data["title"])
+                review_id = compute_review_id(project_id, review_data["type"], review_data["title"])
                 affected_ids = []
                 for pk in review_data.get("affected_page_keys", []):
                     p = self.db.get_wiki_page(project_id, pk)
@@ -307,7 +306,7 @@ class WikiIngestor:
             if not rid:
                 continue
             try:
-                if self.db.resolve_wiki_review(rid, "auto_resolved"):
+                if self.db.resolve_wiki_review(project_id, rid, "auto_resolved"):
                     gaps_resolved += 1
             except Exception as e:
                 logger.error("Ingest [%s]: failed to resolve gap #%s: %s", task_id, num, e)
@@ -489,7 +488,8 @@ class WikiIngestor:
 
     _LLM_MAX_RETRIES = 2  # Pipeline-level retries (on top of client's internal retry)
 
-    async def _chat_with_retry(self, messages, settings, task_id: str, stage: str) -> str:
+    async def _chat_with_retry(self, messages, settings, task_id: str, stage: str,
+                               project_id: str | None = None) -> str:
         """Call LLM with pipeline-level retry for transient errors.
 
         Retries on LLMNetworkError (timeout/connection) and LLMCallFailed (5xx).
@@ -518,10 +518,15 @@ class WikiIngestor:
                     task_id, stage, attempt + 1, self._LLM_MAX_RETRIES + 1,
                     model_name, per_attempt_timeout,
                 )
-                return await asyncio.wait_for(
-                    llm.chat(messages, effective_settings),
-                    timeout=per_attempt_timeout,
-                )
+                # 2.10 §4.3: 用量环境（source=wiki / purpose=ingest，归属项目与
+                # 编译任务）；重试尝试同在环境内，按次落库
+                with push_context(UsageContext(
+                        source="wiki", purpose="ingest",
+                        project_id=project_id, entity_id=task_id)):
+                    return (await asyncio.wait_for(
+                        llm.chat_full(messages),
+                        timeout=per_attempt_timeout,
+                    ))["content"]
             except asyncio.TimeoutError:
                 last_err = LLMNetworkError(
                     detail=f"LLM 调用超时（{per_attempt_timeout}s），模型可能挂起"
@@ -556,12 +561,3 @@ class WikiIngestor:
         )
         raise last_err
 
-    @staticmethod
-    def _compute_review_id(review_type: str, title: str) -> str:
-        """Compute stable review ID (FNV-1a hash)."""
-        normalized = f"{review_type}::{title.strip().lower()}"
-        h = 0x811C9DC5
-        for byte in normalized.encode("utf-8"):
-            h ^= byte
-            h = (h * 0x01000193) & 0xFFFFFFFF
-        return f"review_{h:08x}"

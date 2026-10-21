@@ -1,12 +1,59 @@
-/* 3.0 三期 §6.1.8:首页近期日历 */
-.section { margin-bottom: 20px; }
-.title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
-.dayRow { display: flex; gap: 10px; padding: 4px 0; align-items: baseline; }
-.dayLabel { font-size: 12px; color: var(--text-muted); white-space: nowrap; min-width: 64px; }
-.dayItems { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.item {
-  font-size: 13px; color: var(--text-primary); cursor: pointer;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* 3.0 三期 §6.1.8:首页近期日历;打样修订 2026-10-18:标题/空态统一 + 日分组分隔线 */
+.section {
+  margin-bottom: 24px;
 }
-.item:hover { color: var(--accent); }
-.item b { font-weight: 600; }
+
+/* 区块标题:与 HomePage.sectionTitle 统一(13px/600/secondary) */
+.title {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+  margin-bottom: 10px;
+}
+
+/* 空态:公共 .empty-block(global.css) */
+
+.dayRow {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  align-items: baseline;
+  border-bottom: 1px dashed var(--border);
+}
+
+.dayRow:last-child {
+  border-bottom: none;
+}
+
+.dayLabel {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 72px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dayItems {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.item {
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item:hover {
+  color: var(--accent);
+}
+
+.item b {
+  font-weight: 600;
+}

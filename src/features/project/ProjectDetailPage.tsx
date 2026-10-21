@@ -15,7 +15,9 @@ import { AffairsTab } from './affairs/AffairsTab'
 import { summarizeDueTasks } from './affairs/types'
 import type { PulseDueSummary } from './affairs/types'
 import { PulseBar } from './PulseBar'
+import { FirstProjectHint } from './FirstProjectHint'
 import { ProjectChatPanel } from './ProjectChatPanel'
+import { ProjectUsageBadge } from '../usage/ProjectUsageBadge'
 import type { Project } from '../knowledge/types'
 import type { ProjectType, ProjectStage } from './types'
 import { PROJECT_TYPE_CONFIG, STAGE_MAP, getInitialStage } from './types'
@@ -98,10 +100,15 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     // 四路并行独立兑底(allSettled):知识侧失败 → 脉搏带失败态;应办失败 → chip 隐藏;
     // 建议失败 → chip 隐藏,各数据源互不拖垮;仍只挂在载 + 终态边沿各一次,零新增轮询(0.4 §3.1)
     const [rvR, pgR, afR, sgR] = await Promise.allSettled([
-      window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false }),
+      // reviews limit:1：徽章计数改消费服务端 counts 分型桶（分页后数组不再完整），
+      // 最小负载拉取；listPages 的 pending_compile_count 为全量 key 集元数据，不受分页影响；
+      // affairs limit:0：dueTasks 概要计算需全量任务（非列表渲染，保持原行为）；
+      // suggestions limit:1：建议徽章消费服务端 total（分页契约后 length 会封顶单页量，
+      // 与 reviews counts 桶同款最小负载拉取）
+      window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false, limit: 1 }),
       window.electronAPI.invoke('wiki:listPages', { projectId: pid }),
-      window.electronAPI.invoke('affairs:listByProject', { projectId: pid }),
-      window.electronAPI.invoke('affairs:listSuggestions', { projectId: pid }),
+      window.electronAPI.invoke('affairs:listByProject', { projectId: pid, limit: 0 }),
+      window.electronAPI.invoke('affairs:listSuggestions', { projectId: pid, limit: 1 }),
     ])
     if (latestPidRef.current !== pid) return
     if (rvR.status === 'rejected' || pgR.status === 'rejected') {
@@ -113,10 +120,13 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
       setPulseLoadFailed(false)
       const rv = rvR.value as any
       const pg = pgR.value as any
-      const items: Array<{ type: string }> = rv?.reviews ?? rv?.items ?? []
+      // 分型计数改消费 counts 桶（{type: {pending, resolved, total}}，全表不分页），
+      // gap 桶保持原语义（data-gap + missing-page + broken-link 三型 pending 合计）
+      const c = rv?.counts ?? {}
       setReviewsCounts({
-        contradiction: items.filter((r) => r.type === 'contradiction').length,
-        gap: items.filter((r) => r.type === 'data-gap' || r.type === 'missing-page' || r.type === 'broken-link').length,
+        contradiction: c.contradiction?.pending ?? 0,
+        gap: (c['data-gap']?.pending ?? 0) + (c['missing-page']?.pending ?? 0)
+          + (c['broken-link']?.pending ?? 0),
       })
       setPendingCompile(pg?.pending_compile_count ?? 0)
     }
@@ -128,7 +138,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
       setDueTasks(null)
     }
     if (sgR.status === 'fulfilled') {
-      setSuggestionCount((sgR.value as any)?.suggestions?.length ?? 0)
+      setSuggestionCount((sgR.value as any)?.total ?? 0)   // 分页契约后消费 total（非 length）
     } else {
       console.error('Failed to load suggestions:', sgR.reason)
       setSuggestionCount(0)
@@ -291,7 +301,9 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
               <typeConfig.Icon size={18} />
             </div>
             <div className={s.headerText}>
-              <h2 className={s.projectName}>{project.name}</h2>
+              <h2 className={s.projectName}>
+                {project.name}
+              </h2>
               {project.description && (
                 <p className={s.projectDesc}>{project.description}</p>
               )}
@@ -305,6 +317,8 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
             </div>
           </div>
           <div className={s.headerActions}>
+            {/* 用量徽章（2.10 §6.1/线框 5）：hover 出 by_source 分拆，点击跳统计页筛本项目 */}
+            <ProjectUsageBadge projectId={project.id} />
             {/* Type selector */}
             <select
               className={s.typeSelect}
@@ -338,6 +352,13 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
           </div>
         )}
       </div>
+
+      {/* 首个项目一次性引导提示条(0.5 §4.3 ③):点击动作或关闭后写 localStorage 永不再现 */}
+      <FirstProjectHint
+        onUploadMaterials={() => setActiveTab('materials')}
+        onStartTask={() => window.dispatchEvent(new CustomEvent('app:navigate-tasks'))}
+        onAskAssistant={() => handleChatOpen()}
+      />
 
       {/* 脉搏带（3.0 §2）：状态感知层；矛盾/缺口 chip 点击直达知识治理视图 */}
       <PulseBar
@@ -375,10 +396,19 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
                 title={t('activity.tipFiles', { count: byProject.get(project.id)?.files })}
               />
             )}
-            {key === 'reports' && (byProject.get(project.id)?.reports ?? 0) > 0 && (
+            {key === 'reports' && ((byProject.get(project.id)?.reports ?? 0) + (byProject.get(project.id)?.ppts ?? 0)) > 0 && (
               <span
                 className={s.tabPulse}
-                title={t('activity.tipReports', { count: byProject.get(project.id)?.reports })}
+                title={[
+                  (byProject.get(project.id)?.reports ?? 0) > 0 && t('activity.tipReports', { count: byProject.get(project.id)?.reports }),
+                  (byProject.get(project.id)?.ppts ?? 0) > 0 && t('activity.tipPpts', { count: byProject.get(project.id)?.ppts }),
+                ].filter(Boolean).join(' / ')}
+              />
+            )}
+            {key === 'forms' && (byProject.get(project.id)?.forms ?? 0) > 0 && (
+              <span
+                className={s.tabPulse}
+                title={t('activity.tipForms', { count: byProject.get(project.id)?.forms })}
               />
             )}
           </button>
@@ -430,7 +460,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
             <ReportsTab key={projectType} projectId={project.id} projectType={projectType} />
           )}
           {activeTab === 'forms' && (
-            <FormsTab key={projectType} projectType={projectType} />
+            <FormsTab key={project.id} projectId={project.id} />
           )}
         </div>
 

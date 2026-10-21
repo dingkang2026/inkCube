@@ -2,6 +2,8 @@ import React, { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useTranslation } from 'react-i18next'
+import { Image } from 'lucide-react'
 import { Mermaid } from './Mermaid'
 
 /** Convert [[page_key]] and [[page_key|display text]] to markdown links with wiki: protocol */
@@ -56,6 +58,7 @@ function isSafeImageSrc(src: string): boolean {
 
 /** Custom img renderer: block external URLs, show placeholder + link */
 const SafeImage: Components['img'] = ({ src, alt, ...rest }) => {
+  const { t } = useTranslation()
   if (!src) return null
   if (isSafeImageSrc(src)) {
     return <img src={src} alt={alt} {...rest} />
@@ -68,14 +71,14 @@ const SafeImage: Components['img'] = ({ src, alt, ...rest }) => {
         alignItems: 'center',
         gap: 4,
         padding: '4px 8px',
-        background: '#f0f0f0',
+        background: 'var(--bg-tertiary)',
         borderRadius: 4,
         fontSize: '0.85em',
-        color: '#666',
+        color: 'var(--text-muted)',
       }}
     >
-      🖼️ <a href={src} target="_blank" rel="noopener noreferrer" onClick={(e) => { e.preventDefault(); window.open(src, '_blank', 'noopener,noreferrer') }}>{alt || '外部图片'}</a>
-      <span style={{ color: '#999' }}>(CSP 阻止直接加载)</span>
+      <Image size={12} /> <a href={src} target="_blank" rel="noopener noreferrer" onClick={(e) => { e.preventDefault(); window.open(src, '_blank', 'noopener,noreferrer') }}>{alt || t('common.mdExternalImage')}</a>
+      <span style={{ color: 'var(--text-muted)' }}>{t('common.mdCspBlocked')}</span>
     </span>
   )
 }
@@ -200,7 +203,7 @@ function SanitizedSvg({ source }: { source: string }) {
   const cleaned = useMemo(() => sanitizeSvg(source), [source])
   if (!cleaned) {
     // Unclosed mid-stream or malformed — show raw source instead of nothing
-    return <pre style={{ fontSize: '12px', opacity: 0.7, whiteSpace: 'pre-wrap' }}>{source}</pre>
+    return <pre style={{ fontSize: 'var(--text-sm)', opacity: 0.7, whiteSpace: 'pre-wrap' }}>{source}</pre>
   }
   return <div className="inline-svg" dangerouslySetInnerHTML={{ __html: cleaned }} />
 }

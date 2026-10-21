@@ -16,6 +16,8 @@ from typing import Optional
 from knowledge.knowledge_search import KnowledgeSearchTool
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
+from llm.budget import CHARS_PER_TOKEN, context_window as budget_context_window
+from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
 from db.database import Database
 
 logger = logging.getLogger(__name__)
@@ -73,7 +75,7 @@ class KnowledgeRAG:
 
         # Step 1b: Wiki page retrieval (high-weight skeleton context)
         # Use the new wiki search engine with context budget
-        wiki_context = self._search_wiki_context(project_id, message)
+        wiki_context = self._search_wiki_context(project_id, message, settings=settings)
 
         if not results and not wiki_context:
             logger.info("RAG no results found")
@@ -127,10 +129,11 @@ class KnowledgeRAG:
         context_text = "\n".join(context_parts)
         logger.debug("RAG context built: len=%d chars, %d sources", len(context_text), len(sources))
 
-        # Step 3: Build RAG prompt and call LLM
+        # Step 3: Build RAG prompt and call LLM（rag_model 路由，空值回退全局模型）
         from llm import LLMClient
+        from llm.routing import get_task_settings
 
-        _settings = settings or {}
+        _settings = get_task_settings(settings or {}, "rag")
         llm = LLMClient(_settings)
 
         system_msg = (
@@ -147,12 +150,22 @@ class KnowledgeRAG:
         ]
 
         logger.info("RAG calling LLM: model=%s", _settings.get("model", "default"))
-        answer = await llm.chat(messages, _settings)
+        # 2.10 §4.3: 用量环境（source=chat / purpose=rag，归属项目与文件范围）
+        with push_context(UsageContext(
+                source="chat", purpose="rag", project_id=project_id,
+                entity_id=file_id)):
+            result = await llm.chat_full(messages)
+        answer = result["content"]
         logger.info("RAG answer generated: len=%d", len(answer))
 
-        return {"answer": answer, "sources": sources}
+        # 2.10 §4.5: 响应体带 usage（RAG 气泡操作行实时呈现；无精确值时为空）
+        return {"answer": answer, "sources": sources,
+                "usage": result.get("usage") or {}}
 
-    def _search_wiki_context(self, project_id: str, message: str, top_k: int = 5) -> list[dict]:
+    def _search_wiki_context(
+        self, project_id: str, message: str, top_k: int = 5,
+        settings: Optional[dict] = None,
+    ) -> list[dict]:
         """Search compiled Wiki pages as high-weight skeleton context.
 
         Uses the wiki search engine (keyword + graph expansion) with
@@ -173,8 +186,10 @@ class KnowledgeRAG:
             if not pages:
                 return []
 
-            # Apply context budget truncation
-            budgets = compute_budgets()
+            # Apply context budget truncation（窗口经 budget 唯一入口 + CHARS_PER_TOKEN
+            # 换算；旧 compute_budgets() 用 400_000 私设兜底，低估中文 token 占用）
+            wiki_window_chars = int(budget_context_window(settings or {}) * CHARS_PER_TOKEN)
+            budgets = compute_budgets(context_window=wiki_window_chars)
             truncated = truncate_wiki_context(pages, budgets["wiki"])
 
             logger.info("Wiki context: %d pages searched → %d after budget truncation",

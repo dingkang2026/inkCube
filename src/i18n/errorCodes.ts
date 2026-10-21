@@ -53,9 +53,16 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   // ── web logins ──
   INVALID_DOMAIN: { msg: 'invalidDomain' },
   SITE_NOT_FOUND: { msg: 'siteNotFound' },
+  // ── schedules ──
+  RUN_NOT_FOUND: { msg: 'runNotFound' },
+  RUN_RUNNING: { msg: 'runRunning' },
   // ── knowledge ──
   FILE_DUPLICATE: { msg: 'fileDuplicate' },
   MANUALLY_ARCHIVED: { msg: 'manuallyArchived' },
+  // ── projects（归档 2.1 §归档）──
+  PROJECT_HAS_ACTIVE_WORK: { msg: 'projectHasActiveWork' },
+  PROJECT_NOT_ARCHIVED: { msg: 'projectNotArchived' },
+  PROJECT_ALREADY_ACTIVE: { msg: 'projectAlreadyActive' },
   // ── models ──
   MODEL_ALREADY_DOWNLOADING: { msg: 'modelAlreadyDownloading' },
   MODEL_ALL_BUSY: { msg: 'modelAllBusy' },
@@ -77,6 +84,36 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   COMPILING_IN_PROGRESS: { msg: 'compilingInProgress' },
   COLLECTION_DETECTED: { msg: 'collectionDetected' },
   CARD_PARSE_FAILED: { msg: 'cardParseFailed' },
+  // ── forms（2.4forms-design）──
+  UNSUPPORTED_FORM_TEMPLATE_FORMAT: { msg: 'unsupportedFormTemplateFormat' },
+  FORM_TEMPLATE_ANALYZING: { msg: 'formTemplateAnalyzing' },
+  FORM_TEMPLATE_NOT_READY: { msg: 'formTemplateNotReady' },
+  FORM_TEMPLATE_CHANGED: { msg: 'formTemplateChanged' },
+  FORM_TEMPLATE_MISSING: { msg: 'formTemplateMissing' },
+  FORM_FILL_RUNNING: { msg: 'formFillRunning' },
+  FORM_FILL_CONCURRENT_LIMIT: { msg: 'formFillConcurrentLimit' },
+  // ── ppt（2.3 §6.3 E2/E3）──
+  NOT_ENHANCEABLE: { msg: 'pptNotEnhanceable' },
+  SOURCE_NOT_FOUND: { msg: 'pptSourceNotFound' },
+  ENHANCE_IN_PROGRESS: { msg: 'pptEnhanceInProgress' },
+  ENHANCE_CREATE_FAILED: { msg: 'pptEnhanceCreateFailed' },
+  LAUNCH_FAILED: { msg: 'pptLaunchFailed' },
+  PPT_NOT_FOUND: { msg: 'pptNotFound' },
+  PPT_FINISHED: { msg: 'pptFinished' },
+  CREATE_FAILED: { msg: 'pptCreateFailed' },
+  UNSUPPORTED_PPTX_FORMAT: { msg: 'pptUnsupportedPptxFormat' },
+  INVALID_TEMPLATE_ID: { msg: 'pptInvalidTemplateId' },
+  INVALID_TEMPLATE_KIND: { msg: 'pptInvalidTemplateKind' },
+  INVALID_TEMPLATE_NAME: { msg: 'pptInvalidTemplateName' },
+  INVALID_TEMPLATE_REF: { msg: 'pptInvalidTemplateRef' },
+  TEMPLATE_ID_EXISTS: { msg: 'pptTemplateIdExists' },
+  TEMPLATE_JOB_ACTIVE: { msg: 'pptTemplateJobActive' },
+  TEMPLATE_DELETE_FAILED: { msg: 'pptTemplateDeleteFailed' },
+  TEMPLATE_NOT_FOUND: { msg: 'pptTemplateNotFound' },
+  BUILTIN_TEMPLATE: { msg: 'pptBuiltinTemplate' },
+  SPEC_NOT_FOUND: { msg: 'pptSpecNotFound' },
+  LIB_NOT_FOUND: { msg: 'pptLibNotFound' },
+  SCRIPT_NOT_FOUND: { msg: 'pptScriptNotFound' },
   // ── InkCubeError（errors.py 落库链路）──
   VLM_NOT_CONFIGURED: { msg: 'vlmNotConfigured', sug: 'vlmNotConfiguredSug' },
   VLM_INVALID_KEY: { msg: 'vlmInvalidKey', sug: 'vlmInvalidKeySug' },

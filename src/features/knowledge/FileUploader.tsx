@@ -1,10 +1,10 @@
 /** src/features/knowledge/FileUploader.tsx */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Trash2, RefreshCw, MoreVertical, FileText, FileSpreadsheet, Globe, Image, ChevronLeft, ChevronRight, Pause, Play, ExternalLink } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import { Trash2, RefreshCw, MoreVertical, ChevronLeft, ChevronRight, Pause, Play, ExternalLink } from 'lucide-react'
 import type { FileRecord, KnowledgeIpcChannels } from './types'
 import { DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
+import { fileIcon } from '../task/utils'
 import s from './FileUploader.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useToast } from './Toast'
@@ -27,20 +27,6 @@ interface FileUploaderProps {
   parsingPaused?: boolean
   onToggleParsingPause?: () => void
   ipcChannels?: Partial<KnowledgeIpcChannels>
-}
-
-const FILE_ICONS: Record<string, LucideIcon> = {
-  '.pdf': FileText,
-  '.docx': FileText,
-  '.doc': FileText,
-  '.pptx': FileText,
-  '.ppt': FileText,
-  '.xlsx': FileSpreadsheet,
-  '.xls': FileSpreadsheet,
-  '.html': Globe,
-  '.png': Image,
-  '.jpg': Image,
-  '.jpeg': Image,
 }
 
 export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTotal = 0, fileLimit = 20, onPageChange, selectedFileId, onSelectFile, onDeleteFile, parsingPaused, onToggleParsingPause, ipcChannels }: FileUploaderProps) {
@@ -186,12 +172,12 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
               <span>{t('knowledge.uploadedFiles')} ({fileTotal})</span>
             </label>
             <div className={s.headerActions}>
-              {/* 解析队列暂停开关（0.4 §队列暂停）：仅当父组件接入 useQueuePause 时显示 */}
+              {/* 解析队列停止开关（0.4 §队列暂停，UI 语义停止/继续）：仅当父组件接入 useQueuePause 时显示 */}
               {onToggleParsingPause && (
                 <button
                   className={`${s.refreshBtn} ${parsingPaused ? s.pauseBtnActive : ''}`}
                   onClick={onToggleParsingPause}
-                  title={parsingPaused ? t('knowledge.resumeParsing') : t('knowledge.pauseParsing')}
+                  title={parsingPaused ? t('knowledge.resumeParsing') : t('knowledge.stopParsing')}
                 >
                   {parsingPaused ? <Play size={14} /> : <Pause size={14} />}
                 </button>
@@ -217,7 +203,7 @@ export function FileUploader({ projectId, files, onRefresh, filePage = 1, fileTo
                 checked={selectedIds.has(file.id)}
                 onChange={(e) => { e.stopPropagation(); toggleSelect(file.id) }}
               />
-              <span className={s.fileIcon}>{(() => { const Icon = FILE_ICONS[file.file_type] || FileText; return <Icon size={14} /> })()}</span>
+              <span className={s.fileIcon}>{(() => { const Icon = fileIcon(file.file_type); return <Icon size={14} /> })()}</span>
               <div className={s.fileInfo}>
                 <span className={s.filename}>{file.filename}</span>
                 <div className={s.fileMeta}>

@@ -182,7 +182,15 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
 
   it('mounts PulseBar and refetches pulse data on compile terminal edge', async () => {
     invokeMock.mockImplementation(async (ch: string) => {
-      if (ch === 'wiki:listReviews') return { reviews: [{ type: 'contradiction' }, { type: 'contradiction' }, { type: 'data-gap' }] }
+      if (ch === 'wiki:listReviews') {
+        return {
+          reviews: [{ type: 'contradiction' }, { type: 'contradiction' }, { type: 'data-gap' }],
+          counts: {
+            contradiction: { pending: 2, resolved: 0, total: 2 },
+            'data-gap': { pending: 1, resolved: 0, total: 1 },
+          },
+        }
+      }
       if (ch === 'wiki:listPages') return { pages: [], pending_compile_count: 5 }
       return { task: null, ingest_summaries: [] }
     })
@@ -212,7 +220,8 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     invokeMock.mockImplementation(async (ch: string) => {
       if (ch === 'wiki:listReviews') return { reviews: [] }
       if (ch === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
-      if (ch === 'affairs:listSuggestions') return { suggestions: [{ id: 's1' }, { id: 's2' }] }
+      // 分页契约形态（0.1 §16）：徽章消费服务端 total 而非数组长度（ProjectDetailPage L141）
+      if (ch === 'affairs:listSuggestions') return { suggestions: [{ id: 's1' }, { id: 's2' }], total: 2, has_more: false }
       return { task: null, ingest_summaries: [] }
     })
     const onDataChanged = vi.fn()

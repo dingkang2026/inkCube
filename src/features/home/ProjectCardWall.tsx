@@ -27,6 +27,8 @@ interface ProjectCardWallProps {
   healthData?: Record<string, ProjectHealthSummary>
   nextDueByProject?: Record<string, NextDue>
   latestEntryByProject?: Record<string, LatestEntry>
+  /** 24h 内新产出计数(useRecentOutputs 派生,0.5 E2 T7);>0 时卡片右上角角标,点击即原有进项目行为 */
+  newOutputsByProject?: Record<string, number>
   onSelect: (projectId: string) => void
 }
 
@@ -41,7 +43,7 @@ function daysOverdue(date: string): number {
   return Math.max(0, Math.round((todayMs - dueMs) / 86400000))
 }
 
-export function ProjectCardWall({ projects, healthData, nextDueByProject, latestEntryByProject, onSelect }: ProjectCardWallProps) {
+export function ProjectCardWall({ projects, healthData, nextDueByProject, latestEntryByProject, newOutputsByProject, onSelect }: ProjectCardWallProps) {
   const { t } = useTranslation()
 
   const stageLabel = (p: Project): string | null => {
@@ -50,7 +52,7 @@ export function ProjectCardWall({ projects, healthData, nextDueByProject, latest
     return t(key)
   }
 
-  if (projects.length === 0) return <div className={s.empty}>{t('home.noProjects')}</div>
+  if (projects.length === 0) return <div className="empty-block">{t('home.noProjects')}</div>
   return (
     <div className={s.grid}>
       {projects.map((p) => {
@@ -58,12 +60,18 @@ export function ProjectCardWall({ projects, healthData, nextDueByProject, latest
         const nextDue = nextDueByProject?.[p.id]
         const overdue = nextDue ? daysOverdue(nextDue.date) : 0
         const entry = latestEntryByProject?.[p.id]
+        const newOutputs = newOutputsByProject?.[p.id] ?? 0
         const label = stageLabel(p)
         return (
           <div key={p.id} className={s.card} onClick={() => onSelect(p.id)}>
             <div className={s.head}>
               {sum && <HealthDot summary={sum} />}
               <span className={s.name}>{p.name}</span>
+              {newOutputs > 0 && (
+                <span className={s.newBadge} title={t('home.newOutputs', { count: newOutputs })}>
+                  {newOutputs}
+                </span>
+              )}
             </div>
             <div className={s.meta}>
               {label && <span className={s.stage}>{label}</span>}

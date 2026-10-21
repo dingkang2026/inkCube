@@ -42,7 +42,14 @@ vi.mock('../src/features/project/tabs/WikiHomePage', () => ({
     return null
   },
 }))
-vi.mock('../src/features/project/tabs/WikiPageReader', () => ({ WikiPageReader: () => null }))
+// 捕获 props 以观测预览面板渲染的详情内容（review H-2 用例断言 title）
+const readerState = vi.hoisted(() => ({ props: null as { pageDetail?: { page?: { title?: string } } } | null }))
+vi.mock('../src/features/project/tabs/WikiPageReader', () => ({
+  WikiPageReader: (props: { pageDetail?: { page?: { title?: string } } }) => {
+    readerState.props = props
+    return <div data-testid="page-reader" />
+  },
+}))
 vi.mock('../src/features/project/tabs/WikiPageEditor', () => ({ WikiPageEditor: () => null }))
 vi.mock('../src/features/project/tabs/WikiChangeLog', () => ({ WikiChangeLog: () => null }))
 vi.mock('../src/features/project/tabs/WikiSearchView', () => ({ WikiSearchView: () => null }))
@@ -99,6 +106,7 @@ beforeEach(() => {
   toastMock.mockReset()
   homePageProps = {}
   lintViewProps = {}
+  readerState.props = null
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
     if (channel === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
@@ -357,5 +365,54 @@ describe('WikiTab preview backdrop (知识问答面板同款)', () => {
     fireEvent.click(backdrop as Element)
     expect(container.querySelector('[class*="previewPanel"]')).toBeNull()
     expect(container.querySelector('[class*="previewBackdrop"]')).toBeNull()
+  })
+})
+
+describe('WikiTab same-type project switch (review H-2)', () => {
+  it('clears preview state on project switch; late stale detail cannot repopulate', async () => {
+    let p1PageCalls = 0
+    let resolveLate: (v: unknown) => void = () => {}
+    invokeMock.mockImplementation(async (channel: string, payload?: { projectId?: string }) => {
+      if (channel === 'wiki:listPages') {
+        return { pages: [{ page_key: 'overview', title: '概览' }], pending_compile_count: 0 }
+      }
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:getPage' && payload?.projectId === 'p1') {
+        p1PageCalls += 1
+        if (p1PageCalls === 1) {
+          return { page: { page_key: 'overview', title: 'A 的页' }, sources: [], change_log: [] }
+        }
+        // 切换瞬间在途的第二次 p1 请求：挂起，晚点回
+        return new Promise((resolve) => { resolveLate = resolve })
+      }
+      return { page: { page_key: 'overview', title: 'B 的页' }, sources: [], change_log: [] }
+    })
+    const { rerender, getByTestId, queryByTestId } = render(
+      <WikiTab projectId="p1" projectType="general" />,
+    )
+    await flush()
+    act(() => { homePageProps.onNavigateToPage?.('overview') })
+    await flush()
+    expect(getByTestId('page-reader')).toBeTruthy()
+    expect(readerState.props?.pageDetail?.page?.title).toBe('A 的页')
+
+    // 同类型项目切换：父层 key=projectType 不变 → 实例存活，清理 effect 必须清预览态
+    // （否则预览面板显示 A 的页——标题一致无违和感，编辑保存会整页覆盖 B 项目同名页）
+    rerender(<WikiTab projectId="p2" projectType="general" />)
+    await flush()
+    expect(queryByTestId('page-reader')).toBeNull()
+
+    // 切换瞬间在途的 p1 detail 晚到 → latestPidRef 守卫丢弃，孤儿 state 不得复活预览
+    await act(async () => {
+      resolveLate({ page: { page_key: 'overview', title: 'A 的页' }, sources: [], change_log: [] })
+    })
+    await flush()
+    expect(queryByTestId('page-reader')).toBeNull()
+
+    // p2 点同一页 → 面板渲染 B 的详情（标题一致也不再拿旧项目内容充数）
+    act(() => { homePageProps.onNavigateToPage?.('overview') })
+    await flush()
+    expect(getByTestId('page-reader')).toBeTruthy()
+    expect(readerState.props?.pageDetail?.page?.title).toBe('B 的页')
   })
 })

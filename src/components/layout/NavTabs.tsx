@@ -1,11 +1,13 @@
 import { useTranslation } from 'react-i18next'
-import { Home, Wrench, BookOpen, Loader2 } from 'lucide-react'
+import { Home, Wrench, BookOpen, Loader2, Bell } from 'lucide-react'
 import { useActivity } from '../../features/activity/ActivityContext'
 import styles from './NavTabs.module.css'
 
 interface NavTabsProps {
   activeNav: string
   onNavChange: (nav: string) => void
+  /** 铃铛点击 → 打开通知中心（2.11 §6.1：动作按钮，非 nav 切换） */
+  onOpenNotifications: () => void
 }
 
 const TABS = [
@@ -15,10 +17,12 @@ const TABS = [
 ]
 
 /** L1 徽章（0.4 §5.3）：任务 Tab 运行数徽章 / 项目 Tab 活跃呼吸图标 + 待审阅数字，
- *  数据统一来自 ActivityContext（替代原 Sidebar props 下传） */
-export function NavTabs({ activeNav, onNavChange }: NavTabsProps) {
+ *  数据统一来自 ActivityContext（替代原 Sidebar props 下传）；
+ *  铃铛 + 未读徽章（2.11 §6.1，>99 显示 99+） */
+export function NavTabs({ activeNav, onNavChange, onOpenNotifications }: NavTabsProps) {
   const { t } = useTranslation()
-  const { summary, activeProjectIds } = useActivity()
+  const { status, summary, activeProjectIds } = useActivity()
+  const unreadCount = status?.notifications.unread.length ?? 0
 
   return (
     <nav className={styles.nav}>
@@ -40,6 +44,13 @@ export function NavTabs({ activeNav, onNavChange }: NavTabsProps) {
           )}
         </button>
       ))}
+      <button className={styles.tab} onClick={onOpenNotifications} title={t('nav.notifications')}>
+        <Bell className={styles.icon} size={18} strokeWidth={1.8} />
+        <span className={styles.label}>{t('nav.notifications')}</span>
+        {unreadCount > 0 && (
+          <span className={styles.taskBadge}>{unreadCount > 99 ? '99+' : unreadCount}</span>
+        )}
+      </button>
     </nav>
   )
 }

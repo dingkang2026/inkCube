@@ -11,56 +11,64 @@ for the system prompt.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
-import threading
 import time
 import uuid
 from typing import Any
 
+from llm.budget import count_tokens
+
 logger = logging.getLogger(__name__)
 
-# ── Token counting ──
-# Use tiktoken for precise counting when available; fallback to heuristic.
-#
-# The encoder is initialised in a daemon thread, NOT at import time:
-# encoding_for_model("gpt-4o") needs the o200k_base data file, and when it is
-# not in the local cache tiktoken downloads it from the OpenAI CDN via a
-# requests.get() WITHOUT timeout. On networks where that CDN is unreachable
-# the download blocks forever, which froze module import (agent.task_agent →
-# deps → main) and made the whole backend fail its /health budget
-# ("Python backend failed to start within 60000ms", 2026-10-13).
-# Import below is local-only; the daemon thread fills the encoder in when
-# (and if) it becomes available — count_tokens falls back to the heuristic
-# until then.
-_CHARS_PER_TOKEN = 3  # conservative middle ground (fallback)
-_tiktoken_encoder = None
 
-try:
-    import tiktoken
-except ImportError:
-    tiktoken = None
+def summarize_tool_result_line(tool_name: str, content: str, max_len: int = 160) -> str:
+    """One-line road-sign summary of a tool result（统一路标格式，1.1 §6.2）。
 
+    两个入口共用同一格式（工具结果在上下文中被丢弃时的活动线索）：
+    - 回合内 Micro Compact（70% 压力时压早期工具结果）
+    - 回合间重建（DB 回放只携 user/assistant 全文，TaskAgent._rebuild_history_from_db）
+    提取结构化信号（exit_code / ok / error）+ 首行语义；「文件即状态」
+    仍是最终权威，本函数只产出路标，不承诺还原全部信息。
+    """
+    name = (tool_name or "tool").strip() or "tool"
+    text = (content or "").strip()
+    if not text:
+        return f"{name} → (空结果)"
 
-def _init_tiktoken_encoder() -> None:
-    global _tiktoken_encoder
+    status = ""
+    head = ""
     try:
-        cache_dir = os.environ.get("TIKTOKEN_CACHE_DIR")
-        if cache_dir:
-            os.makedirs(cache_dir, exist_ok=True)
-        _tiktoken_encoder = tiktoken.encoding_for_model("gpt-4o")
-        logger.info("tiktoken encoder ready (gpt-4o / o200k_base)")
-    except Exception as e:
-        # Reachable only for fast failures (missing pkg data, corrupt cache);
-        # a hung CDN download stays in the daemon thread and never blocks.
-        logger.warning("tiktoken encoder unavailable, using heuristic fallback: %s", e)
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        if "exit_code" in obj:
+            status = f"exit={obj['exit_code']}"
+        elif "ok" in obj:
+            status = f"ok={obj['ok']}"
+        err = obj.get("error") or obj.get("stderr")
+        if err:
+            head = str(err).strip().split("\n")[0]
+        else:
+            for key in ("installed", "uninstalled", "stdout", "output",
+                        "content", "result"):
+                val = obj.get(key)
+                if isinstance(val, list) and val:
+                    head = ", ".join(str(v) for v in val[:3])
+                    break
+                if isinstance(val, str) and val.strip():
+                    head = val.strip().split("\n")[0]
+                    break
+    if not head:
+        head = text.split("\n")[0].strip()
 
-
-if tiktoken is not None:
-    threading.Thread(
-        target=_init_tiktoken_encoder, daemon=True, name="tiktoken-init"
-    ).start()
+    line = f"{name} → {status + ' | ' if status else ''}{head}"
+    if len(line) > max_len:
+        line = line[:max_len] + "..."
+    return line
 
 
 class ContextManager:
@@ -90,36 +98,16 @@ class ContextManager:
         self.keep_recent = keep_recent
 
     # ── Token estimation ──
+    # count_tokens 自 llm.budget 导入（D2 唯一计数入口），此处不再持有实现。
 
     @property
     def available_tokens(self) -> int:
         """Tokens available for the conversation history."""
         return self.max_tokens - self.reserve_for_response - self.reserve_for_system
 
-    @staticmethod
-    def count_tokens(text: str) -> int:
-        """Count tokens for a text string.
-
-        Uses tiktoken (precise) when available, otherwise falls back to
-        a language-aware heuristic (CJK ~1.5 chars/token, Latin ~3 chars/token).
-        """
-        if not text:
-            return 0
-        if _tiktoken_encoder is not None:
-            return len(_tiktoken_encoder.encode(text))
-
-        # Heuristic: detect CJK characters for better estimation
-        cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-        if cjk_count > len(text) * 0.3:
-            # Mostly CJK: ~1.5 chars per token (cl100k_base ≈ 1 token/CJK char)
-            return max(1, int(len(text) * 2 / 3))
-        else:
-            # Mostly Latin: ~3 chars per token
-            return max(1, len(text) // 3)
-
     def total_tokens(self, messages: list[dict]) -> int:
         """Estimate total tokens across all messages."""
-        return sum(self.count_tokens(m.get("content", "") or "") for m in messages)
+        return sum(count_tokens(m.get("content", "") or "") for m in messages)
 
     # ── Compression decision ──
 
@@ -133,7 +121,6 @@ class ContextManager:
         self,
         messages: list[dict],
         llm: Any,
-        settings: dict,
     ) -> list[dict]:
         """Progressive compression entry point.
 
@@ -151,12 +138,12 @@ class ContextManager:
 
         # Level 2: Context Collapse (85%)
         if total > self.available_tokens * 0.85:
-            messages = await self._context_collapse(messages, llm, settings)
+            messages = await self._context_collapse(messages, llm)
             total = self.total_tokens(messages)
 
         # Level 3: Full Compact (95%)
         if total > self.available_tokens * 0.95:
-            messages = await self.full_compact(messages, llm, settings)
+            messages = await self.full_compact(messages, llm)
 
         return messages
 
@@ -164,7 +151,6 @@ class ContextManager:
         self,
         messages: list[dict],
         llm: Any,
-        settings: dict,
     ) -> list[dict]:
         """Context Collapse: summarise early messages via LLM.
 
@@ -185,8 +171,8 @@ class ContextManager:
 
         summary_text = None
 
-        # Try LLM-based summarisation
-        if llm and settings and settings.get("api_key"):
+        # Try LLM-based summarisation（api_key 判据改实例状态：settings 不再随调用传递）
+        if llm and getattr(llm, "api_key", ""):
             try:
                 convo_lines = []
                 for msg in old_msgs:
@@ -201,7 +187,7 @@ class ContextManager:
                     {"role": "system", "content": "你是一个摘要助手。请将以下对话历史压缩为简洁的摘要，保留关键信息（用户需求、已完成的操作、重要结果）。摘要应让后续对话能理解上下文。直接输出摘要内容，不要加前缀。"},
                     {"role": "user", "content": f"请摘要以下对话历史：\n\n{conversation_text}"},
                 ]
-                summary_text = await llm.chat(summary_prompt, settings)
+                summary_text = (await llm.chat_full(summary_prompt))["content"]
                 if summary_text and len(summary_text.strip()) > 10:
                     summary_text = summary_text.strip()
                     logger.info(
@@ -308,15 +294,28 @@ class ContextManager:
         old_msgs = non_system[:-self.keep_recent]
         recent_msgs = non_system[-self.keep_recent:]
 
+        # tool_call_id → 工具名（OpenAI 格式 tool 消息不带 name，从配对的
+        # assistant.tool_calls 反查；查不到回落 "tool"）
+        tc_names: dict[str, str] = {}
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if isinstance(tc, dict) and tc.get("id"):
+                        fname = (tc.get("function") or {}).get("name", "")
+                        if fname:
+                            tc_names[tc["id"]] = fname
+
         # Compress tool results in old messages (create new dicts)
+        # 摘要统一走 summarize_tool_result_line（与回合间重建共用路标格式）
         compressed_old = []
         for msg in old_msgs:
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
                 if len(content) > 500:
-                    first_line = content.split("\n")[0][:200]
+                    summary = summarize_tool_result_line(
+                        tc_names.get(msg.get("tool_call_id", ""), "tool"), content)
                     msg = dict(msg)
-                    msg["content"] = f"[已压缩] {first_line}..."
+                    msg["content"] = f"[已压缩] {summary}"
             compressed_old.append(msg)
 
         return list(system_msgs) + compressed_old + recent_msgs
@@ -364,7 +363,6 @@ class ContextManager:
         self,
         messages: list[dict],
         llm: Any,
-        settings: dict,
     ) -> list[dict]:
         """Last-resort compression: LLM summarizes entire history.
 
@@ -404,8 +402,8 @@ class ContextManager:
         ]
 
         try:
-            summary = await llm.chat(summary_prompt, settings)
-            if summary and isinstance(summary, str) and len(summary.strip()) > 10:
+            summary = (await llm.chat_full(summary_prompt))["content"]
+            if summary and len(summary.strip()) > 10:
                 result = list(system_msgs)
                 result.append({
                     "role": "user",

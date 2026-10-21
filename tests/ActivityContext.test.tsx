@@ -1,6 +1,6 @@
 /** tests/ActivityContext.test.tsx — ActivityContext 用例（0.4lifecycle-design.md §6.2，v1.7）
  *  覆盖：applyStatus → status/summary/feed/byProject 派生（含 container 分流）、feed 去重降序、
- *  markRead 乐观更新（含 IPC 失败不影响 UI）、无 Provider 抛错。
+ *  markRead 乐观更新（含 IPC 失败不影响 UI）、markAllRead 全清（2.11 §6.4）、无 Provider 抛错。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -50,6 +50,7 @@ function makeStatus(partial: {
       generating_reports: 1,
       running_tasks: 0,
       downloading_models: 0,
+      active_ppts: 0,
     },
   }
 }
@@ -91,6 +92,7 @@ describe('ActivityContext', () => {
             { entity_type: 'file', project_id: 'p1', project_name: 'P1', count: 3, image_describing: 1 },
             { entity_type: 'wiki_compile', project_id: 'p1', status: 'ingesting' },
             { entity_type: 'report', project_id: 'p2', project_name: 'P2' },
+            { entity_type: 'ppt', project_id: 'p2', status: 'running' },
             { entity_type: 'file', project_id: 'lib1', project_name: 'L1', container: 'baselib', count: 2 },
           ],
         }),
@@ -104,6 +106,8 @@ describe('ActivityContext', () => {
       compiles: 1,
     })
     expect(result.current.byProject.get('p2')?.reports).toBe(1)
+    // ppt 活动入桶（2.3 §7.1）：报告 Tab PPT 区块活跃点取数
+    expect(result.current.byProject.get('p2')?.ppts).toBe(1)
     // container 分流（0.4 §3.6）：基础库活动进桶时标记 baselib，供 BaseLibFooter 活跃点取数
     const lib = result.current.byProject.get('lib1')
     expect(lib?.container).toBe('baselib')
@@ -140,6 +144,36 @@ describe('ActivityContext', () => {
     })
     // best-effort：失败不影响 UI（0.4 §6.2）
     expect(result.current.feed.find((n) => n.id === 8)?.read_at).toBeTruthy()
+  })
+
+  it('markAllRead invokes readAll once and clears all unread optimistically (2.11 §6.4)', async () => {
+    invokeMock.mockResolvedValue({ ok: true, marked: 2 })
+    const { result } = renderHook(() => useActivity(), { wrapper: ActivityProvider })
+    act(() => {
+      result.current.applyStatus(makeStatus({ unread: [notif({ id: 3 }), notif({ id: 4 })] }))
+    })
+    await act(async () => {
+      await result.current.markAllRead()
+    })
+    expect(invokeMock).toHaveBeenCalledWith('notifications:readAll')
+    // 双源乐观清（review m-1）：feed 供面板实时面，status.notifications.unread
+    // 是 NavTabs 徽章（unreadCount）的数据源——仅清 feed 要等下一轮心跳才归零
+    expect(result.current.feed.every((n) => n.read_at)).toBe(true)
+    expect(result.current.status?.notifications.unread).toEqual([])
+  })
+
+  it('markAllRead keeps optimistic update even when IPC fails', async () => {
+    invokeMock.mockRejectedValue(new Error('ipc down'))
+    const { result } = renderHook(() => useActivity(), { wrapper: ActivityProvider })
+    act(() => {
+      result.current.applyStatus(makeStatus({ unread: [notif({ id: 6 })] }))
+    })
+    await act(async () => {
+      await result.current.markAllRead()
+    })
+    // best-effort：失败不影响 UI（0.4 §6.2），双源乐观清照常生效
+    expect(result.current.feed.every((n) => n.read_at)).toBe(true)
+    expect(result.current.status?.notifications.unread).toEqual([])
   })
 
   it('throws when useActivity is used without provider', () => {

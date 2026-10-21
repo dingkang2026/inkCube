@@ -89,7 +89,7 @@ def wiki_data_dir(tmp_path):
 def _make_patched_ingestor(monkeypatch, db, data_dir):
     """Stub LLM：stage1 返回分析文本，stage2 返回含 confirm+contradiction 的输出。"""
 
-    async def fake_chat(self, messages, settings, task_id, stage):
+    async def fake_chat(self, messages, settings, task_id, stage, project_id=None):
         return _STAGE1_OUTPUT if stage == "stage1" else _STAGE2_OUTPUT
 
     monkeypatch.setattr(WikiIngestor, "_chat_with_retry", fake_chat)

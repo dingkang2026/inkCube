@@ -361,7 +361,7 @@ class TestAdjudicateEndpoint:
     def test_adjudicate_rejects_already_resolved(self, db, project_id, monkeypatch):
         """已处理发现项 → 409，不允许重复裁决。"""
         review_id = _setup_contradiction(db, project_id)
-        db.resolve_wiki_review(review_id, "dismiss")
+        db.resolve_wiki_review(project_id, review_id, "dismiss")
         monkeypatch.setattr("routers.wiki.get_db", lambda: db)
 
         resp = _run(adjudicate_review(
@@ -504,7 +504,7 @@ def _make_capture_ingestor(monkeypatch, db, stage2_output: str, data_dir: str):
     """Stub LLM：stage1 返回分析文本；stage2 记录 messages 并返回指定输出。"""
     captured = {}
 
-    async def fake_chat(self, messages, settings, task_id, stage):
+    async def fake_chat(self, messages, settings, task_id, stage, project_id=None):
         if stage == "stage1":
             return _STAGE1_OUTPUT
         captured["messages"] = messages
@@ -605,7 +605,7 @@ class TestIngestUserEditedWindow:
             content="旧内容", status="compiled",
         )
 
-        async def fake_chat(self, messages, settings, task_id, stage):
+        async def fake_chat(self, messages, settings, task_id, stage, project_id=None):
             if stage == "stage1":
                 return _STAGE1_OUTPUT
             # 模拟 Stage 2 LLM 期间用户裁决/手编写入 user_edited

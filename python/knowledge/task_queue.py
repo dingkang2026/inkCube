@@ -17,8 +17,9 @@ from typing import Optional
 
 from knowledge.pipeline import ProcessingPipeline
 from knowledge.vlm_client import VLMClient
-from knowledge.vector_store import VectorStore
+from knowledge.vector_store import VectorStore, image_doc_id
 from errors import InkCubeError, FileNotFound, actionable
+from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
 import activity_events
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,10 @@ class KnowledgeWorker:
         self._max_file_concurrency = max_file_concurrency
         self._max_image_concurrency = max_image_concurrency
         self._max_compile_concurrency = max_compile_concurrency
+        # 在岗 worker 计数（update_concurrency 热更新补足的判据，见该函数）
+        self._file_worker_count = 0
+        self._image_worker_count = 0
+        self._compile_worker_count = 0
         # 扫描节奏可注入（测试用）；生产默认 3s 启动延迟 + 5s 轮询
         self._scan_initial_delay = scan_initial_delay
         self._scan_interval = scan_interval
@@ -92,12 +97,65 @@ class KnowledgeWorker:
 
     # ── Public API ──
 
+    def reset_vector_store(self) -> None:
+        """chroma 目录被 wipe（知识清理/reset-all）后失效共享实例。
+
+        清理路径已 drop_chroma_client stop 旧 client；本单例的懒加载缓存
+        若不清，下次解析/图片描述/Wiki 编译会打在已 stop 的 system 上
+        确定性失败直至进程重启（与 B1 原始 bug 同族，审查 2026-10-20）。
+        下次 _get_vector_store 经 get_chroma_client 重建，模型随建随载。"""
+        self._vector_store = None
+        logger.info("[KnowledgeWorker] Vector store invalidated (chroma wiped)")
+
+    def _spawn_file_worker(self):
+        self._file_worker_count += 1
+        self._tasks.append(
+            asyncio.create_task(self._file_worker(f"file-w-{self._file_worker_count - 1}"))
+        )
+
+    def _spawn_image_worker(self):
+        self._image_worker_count += 1
+        self._tasks.append(
+            asyncio.create_task(self._image_worker(f"img-w-{self._image_worker_count - 1}"))
+        )
+
+    def _spawn_compile_worker(self):
+        self._compile_worker_count += 1
+        self._tasks.append(
+            asyncio.create_task(self._compile_worker(f"compile-w-{self._compile_worker_count - 1}"))
+        )
+
     def update_concurrency(self, file_concurrency: int, image_concurrency: int, compile_concurrency: int | None = None):
-        """Update concurrency limits (takes effect on next task acquisition)."""
+        """Update concurrency limits — hot reload, both directions.
+
+        实际并发 = min(worker 数, semaphore)。仅换 semaphore 时调大方向无效
+        （worker 数启动期固定，review 2026-10-20 K-1：设置页把解析并发 2→4
+        保存后实际并发仍为 2）。修复：semaphore 换新即时约束上限；worker
+        供给只增不减——运行中调大方向补足 worker 使新上限真实可达，调小方向
+        由 semaphore 自然限流，多余 worker 空闲（队列 get 2s 超时轮询，开销
+        可忽略）。仅在 start() 之后补足（create_task 需事件循环）。
+        """
         self._file_sem = asyncio.Semaphore(file_concurrency)
         self._image_sem = asyncio.Semaphore(image_concurrency)
         if compile_concurrency is not None:
             self._compile_sem = asyncio.Semaphore(compile_concurrency)
+        self._max_file_concurrency = file_concurrency
+        self._max_image_concurrency = image_concurrency
+        if compile_concurrency is not None:
+            self._max_compile_concurrency = compile_concurrency
+        if not self._running:
+            return
+        while self._file_worker_count < file_concurrency:
+            self._spawn_file_worker()
+        while self._image_worker_count < image_concurrency:
+            self._spawn_image_worker()
+        if compile_concurrency is not None:
+            while self._compile_worker_count < compile_concurrency:
+                self._spawn_compile_worker()
+        logger.info(
+            "[KnowledgeWorker] Concurrency updated: %d file, %d image, %d compile workers on duty",
+            self._file_worker_count, self._image_worker_count, self._compile_worker_count,
+        )
 
     def set_file_paused(self, paused: bool):
         if paused:
@@ -113,6 +171,48 @@ class KnowledgeWorker:
             self._image_run.set()
         logger.info("[KnowledgeWorker] Image description %s", "paused" if paused else "resumed")
 
+    def _drain_queue(self, queue: asyncio.Queue, enqueued: set) -> int:
+        """停止时清空内存队列积压 + 同步清防重集；force 重试条目保留。
+
+        DB 是唯一事实源（被丢弃任务在 DB 仍是 pending），恢复后 QueueScanner
+        下一轮（≤ scan_interval）自动补投递，断点续传零丢失。防重集必须同步
+        清空：它只在 worker 出队时 discard，不清会把恢复后的补投递全部挡在
+        enqueue 防重检查外。已在 worker 手里（出队未处理完）的任务不受影响，
+        process 前的 status 守卫会跳过恢复后的重复投递。
+
+        例外——force 条目（单图强制解析，(image_id, force=True)）保留不丢：
+        force 意图只存在于内存队列、不落 DB，丢弃后 Scanner 补投递
+        force=False，小图（< MIN_IMAGE_SIZE）会被再次自动归档，用户显式
+        重试意图静默失效（review 2026-10-15）。保留条目与补投递可能重复，
+        出队 status 守卫保证收敛。
+        """
+        drained = 0
+        kept: list = []
+        while True:
+            try:
+                item = queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+            # image 队列条目为 (image_id, force)；file 队列为 str（无 force 概念）
+            if isinstance(item, tuple) and item[1]:
+                kept.append(item)
+            else:
+                drained += 1
+        enqueued.clear()
+        for item in kept:
+            queue.put_nowait(item)
+            enqueued.add(item[0])
+        return drained
+
+    def drain_file_queue(self) -> int:
+        """Drop queued file-parsing entries; returns how many were dropped."""
+        return self._drain_queue(self._file_queue, self._file_enqueued)
+
+    def drain_image_queue(self) -> int:
+        """Drop queued image-description entries; returns how many were dropped."""
+        return self._drain_queue(self._image_queue, self._image_enqueued)
+
     # Wiki 编译不设队列暂停（0.4 §6.7 修订）：其任务级「停止」（协作式，stopped
     # 终态）+ ingest_summaries 断点续传已覆盖暂停的全部用户价值（效果等价、恢复
     # 成本相同），双出口只会增加语义混淆。
@@ -121,18 +221,12 @@ class KnowledgeWorker:
         """Start all workers. Call from FastAPI lifespan."""
         self._reset_interrupted_items()
         self._running = True
-        for i in range(self._max_file_concurrency):
-            self._tasks.append(
-                asyncio.create_task(self._file_worker(f"file-w-{i}"))
-            )
-        for i in range(self._max_image_concurrency):
-            self._tasks.append(
-                asyncio.create_task(self._image_worker(f"img-w-{i}"))
-            )
-        for i in range(self._max_compile_concurrency):
-            self._tasks.append(
-                asyncio.create_task(self._compile_worker(f"compile-w-{i}"))
-            )
+        for _ in range(self._max_file_concurrency):
+            self._spawn_file_worker()
+        for _ in range(self._max_image_concurrency):
+            self._spawn_image_worker()
+        for _ in range(self._max_compile_concurrency):
+            self._spawn_compile_worker()
         self._tasks.append(asyncio.create_task(self._queue_scanner()))
         logger.info(
             "[KnowledgeWorker] Started: %d file, %d image, %d compile workers",
@@ -151,6 +245,11 @@ class KnowledgeWorker:
         self._file_enqueued.clear()
         self._image_enqueued.clear()
         self._compile_enqueued.clear()
+        # 在岗计数归零：与 _tasks.clear() 同步，重启后 update_concurrency 的
+        # 补足判据才不失真（否则残留计数会吞掉新配置的 worker 补足）
+        self._file_worker_count = 0
+        self._image_worker_count = 0
+        self._compile_worker_count = 0
         logger.info("[KnowledgeWorker] Stopped")
 
     async def enqueue_file(self, file_id: str):
@@ -407,7 +506,12 @@ class KnowledgeWorker:
 
         try:
             if img_path.exists():
-                result = await vlm_client.describe_image(str(img_path), context_text=context_text)
+                # 2.10 §4.3: 用量环境（source=vlm，归属项目与图片）——worker 协程
+                # 独立 context，图片间互不可见
+                with push_context(UsageContext(
+                        source="vlm", purpose="describe",
+                        project_id=project_id, entity_id=image_id)):
+                    result = await vlm_client.describe_image(str(img_path), context_text=context_text)
             else:
                 raise FileNotFound(detail=str(img_path))
 
@@ -455,7 +559,7 @@ class KnowledgeWorker:
                 # Store as ChromaDB chunk (reuse shared VectorStore)
                 try:
                     vs = self._get_vector_store()
-                    img_doc_id = f"img_{file_id}_{img.get('page_no', 0)}"
+                    img_doc_id = image_doc_id(file_id, img.get("page_no"), image_id)
                     vs.add_documents(
                         project_id=project_id,
                         ids=[img_doc_id],
@@ -534,10 +638,13 @@ class KnowledgeWorker:
         # Mark task as started
         self.db.start_compile_task(task_id)
 
-        # Get LLM settings
-        settings = self.db.get_settings()
-
+        # Get LLM settings（档位制：ingest 档解析写入 model 键后构造——旧直构
+        # 缺 model 键，此 client 拿不到真实模型且 ingest._chat_with_retry 因
+        # None≠名字比较每次重建、本对象成死对象；派生 dict 兼作配置容器传
+        # 下游：再解析一次结果相同 → 复用 llm_client，2026-10-20 补齐）
         from llm import LLMClient
+        from llm.routing import get_task_settings
+        settings = get_task_settings(self.db.get_settings(), "ingest")
         llm_client = LLMClient(settings)
 
         # V2 per-file ingest, continuous run (failure-isolated per file,

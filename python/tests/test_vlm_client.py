@@ -21,6 +21,14 @@ class TestVlmCategories:
     def test_seal_is_auto_archived(self):
         assert "seal" in VLMClient.AUTO_ARCHIVE_CATEGORIES
 
+    def test_invoice_and_certificate_are_content_categories(self):
+        """票据/资质证书为内容类：进报告插图池，不进自动归档
+        （与 qr_code/signature/seal 修饰类相对，商务场景是信任背书插图）。"""
+        assert "invoice" in VLMClient.CATEGORIES
+        assert "certificate" in VLMClient.CATEGORIES
+        assert "invoice" not in VLMClient.AUTO_ARCHIVE_CATEGORIES
+        assert "certificate" not in VLMClient.AUTO_ARCHIVE_CATEGORIES
+
     def test_auto_archive_categories_are_subset_of_categories(self):
         assert set(VLMClient.AUTO_ARCHIVE_CATEGORIES) <= set(VLMClient.CATEGORIES)
 

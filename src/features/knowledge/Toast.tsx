@@ -1,6 +1,7 @@
 /** src/features/knowledge/Toast.tsx */
-import { useState, useEffect, useCallback, useContext, useMemo, createContext } from 'react'
+import { useState, useEffect, useCallback, useContext, useMemo, createContext, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { CheckCircle2, Info, TriangleAlert, XCircle } from 'lucide-react'
 import s from './Toast.module.css'
 
 type ToastType = 'success' | 'error' | 'info' | 'warning'
@@ -77,11 +78,11 @@ function ToastItemView({ toast, onRemove }: { toast: ToastItem; onRemove: (id: n
     }
   }, [toast.id, onRemove, duration, removeDelay])
 
-  const icons: Record<ToastType, string> = {
-    success: '✓',
-    error: '✕',
-    info: 'ℹ',
-    warning: '!',
+  const icons: Record<ToastType, ReactNode> = {
+    success: <CheckCircle2 size={14} />,
+    error: <XCircle size={14} />,
+    info: <Info size={14} />,
+    warning: <TriangleAlert size={14} />,
   }
 
   return (

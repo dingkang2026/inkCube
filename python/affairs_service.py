@@ -11,6 +11,8 @@ import logging
 import re
 from datetime import date, timedelta
 
+import activity_events
+
 logger = logging.getLogger(__name__)
 
 _MAX_ROLL_PERIODS = 120  # 滚动迭代上限(裁决 3,防御坏 rule 死循环)
@@ -72,6 +74,15 @@ def prev_occurrence(rule: dict, key: str) -> tuple[str, str]:
 
 _VALID_FREQS = ("monthly", "quarterly", "yearly")
 _MMDD = re.compile(r"^(\d{2})-(\d{2})$")
+# freq → occurrence_key 形态(三格式:2026-10 / 2026-Q4 / 2026,字典序可比)。
+# 滚动起点只认同格式实例:改 freq 后旧格式 key 不参与缺口回铺,跨格式混排
+# (monthly key 撞 quarterly 推进 → 静默产出重复语义期次/IndexError)从根上
+# 消灭(2026-10-21 裁决:方案 1「改节奏仅影响未来期次」完整落地)
+_KEY_SHAPES = {
+    "monthly": re.compile(r"^\d{4}-\d{2}$"),
+    "quarterly": re.compile(r"^\d{4}-Q[1-4]$"),
+    "yearly": re.compile(r"^\d{4}$"),
+}
 
 
 def parse_rule(raw) -> dict | None:
@@ -109,11 +120,8 @@ _last_roll_date: str | None = None
 
 
 def roll_recurring(db) -> int:
-    try:
-        return _roll_recurring_inner(db)
-    except Exception:
-        logger.warning("roll_recurring failed", exc_info=True)
-        return 0
+    """滚动生成缺失期次实例；首查 DB 失败上抛（组级失败内部隔离不拖垮其余）。"""
+    return _roll_recurring_inner(db)
 
 
 def _roll_one_group(db, g, today: date) -> int:
@@ -134,13 +142,17 @@ def _roll_one_group(db, g, today: date) -> int:
     cur_key, _ = current_occurrence(rule, today)
     nxt_key, _ = next_occurrence(rule, cur_key)
     existing = {r["occurrence_key"] for r in rows if r["occurrence_key"]}
-    # 迭代起点取「组内最早期」与「当期」的较小者:组内最早期晚于当期时
-    # (如用户删掉当期实例),仍能扫到并补出当期,不能只从现存最早期起扫;
-    # NULL occurrence_key 的脏数据行不参与起点计算(防 min(None) TypeError)
     known = sorted(k for k in existing if k)
     if not known:
         return 0
-    key = min(known[0], cur_key)
+    # 迭代起点取「现存同格式最早」与「当期」的较小者(裁决 4 完整落地,
+    # 2026-10-21:改节奏仅影响未来期次——起点只认同当前 freq 格式的实例,
+    # 旧格式 key 不参与,跨格式混排从根上消灭;同格式实例晚于当期时
+    # (如用户删掉当期实例),仍能扫到并补出当期,不能只从现存最早期起扫;
+    # NULL occurrence_key 的脏数据行不参与起点计算(防 min(None) TypeError))
+    shape = _KEY_SHAPES[rule["freq"]]
+    same_fmt = [k for k in known if shape.match(k)]
+    key = min(same_fmt[0], cur_key) if same_fmt else cur_key
     proto = rows[-1]  # 新期次实例的列原型(同 project/phase/type/title/rule)
     created = 0
     # 事务级锁 + 异常自动回滚(Task 2 落地的 transaction()):组内部分插入
@@ -194,21 +206,80 @@ def _roll_recurring_inner(db) -> int:
 
 
 def maybe_roll_daily(db) -> bool:
-    """跨日即滚;同日重复调用零开销(lifespan roll 后同进程共享 _last_roll_date)。"""
+    """跨日即滚;同日重复调用零开销(lifespan roll 后同进程共享 _last_roll_date)。
+
+    首查 DB 瞬时异常不置当日标记,当日后续心跳/重启可重试(与 reminders/forms
+    扫描口径一致,review 问题 2);组级失败属设计容忍,不影响置位。
+    """
     global _last_roll_date
     today = date.today().isoformat()
     if _last_roll_date == today:
         return False
+    try:
+        roll_recurring(db)
+    except Exception:
+        logger.warning("daily roll failed, will retry", exc_info=True)
+        return False
     _last_roll_date = today
-    roll_recurring(db)
+    return True
+
+
+# ── 事务到期/逾期提醒扫描（2.11 §3.2）──
+
+_last_reminder_date: str | None = None
+
+
+def maybe_scan_reminders(db) -> bool:
+    """每日一次事务提醒扫描（心跳入口调用，同日零开销；服务层自行兑底异常）。
+
+    due_date == today → notify(kind='due')；due_date < today → notify(kind='overdue')
+    （list_due_phase_tasks(horizon_days=0) 即逾期全部 + 今日，已过滤基础库/归档）。
+    按天查重（add_notification_daily）→ 每事务每 kind 每天至多一条（D1 跨天重发）。
+    首次调用即扫（覆盖应用当天中途启动）；开关关闭不扫不置标记（开启当日补扫）。
+    通知不隶属长时活动，不注册 registry（2.11 D7）。返回是否执行了扫描。
+    """
+    global _last_reminder_date
+    today = date.today().isoformat()
+    if _last_reminder_date == today:
+        return False
+    try:
+        # 开关关闭：不扫不置标记（开启当日补扫，2.11 §3.2）
+        if not db.get_settings().get("affair_reminder_enabled", True):
+            return False
+        due_tasks = db.list_due_phase_tasks(horizon_days=0)
+    except Exception:
+        logger.warning("affair reminder scan failed", exc_info=True)
+        return False
+    _last_reminder_date = today
+    notified = 0
+    for pt in due_tasks:
+        kind = "due" if pt["due_date"] == today else "overdue"
+        try:
+            activity_events.notify(
+                db,
+                entity_type="affair", entity_id=pt["id"],
+                project_id=pt["project_id"], container="project",
+                kind=kind, entity_title=pt["title"],
+            )
+            notified += 1
+        except Exception:
+            logger.warning("affair reminder notify failed for %s", pt["id"], exc_info=True)
+    if notified:
+        logger.info("Affair reminders sent: %d", notified)
     return True
 
 
 # ── 阶段切换激活(§5.3)──
 
 def activate_phase(db, project_id: str, new_stage: str) -> int:
-    try:
-        phase = phase_of(new_stage)
+    """激活指定时期的 pending_activation 实例（§5.3）。
+
+    异常上抛不吞（review M-2）：调用方（knowledge.update_project）依赖异常
+    阻断 stage 写入——吞掉会「阶段已换、任务未铺出」且用户零感知。实例铺出
+    整体单事务，中途失败回滚半成品，不留部分 open 实例。
+    """
+    phase = phase_of(new_stage)
+    with db.conn.transaction():
         rows = db.conn.execute(
             """SELECT pt.id, pt.recurrence_rule, tpl.due_offset_days, tpl.due_date_fixed
                FROM phase_tasks pt
@@ -234,12 +305,7 @@ def activate_phase(db, project_id: str, new_stage: str) -> int:
                 "UPDATE phase_tasks SET status='open', due_date=?, occurrence_key=? WHERE id=?",
                 (due, occ, r["id"]))
             n += 1
-        if n:
-            db.conn.commit()
-        return n
-    except Exception:
-        logger.warning("activate_phase failed for %s", project_id, exc_info=True)
-        return 0
+    return n
 
 
 # ── 终态事件自动完成(§5.4 事件路径)──

@@ -1,6 +1,5 @@
 /* src/features/project/affairs/RhythmCards.module.css — 周期节奏卡(0.3 §4.3 token;
-   期次状态色口径 §6.3:--error 逾期 / --warning 临期 / --accent 进行中;
-   --warning 未定义全局 token,沿仓内既定 fallback 形式) */
+   期次状态色口径 §6.3:--error 逾期 / --text-warning 临期 / --accent 进行中) */
 
 .container {
   display: flex;
@@ -11,7 +10,7 @@
 
 .empty {
   padding: 24px 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-muted);
   text-align: center;
 }
@@ -35,7 +34,7 @@
 }
 
 .cardTitle {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -45,11 +44,11 @@
 }
 
 .freqBadge {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   background: var(--bg-secondary);
   padding: 2px 8px;
-  border-radius: 8px;
+  border-radius: 999px;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -60,7 +59,7 @@
   gap: 4px;
   padding: 3px 8px;
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   background: none;
   border: 1px solid var(--border);
@@ -101,7 +100,7 @@
 }
 
 .occKey {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -133,7 +132,7 @@
 }
 
 .occWarn .occDot {
-  background: var(--warning, #d97706);
+  background: var(--text-warning);
 }
 
 .occOpen .occDot {

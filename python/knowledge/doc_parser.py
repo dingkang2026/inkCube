@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 import tempfile
 import subprocess
 
+from knowledge.office_media import extract_office_images
+
 logger = logging.getLogger(__name__)
 
 # COM hresults meaning "callee busy, retry shortly". Office automation under
@@ -22,22 +24,32 @@ _COM_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton: Docling DocumentConverter is shared across ALL
+# Module-level singletons: Docling DocumentConverters are shared across ALL
 # DocumentParser instances so its models (layout, table, OCR) are loaded
-# exactly once per process.
+# exactly once per process and per options-set.
+#
+# Two converters by design（Office 图片无损改造，2.2 §4.4）：
+# - pictures=True : PDF 带图裁剪 + 独立图片输入，服务 PDF/HTML/XLSX 等格式；
+# - pictures=False: 仅服务 DOCX/PPTX 转 PDF 产物——图片改由原生 zip 提取
+#   （office_media），Docling 不再生成有损裁剪图。
+# docling 2.127 的 pipeline 缓存键为 (pipeline_class, options_hash)，两组
+# options 各自缓存 pipeline 同进程共存；独立 converter 实例避免运行时切换
+# 共享 format_to_options[PDF] 槽位的并发竞态（文件并发 2）。
+# 无图 converter 仅在首个 DOCX/PPTX 解析时才加载模型（不上传 Office 文档零开销）。
 # ---------------------------------------------------------------------------
-_docling_converter = None
+_docling_converters: dict[bool, "_ThreadsafeConverter"] = {}
 _docling_converter_lock = threading.Lock()
 
 
-def _get_docling_converter(models_dir: Path):
-    """Return the singleton DocumentConverter, loading it on first call."""
-    global _docling_converter
-    if _docling_converter is not None:
-        return _docling_converter
+def _get_docling_converter(models_dir: Path, generate_picture_images: bool = True):
+    """Return the singleton _ThreadsafeConverter for the given options set."""
+    wrapper = _docling_converters.get(generate_picture_images)
+    if wrapper is not None:
+        return wrapper
     with _docling_converter_lock:
-        if _docling_converter is not None:
-            return _docling_converter
+        wrapper = _docling_converters.get(generate_picture_images)
+        if wrapper is not None:
+            return wrapper
         try:
             from docling.document_converter import (
                 DocumentConverter, PdfFormatOption, ImageFormatOption,
@@ -47,19 +59,19 @@ def _get_docling_converter(models_dir: Path):
                 PdfPipelineOptions, TableStructureV2Options,
             )
 
-            def _build_pipeline_options(generate_picture_images: bool):
+            def _build_pipeline_options(with_pictures: bool):
                 opts = PdfPipelineOptions()
                 opts.artifacts_path = str(models_dir)
                 opts.do_ocr = True
                 opts.do_table_structure = True
                 if opts.do_table_structure:
                     opts.table_structure_options = TableStructureV2Options()
-                opts.generate_picture_images = generate_picture_images
+                opts.generate_picture_images = with_pictures
                 opts.generate_page_images = False
                 return opts
 
-            _docling_converter = DocumentConverter(
-                format_options={
+            if generate_picture_images:
+                format_options = {
                     # 文档输入：提取内嵌图区域（图片保留是文档理解的核心，2.2 §4.4）
                     InputFormat.PDF: PdfFormatOption(
                         pipeline_options=_build_pipeline_options(True)
@@ -72,40 +84,57 @@ def _get_docling_converter(models_dir: Path):
                         pipeline_options=_build_pipeline_options(False)
                     ),
                 }
+            else:
+                # 无图 converter 仅注册 PDF：只接 DOCX/PPTX 的转 PDF 产物。
+                # 降级路径（无 Office 转换器）直喂 DOCX/PPTX 时走 docling 默认
+                # 原生 backend，与图片无关（图片由原生提取器负责）。
+                format_options = {
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=_build_pipeline_options(False)
+                    ),
+                }
+            wrapper = _ThreadsafeConverter(DocumentConverter(format_options=format_options))
+            _docling_converters[generate_picture_images] = wrapper
+            logger.info(
+                "Docling converter loaded (artifacts: %s, pictures: %s)",
+                models_dir, generate_picture_images,
             )
-            logger.info("Docling converter loaded (artifacts: %s)", models_dir)
         except ImportError as e:
             logger.warning("Docling not available: %s", e)
-            _docling_converter = None
-    return _docling_converter
+            wrapper = None
+    return wrapper
 
 
-# ---------------------------------------------------------------------------
-# First-convert serialization: Docling loads its pipeline models lazily
-# inside the FIRST convert() call (unlocked internal caches + model init on
-# that path), so two workers converting concurrently at startup can crash
-# each other. Steady-state convert() is PyTorch/ONNX inference and is
-# thread-safe, so after the first call completes the lock is never taken
-# again (zero steady-state cost).
-# ---------------------------------------------------------------------------
-_docling_first_convert_lock = threading.Lock()
-_docling_warmed = False
+class _ThreadsafeConverter:
+    """Wrap a DocumentConverter, serializing only its first (lazy-init) call.
 
+    Docling loads its pipeline models lazily inside the FIRST convert() call
+    (unlocked internal caches + model init on that path), so two workers
+    converting concurrently at startup can crash each other. Steady-state
+    convert() is PyTorch/ONNX inference and is thread-safe, so after the first
+    call completes the lock is never taken again (zero steady-state cost).
+    The lock is per converter: the two singletons initialize their pipelines
+    independently, so a shared warmed flag would leave the second converter's
+    lazy init unprotected.
+    """
 
-def _convert_threadsafe(converter, file_path: str):
-    """Run converter.convert, serializing only the first (lazy-init) call."""
-    global _docling_warmed
-    if _docling_warmed:
-        return converter.convert(file_path)
-    with _docling_first_convert_lock:
-        if not _docling_warmed:
-            try:
-                return converter.convert(file_path)
-            finally:
-                # Mark warmed even on failure: init state is already mutated;
-                # retrying the racy init path would only re-open the race
-                _docling_warmed = True
-    return converter.convert(file_path)
+    def __init__(self, converter):
+        self._converter = converter
+        self._first_convert_lock = threading.Lock()
+        self._warmed = False
+
+    def convert(self, file_path: str):
+        if self._warmed:
+            return self._converter.convert(file_path)
+        with self._first_convert_lock:
+            if not self._warmed:
+                try:
+                    return self._converter.convert(file_path)
+                finally:
+                    # Mark warmed even on failure: init state is already mutated;
+                    # retrying the racy init path would only re-open the race
+                    self._warmed = True
+        return self._converter.convert(file_path)
 
 
 @dataclass
@@ -164,16 +193,18 @@ class DocumentParser:
             models_dir = get_models_dir()
         
         self.models_dir = Path(models_dir)
-        # Use module-level singleton converter (shared across all instances)
-        self.converter = _get_docling_converter(self.models_dir)
+        # Module-level singleton converters (shared across all instances):
+        # 带图（PDF/HTML/XLSX/独立图片）与无图（仅 DOCX/PPTX 产物 PDF，图片由
+        # office_media 原生无损提取）各一，见 _get_docling_converter 注释
+        self.converter = _get_docling_converter(
+            self.models_dir, generate_picture_images=True
+        )
+        self._office_converter = _get_docling_converter(
+            self.models_dir, generate_picture_images=False
+        )
         # Cache for tokenizer / chunker (lazily initialised in _extract_chunks)
         self._chunker = None
         self._tokenizer = None
-    
-    # _init_converter kept for backward compatibility but now delegates
-    # to the module-level singleton so repeated calls are no-ops.
-    def _init_converter(self):
-        self.converter = _get_docling_converter(self.models_dir)
     
     def parse_file(self, file_path: str, file_id: str) -> ParseResult:
         """
@@ -192,10 +223,13 @@ class DocumentParser:
             raise FileNotFoundError(f"File not found: {file_path}")
         
         # Office → PDF conversion if needed (Excel handled directly by Docling)
+        # 图片无损改造（2.2 §4.4）：DOCX/PPTX 的 PDF 仅服务文字/版面，图片由
+        # office_media 从原始 zip 包提取，Docling 转换产物不再生成裁剪图
+        is_office = file_path.suffix.lower() in ['.docx', '.pptx']
         original_path = file_path
         temp_pdf = None
         conversion_warnings: List[str] = []
-        if file_path.suffix.lower() in ['.docx', '.pptx']:
+        if is_office:
             pdf_path, conv_warning = self._convert_office_to_pdf(file_path)
             if conv_warning:
                 conversion_warnings.append(conv_warning)
@@ -207,15 +241,34 @@ class DocumentParser:
             if self.converter is None:
                 raise RuntimeError("Docling converter not initialized")
             
-            # Parse with Docling (first call serialized — see helper docstring)
-            conv_result = _convert_threadsafe(self.converter, str(file_path))
+            # Parse with Docling (first call serialized — see _ThreadsafeConverter)
+            # 按源格式分发而非转换产物后缀：file_path 此时已是 temp_pdf，
+            # 后缀恒为 .pdf，若按后缀分发则无图单例在主路径永远脱靶
+            conv_result = (
+                self._office_converter if is_office else self.converter
+            ).convert(str(file_path))
             doc = conv_result.document
             
             # Extract text chunks with HybridChunker
             text_chunks = self._extract_chunks(doc)
             
             # Extract images with context
-            images = self._extract_images(doc, file_id, file_path.parent)
+            # DOCX/PPTX：原生无损提取；失败声明 0 图 + warning（不重新带图解析，
+            # 避免双倍解析成本），文件照常 done；其他格式维持版面裁剪提取
+            if is_office:
+                try:
+                    images = extract_office_images(original_path, file_id, file_path.parent)
+                except Exception as e:
+                    logger.error(
+                        "Native image extraction failed for %s: %s",
+                        original_path.name, e, exc_info=True,
+                    )
+                    conversion_warnings.append(
+                        f"图片无损提取失败({e.__class__.__name__})，本次解析不含图片"
+                    )
+                    images = []
+            else:
+                images = self._extract_images(doc, file_id, file_path.parent)
             
             # Build metadata
             metadata = {

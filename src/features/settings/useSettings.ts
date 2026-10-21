@@ -4,19 +4,26 @@ import type { LLMSettings } from '../../types'
 const DEFAULT_SETTINGS: LLMSettings = {
   api_url: 'https://open.bigmodel.cn/api/paas/v4/',
   api_key: '',
-  model: 'glm-4-flash',
+  // 模型档位槽（2026-10-19 档位制，替代原单一 model 键）
+  standard_model: 'glm-5.3-flash',
+  high_model: 'glm-5.3',
   temperature: 0.7,
   // 与后端 defaults 对齐（schemas.py SettingsModel / database.py get_settings）：
   // 后端不可达时本表作为回显基底，数值漂移会让用户保存时写入与预期不同的值
-  max_tokens: 8192,
+  max_tokens: 32768,
+  context_window: 131072,  // 0 = 自动（后端 budget.floor 落 128K 下限）
   top_p: 0.9,
   reasoning_effort: 'low',
   reasoning_override: '',
   system_prompt: '',
   tavily_key: '',
+  // 与后端 defaults 对齐（web_search_provider 空 = 未选择，2026-10-19 供应商化）
+  web_search_provider: '',
+  zhipu_search_key: '',
+  zhipu_search_engine: 'search_pro',
   vlm_api_url: 'https://open.bigmodel.cn/api/paas/v4/',
   vlm_api_key: '',
-  vlm_model: 'glm-4v',
+  vlm_model: 'glm-4.6v',
   max_concurrent_file_parsing: 2,
   max_concurrent_image_description: 2,
   // Wiki compile settings
@@ -24,15 +31,24 @@ const DEFAULT_SETTINGS: LLMSettings = {
   // LLM timeout settings
   llm_connect_timeout: 30,
   llm_read_timeout: 300,
-  task_model: '',
+  // 任务路由（值 = 档位 standard/high；planner 空串 = 不启用规划）
+  task_model: 'standard',
   task_planner_model: '',
-  // Wiki LLM task routing (empty = use global model)
-  wiki_ingest_model: '',
-  wiki_lint_model: '',
-  wiki_dedup_model: '',
-  wiki_ledger_parse_model: '',
+  // Wiki LLM task routing（值 = 档位，空值按 standard）
+  wiki_ingest_model: 'standard',
+  wiki_lint_model: 'standard',
+  wiki_dedup_model: 'standard',
+  wiki_ledger_parse_model: 'standard',
+  wiki_enrich_model: 'standard',
+  // Pipeline LLM routing（值 = 档位，空值按 standard；ppt 唯一默认 high）
+  report_model: 'standard',
+  report_extract_model: 'standard',
+  form_analyze_model: 'standard',
+  form_fill_model: 'standard',
+  rag_model: 'standard',
+  ppt_model: 'high',
   task_timeout: 30,
-  task_max_iterations: 25,
+  task_max_iterations: 60,
   task_auto_confirm_shell: false,
   task_shell_confirm_mode: 'smart',
   task_shell_domain_whitelist: '',
@@ -40,6 +56,15 @@ const DEFAULT_SETTINGS: LLMSettings = {
   task_workspace_max_mb: 1024,
   task_max_count: 50,
   task_auto_archive_days: 30,
+  // 存储保留策略（与 schemas.py SettingsModel 对齐；0 = 永不清理）
+  archived_task_cleanup_days: 30,
+  llm_usage_retention_days: 90,
+  schedule_runs_retention_days: 90,
+  // Notification settings (2.11 §2.3)
+  os_notify_enabled: true,
+  os_notify_sound: true,
+  affair_reminder_enabled: true,
+  schedule_notify: false,   // R4 订阅完成通知：默认静默（review P2-7 提前落地）
 }
 
 export function useSettings() {
@@ -54,7 +79,13 @@ export function useSettings() {
   const loadSettings = useCallback(async () => {
     try {
       const res = await window.electronAPI.invoke('settings:get')
-      setSettings(res as LLMSettings)
+      // 以 DEFAULT_SETTINGS 为基底合并：后端响应可能缺新增字段的键——
+      // dev 模式后端进程无热重载，新增键要等进程重启才进响应（
+      // 2026-10-15 实证：后端 08:55 启动，defaults 新增两键 14:50 落盘，
+      // 响应缺 context_window/max_tokens）。直接断言会让 form 字段为
+      // undefined，受控输入 value 收到 undefined 被 React 判为非受控，
+      // 首次输入即报 "changing an uncontrolled input to be controlled"。
+      setSettings({ ...DEFAULT_SETTINGS, ...(res as Partial<LLMSettings>) })
       setLoadFailed(false)
     } catch (err) {
       console.error('Failed to load settings:', err)

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Loader2, RefreshCw, X } from 'lucide-react'
 import { usePolling } from '../../hooks/usePolling'
 import styles from './TaskLogViewer.module.css'
 
@@ -49,6 +50,14 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
     }
   }, [visible, taskId, fetchLogs])
 
+  // Esc 关闭日志面板（模态面板语义 0.3 §5.2，仅 visible 时监听）
+  useEffect(() => {
+    if (!visible) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [visible, onClose])
+
   // Auto-refresh polling（#10，v1.7 迁移 usePolling，0.4 §8.1）
   usePolling({
     name: 'task-log-viewer',
@@ -67,10 +76,10 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
   if (!visible) return null
 
   return (
-    <div className={styles.overlay}>
-      <div className={styles.panel}>
+    <div className={styles.overlay} onClick={onClose}>
+      <div className={styles.panel} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
-          <span className={styles.title}>📋 {t('task.execLogTitle', '执行日志')}</span>
+          <span className={styles.title}>{t('task.execLogTitle', '执行日志')}</span>
           <span className={styles.meta}>
             {totalLines > 0 && (
               showing > 0 && showing < totalLines
@@ -88,9 +97,9 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
               {t('task.execLogAutoRefresh', '自动刷新')}
             </label>
             <button className={styles.refreshBtn} onClick={() => void fetchLogs().catch(() => {})} disabled={loading}>
-              {loading ? '⏳' : '🔄'}
+              {loading ? <Loader2 size={14} className={styles.spinning} /> : <RefreshCw size={14} />}
             </button>
-            <button className={styles.closeBtn} onClick={onClose}>✕</button>
+            <button className={styles.closeBtn} onClick={onClose} title={t('common.close')}><X size={14} /></button>
           </div>
         </div>
         <div className={styles.content}>

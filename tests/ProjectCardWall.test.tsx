@@ -94,3 +94,21 @@ describe('ProjectCardWall ledger entry + due title (3.0 四期 T9)', () => {
     expect(c2.textContent).not.toContain('企业被列入经营异常名录')
   })
 })
+
+describe('ProjectCardWall 新产出角标 (0.5 E2 T7)', () => {
+  it('计数>0 渲染角标（计数文本 + tooltip）', () => {
+    const { container, getByText } = render(
+      <ProjectCardWall projects={[proj]} newOutputsByProject={{ p1: 3 }} onSelect={vi.fn()} />)
+    expect(getByText('3')).toBeTruthy()
+    expect(container.querySelector('span[title*="home.newOutputs"]')).toBeTruthy()
+  })
+
+  it('无计数/零计数项目不渲染角标', () => {
+    const { container } = render(
+      <ProjectCardWall projects={[proj]} newOutputsByProject={{}} onSelect={vi.fn()} />)
+    expect(container.querySelector('span[title*="home.newOutputs"]')).toBeNull()
+    const { container: c2 } = render(
+      <ProjectCardWall projects={[proj]} newOutputsByProject={{ p1: 0 }} onSelect={vi.fn()} />)
+    expect(c2.querySelector('span[title*="home.newOutputs"]')).toBeNull()
+  })
+})

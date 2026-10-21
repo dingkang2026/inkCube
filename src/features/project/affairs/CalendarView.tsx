@@ -13,7 +13,7 @@ import s from './CalendarView.module.css'
 export interface CalendarViewProps {
   tasks: PhaseTask[]
   onOpenDrawer: (task: PhaseTask) => void
-  /** 点格空白:携带该日 YYYY-MM-DD 供表单预填(Task 10 经 AffairsTab 接线) */
+  /** 点格空白：携带该日 YYYY-MM-DD 供表单预填（Task 10 经 AffairsTab 接线） */
   onCreateTask: (prefillDate: string) => void
 }
 

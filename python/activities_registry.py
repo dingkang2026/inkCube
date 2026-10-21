@@ -5,14 +5,15 @@
 前端 useActivity(kind) 按需消费（0.4 §2.2 单一数据源）。
 
 契约：
-- kind 与 notifications.entity_type 一致（file / wiki_compile / report / task / model_download）；
+- kind 与 notifications.entity_type 一致（file / wiki_compile / report / task / model_download /
+  ledger_parse / form_template / form_fill / project_export / project_import / ppt / schedule）；
 - fetch() 返回 list[dict]，每项至少含 entity_type（= kind），
   可选 entity_id / project_id / project_name / entity_title / count / status / progress_text / progress；
 - fetch() 只读快照，禁止副作用；
 - 单源异常只影响本源（隔离降级为空），不影响其他源与聚合端点。
 
-迁移状态（0.4 §8.5）：model_download 已收编；file / wiki_compile / report / task 仍为存量
-函数包装，后续按 0.4 §8.5 迁移顺序逐个搬入统一生命周期。
+全部 kind 均已收编（注册清单见 routers/activities.py，0.4 §6.1 / §8.2）：
+新增长时活动一律实现 ActivitySource 后在此注册，禁止绕过注册表自建聚合。
 """
 import logging
 from typing import Callable, Protocol, runtime_checkable

@@ -13,13 +13,14 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from readiness import ensure_ready
 from errors import actionable
 import activity_events
+from llm.usage import UsageContext, push_context, set_context, reset_context  # 2.10 §4.3
 from paths import get_data_dir
 
 logger = logging.getLogger(__name__)
@@ -326,14 +327,19 @@ async def extract_template_from_sample(
         temp_path.write_bytes(content)
 
         try:
-            # Get LLM client and settings
+            # Get LLM client and settings（report_extract_model 路由，空值回退全局模型）
             db = get_db()
             llm_settings = db.get_settings()
             from llm.client import LLMClient
-            llm_client = LLMClient(llm_settings)
+            from llm.routing import get_task_settings
+            effective_settings = get_task_settings(llm_settings, "report_extract")
+            llm_client = LLMClient(effective_settings)
 
             from report_generator.template_extractor import extract_template_from_sample as do_extract
-            template = await do_extract(str(temp_path), llm_client, llm_settings)
+            # 2.10 §4.3: 用量环境（source=report / purpose=extract；模板为
+            # 全局资产无 project_id）
+            with push_context(UsageContext(source="report", purpose="extract")):
+                template = await do_extract(str(temp_path), llm_client)
 
             # Count outline chapters
             outline = template.get("outline", [])
@@ -361,11 +367,20 @@ async def extract_template_from_sample(
 
 
 @router.get("")
-async def list_reports(project_id: str):
+async def list_reports(
+    project_id: str,
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
     """List reports for a project, enriched with template_name and stage."""
     try:
         db = get_db()
-        reports = db.list_reports(project_id)
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）；enrichment 只作用于当前页行
+        reports = db.list_reports(
+            project_id, limit=limit + 1 if limit > 0 else 0, offset=offset)
+        has_more = limit > 0 and len(reports) > limit
+        if has_more:
+            reports = reports[:limit]
         # Enrich with template info. stage 存于 template_json 内部（DB 行顶层无此列），
         # 解析后回填；模板缺失/无 stage/JSON 损坏时归入前端 other（none）列。
         for r in reports:
@@ -378,28 +393,16 @@ async def list_reports(project_id: str):
                 except (json.JSONDecodeError, TypeError):
                     stage = None
             r["stage"] = stage if stage in ("before", "during", "after") else "none"
-        return {"reports": reports}
+        # 2.10 §4.5：报告行内总消耗（entity_id=report_id，含提取+变量+生成全部调用）
+        usage_map = db.get_usage_by_entities([r["id"] for r in reports])
+        for r in reports:
+            r["usage"] = usage_map.get(r["id"])
+        total = db.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM reports WHERE project_id = ?", (project_id,)
+        ).fetchone()["cnt"]
+        return {"reports": reports, "has_more": has_more, "total": total}
     except Exception as e:
         logger.error("Failed to list reports: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{report_id}")
-async def get_report(report_id: str):
-    """Get report details."""
-    try:
-        db = get_db()
-        report = db.get_report(report_id)
-        if not report:
-            raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
-
-        # Get sections
-        sections = db.list_report_sections(report_id)
-        return {"report": report, "sections": sections}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to get report %s: %s", report_id, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -940,19 +943,21 @@ async def _run_report_generation(
     llm_settings = db.get_settings()
     search_tool = _get_search_tool(db, data_dir)
 
-    # Copy settings — reasoning effort comes from user settings (settings page 思考深度)
-    report_llm_settings = dict(llm_settings)
-    # 输出预算抬升（同 wiki/ingest 先例）：节正文目标 1200 字 + 引用标注，
-    # reasoning 模型的思考 token 亦计入 max_tokens，全局默认（8192）有截断风险
-    report_llm_settings["max_tokens"] = max(
-        int(llm_settings.get("max_tokens") or 4096), 32000,
-    )
+    # 输出预算经构造期 floor 一次到位（D1：设置值 <32K 读取时自动抬升），
+    # 旧的 max(设置值, 32000) 强制已被 floor 吸收（死代码删除），
+    # report_llm_settings 派生随之撤销——runner 直接收主 settings
+    #（tavily_key/report_channel_parallelism 等配置容器用途不受影响）
     logger.info(
         "Report [%s]: reasoning_effort=%s, max_tokens=%s",
-        report_id, report_llm_settings.get("reasoning_effort"), report_llm_settings.get("max_tokens"),
+        report_id, llm_settings.get("reasoning_effort"), llm_settings.get("max_tokens"),
     )
 
-    llm_client = LLMClient(report_llm_settings)
+    # report_model 路由（llm/routing.py）：仅覆盖 model 键，runner 的 llm_settings
+    # 兼作配置容器（tavily_key/report_channel_parallelism 等）不受影响
+    from llm.routing import get_task_settings
+    llm_settings = get_task_settings(llm_settings, "report")
+
+    llm_client = LLMClient(llm_settings)
 
     # 写入开始日志
     db.create_report_log(report_id, "开始生成报告", level="info")
@@ -963,7 +968,7 @@ async def _run_report_generation(
         project_id=project_id,
         search_tool=search_tool,
         llm_client=llm_client,
-        llm_settings=report_llm_settings,
+        llm_settings=llm_settings,
         output_dir=report_dir,
         base_project_ids=base_project_ids,
         db=db,
@@ -973,6 +978,11 @@ async def _run_report_generation(
         pause_check=lambda: db.get_report_pause_requested(report_id),
     )
 
+    # 2.10 §4.3: 用量环境（source=report，归属项目与报告实体）。token 式
+    # 手动 push：async for 循环体过长不宜整体缩进；async generator 迭代在
+    # 调用方 context 中执行，token 覆盖迭代全程有效
+    usage_token = set_context(UsageContext(
+        source="report", project_id=project_id, entity_id=report_id))
     try:
         async for event in runner.run():
             if event.event_type == "section_start":
@@ -1056,10 +1066,6 @@ async def _run_report_generation(
                 # try/except 仅记日志不阻塞报告流
                 import affairs_service
                 affairs_service.on_report_completed(db, report_id)
-                # 保存 token 统计
-                token_usage = event.data.get("token_usage")
-                if token_usage:
-                    db.update_report_token_usage(report_id, token_usage)
                 # 完成日志
                 db.create_report_log(report_id, "报告生成完成", level="info")
 
@@ -1080,3 +1086,5 @@ async def _run_report_generation(
     except Exception as e:
         logger.exception("Report generation failed for %s: %s", report_id, e)
         _fail_report_terminal(db, report_id, actionable(e))
+    finally:
+        reset_context(usage_token)

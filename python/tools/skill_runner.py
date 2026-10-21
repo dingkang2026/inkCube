@@ -45,11 +45,25 @@ class SkillRunnerTool(BaseTool):
         self.task_venv_python: str = ""  # task venv python for Agent Skills
         self.task_workspace_path: str = ""  # task workspace for subprocess cwd
         self.task_id: str = ""  # task identity for SkillContext (INKCUBE_TASK_ID 注入链)
+        self.fc_skill_names: set[str] = set()  # 已注册为独立 FC 工具的 Skill 名（双通道去冗）
 
     def configure(self, db):
         """Set the database reference for skill discovery."""
         self.db = db
         self._skill_cache = []
+        self.fc_skill_names = set()
+
+    def mark_fc_registered(self, names: list[str]) -> None:
+        """记录已注册为独立 function-calling 工具的 Agent Skill 名。
+
+        CLI 型 Agent Skill 每次任务都会经 TaskAgent._register_external_skills
+        注册成独立 FC 工具（L1 自带用法围栏）。若 skill_runner 的 L1 清单再
+        列一遍同名 Skill，模型会走 skill_runner「先激活」——参数约定不同
+        （skill+input vs command），首调必错一轮（2026-10-16 天眼查任务
+        实证：空 input 调 skill_runner → CLI usage 报错 → 换道独立工具）。
+        prompt_description 据此分组标注。
+        """
+        self.fc_skill_names = set(names or [])
 
     def _refresh_cache(self):
         """Reload enabled skills from DB."""
@@ -87,10 +101,19 @@ class SkillRunnerTool(BaseTool):
             "",
         ]
         if self._skill_cache:
-            lines.append("可用 Skill:")
-            for s in self._skill_cache:
-                desc = s.get("description", "") or "无描述"
-                lines.append(f"- **{s['name']}**: {desc}")
+            standalone = [s for s in self._skill_cache
+                          if s["name"] in self.fc_skill_names]
+            rest = [s for s in self._skill_cache
+                    if s["name"] not in self.fc_skill_names]
+            if standalone:
+                names = ", ".join(f"**{s['name']}**" for s in standalone)
+                lines.append(
+                    f"已作为独立工具注册的 Skill（直接按工具名调用，无需经本工具）: {names}")
+            if rest:
+                lines.append("可用 Skill:")
+                for s in rest:
+                    desc = s.get("description", "") or "无描述"
+                    lines.append(f"- **{s['name']}**: {desc}")
         else:
             lines.append("当前无已安装的第三方 Skill。")
         return "\n".join(lines)

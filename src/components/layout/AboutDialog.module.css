@@ -10,16 +10,16 @@
 }
 
 .overlay.visible {
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--bg-overlay);
 }
 
 .card {
   position: relative;
   width: 380px;
-  background: #fafafa;
-  border-radius: 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-lg);
   opacity: 0;
   transform: scale(0.92) translateY(20px);
   transition: opacity 0.4s ease, transform 0.4s ease, box-shadow 0.3s ease;
@@ -89,30 +89,30 @@
   font-size: 64px;
   font-weight: 900;
   line-height: 1;
-  color: #1a1a1a;
+  color: var(--text-primary);
   letter-spacing: 0.05em;
   text-shadow:
     2px 2px 0 rgba(0, 0, 0, 0.06),
     -1px -1px 0 rgba(255, 255, 255, 0.5);
-  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  font-family: var(--font-serif);
 }
 
 .appName {
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   letter-spacing: 0.15em;
 }
 
 .version {
-  font-size: 13px;
-  color: #888;
+  font-size: var(--text-base);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   margin-bottom: 8px;
 }
 
 .tagline {
-  font-size: 13px;
-  color: #999;
+  font-size: var(--text-base);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
 }

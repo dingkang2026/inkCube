@@ -6,21 +6,21 @@
 
 .heading {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
 .description {
   margin: 0;
-  font-size: 13px;
-  color: var(--text-secondary, #999);
+  font-size: var(--text-base);
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
 .hint {
   margin: 0;
-  font-size: 12px;
-  color: #f59e0b;
+  font-size: var(--text-sm);
+  color: var(--text-warning);
   line-height: 1.5;
 }
 
@@ -35,11 +35,11 @@
   flex: 1;
   min-width: 0;
   padding: 6px 10px;
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg-secondary, #1a1a2a);
-  color: var(--text-primary, #ccc);
-  font-size: 13px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: var(--text-base);
 }
 
 .addBtn {
@@ -47,9 +47,9 @@
   padding: 6px 16px;
   border: none;
   border-radius: var(--radius-sm);
-  background: var(--accent, #3b82f6);
-  color: #fff;
-  font-size: 13px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: var(--text-base);
   cursor: pointer;
 }
 
@@ -61,15 +61,15 @@
 .error {
   padding: 6px 10px;
   border-radius: var(--radius-sm);
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-  font-size: 12px;
+  background: var(--bg-danger);
+  color: var(--error);
+  font-size: var(--text-sm);
 }
 
 .empty {
   padding: 16px 0;
-  font-size: 13px;
-  color: var(--text-secondary, #888);
+  font-size: var(--text-base);
+  color: var(--text-muted);
   text-align: center;
 }
 
@@ -86,9 +86,9 @@
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  border: 1px solid var(--border, #2a2a3a);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg-secondary, #1a1a2a);
+  background: var(--bg-secondary);
 }
 
 .info {
@@ -99,14 +99,14 @@
 }
 
 .domain {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
-  color: var(--text-primary, #ccc);
+  color: var(--text-primary);
 }
 
 .note {
-  font-size: 12px;
-  color: var(--text-secondary, #888);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -121,16 +121,16 @@
 
 .reloginBtn {
   padding: 3px 12px;
-  border: 1px solid var(--accent, #3b82f6);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--accent, #3b82f6);
-  font-size: 12px;
+  color: var(--accent);
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 
 .reloginBtn:hover {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--accent-rgb), 0.15);
 }
 
 .removeBtn {
@@ -138,10 +138,36 @@
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-base);
   opacity: 0.6;
 }
 
 .removeBtn:hover {
   opacity: 1;
+}
+
+/* ── Load more（0.1dev-guide 列表分页统一约定）── */
+.loadMoreBtn {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.loadMoreBtn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

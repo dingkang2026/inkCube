@@ -18,18 +18,18 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { TaskSettings } from '../src/features/settings/TaskSettings'
 import type { LLMSettings } from '../src/types'
 
-/** 仅声明被测链路相关键，其余字段组件经 `??` 默认兜底 */
+/** 仅声明被测链路相关键，其余字段组件经 `??` 默认兑底（取值与新默认一致） */
 const settings = {
-  task_timeout: 30,
-  task_max_iterations: 25,
+  task_timeout: 300,
+  task_max_iterations: 60,
 } as LLMSettings
 
 describe('TaskSettings — task_max_iterations 可见化', () => {
-  it('渲染迭代上限输入项（label + 默认 25）', () => {
+  it('渲染迭代上限输入项（label + 默认 60）', () => {
     render(<TaskSettings settings={settings} />)
     expect(screen.getByText('settings.task.maxIterations')).toBeTruthy()
     expect(screen.getByText('settings.task.maxIterationsHint')).toBeTruthy()
-    const input = screen.getByDisplayValue('25') as HTMLInputElement
+    const input = screen.getByDisplayValue('60') as HTMLInputElement
     expect(input.type).toBe('number')
     expect(input.min).toBe('1')
     expect(input.max).toBe('200')
@@ -38,16 +38,16 @@ describe('TaskSettings — task_max_iterations 可见化', () => {
   it('修改后按 task_max_iterations 键回写', () => {
     const onUpdate = vi.fn()
     render(<TaskSettings settings={settings} onUpdate={onUpdate} />)
-    const input = screen.getByDisplayValue('25')
-    fireEvent.change(input, { target: { value: '60' } })
-    expect(onUpdate).toHaveBeenCalledWith('task_max_iterations', 60)
+    const input = screen.getByDisplayValue('60')
+    fireEvent.change(input, { target: { value: '100' } })
+    expect(onUpdate).toHaveBeenCalledWith('task_max_iterations', 100)
   })
 
-  it('非法输入回退默认 25（parseInt || 25 契约）', () => {
+  it('非法输入回退默认 60（parseInt || 60 契约）', () => {
     const onUpdate = vi.fn()
     render(<TaskSettings settings={settings} onUpdate={onUpdate} />)
-    const input = screen.getByDisplayValue('25')
+    const input = screen.getByDisplayValue('60')
     fireEvent.change(input, { target: { value: '' } })
-    expect(onUpdate).toHaveBeenCalledWith('task_max_iterations', 25)
+    expect(onUpdate).toHaveBeenCalledWith('task_max_iterations', 60)
   })
 })

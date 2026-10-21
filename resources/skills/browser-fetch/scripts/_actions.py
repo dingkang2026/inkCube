@@ -7,6 +7,7 @@ CLI 每步 attach 常驻面板 webview 的 target（页面状态常驻 webview�
 from __future__ import annotations
 
 import os
+import random
 import time
 
 import _fetch_core as core
@@ -20,8 +21,21 @@ except ImportError:  # pragma: no cover - 需真实缺包环境
 
 DEFAULT_TIMEOUT_S = 20
 SETTLE_LOAD_MS = 3000    # click 后 load 事件容错（§5.2）
+SETTLE_NETWORK_MS = 3000  # networkidle 容错窗：dcl 后二次导航+首屏 XHR 完成（长轮询站永不空闲则超时照常）
 SETTLE_QUIET_MS = 500    # settle 静默窗
+HUMAN_PAUSE_MS = (120, 380)   # 动作后拟人停顿（随机，模拟人看完页面再决定下一步）
+TYPE_KEY_DELAY_MS = (40, 140)  # 逐键输入随机键间隔（行为风控按键盘节奏识别自动化）
+MOUSE_STEPS = (10, 22)   # 拟真鼠标轨迹步数（locator.click 默认瞬移，无 mousemove 事件流）
 EXTRACT_TEXT_HINT = 200  # extract 摘要的正文预览长度
+SCROLL_MAX_ROUNDS = 12         # scroll --to bottom 收敛滚动轮数上限（无限流防烧预算）
+SCROLL_STABLE_ROUNDS = 2       # 高度连续 N 轮无增长 = 内容收敛（加载器无更多）
+SCROLL_BOTTOM_BUDGET_MS = 45_000  # 收敛滚动总预算（超预算按未收敛返回，LLM 可判断内容可能不全）
+
+# 轻量滚动信息探针（收敛循环每轮读取；与 snapshot_js 分离避免全量枚举。
+# JS 以 "() => ({y:" 开头，与快照源区分——测试 FakePage 据此分发）
+SCROLL_INFO_JS = ("() => ({y: window.scrollY,"
+                  " h: Math.max(document.body ? document.body.scrollHeight : 0,"
+                  " document.documentElement.scrollHeight), vh: window.innerHeight})")
 
 
 def _timeout_ms(opts: dict) -> int:
@@ -45,14 +59,38 @@ async def _settle(page) -> None:
         await page.wait_for_load_state("load", timeout=SETTLE_LOAD_MS)
     except PlaywrightError:
         pass  # SPA 可能不触发新 load；静默窗后照常快照
+    try:
+        # 2026-10-14 天眼查实证：dcl 后的二次导航（登录重定向/URL 规范化）
+        # 会销毁快照 evaluate 上下文——networkidle 意味着导航与首屏 XHR 全部
+        # 结束，根治快照撞导航窗口；长轮询/广告站永不空闲 → 容错窗后照常快照
+        await page.wait_for_load_state("networkidle", timeout=SETTLE_NETWORK_MS)
+    except PlaywrightError:
+        pass
     await page.wait_for_timeout(SETTLE_QUIET_MS)
+    # 拟人节奏：真人每步操作后有阅读/决策停顿，匀速连发是自动化特征
+    await page.wait_for_timeout(random.randint(*HUMAN_PAUSE_MS))
 
 
 async def _snapshot(page, action: str, orig_url: str, status: int | None) -> dict:
-    """快照 + 登录墙检测（§4.1 步 4）。命中登录墙返回错误体。"""
-    snap = await page.evaluate(core.snapshot_js())
-    title = await page.title()
-    url = page.url
+    """快照 + 登录墙检测（§4.1 步 4）。命中登录墙返回错误体。
+
+    evaluate 撞上导航窗口（Execution context was destroyed）时：导航本身
+    成功（用户可视面板页面已打开），报失败会误导上层重复 open——等待导航
+    稳定后重取一次（此时 status 已不可信，按 None 传入登录墙检测）。
+    """
+    try:
+        snap = await page.evaluate(core.snapshot_js())
+        title = await page.title()
+        url = page.url
+    except PlaywrightError as e:
+        if "Execution context was destroyed" not in str(e):
+            raise
+        await page.wait_for_load_state("load", timeout=SETTLE_LOAD_MS)
+        await page.wait_for_timeout(SETTLE_QUIET_MS)
+        snap = await page.evaluate(core.snapshot_js())
+        title = await page.title()
+        url = page.url
+        status = None
     domain = core.normalize_domain(url)
     if core.detect_login_wall(status, url, orig_url or url, title,
                               snap["text"], snap["hasPassword"]):
@@ -65,6 +103,7 @@ async def _snapshot(page, action: str, orig_url: str, status: int | None) -> dic
         "page": {"text": snap["text"], "truncated": snap["truncated"]},
         "elements": snap["elements"],
         "remaining": snap.get("remaining", 0),
+        "scroll": snap.get("scroll"),
         "needs_login": False,
     }
 
@@ -78,6 +117,38 @@ def _locate(page, opts: dict):
     if opts.get("selector"):
         return page.locator(opts["selector"]).first
     return page.get_by_text(opts["text"], exact=True).first
+
+
+async def _click_human(page, locator, timeout_ms: int) -> None:
+    """拟真点击：mouse.move(steps) 轨迹移动到元素 → locator.click 原地按下。
+
+    locator.click 默认鼠标瞬移（无 mousemove 事件流），行为风控采集轨迹熵；
+    轨迹移动顺带产生真实 hover 事件。终点仍用 locator.click：actionability
+    检查（可见/可点/接收事件）完整保留，只拟真移动不牺牲可靠性。隐藏元素
+    拿不到 bounding_box → 降级原 click（由 actionability 报精确错误）。
+    """
+    box = await locator.bounding_box()
+    if box:
+        jx = min(4, box["width"] / 4)
+        jy = min(4, box["height"] / 4)
+        cx = box["x"] + box["width"] / 2 + random.uniform(-jx, jx)
+        cy = box["y"] + box["height"] / 2 + random.uniform(-jy, jy)
+        await page.mouse.move(cx, cy, steps=random.randint(*MOUSE_STEPS))
+    await locator.click(timeout=timeout_ms)
+
+
+async def _type_human(locator, text: str, timeout_ms: int, submit: bool) -> None:
+    """拟真输入：先清空 → 逐键输入（随机键间隔）→ 可选回车。
+
+    fill 是瞬时置值（单个 input 事件，零键盘事件流）；真人输入是逐键
+    keydown/keypress 流。press_sequentially 发真实按键事件且自带
+    scroll-into-view（输入框在视口外时自动滚入视野）。
+    """
+    await locator.fill("", timeout=timeout_ms)  # 真人先清空再输入
+    await locator.press_sequentially(
+        text, delay=random.randint(*TYPE_KEY_DELAY_MS), timeout=timeout_ms)
+    if submit:
+        await locator.press("Enter", timeout=timeout_ms)
 
 
 async def _read_type_text(opts: dict) -> str:
@@ -151,28 +222,78 @@ async def _run_via_cdp(action: str, opts: dict, final_url: str) -> dict:
                 pass
 
 
+async def _scroll_to_bottom(page, action: str) -> dict:
+    """懒加载/无限滚动收敛滚动（2026-10-14 用户提出）：滚到底 → settle → 高度仍增长则继续。
+
+    瀑布流页面没有真正的底：每轮触发的追加加载会推高 scrollHeight，高度
+    连续 SCROLL_STABLE_ROUNDS 轮无增长即加载器无更多内容（普通长页首轮
+    到底后两轮即收敛）。轮数上限/时间预算双保险防失控；返回体带 rounds
+    与 converged——未收敛说明内容可能仍不完整，LLM 可据此决定是否继续。
+    """
+    rounds = 0
+    stable = 0
+    last_height = 0
+    deadline = time.monotonic() + SCROLL_BOTTOM_BUDGET_MS / 1000
+    while rounds < SCROLL_MAX_ROUNDS and time.monotonic() < deadline:
+        await page.evaluate(
+            "window.scrollTo(0, Math.max("
+            "document.body ? document.body.scrollHeight : 0,"
+            " document.documentElement.scrollHeight))")
+        await _settle(page)
+        rounds += 1
+        info = await page.evaluate(SCROLL_INFO_JS)
+        height = info["h"]
+        if height <= last_height:
+            stable += 1
+            if stable >= SCROLL_STABLE_ROUNDS:
+                break
+        else:
+            stable = 0
+        last_height = height
+    out = await _snapshot(page, action, "", None)
+    out["scroll_rounds"] = rounds
+    out["converged"] = stable >= SCROLL_STABLE_ROUNDS
+    return out
+
+
 async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
     """按 action 分支执行 → settle → 快照（extract/close 例外，见各分支）。"""
     try:
         if action == "open":
-            resp = await page.goto(final_url, wait_until="load", timeout=_timeout_ms(opts))
+            # 就绪语义（2026-10-14 新浪/天眼查两任务实证）：wait_until="load"
+            # 对重广告资源站拖满超时（ent.sina.com.cn 首次必 20s 超时）——
+            # 改 dcl + _settle 组合：load 在 3s 容错窗内来则等到（保留就绪
+            # 语义），不来则静默窗后照常快照，不再整体超时
+            resp = await page.goto(final_url, wait_until="domcontentloaded",
+                                   timeout=_timeout_ms(opts))
+            await _settle(page)
             status = resp.status if resp is not None else None
             if opts.get("wait_for"):
                 try:
                     await page.wait_for_selector(opts["wait_for"], timeout=_timeout_ms(opts))
                 except PlaywrightError:
-                    return {"error": f"等待选择器超时: {opts['wait_for']}（页面未渲染出该元素）"}
+                    # 等待的元素未出现 ≠ 页面不可用（2026-10-16 天眼查实证：
+                    # --wait-for input 超时返回裸错误，LLM 无页面实况可看，
+                    # 绕道 web_search 烧两轮）。返回当前快照 + warning，
+                    # LLM 基于实况决策；命中登录墙时仍按登录墙错误体返回
+                    # （登录引导优先于快照）
+                    snap = await _snapshot(page, action, opts.get("url", ""), status)
+                    if "error" not in snap:
+                        snap["warning"] = (
+                            f"等待选择器超时: {opts['wait_for']}"
+                            "（元素未渲染；以上为页面当前实况，未加载完可稍后重试）")
+                    return snap
             return await _snapshot(page, action, opts.get("url", ""), status)
 
         if action == "click":
             locator = _locate(page, opts)
             try:
-                await locator.click(timeout=_timeout_ms(opts))
+                await _click_human(page, locator, _timeout_ms(opts))
             except PlaywrightError as e:
                 # --text 精确匹配未命中 → 部分匹配降级一次（可见文本常带前后缀）
                 if opts.get("text"):
                     try:
-                        await page.get_by_text(opts["text"]).first.click(timeout=_timeout_ms(opts))
+                        await _click_human(page, page.get_by_text(opts["text"]).first, _timeout_ms(opts))
                         await _settle(page)
                         return await _snapshot(page, action, "", None)
                     except PlaywrightError as e2:
@@ -184,13 +305,21 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
 
         if action == "type":
             text = await _read_type_text(opts)
-            locator = page.locator(opts["selector"]).first
+            sel = opts["selector"]
+            locator = page.locator(sel).first
+            # 隐藏副本自动切换（2026-10-14 天眼查实证：首页多个同名搜索框
+            # （桌面/移动端互斥显隐），.first 命中 visibility:hidden 副本时
+            # actionability 永不过 → fill 超时 20s。first 不可见时改选第一个
+            # 真可见副本；无副本则保留 first 由 actionability 报精确错误）
             try:
-                await locator.fill(text, timeout=_timeout_ms(opts))
-                if opts.get("submit"):
-                    await locator.press("Enter")
+                if not await locator.is_visible():
+                    vis = page.locator(sel).filter(visible=True).first
+                    if await vis.count() > 0:
+                        locator = vis
+                await _type_human(locator, text, _timeout_ms(opts), bool(opts.get("submit")))
             except PlaywrightError as e:
-                return {"error": f"输入失败（检查 --selector 是否命中可输入元素）: {e}"}
+                return {"error": f"输入失败（检查 --selector 是否命中可输入元素）: {e}",
+                        "hint": "元素不可见多为表单在折叠区/tab/弹窗内——先 click 展开对应区域再 type"}
             await _settle(page)
             return await _snapshot(page, action, "", None)
 
@@ -204,6 +333,12 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
             return await _snapshot(page, action, "", None)
 
         if action == "scroll":
+            if opts.get("to") == "bottom":
+                return await _scroll_to_bottom(page, action)
+            if opts.get("to") == "top":
+                await page.evaluate("window.scrollTo(0, 0)")
+                await _settle(page)
+                return await _snapshot(page, action, "", None)
             direction = opts.get("direction", "down")
             amount = int(opts.get("amount", 600))
             sign = -1 if direction == "up" else 1
@@ -218,7 +353,8 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
                 try:
                     await page.wait_for_selector(opts["wait_for"], timeout=_timeout_ms(opts))
                 except PlaywrightError:
-                    return {"error": f"等待选择器超时: {opts['wait_for']}"}
+                    return {"error": f"等待选择器超时: {opts['wait_for']}",
+                            "hint": "可去掉 --wait-for 直接提取当前内容"}
             if selector and await page.query_selector(selector) is None:
                 return {"error": f"选择器未命中任何元素: {selector}",
                         "hint": "可去掉 --selector 提取全文，或用快照 elements 里的 selector"}
@@ -239,7 +375,14 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
                 return {"error": f"该站点需要登录: {domain}",
                         "needs_login": True, "domain": domain}
             markdown = core.html_to_markdown(extracted["html"])
-            fetched_dir = os.path.join(os.getcwd(), "fetched")
+            # 产物目录锚 data_dir/fetched（B7 审计）：抓取产物是跨任务资产，
+            # 落任务工作区会随归档清盘/重置蒸发，且数据管理面板不可见；
+            # 统一入 data_dir（task_agent 已将 fetched/ 注册为 file_ops
+            # 只读根，任务内可用返回的绝对路径回读）。无 INKCUBE_DATA_DIR
+            # （dev 直跑技能调试）保持 cwd/fetched 兜底，判定与租约锁一致。
+            data_dir_env = os.environ.get("INKCUBE_DATA_DIR", "")
+            fetched_dir = (os.path.join(data_dir_env, "fetched") if data_dir_env
+                           else os.path.join(os.getcwd(), "fetched"))
             os.makedirs(fetched_dir, exist_ok=True)
             ts = time.strftime("%Y%m%d-%H%M%S")
             filename = opts.get("save_to") or f"{domain}-{ts}.md"
@@ -252,7 +395,9 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
             return {
                 "url": url,
                 "title": title,
-                "path": os.path.relpath(path, os.getcwd()).replace("\\", "/"),
+                # 绝对路径（/ 分隔）：锚 data_dir 后相对工作区是 ../ 深链，
+                # file_ops read 直接消费绝对路径
+                "path": path.replace("\\", "/"),
                 "length": len(markdown),
                 "outline": core.extract_outline(markdown),
                 "preview": extracted["text"][:EXTRACT_TEXT_HINT],

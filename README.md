@@ -1,102 +1,205 @@
-# 墨方 InkCube
+# InkCube 墨方
 
-> 墨方，取自「笔墨」与「魔方」的谐音——寓意以同一套知识引擎，写出千变万化的报告。
+> 墨方 (Mòfāng) — a blend of the Chinese words for "ink" (笔墨) and "Rubik's cube" (魔方): one knowledge engine, endlessly many reports.
 
-本地优先的知识工作台：项目化知识库（RAG）、LLM Wiki、研究报告引擎与任务智能体。除大模型 API 外，全部数据与计算均在本地完成。
+English | [简体中文](README.zh-CN.md)
 
-## 功能特性
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
+![Python](https://img.shields.io/badge/python-3.12-green)
+![Electron](https://img.shields.io/badge/electron-33-brightgreen)
+![License](https://img.shields.io/badge/license-AGPL--3.0-orange)
 
-- **项目管理** — 项目 / 基础库双类型：项目为素材 · Wiki · 报告 · 填表四 Tab 工作区（含跨 Tab Chat，填表为占位功能），基础知识库预置 2 个、跨项目共享知识
-- **知识库 RAG** — Docling 解析（PDF / Word / PPT）→ 分块 → bge-m3 向量化 → ChromaDB + FTS5 混合检索（RRF 融合）；图片自动抽取 + VLM 描述
-- **LLM Wiki** — 逐文件增量摄入（两步链式思考），实体 / 概念 / 主题页面 + 双链引用 + Lint 健康检查 + 监督审阅
-- **报告引擎** — 模板化多步流水线：变量 DAG → 多通道检索 → 知识卡片 → 逐节生成（checkpoint 断点续跑）→ 一致性收尾，导出 Word / PDF
-- **任务智能体** — 通用 / 编程双模式 Function Calling 循环 + Skill 框架（内置 20+ 工具，兼容 Agent Skills 标准）；SSE 流式输出、上下文压缩、每任务独立 venv
-- **全局反馈（Activity Hub）** — 统一活动总线：终态通知（Toast / 徽章 / 首页动态）、崩溃恢复、功能就绪度引导（首启向导 + 入口引导弹层）
-- **本地与跨平台** — Windows / macOS / Linux；中英双语；用户数据与程序分离，升级不覆盖
+**A local-first project workbench built for investment-promotion and investment professionals.** Delegate the "collect information → organize → fill forms / draft reports / build decks" loop to a task agent, and spend your time on judgment instead — designed for managers who need to juggle dozens of deals at once. Except for LLM API calls, all data and computation stay on your machine: **your private data never leaves your domain**.
 
-## 架构速览
+## Why InkCube?
+
+| Your day | Without InkCube | With InkCube |
+|----------|-----------------|--------------|
+| Morning triage | Dig through N systems / group chats / spreadsheets | One screen: today's overview + to-dos + activity feed |
+| Boss or client asks about a company out of the blue | Manual lookups on Tianyancha / search engines, pasting together a memo | Task agent browses the web and drafts the report for you |
+| A target company hits the news (negative / competitor move) | You hear about it last | Scheduled subscriptions watch for you; intel digest lands on your home page |
+| Forms, weekly / monthly reports, pitch decks | Copy-pasting the same info into fixed formats | Forms / reports / PPT generated from templates, automatically |
+| Kicking off a new deal | New Word doc, rebuilt folder tree, hunting for templates | One-click project templates: deal type + stage + preset structure |
+| Reporting upward / sharing sideways | Zip files, email attachments, stitched screenshots | Project export, report / PPT export |
+
+Built-in **primary-market methodology skills** (due-diligence checklists, business-model teardowns, valuation models, IB documents) — methodology that used to live only in your head.
+
+## ✨ Features (implemented)
+
+### Task agent
+
+- Conversational execution: general / coding dual-mode Function Calling loop with 20+ built-in tools; SSE streaming thought display, context compaction
+- Task resilience: crash recovery, checkpoint resume — the database is the single source of truth
+- Per-task workspace and Python venv; file tree / preview / download; one-click import of outputs into a project or the base library
+- Skill framework: compatible with the Agent Skills standard; install and manage third-party skills; built-in primary-market methodology skills
+- Browser fetch: background window pool collects public web information; web login-state management (domain allowlist + cookie cleanup)
+- Task templates: 10 built-in (info gathering / sentiment monitoring / industry intel / report & research / office) + custom templates with placeholder forms
+
+### Scheduled subscriptions
+
+- Periodic collection of news / competitor moves / industry developments: the scheduler dispatches shadow tasks that reuse the agent execution chain
+- Auto-pause on repeated failure, catch-up runs for missed windows (≤24h), incremental injection (each issue writes only what's new); unified subscription manager
+
+### Project workspace
+
+- Project types (investment promotion / investment / general) × lifecycle stages (pre / during / post deal)
+- Affairs (to-dos): four kinds — material / report / milestone / recurring; due reminders; auto-generated on stage transitions
+- Six output tabs: materials, wiki, chat, reports, forms, PPT
+- Project export / import: pack a project up and carry or share it
+
+### Intelligence layer
+
+- Project pulse bar with an AI status sentence
+- Ledger timeline cards (monitoring pages parsed into append-only timelines)
+- Event-driven task suggestions
+- Milestone ledger extraction (wiki compile hook)
+
+### Knowledge base & RAG
+
+- Docling parsing (PDF / Word / PPT) → chunking → bge-m3 embeddings → hybrid retrieval over ChromaDB + FTS5 (RRF fusion)
+- Automatic image extraction + VLM descriptions; project library + base library (shared across projects)
+
+### LLM Wiki
+
+- Per-file incremental ingestion (two-step chain of thought); entity / concept / topic pages with bidirectional links, lint health checks, supervised review
+
+### Report engine
+
+- Template-driven multi-step pipeline: variable DAG → multi-channel retrieval → knowledge cards → section-by-section generation (checkpoint resume) → consistency pass
+- Report template management; export to Word / PDF
+
+### Form filling
+
+- Upload / parse form templates (global assets) → launch fill instances (project-scoped) → manual revision → download
+
+### PPT
+
+- PPT template management and parsing, deliverable generation (task-pipeline execution), progress and artifact aggregation
+
+### Template management
+
+- Report / form / PPT / task templates, managed in one place
+
+### Home & onboarding
+
+- Today overview (projects / overdue / due today / in progress), today's to-dos + upcoming calendar, project card wall, activity feed, quick actions
+- Intel digest: cross-subscription stream of the latest issues (unread first; "view all" opens the subscription manager)
+- SystemAlerts global banner (service issues / antivirus authorization; invisible when healthy)
+- First-launch wizard, three-step first-project guide, onboarding bubbles
+
+### Activities & notifications
+
+- Unified long-running activity bus: tasks / file parsing / image description / wiki compile / reports / forms / model downloads share one state machine and crash-recovery model
+- Notification center + OS notifications + affair due reminders + terminal Toast / badges / home feed; SSE push with heartbeat fallback
+
+### Token usage
+
+- Today / total / range summaries; grouped by day / source / model / project; per-task run details
+
+### Settings & system
+
+- LLM / VLM / embedding service configuration (any OpenAI-compatible endpoint; Zhipu GLM-4-Flash by default)
+- Built-in model download management (bge-m3 / Docling family, ~4.8 GB) with multi-source fallback (ModelScope → hf-mirror → Hugging Face) and integrity verification
+- In-app log viewer, health checks and readiness self-tests
+
+### Platform & engineering
+
+- Windows / macOS / Linux; bilingual i18n (zh-CN / en-US)
+- Data and program separated; upgrades never touch user data
+- Uniform list pagination contract, cascading delete cleanup, IPC orphan-channel audit
+
+## 🚧 Roadmap
+
+| Item | Phase | Notes |
+|------|-------|-------|
+| PPT templates | Near-term | Keep polishing & expanding on top of the shipped template management / parsing |
+| Multi-platform validation & tuning | Near-term | macOS / Linux installer testing (the Windows install / upgrade / uninstall chain is fully validated; mac / Linux packaging targets are configured) |
+| Long-term memory | Long-term | Cross-task, cross-session memory |
+| Server edition | Long-term | Server-based deployment |
+| H5 remote control | Long-term | Remote view & control via mobile H5 |
+
+## 🏗 Architecture
 
 ```
 React + TypeScript (Vite)
         │  contextBridge IPC
         ▼
-   Electron 主进程 ──── 子进程管理 · 统一日志 · Mermaid 离屏渲染
-        │  HTTP + SSE（127.0.0.1）
+   Electron main ──── child-process mgmt · unified logging · Mermaid offscreen rendering
+        │  HTTP + SSE (127.0.0.1)
         ▼
    FastAPI (Python 3.12)
-   知识库 │ Wiki │ 报告 │ 任务智能体 │ 活动 / 就绪度
+   Knowledge │ Wiki │ Reports │ Forms │ PPT │ Task agent │ Schedules │ Activities / Notifications / Usage
         │
-   SQLite（23 表）+ ChromaDB + 本地模型（bge-m3 / Docling 系列）
+   SQLite (WAL) + ChromaDB + local models (bge-m3 / Docling family)
 ```
 
-- 五大长时操作（任务 / 文件解析 / 图片描述 / Wiki 编译 / 报告生成）共享统一状态机与崩溃恢复模型，DB 是唯一事实源，前端为只读镜像
-- 外部依赖仅一个兼容 OpenAI API 的 LLM（VLM 用于图片描述，可选降级）
+- All long-running operations share one state machine and crash-recovery model; the database is the single source of truth, the frontend is a read-only mirror
+- The only external dependency is one OpenAI-compatible LLM endpoint (VLM for image description, optional degradation)
 
-## 技术栈
+## 🛠 Tech stack
 
-| 层 | 技术 |
+| Layer | Technology |
 |---|---|
-| 前端 | React 18 + TypeScript + Vite 6 |
-| 桌面 | Electron 33（contextBridge 安全隔离） |
-| 后端 | Python 3.12 + FastAPI（SSE 流式） |
-| 数据 | SQLite（WAL）+ ChromaDB + FTS5 |
-| 解析 / 向量 | Docling + bge-m3 + RapidOCR（本地推理） |
-| 打包 | electron-builder + python-build-standalone + uv 依赖装配 |
+| Frontend | React 18 + TypeScript + Vite 6 |
+| Desktop | Electron 33 (contextBridge isolation) |
+| Backend | Python 3.12 + FastAPI (SSE streaming) |
+| Data | SQLite (WAL) + ChromaDB + FTS5 |
+| Parsing / embeddings | Docling + bge-m3 + RapidOCR (local inference) |
+| Packaging | electron-builder + python-build-standalone + uv dependency assembly |
 
-## 快速开始（开发）
+## 🚀 Quick start (development)
 
 ```powershell
-# 1. 前端依赖
+# 1. Frontend dependencies
 npm install
 
-# 2. Python 环境（conda）
+# 2. Python environment (conda)
 conda create -n inkcube python=3.12
 conda activate inkcube
 pip install -r python/requirements.txt
 
-# 3. 启动完整栈（Vite + Electron + Python）
+# 3. Start the full stack (Vite + Electron + Python)
 npm run dev
 ```
 
-> 首次启动可在设置中配置 LLM API（默认智谱 GLM-4-Flash，可切换任意 OpenAI 兼容模型）；内部模型（bge-m3 / Docling 系列，约 4.8 GB）按需在设置中下载。环境细节见[开发指南](docs/0.1dev-guide.md)。
+> On first launch, configure the LLM API in Settings (defaults to Zhipu GLM-4-Flash; any OpenAI-compatible model works). Built-in models (bge-m3 / Docling family, ~4.8 GB) are downloaded on demand from Settings. See the [dev guide](docs/0.1dev-guide.md) (Chinese) for details.
 
-## 测试与验证
+## 📦 Packaging
 
 ```powershell
-python -m pytest python/tests/ -v   # 后端单测
-npx tsc --noEmit                    # 前端类型检查
-npm run build                       # 前端构建
+npm run pack                        # build frontend + electron-builder
+powershell scripts/build-installer.ps1   # full Windows installer pipeline
 ```
 
-## 路线图
+> Note: `resources/tools/` and `resources/python-backend/` are git-ignored build artifacts — run `powershell scripts/prepare-tools.ps1` first for the former (pinned versions; add `-MirrorPrefix` behind restrictive networks, or place files manually per the [packaging design doc](docs/0.2packaging-design.md), Chinese), the latter is assembled by the build script.
 
-### v1.0 — 首个可发布版（当前阶段）
+## 🧪 Testing & verification
 
-目标：从功能完备间可分发、可依赖的桌面产品。
+```powershell
+python -m pytest python/tests/ -v    # backend unit tests (pytest)
+npx vitest run                        # frontend unit tests (vitest)
+npx tsc --noEmit                      # type check
+npm run build                         # frontend build
+node scripts/orphan_channel_audit.js  # IPC orphan-channel audit (all groups must be 0)
+```
 
-| # | 事项 | 说明 |
-|---|------|------|
-| 1 | 模型下载托底 | 内置模型（bge-m3 / Docling 系列）多下载源托底 + 完整性校验、失败可恢复——首启体验关键路径 |
-| 2 | 打包安装实测 | prepare-tools → 依赖装配（uv）→ electron-builder 全流程 Windows 实机验证安装 / 升级 / 卸载（用户数据不丢），沉淀可复现发布流程 |
-| 3 | Token 计量 | 任务 / Wiki / 报告统一 token 用量统计与历史展示（报告引擎已有 token_usage 基础） |
+## 🤝 Contributing
 
-### 后续 — 产出能力扩展
+Issues and PRs are welcome! Please read the [contributing guide](CONTRIBUTING.md) (Chinese) first. By participating you accept the [code of conduct](CODE_OF_CONDUCT.md). Security issues: please report privately via [SECURITY.md](SECURITY.md).
 
-| # | 事项 | 说明 |
-|---|------|------|
-| 4 | 填表系统 | 结构化数据填充，与报告并列的产出形式（2.4 设计文档，前端 UI 已就绪） |
-| 5 | PPT 导出 | Word 报告内容的下游渲染，非独立生成管线（2.3 设计文档） |
+## 📚 Documentation (Chinese)
 
-## 文档导航
-
-| 文档 | 内容 |
+| Doc | Contents |
 |---|---|
-| [0.0 架构总览](docs/0.0architecture.md) | 分层架构、数据模型、模块划分、后续扩展点 |
-| [0.1 开发指南](docs/0.1dev-guide.md) | 环境搭建、项目结构、测试验证、打包发布 |
-| [0.2 打包设计](docs/0.2packaging-design.md) · [0.3 UX 设计](docs/0.3ux-design.md) · [0.4 生命周期](docs/0.4lifecycle-design.md) | 工程基础专题 |
-| [1.1 任务智能体](docs/1.1task-agent-design-unified.md) · [1.2 流式显示](docs/1.2streaming-thought-display.md) · [1.3 任务韧性](docs/1.3task-resilience-design.md) | 智能体专题 |
-| [2.x 功能设计](docs/2.1project-design.md)（项目 / 知识库 / PPT / 表单 / 报告 / Wiki / 基础库 RAG） | 功能模块专题 |
+| [0.0 Architecture](docs/0.0architecture.md) | Layered architecture, data model, modules, extension points |
+| [0.1 Dev guide](docs/0.1dev-guide.md) | Environment, project structure, testing, packaging |
+| [0.2 Packaging](docs/0.2packaging-design.md) · [0.3 UX](docs/0.3ux-design.md) · [0.4 Lifecycle](docs/0.4lifecycle-design.md) · [0.5 Product redesign](docs/0.5product-redesign.md) | Engineering & product foundations |
+| [1.1 Task agent](docs/1.1task-agent-design-unified.md) · [1.2 Streaming display](docs/1.2streaming-thought-display.md) · [1.3 Task resilience](docs/1.3task-resilience-design.md) | Agent topic |
+| [2.1 Project](docs/2.1project-design.md) · [2.2 Knowledge base](docs/2.2knowledge-base-design.md) · [2.3 PPT](docs/2.3ppt-export-design.md) · [2.4 Forms](docs/2.4forms-design.md) | Feature modules |
+| [2.5 Reports](docs/2.5report-design.md) · [2.6 Wiki](docs/2.6wiki-design.md) · [2.7 Base-lib RAG](docs/2.7baselib-rag-design.md) · [2.8 Browser fetch](docs/2.8browser-fetch-design.md) | Feature modules |
+| [2.9 Project transfer](docs/2.9project-transfer-design.md) · [2.10 Token usage](docs/2.10token-usage-design.md) · [2.11 Notifications](docs/2.11notification-design.md) · [2.11 Scheduled tasks](docs/2.11scheduled-task-design.md) | Feature modules |
+| [3.0 Project lifecycle](docs/3.0project-lifecycle-design.md) · [3.1 Intelligence layer](docs/3.1intelligence-design.md) | Lifecycle & intelligence |
 
-## 开源协议
+## 📄 License
 
-[AGPL-3.0](LICENSE)
+Released under the [AGPL-3.0](LICENSE).

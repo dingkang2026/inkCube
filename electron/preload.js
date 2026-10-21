@@ -8,5 +8,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on(channel, subscription)
     return () => ipcRenderer.removeListener(channel, subscription)
   },
-  getPythonBaseUrl: () => ipcRenderer.invoke('python:getBaseUrl'),
 })

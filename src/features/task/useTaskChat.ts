@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { TaskMessage, StreamStep, PlanData } from '../../types'
+import type { TaskMessage, StreamStep, PlanData, UsageSummary } from '../../types'
 import { apiErrorText } from '../../i18n/errorCodes'
 import { browserPanelStore } from '../browser/browserPanelStore'
 
@@ -34,6 +34,9 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
   const handleStreamEventRef = useRef<(type: string, payload: string) => void>(() => {})
   const handleBgStreamEventRef = useRef<(taskId: string, type: string, payload: string) => void>(() => {})
   const [planData, setPlanData] = useState<PlanData | null>(null)
+  // 轮级 usage（2.10 §4.5）：done 前到达的 SSE usage 事件暂存于此，done 转 assistant
+  // 消息时附着 metadata.usage（历史回放由 DB 同数据兜底）；后台路径不消费
+  const pendingUsageRef = useRef<UsageSummary | null>(null)
   const [pendingShellConfirm, setPendingShellConfirm] = useState<ShellConfirmData | null>(null)
   const [pendingSkillConfirm, setPendingSkillConfirm] = useState<SkillConfirmData | null>(null)
   const [canResume, setCanResume] = useState(false)
@@ -51,6 +54,12 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     pendingShellConfirm: ShellConfirmData | null; pendingSkillConfirm: SkillConfirmData | null;
   }>>(new Map())
   const prevActiveTaskIdRef = useRef<string | null>(null)
+  /** override 发送后的首次 activeTaskId 切换抑制标记（0.5 §4.4 发送即建任务）：
+   *  创建后立即发送已完成 messages/isGenerating/ref 全部状态设置，紧随的切换 effect
+   *  （null → 新 id）若再跑，else 分支会重置 isGenerating（流式呈现/停止钮失效、
+   *  sendingRef 提前释放），loadMessages 会用后端空列表覆盖乐观 user 消息——
+   *  该切换是冗余回流，匹配即跳过并消费标记（一次性，不影响后续正常 bg 保存/恢复） */
+  const suppressSwitchRef = useRef<string | null>(null)
 
   const clearStreamState = useCallback(() => {
     setStreamContent('')
@@ -90,6 +99,11 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       })
     }
     prevActiveTaskIdRef.current = activeTaskId
+
+    if (activeTaskId && activeTaskId === suppressSwitchRef.current) {
+      suppressSwitchRef.current = null
+      return
+    }
 
     if (activeTaskId) {
       const bg = bgStates.current.get(activeTaskId)
@@ -164,13 +178,21 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         setPlanData(parsed as PlanData)
       } else if (type === 'thought') {
         // 本轮 LLM 响应结束（有 tool_calls）：锁定该轮推理+分析快照，清空当前流。
-        // 迭代推进由 iteration 事件负责；仅 streamContent 非空才快照分析
-        // （planner/resume 的提示型 thought 无流式内容，不产生可见分析）
+        // 迭代推进由 iteration 事件负责；快照取流式内容，为空时回退载荷——
+        // 提示型 thought（planner/恢复提示，P2）无前置流式内容，载荷即文案
+        // （此前被静默丢弃，「流内提示」从未可见）；同一轮已有值时换行追加
+        //（提示 + 随后到达的正常分析同卡可见）
         if (streamReasoningRef.current.trim()) {
           streamIterationReasoning.current.set(streamIterationRef.current, streamReasoningRef.current)
         }
-        if (streamContentRef.current.trim()) {
-          streamIterationThoughts.current.set(streamIterationRef.current, streamContentRef.current)
+        const incoming = streamContentRef.current.trim()
+          || (typeof parsed.content === 'string' ? parsed.content.trim() : '')
+        if (incoming) {
+          const prevThought = streamIterationThoughts.current.get(streamIterationRef.current)
+          streamIterationThoughts.current.set(
+            streamIterationRef.current,
+            prevThought ? `${prevThought}\n${incoming}` : incoming,
+          )
         }
         streamReasoningRef.current = ''
         setStreamReasoning('')
@@ -185,6 +207,15 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           (parsed.tool === 'skill_runner' && (parsed.input as { skill?: string } | undefined)?.skill === 'browser-fetch')
         ) {
           browserPanelStore.showCompact()
+          // type 输入可见性（V2.1-R10）：输入动作需要用户看清输入框——小卡
+          // 360×480 里几乎不可见，自动放大；observation 到达回小卡
+          // （collapseIfAuto 仅对 auto 放大生效，用户手动切换优先）
+          const bfInput = parsed.input as
+            | { command?: string; input?: { command?: string } }
+            | undefined
+          const cmd =
+            (parsed.tool === 'browser-fetch' ? bfInput?.command : bfInput?.input?.command) || ''
+          if (cmd.startsWith('type')) browserPanelStore.expandForInput()
         }
         setStreamSteps((prev) => {
           const next: StreamStep[] = [...prev, { type: 'action', tool: parsed.tool, input: parsed.input, iteration: streamIterationRef.current }]
@@ -200,6 +231,9 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
           return next
         })
       } else if (type === 'observation') {
+        // type 自动放大随输入完成回小卡（V2.1-R10；仅 auto 触发的才回，
+        // 用户手动放大不受影响）
+        browserPanelStore.collapseIfAuto()
         setStreamSteps((prev) => {
           const steps = [...prev]
           for (let i = steps.length - 1; i >= 0; i--) {
@@ -237,6 +271,11 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         // reason is traced via the action's observation (1.1 §7.2)
         if (parsed.kind === 'shell') setPendingShellConfirm(null)
         else setPendingSkillConfirm(null)
+      } else if (type === 'usage') {
+        // 轮级 usage（done 前，2.10 §4.5）：暂存供 done 附着；同时通知 L2 呈现位
+        // （状态栏/列表行/徽章）按去抖节奏重取（§5.3 事件路径）
+        pendingUsageRef.current = parsed as UsageSummary
+        window.dispatchEvent(new Event('app:usage-changed'))
       } else if (type === 'done') {
         setIsGenerating(false)
         // Convert ALL streaming state to permanent messages (no DB reload)
@@ -298,9 +337,12 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         if (streamContentRef.current.trim()) {
           newMessages.push({
             id: crypto.randomUUID(), task_id: taskId, role: 'assistant',
-            content: streamContentRef.current, created_at: now,
+            content: streamContentRef.current,
+            metadata: pendingUsageRef.current ? { usage: pendingUsageRef.current } : undefined,
+            created_at: now,
           })
         }
+        pendingUsageRef.current = null
 
         if (newMessages.length > 0) {
           setMessages((prev) => [...prev, ...newMessages])
@@ -309,6 +351,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         // Clear streaming state
         bgStates.current.delete(taskId)
         clearStreamState()
+        // done 不重载消息，canResume 原先只在 loadMessages（切任务）时查询——
+        // 前台看着任务耗尽时恢复横幅不出现，兜底文案指路的「恢复」按钮缺失
+        //（P2 CodeReview M2；后台任务不刷，切回时 loadMessages 自然覆盖）
+        refreshCanResume(taskId)
         onDoneRef.current?.()
       }
     } catch {
@@ -347,8 +393,15 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         if (bg.reasoning.trim()) {
           bg.iterationReasoning.set(bg.iteration, bg.reasoning)
         }
-        if (bg.content.trim()) {
-          bg.iterationThoughts.set(bg.iteration, bg.content)
+        // 与前台路径对称：流式内容优先，空则取载荷（提示型 thought）
+        const incoming = bg.content.trim()
+          || (typeof parsed.content === 'string' ? parsed.content.trim() : '')
+        if (incoming) {
+          const prevThought = bg.iterationThoughts.get(bg.iteration)
+          bg.iterationThoughts.set(
+            bg.iteration,
+            prevThought ? `${prevThought}\n${incoming}` : incoming,
+          )
         }
         bg.reasoning = ''
         bg.content = ''
@@ -395,34 +448,54 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         // Background task finished — clean up. DB already has the messages.
         bgStates.current.delete(taskId)
       }
+      // type === 'usage' 后台路径不消费（2.10 §4.5）：气泡用 DB metadata.usage 兜底，
+      // 全局呈现位的 app:usage-changed 信号由前台路径/活动终态发出
     } catch {
       // partial data — malformed/incomplete payload, skip
     }
   }
   handleBgStreamEventRef.current = handleBgStreamEvent
 
-  const loadMessages = async (taskId: string) => {
-    const res = await window.electronAPI.invoke('tasks:getMessages', taskId)
-    setMessages((res as { messages: TaskMessage[] }).messages || [])
-    // Check if task has saved state (for resume UI)
+  // Check if task has saved state (for resume UI)；Boolean 归一化防 undefined 入 state
+  const refreshCanResume = useCallback(async (taskId: string) => {
     try {
       const stateRes = await window.electronAPI.invoke('tasks:hasState', taskId) as { has_state: boolean }
-      setCanResume(stateRes.has_state)
+      // 乱序守卫：响应返回时已切走 → 丢弃（canResume 只描述当前活跃任务，
+      // 与 loadMessages 同一竞态窗口；done 路径的 taskId 恒等于活跃任务，不受影响）
+      if (activeTaskIdRef.current !== taskId) return
+      setCanResume(Boolean(stateRes.has_state))
     } catch {
-      setCanResume(false)
+      if (activeTaskIdRef.current === taskId) setCanResume(false)
     }
+  }, [])
+
+  const loadMessages = async (taskId: string) => {
+    const res = await window.electronAPI.invoke('tasks:getMessages', taskId)
+    // 乱序守卫（review 2026-10-20 T-3）：快速切换任务时，旧任务的慢响应
+    // 不得覆盖新任务的消息列表（同文件流式路径已有归属判定，唯此加载路径缺失）
+    if (activeTaskIdRef.current !== taskId) return
+    setMessages((res as { messages: TaskMessage[] }).messages || [])
+    await refreshCanResume(taskId)
   }
 
   const handleSendMessage = useCallback(
-    async (content: string) => {
-      if (!activeTaskId || isGenerating) return
+    async (content: string, overrideTaskId?: string) => {
+      // overrideTaskId：欢迎页「发送即建任务」链路（0.5 §4.4）——创建任务后立即以新 id
+      // 发送首条，此时 activeTaskId prop/ref 尚未经渲染回流，显式指定并在发送瞬间同步
+      // activeTaskIdRef：流事件归属判定（L132）与 done 合成消息的 task_id（L273）都读它
+      const tid = overrideTaskId ?? activeTaskId
+      if (!tid || isGenerating) return
+      if (overrideTaskId) {
+        activeTaskIdRef.current = overrideTaskId
+        suppressSwitchRef.current = overrideTaskId
+      }
 
       clearStreamState()
-      bgStates.current.delete(activeTaskId)
+      bgStates.current.delete(tid)
 
       const userMsg: TaskMessage = {
         id: crypto.randomUUID(),
-        task_id: activeTaskId,
+        task_id: tid,
         role: 'user',
         content,
         created_at: new Date().toISOString(),
@@ -431,10 +504,23 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       setIsGenerating(true)
 
       try {
-        await window.electronAPI.invoke('tasks:chat', {
-          taskId: activeTaskId,
+        const res = await window.electronAPI.invoke('tasks:chat', {
+          taskId: tid,
           message: content,
-        })
+        }) as { error?: string; code?: string } | null | undefined
+        // 200+error body（错误桥合法形态二，review 2026-10-20 T-2）：tasks:chat
+        // 桥把 200 响应体当 SSE 流解析，dict 错误不抛错——显式检查防 isGenerating 卡死
+        if (res?.error) {
+          setIsGenerating(false)
+          setMessages((prev) => [...prev, {
+            id: crypto.randomUUID(),
+            task_id: tid,
+            role: 'assistant',
+            content: apiErrorText(res.code, res.error || t('task.startFailed'), t),
+            created_at: new Date().toISOString(),
+          }])
+          return
+        }
       } catch (err) {
         console.error('Task chat error:', err)
         setIsGenerating(false)
@@ -444,7 +530,7 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         const text = apiErrorText(errCode, `${t('task.startFailed')}${errMsg}`, t)
         const infoMsg: TaskMessage = {
           id: crypto.randomUUID(),
-          task_id: activeTaskId,
+          task_id: tid,
           role: 'assistant',
           content: text,
           created_at: new Date().toISOString(),
@@ -514,17 +600,30 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     bgStates.current.delete(activeTaskId)
     setIsGenerating(true)
     setCanResume(false)
+    const tid = activeTaskId
     try {
-      await window.electronAPI.invoke('tasks:chat', {
-        taskId: activeTaskId,
+      const res = await window.electronAPI.invoke('tasks:chat', {
+        taskId: tid,
         message: '',
         resume: true,
-      })
+      }) as { error?: string; code?: string } | null | undefined
+      // 200+error body（T-2 同款）：不检查则 await 正常返回且无 SSE done 事件，
+      // isGenerating 恒 true、输入框永久锁死（对齐 confirmSkill found===false 先例）
+      if (res?.error) {
+        setIsGenerating(false)
+        setMessages((prev) => [...prev, {
+          id: crypto.randomUUID(),
+          task_id: tid,
+          role: 'assistant',
+          content: apiErrorText(res.code, res.error || t('task.startFailed'), t),
+          created_at: new Date().toISOString(),
+        }])
+      }
     } catch (err) {
       console.error('Resume task error:', err)
       setIsGenerating(false)
     }
-  }, [activeTaskId, isGenerating, clearStreamState])
+  }, [activeTaskId, isGenerating, clearStreamState, t])
 
   /** Reset generating state after Python process crash (Phase 1 crash recovery). */
   const resetGeneratingState = useCallback(() => {

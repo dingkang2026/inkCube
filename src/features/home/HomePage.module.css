@@ -1,111 +1,57 @@
-/* ── Home page — dashboard layout ── */
+/* ── Home page — full-width dashboard grid（0.5 §4.2 打样修订 2026-10-18）── */
 .page {
   flex: 1;
   overflow-y: auto;
-  padding: 32px 40px;
-  max-width: 960px;
-  margin: 0 auto;
+  padding: 28px 40px 40px;
 }
 
-/* ── Section titles ── */
-.sectionTitle {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 12px;
-}
-
-/* ── Top: Service status cards ── */
-.statusGrid {
+/* 主列(进行中/今日待办+日历/卡片墙) + 侧列(动态流/快捷动作);窄屏退化单列 */
+.grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 32px;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 28px;
+  align-items: start;
 }
 
-.statusCard {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  cursor: default;
-  transition: box-shadow 0.15s, border-color 0.15s;
-}
-
-.statusCard:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-}
-
-.statusCard.clickable {
-  cursor: pointer;
-}
-
-.statusCard.clickable:hover {
-  border-color: var(--accent);
-}
-
-.statusIcon {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  flex-shrink: 0;
-}
-
-.statusIcon.ok {
-  background: var(--bg-success);
-  color: var(--text-success);
-}
-
-.statusIcon.error {
-  background: var(--bg-danger);
-  color: var(--text-danger);
-}
-
-.statusIcon.checking {
-  background: var(--bg-muted);
-  color: var(--text-muted);
-}
-
-.statusInfo {
-  flex: 1;
+.main {
   min-width: 0;
 }
 
-.statusName {
-  font-size: 13px;
+.side {
+  min-width: 0;
+}
+
+.block {
+  margin-bottom: 28px;
+}
+
+.block:last-child {
+  margin-bottom: 0;
+}
+
+/* ── 区块标题(统一语言:13px/600/secondary) ── */
+.sectionTitle {
+  font-size: var(--text-base);
   font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.3;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+  margin-bottom: 10px;
 }
 
-.statusMsg {
-  font-size: 11px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.3;
+/* 标题行(带右侧动作,如「查看全部」) */
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-.statusMsg.errorMsg {
-  color: var(--text-danger);
-}
+/* 区块空态:公共 .empty-block(global.css) */
 
-/* ── Middle: Ongoing activities (Activity Hub, 0.4 §3.6) ── */
+/* ── Ongoing activities (Activity Hub, 0.4 §3.6) ── */
 .ongoingList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 32px;
+  gap: 6px;
 }
 
 .ongoingItem {
@@ -114,28 +60,33 @@
   gap: 10px;
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
   cursor: pointer;
-  transition: background 0.1s, border-color 0.1s;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 
 .ongoingItem:hover {
-  background: var(--bg-hover);
   border-color: var(--accent);
+  box-shadow: var(--shadow-xs);
 }
 
 .ongoingIcon {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-secondary);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
 .ongoingText {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -156,149 +107,60 @@
   50% { opacity: 0.4; transform: scale(0.8); }
 }
 
-/* ── Quick start cards ── */
-.quickGrid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 32px;
-}
-
-.quickCard {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 18px 20px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
-}
-
-.quickCard:hover {
-  background: var(--bg-hover);
-  border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
-}
-
-.quickIcon {
-  font-size: 24px;
-  line-height: 1;
-}
-
-.quickText {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.quickLabel {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.quickDesc {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-/* ── Bottom: Recent activity ── */
-.recentGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
-}
-
-.recentSection {
-  display: flex;
-  flex-direction: column;
-}
-
+/* ── Side: recent activity feed ── */
 .recentList {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.recentEmpty {
-  padding: 24px 12px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-/* ── Activity feed (Activity Hub, 0.4 §3.6) ── */
-.feedItem {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
+/* 「查看全部」→ 通知中心(2.11 §6.1) */
+.viewAll {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-xs);
   cursor: pointer;
-  transition: background 0.1s;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
 }
 
-.feedItem:hover {
+.viewAll:hover {
   background: var(--bg-hover);
 }
 
-.feedUnread {
-  background: color-mix(in srgb, var(--accent, #2563eb) 6%, transparent);
+/* ── Load more（0.1dev-guide 列表分页统一约定：项目卡墙追加）── */
+.loadMoreBtn {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 
-.feedDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.loadMoreBtn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
-.feedDotOk {
-  background: var(--text-success, #16a34a);
-}
-
-.feedDotErr {
-  background: var(--text-danger, #ef4444);
-}
-
-.feedDotWarn {
-  background: var(--warning, #d97706);
-}
-
-.feedText {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.feedUnread .feedText {
-  font-weight: 600;
-}
-
-.feedTime {
-  font-size: 11px;
-  color: var(--text-muted);
-  flex-shrink: 0;
+.loadMoreBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── Responsive ── */
-@media (max-width: 800px) {
+@media (max-width: 1100px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
   .page {
-    padding: 20px 16px;
-  }
-  .statusGrid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .quickGrid {
-    grid-template-columns: 1fr;
-  }
-  .recentGrid {
-    grid-template-columns: 1fr;
+    padding: 20px 16px 32px;
   }
 }

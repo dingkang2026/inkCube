@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderOpen, Wrench, Paperclip, Pause, Square, SendHorizonal, AlertTriangle, Check, SkipForward, X, Puzzle, Play } from 'lucide-react'
+import { FolderOpen, Bot, Paperclip, Pause, Square, SendHorizonal, AlertTriangle, Check, SkipForward, X, Puzzle, Play } from 'lucide-react'
 import { TaskMessageList } from './TaskMessageList'
+import { TaskTemplatePanel } from './TaskTemplatePanel'
+import { hasUnfilledPlaceholders } from './promptTemplate'
+import { usePlaceholderFill } from './usePlaceholderFill'
 import type { TaskMessage, StreamStep, PlanData } from '../../types'
 import type { ShellConfirmData, SkillConfirmData } from './useTaskChat'
 import { useFeatureGuard } from '../readiness/useReadiness'
+import { useToast } from '../knowledge/Toast'
 import styles from './TaskChatView.module.css'
 
 interface SlashCommand {
@@ -26,7 +30,7 @@ interface TaskChatViewProps {
   planData?: PlanData | null
   pendingShellConfirm?: ShellConfirmData | null
   pendingSkillConfirm?: SkillConfirmData | null
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string) => void | Promise<void>
   onStopGenerate: () => void
   onPauseTask?: () => void
   onShellConfirm?: (confirmed: boolean, allowSession?: boolean) => void
@@ -61,7 +65,12 @@ export function TaskChatView({
 }: TaskChatViewProps) {
   const { t } = useTranslation()
   const guard = useFeatureGuard()
-  const [input, setInput] = useState('')
+  const showToast = useToast()
+  // 输入框 + 占位符表单联动（0.5 §4.4）：模板预填后变量按名去重，填一次全文替换；
+  // 手动编辑文本框即接管（表单停用），发送成功后 reset
+  const phForm = usePlaceholderFill()
+  const input = phForm.text
+  const setInput = phForm.setText
   const [isDragOver, setIsDragOver] = useState(false)
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const [slashVisible, setSlashVisible] = useState(false)
@@ -70,6 +79,9 @@ export function TaskChatView({
   const dragCounterRef = useRef(0)
   const sendingRef = useRef(false)  // synchronous guard against double-submit
   const guardPendingRef = useRef(false)  // entry-guard in flight (0.4 §7.3)
+  // 发送占位符守卫(0.5 E1 T7):含未填 {占位符} 首次发送 → toast 警示不发送;再次点击放行;
+  // 重选模板/发送成功后重置,保证每个新预填的模板都得到一次提醒
+  const placeholderWarnedRef = useRef(false)
   const isEmpty = messages.length === 0 && !isGenerating
 
   // Fetch installed skills for slash command autocomplete
@@ -100,27 +112,56 @@ export function TaskChatView({
     }
   }, [isGenerating])
 
-  /** 入口 guard（0.4 §5.3 第二层）：任务发送依赖 LLM 配置；放行后才置 sending 防重标记 */
+  /** 输入内容变化后 textarea 高度自适应（手动输入/模板预填/发送清空共用，上限 200px） */
+  useEffect(() => {
+    const el = textareaRef.current
+    if (el) {
+      el.style.height = 'auto'
+      el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+    }
+  }, [input])
+
+  /** 入口 guard（0.4 §5.3 第二层）：任务发送依赖 LLM 配置；放行后才置 sending 防重标记。
+   *  onSendMessage 允许异步（零任务态发送需先建任务，0.5 §4.4）：await 到「发送受理」为止，
+   *  不等生成结束（isGenerating 生命周期归 useTaskChat）；失败（建任务失败等）→ 保留输入、
+   *  复位 sendingRef 供直接重试，错误 toast 由链路上游（useTasks createFailed）负责 */
   const guardSend = (text: string, afterSend?: () => void) => {
     if (sendingRef.current || guardPendingRef.current) return
     guardPendingRef.current = true
-    void guard('task', () => {
+    void guard('task', async () => {
       sendingRef.current = true
-      onSendMessage(text)
-      afterSend?.()
+      try {
+        await onSendMessage(text)
+        afterSend?.()
+      } catch {
+        sendingRef.current = false
+      }
     }).finally(() => {
       guardPendingRef.current = false
     })
   }
 
+  /** 模板点卡预填(0.5 §4.4):登记基底 prompt 激活占位符表单,只填不发送,重置发送守卫；
+   *  skill 版多行模板预填后 toast 告知发送方式（Enter 换行/Ctrl+Enter 发送，0.5 §7.3） */
+  const handlePickTemplate = (prompt: string) => {
+    phForm.start(prompt)
+    placeholderWarnedRef.current = false
+    if (prompt.includes('\n')) showToast(t('task.templateMultilineHint'))
+    textareaRef.current?.focus()
+  }
+
   const handleSend = () => {
     const text = input.trim()
     if (!text) return
+    // 发送守卫:含未填占位符首次点击 → toast 警示不发送;再次点击放行
+    if (hasUnfilledPlaceholders(text) && !placeholderWarnedRef.current) {
+      placeholderWarnedRef.current = true
+      showToast(t('task.placeholderWarn'))
+      return
+    }
+    placeholderWarnedRef.current = false
     guardSend(text, () => {
-      setInput('')
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto'
-      }
+      phForm.reset()
     })
   }
 
@@ -152,19 +193,21 @@ export function TaskChatView({
         return
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      // 多行内容发送通道：Ctrl/Cmd+Enter 任意形态可发（0.5 §7.3）
+      e.preventDefault()
+      if (!isGenerating) handleSend()
+      return
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !input.includes('\n')) {
+      // 单行裸 Enter 发送；含换行时裸 Enter=换行（textarea 默认行为）
       e.preventDefault()
       if (!isGenerating) handleSend()
     }
   }
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const el = textareaRef.current
-    if (el) {
-      el.style.height = 'auto'
-      el.style.height = Math.min(el.scrollHeight, 200) + 'px'
-    }
-    // Update slash command popup visibility using the new value
+    // 高度自适应由 input effect 统一处理；此处仅更新 slash 弹层可见性
     updateSlashPopup(e.target.value)
   }
 
@@ -184,6 +227,8 @@ export function TaskChatView({
   }
 
   const selectSlashCommand = (cmd: SlashCommand) => {
+    // 程序化覆写输入：摆脱模板联动（否则残留基底 prompt 与表单状态）
+    phForm.detach()
     setInput(cmd.name + ' ')
     setSlashVisible(false)
     textareaRef.current?.focus()
@@ -259,20 +304,21 @@ export function TaskChatView({
       )}
       {isEmpty ? (
         <div className={styles.emptyState}>
-          <div className={styles.emptyLogo}><Wrench size={36} /></div>
-          <p className={styles.emptyGreeting}>{t('task.greeting')}</p>
+          <div className={styles.emptyLogo}><Bot size={36} /></div>
+          <p className={styles.emptyGreeting}>
+            {(() => {
+              // 时段问候(0.5 §4.4):6-12 早上 / 12-18 下午 / 其余晚上
+              const hour = new Date().getHours()
+              const greetKey = hour >= 6 && hour < 12
+                ? 'task.greetMorning'
+                : hour >= 12 && hour < 18
+                  ? 'task.greetAfternoon'
+                  : 'task.greetEvening'
+              return `${t(greetKey)}${t('task.greetLead')}`
+            })()}
+          </p>
           <p className={styles.emptyHint}>{t('task.hint')}</p>
-          <div className={styles.quickActions}>
-            <button className={styles.quickCard} onClick={() => guardSend(t('task.example1'))}>
-              {t('task.example1')}
-            </button>
-            <button className={styles.quickCard} onClick={() => guardSend(t('task.example2'))}>
-              {t('task.example2')}
-            </button>
-            <button className={styles.quickCard} onClick={() => guardSend(t('task.example3'))}>
-              {t('task.example3')}
-            </button>
-          </div>
+          <TaskTemplatePanel onPick={handlePickTemplate} />
         </div>
       ) : (
         <TaskMessageList
@@ -320,6 +366,24 @@ export function TaskChatView({
       )}
 
       <div className={styles.inputArea}>
+        {/* 占位符表单(0.5 §4.4,仅空态+模板预填+未接管):变量按名去重,填一次全量替换;
+            接管(手动编辑文本框)后隐藏,未填变量由发送守卫 toast 兜底 */}
+        {isEmpty && !phForm.manual && phForm.names.length > 0 && (
+          <div className={styles.phForm}>
+            {phForm.names.map((name) => (
+              <label key={name} className={styles.phItem}>
+                <span className={styles.phName}>{name}</span>
+                <input
+                  className={styles.phInput}
+                  value={phForm.values[name] ?? ''}
+                  aria-label={name}
+                  onChange={(e) => phForm.setValue(name, e.target.value)}
+                />
+              </label>
+            ))}
+            <span className={styles.phHint}>{t('task.phFormHint')}</span>
+          </div>
+        )}
         {slashVisible && !isGenerating && hasActiveTask && (
           <div className={styles.slashPopup}>
             {slashCommands
@@ -342,6 +406,8 @@ export function TaskChatView({
         )}
         <div className={styles.wrapper}>
           <div className={styles.inputRow}>
+            {/* 上传保持任务门控：文件必须挂任务工作区（tasks:pickAndUpload 需要 taskId），
+                与零任务态可输入的「发送即建任务」（0.5 §4.4）不冲突 */}
             <button
               className={styles.uploadBtn}
               onClick={async () => {
@@ -361,15 +427,16 @@ export function TaskChatView({
             >
               <Paperclip size={16} />
             </button>
+            {/* 零任务态不禁用（0.5 §4.4 发送即建任务）：发送时由 App 层自动建任务 */}
             <textarea
               ref={textareaRef}
               className={styles.textarea}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => phForm.onInputEdit(e.target.value)}
               onKeyDown={handleKeyDown}
               onInput={handleInput}
-              placeholder={hasActiveTask ? t('task.inputPlaceholder') : t('task.selectTaskFirst')}
-              disabled={!hasActiveTask || isGenerating}
+              placeholder={t('task.inputPlaceholder')}
+              disabled={isGenerating}
               rows={1}
             />
             {isGenerating ? (
@@ -389,7 +456,7 @@ export function TaskChatView({
               <button
                 className={styles.sendBtn}
                 onClick={handleSend}
-                disabled={!input.trim() || !hasActiveTask}
+                disabled={!input.trim()}
                 title={t('task.send')}
               >
                 <SendHorizonal size={16} />

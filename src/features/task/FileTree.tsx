@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FilePreview } from './FilePreview'
+import { ImportTargetDialog } from './ImportTargetDialog'
+import { ScheduleFormModal } from '../schedule/ScheduleFormModal'
+import { CalendarClock, Folder, Loader2, RefreshCw, Upload } from 'lucide-react'
 import { fileIcon, formatSize } from './utils'
 import styles from './FileTree.module.css'
 
@@ -48,7 +51,7 @@ function TreeNode({
           onClick={() => setExpanded(!expanded)}
         >
           <span className={styles.arrow}>{expanded ? '▾' : '▸'}</span>
-          <span className={styles.icon}>📁</span>
+          <span className={styles.icon}><Folder size={14} /></span>
           <span className={styles.name}>{node.name}</span>
         </div>
         {expanded && node.children?.map((child) => (
@@ -66,6 +69,7 @@ function TreeNode({
 
   const filePath = node.path || node.name
   const isSelected = selectedPath === filePath
+  const FileIcon = fileIcon(node.name)
 
   return (
     <div className={styles.node}>
@@ -74,7 +78,7 @@ function TreeNode({
         style={{ paddingLeft: 8 + depth * 16 + 16 }}
         onClick={() => onFileClick({ path: filePath, name: node.name, size: node.size || 0 })}
       >
-        <span className={styles.icon}>{fileIcon(node.name)}</span>
+        <span className={styles.icon}><FileIcon size={14} /></span>
         <span className={styles.name}>{node.name}</span>
         {node.size !== undefined && (
           <span className={styles.size}>{formatSize(node.size)}</span>
@@ -102,6 +106,9 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
   const [tree, setTree] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null)
+  const [importing, setImporting] = useState(false)
+  // 渠道③「设为定时」（2.11 §9.1）：任务级入口，refinePrompt 从对话提炼订阅内容
+  const [scheduling, setScheduling] = useState(false)
 
   const handleFileClick = useCallback((file: SelectedFile) => {
     setSelectedFile(file)
@@ -184,8 +191,24 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
       <div className={styles.treePanel} style={{ width: treeWidth, flexShrink: 0 }}>
         <div className={styles.header}>
           <span className={styles.headerTitle}>{t('task.workspace')}</span>
+          <button
+            className={styles.iconBtn}
+            disabled={!taskId}
+            onClick={() => setScheduling(true)}
+            title={t('task.scheduleFromTask')}
+          >
+            <CalendarClock size={14} />
+          </button>
+          <button
+            className={styles.iconBtn}
+            disabled={!selectedFile}
+            onClick={() => setImporting(true)}
+            title={t('task.import.title')}
+          >
+            <Upload size={14} />
+          </button>
           <button className={styles.iconBtn} onClick={loadTree} title={t('task.refresh')}>
-            {loading ? '⏳' : '🔄'}
+            {loading ? <Loader2 size={14} className={styles.spinning} /> : <RefreshCw size={14} />}
           </button>
         </div>
         <div className={styles.treeSection}>
@@ -219,6 +242,25 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
             />
           </div>
         </>
+      )}
+
+      {importing && selectedFile && taskId && (
+        <ImportTargetDialog
+          taskId={taskId}
+          path={selectedFile.path}
+          filename={selectedFile.name}
+          onDone={() => setImporting(false)}
+          onClose={() => setImporting(false)}
+        />
+      )}
+
+      {scheduling && taskId && (
+        <ScheduleFormModal
+          open
+          initial={{ taskId }}
+          onClose={() => setScheduling(false)}
+          onSaved={() => setScheduling(false)}
+        />
       )}
     </div>
   )

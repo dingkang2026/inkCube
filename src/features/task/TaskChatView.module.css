@@ -23,7 +23,7 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: rgba(var(--accent-rgb, 59, 130, 246), 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
   backdrop-filter: blur(2px);
   border-radius: var(--radius-md);
   pointer-events: none;
@@ -35,7 +35,7 @@
 }
 
 .dropText {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 500;
   color: var(--accent);
 }
@@ -47,11 +47,15 @@
 
 .emptyState {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  justify-content: safe center; /* 内容溢出时退化为顶部对齐，避免居中裁掉顶部且不可滚动 */
   gap: 12px;
+  padding: 16px 24px;
 }
 
 .emptyLogo {
@@ -60,37 +64,16 @@
 }
 
 .emptyGreeting {
-  font-size: 18px;
-  font-weight: 500;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .emptyHint {
-  font-size: 14px;
-  color: var(--text-secondary);
-}
-
-.quickActions {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 12px;
-  margin-top: 24px;
-  max-width: 600px;
-}
-
-.quickCard {
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  cursor: pointer;
-  font-size: 12px;
-  text-align: left;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.quickCard:hover {
-  border-color: var(--accent);
-  background: var(--bg-primary);
+  max-width: 520px;
+  font-size: var(--text-base);
+  line-height: 1.6;
+  color: var(--text-muted);
 }
 
 .uploadBtn {
@@ -103,7 +86,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: var(--text-lg);
   flex-shrink: 0;
   opacity: 0.6;
   transition: opacity 0.15s, background 0.15s;
@@ -125,14 +108,14 @@
   align-items: center;
   gap: 8px;
   padding: 8px 24px;
-  background: rgba(245, 158, 11, 0.08);
-  border-top: 1px solid rgba(245, 158, 11, 0.2);
-  font-size: 13px;
+  background: color-mix(in srgb, var(--text-warning) 8%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--text-warning) 20%, transparent);
+  font-size: var(--text-base);
   color: var(--text-secondary);
 }
 
 .resumeIcon {
-  color: var(--warning, #f59e0b);
+  color: var(--text-warning);
   flex-shrink: 0;
 }
 
@@ -144,8 +127,8 @@
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--accent);
-  color: white;
-  font-size: 12px;
+  color: var(--text-inverse);
+  font-size: var(--text-sm);
   cursor: pointer;
   margin-left: auto;
   transition: background 0.15s;
@@ -161,6 +144,50 @@
   position: relative;
   padding: 12px 24px 16px;
   border-top: 1px solid var(--border);
+  flex-shrink: 0; /* 输入区是功能核心：空态内容超高时被压缩的是 emptyState（内部滚动），绝非输入区 */
+}
+
+/* 占位符表单(0.5 §4.4,仅空态+模板预填+未接管):变量按名去重,填一次全量替换 */
+.phForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 0 0 8px;
+}
+
+.phItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.phName {
+  font-size: var(--text-sm);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.phInput {
+  width: 160px;
+  padding: 3px 8px;
+  font-size: var(--text-sm);
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.phInput:focus {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.phHint {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
 }
 
 .wrapper {
@@ -184,11 +211,12 @@
 
 .textarea {
   flex: 1;
+  min-width: 0; /* flex 收缩前提：覆盖 textarea 固有宽度（默认 cols）下限，窄窗口不把发送钮横向挤出 */
   border: none;
   background: none;
   resize: none;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: var(--text-md);
   line-height: 1.5;
   outline: none;
   min-height: 24px;
@@ -201,12 +229,12 @@
   border: none;
   border-radius: var(--radius-sm);
   background: var(--accent);
-  color: white;
+  color: var(--text-inverse);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: var(--text-md);
   flex-shrink: 0;
   transition: background 0.15s;
 }
@@ -225,11 +253,11 @@
 }
 
 .pauseBtn {
-  background: var(--warning, #f59e0b);
+  background: var(--text-warning);
 }
 
 .hint {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   text-align: center;
   margin-top: 6px;
@@ -273,14 +301,14 @@
 
 .slashName {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--accent);
   white-space: nowrap;
 }
 
 .slashDesc {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -292,27 +320,27 @@
 .shellConfirm {
   margin: 8px 24px;
   padding: 12px 16px;
-  border: 1px solid var(--accent, #3b82f6);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-md);
-  background: rgba(var(--accent-rgb, 59, 130, 246), 0.06);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .shellConfirmHeader {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   margin-bottom: 8px;
 }
 
 .shellConfirmIcon {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .shellConfirmTimer {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -324,7 +352,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
@@ -340,11 +368,11 @@
 .shellConfirmAllow {
   flex: 1;
   padding: 6px 12px;
-  border: 1px solid var(--accent, #3b82f6);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
-  background: var(--accent, #3b82f6);
-  color: #fff;
-  font-size: 12px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: opacity 0.15s;
 }
@@ -356,17 +384,17 @@
 .shellConfirmSession {
   flex: 1;
   padding: 6px 12px;
-  border: 1px solid var(--accent, #3b82f6);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--accent, #3b82f6);
-  font-size: 12px;
+  color: var(--accent);
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .shellConfirmSession:hover {
-  background: color-mix(in srgb, var(--accent, #3b82f6) 10%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .shellConfirmDeny {
@@ -376,7 +404,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: background 0.15s;
 }

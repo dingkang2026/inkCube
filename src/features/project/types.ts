@@ -1,6 +1,7 @@
 /** src/features/project/types.ts — Project feature type definitions */
 import { Factory, DollarSign, FolderOpen } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import type { UsageSummary } from '../../types'
 
 /** Project type — determines default templates, wiki structure, stages */
 export type ProjectType = 'recruitment' | 'investment' | 'general'
@@ -27,6 +28,8 @@ export interface Report {
   progress?: number
   stage?: ProjectStage
   error_message?: string
+  /** 该报告生成总消耗（listReports 聚合，含模板提取+变量+生成全部调用；无记录为 null，2.10 §4.5） */
+  usage?: UsageSummary | null
 }
 
 /** Report generation log entry */

@@ -3,8 +3,9 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 900;
+  background: var(--bg-overlay);
+  /* 模态面板（0.3 §5.2 阶梯第二级；孤例 900 低于 TitleBar 1000 会被标题栏压住，归位 2026-10-19） */
+  z-index: 2000;
 }
 
 .panel {
@@ -50,7 +51,7 @@
 .statusBadge {
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-muted);
   color: var(--text-secondary);
 }
@@ -73,20 +74,20 @@
 .typeBadge {
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   color: var(--text-secondary);
 }
 
 .occ {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
   word-break: break-word;
@@ -94,14 +95,14 @@
 
 .desc {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .meta {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
 }
 
@@ -115,9 +116,9 @@
   flex-direction: column;
   gap: 4px;
   padding: 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -132,16 +133,16 @@
 
 .uploadHint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   padding: 8px 10px;
   border: 1px dashed var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .actionError {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--error);
 }
 
@@ -159,10 +160,10 @@
   gap: 5px;
   padding: 7px 12px;
   border: 1px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
-  font-size: 13px;
-  color: #ffffff;
+  font-size: var(--text-base);
+  color: var(--text-inverse);
   cursor: pointer;
 }
 
@@ -181,9 +182,9 @@
   gap: 5px;
   padding: 7px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-primary);
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -203,9 +204,9 @@
   gap: 5px;
   padding: 7px 12px;
   border: 1px solid var(--error);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-primary);
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--error);
   cursor: pointer;
 }

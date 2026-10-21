@@ -28,60 +28,69 @@ export function GeneralSettings({ settings, onUpdate }: GeneralSettingsProps) {
         <option value="en-US">English</option>
       </select>
 
-      <label className={styles.label}>{t('settings.concurrency.fileParsing')}</label>
-      <input
-        type="number"
-        min={1}
-        max={10}
-        className={styles.input}
-        value={settings?.max_concurrent_file_parsing ?? 2}
-        onChange={(e) => onUpdate?.('max_concurrent_file_parsing', parseInt(e.target.value) || 2)}
-      />
-      <p className={styles.hint}>{t('settings.concurrency.fileParsingHint')}</p>
+      {/* Notification (2.11 §6.1)：OS 通知开关即时生效（SettingsPage 保存后广播
+          app:settings-changed，ActivityMonitor 重读） */}
+      <h3 className={styles.heading}>{t('settings.notification.title')}</h3>
+      <div className={styles.toggleRow}>
+        <div className={styles.toggleLabel}>
+          <span className={styles.label}>{t('settings.notification.osEnabled')}</span>
+          <p className={styles.hint}>{t('settings.notification.osEnabledHint')}</p>
+        </div>
+        <label className={styles.toggle}>
+          <input
+            type="checkbox"
+            checked={settings?.os_notify_enabled ?? true}
+            onChange={(e) => onUpdate?.('os_notify_enabled', e.target.checked)}
+          />
+          <span className={styles.toggleSlider}></span>
+        </label>
+      </div>
+      <div className={styles.toggleRow}>
+        <div className={styles.toggleLabel}>
+          <span className={styles.label}>{t('settings.notification.sound')}</span>
+          <p className={styles.hint}>{t('settings.notification.soundHint')}</p>
+        </div>
+        <label className={styles.toggle}>
+          <input
+            type="checkbox"
+            checked={settings?.os_notify_sound ?? true}
+            onChange={(e) => onUpdate?.('os_notify_sound', e.target.checked)}
+          />
+          <span className={styles.toggleSlider}></span>
+        </label>
+      </div>
+      <div className={styles.toggleRow}>
+        <div className={styles.toggleLabel}>
+          <span className={styles.label}>{t('settings.notification.affairReminder')}</span>
+          <p className={styles.hint}>{t('settings.notification.affairReminderHint')}</p>
+        </div>
+        <label className={styles.toggle}>
+          <input
+            type="checkbox"
+            checked={settings?.affair_reminder_enabled ?? true}
+            onChange={(e) => onUpdate?.('affair_reminder_enabled', e.target.checked)}
+          />
+          <span className={styles.toggleSlider}></span>
+        </label>
+      </div>
+      {/* R4 订阅完成通知（review P2-7 提前落地）：默认关闭 = 静默（通知中心
+          可见+静默已读）；开启后 completed 实时弹 Toast/OS 通知 */}
+      <div className={styles.toggleRow}>
+        <div className={styles.toggleLabel}>
+          <span className={styles.label}>{t('settings.notification.scheduleNotify')}</span>
+          <p className={styles.hint}>{t('settings.notification.scheduleNotifyHint')}</p>
+        </div>
+        <label className={styles.toggle}>
+          <input
+            type="checkbox"
+            checked={settings?.schedule_notify ?? false}
+            onChange={(e) => onUpdate?.('schedule_notify', e.target.checked)}
+          />
+          <span className={styles.toggleSlider}></span>
+        </label>
+      </div>
 
-      <label className={styles.label}>{t('settings.concurrency.imageDescription')}</label>
-      <input
-        type="number"
-        min={1}
-        max={10}
-        className={styles.input}
-        value={settings?.max_concurrent_image_description ?? 2}
-        onChange={(e) => onUpdate?.('max_concurrent_image_description', parseInt(e.target.value) || 2)}
-      />
-      <p className={styles.hint}>{t('settings.concurrency.imageDescriptionHint')}</p>
-
-      <label className={styles.label}>{t('settings.concurrency.compile')}</label>
-      <input
-        type="number"
-        min={1}
-        max={5}
-        className={styles.input}
-        value={settings?.max_compile_concurrency ?? 2}
-        onChange={(e) => onUpdate?.('max_compile_concurrency', parseInt(e.target.value) || 2)}
-      />
-      <p className={styles.hint}>{t('settings.concurrency.compileHint')}</p>
-
-      <label className={styles.label}>{t('settings.llm.connectTimeout')}</label>
-      <input
-        type="number"
-        min={5}
-        max={120}
-        className={styles.input}
-        value={settings?.llm_connect_timeout ?? 30}
-        onChange={(e) => onUpdate?.('llm_connect_timeout', parseInt(e.target.value) || 30)}
-      />
-      <p className={styles.hint}>{t('settings.llm.connectTimeoutHint')}</p>
-
-      <label className={styles.label}>{t('settings.llm.readTimeout')}</label>
-      <input
-        type="number"
-        min={30}
-        max={1800}
-        className={styles.input}
-        value={settings?.llm_read_timeout ?? 300}
-        onChange={(e) => onUpdate?.('llm_read_timeout', parseInt(e.target.value) || 300)}
-      />
-      <p className={styles.hint}>{t('settings.llm.readTimeoutHint')}</p>
+      {/* 处理并发已移至「项目」组 ConcurrencySettings（0.3 §4.4 五组导航 2026-10-19） */}
     </div>
   )
 }

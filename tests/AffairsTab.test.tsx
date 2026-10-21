@@ -96,7 +96,8 @@ describe('AffairsTab container', () => {
   it('loads tasks on mount and switches three views', async () => {
     const { container, getByText } = render(<AffairsTab {...base} />)
     await flush()
-    expect(invokeMock).toHaveBeenCalledWith('affairs:listByProject', { projectId: 'p1' })
+    expect(invokeMock).toHaveBeenCalledWith(
+      'affairs:listByProject', { projectId: 'p1', limit: 50 })
     expect(container.textContent).toContain('上传BP')
     fireEvent.click(getByText('affairs.viewRhythm'))
     expect(container.textContent).toContain('affairs.rhythmEmpty') // 无已收节奏时的空态(月报卡片在 Task 8)

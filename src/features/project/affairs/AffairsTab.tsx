@@ -18,6 +18,8 @@ import { TaskDrawer } from './TaskDrawer'
 import { TaskFormModal } from './TaskFormModal'
 import s from './AffairsTab.module.css'
 
+const TASKS_PAGE_SIZE = 50
+
 export interface AffairsTabProps {
   projectId: string
   projectType: ProjectType
@@ -30,7 +32,7 @@ export interface AffairsTabProps {
   onFocusHandled?: () => void
   /** 执行抽屉打开 → 父级关 Chat(互斥,§6.4-7) */
   onPanelOpenChange?: (open: boolean) => void
-  /** 抽屉「发起报告」→ 父级切 reports Tab(裁决 7) */
+  /** 抽屉「发起报告」→ 父级切 reports Tab（裁决 7） */
   onOpenReports?: () => void
 }
 
@@ -39,6 +41,11 @@ export function AffairsTab({ projectId, projectType, stage, refreshSignal, focus
   const [tasks, setTasks] = useState<PhaseTask[]>([])
   // 首拉/刷新失败标记:失败态下显示失败文案,不得呈现假「暂无事务」空态(对齐一期 PulseBar pulseLoadFailed 原则)
   const [loadFailed, setLoadFailed] = useState(false)
+  // 列表分页（0.1dev-guide 统一约定）：手写游标（load 承载抽屉同步/focusTask 匹配多重
+  // 语义，不适配 usePagedList）；日历视图挂载时自动 limit=0 全量（分页不得截断日历）
+  const [hasMoreTasks, setHasMoreTasks] = useState(false)
+  const [loadingMoreTasks, setLoadingMoreTasks] = useState(false)
+  const tasksLimitRef = useRef(TASKS_PAGE_SIZE)
   const [view, setView] = useState<AffairsView>('board')
   const [drawerTask, setDrawerTask] = useState<PhaseTask | null>(null)
   const [formTask, setFormTask] = useState<PhaseTask | null | undefined>(undefined)
@@ -50,14 +57,16 @@ export function AffairsTab({ projectId, projectType, stage, refreshSignal, focus
   const drawerTaskRef = useRef<PhaseTask | null>(null)
   useEffect(() => { drawerTaskRef.current = drawerTask }, [drawerTask])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { full?: boolean }) => {
     const pid = projectId
+    if (opts?.full) tasksLimitRef.current = 0 // 全量（日历/兜底场景，分页不得截断）
     try {
-      const r: any = await window.electronAPI.invoke('affairs:listByProject', { projectId: pid })
+      const r: any = await window.electronAPI.invoke('affairs:listByProject', { projectId: pid, limit: tasksLimitRef.current })
       if (latestPidRef.current !== pid) return
       const list: PhaseTask[] = r?.tasks ?? []
       setTasks(list)
       setLoadFailed(false)
+      setHasMoreTasks(!!r?.has_more)
       // 抽屉数据同步:按 id 替换为最新对象(完成后状态徽章/按钮组不谎报);
       // 任务已不在列表(已删)则自动关抽屉并复位 Chat 面板
       const cur = drawerTaskRef.current
@@ -72,11 +81,33 @@ export function AffairsTab({ projectId, projectType, stage, refreshSignal, focus
     }
   }, [projectId])
 
-  // 快切项目即清残留:失败/慢响应下不得显示上一项目的任务(Task 6 评审 minor①)
-  useEffect(() => { setTasks([]); setLoadFailed(false) }, [projectId])
+  // 快切项目即清残留:失败/慢响应下不得显示上一项目的任务(Task 6 评审 minor①);
+  // 分页游标同步重置（load effect 声明在其后，先重置再拉）
+  useEffect(() => {
+    setTasks([]); setLoadFailed(false)
+    tasksLimitRef.current = TASKS_PAGE_SIZE
+  }, [projectId])
 
   useEffect(() => { void load() }, [load])
   useEffect(() => { if (refreshSignal !== undefined && refreshSignal > 0) void load() }, [refreshSignal, load])
+
+  const loadMoreTasks = useCallback(async () => {
+    if (!hasMoreTasks || loadingMoreTasks) return
+    setLoadingMoreTasks(true)
+    try {
+      tasksLimitRef.current += TASKS_PAGE_SIZE
+      await load()
+    } finally {
+      setLoadingMoreTasks(false)
+    }
+  }, [hasMoreTasks, loadingMoreTasks, load])
+
+  // 日历视图不得截断（计划裁决）：切到日历若尚未加载完则自动全量重拉；
+  // load 引用稳定，全量拉完 hasMoreTasks 转 false 后本 effect 重跑即短路
+  useEffect(() => {
+    if (view !== 'calendar' || !hasMoreTasks) return
+    void load({ full: true })
+  }, [view, hasMoreTasks, load])
 
   const handleChanged = useCallback(() => {
     window.dispatchEvent(new CustomEvent('app:tasks-changed'))  // 3.0 三期：跨页边沿（侧栏色点/首页待办同步）
@@ -99,10 +130,19 @@ export function AffairsTab({ projectId, projectType, stage, refreshSignal, focus
     if (!focusTask || handledFocusTsRef.current === focusTask.ts) return
     if (tasks.length === 0 && !loadFailed) return
     const target = tasks.find((x) => x.id === focusTask.taskId)
-    if (target) openDrawer(target)
-    handledFocusTsRef.current = focusTask.ts
-    onFocusHandled?.()
-  }, [focusTask, tasks, loadFailed, openDrawer, onFocusHandled])
+    if (target) {
+      openDrawer(target)
+      handledFocusTsRef.current = focusTask.ts
+      onFocusHandled?.()
+    } else if (hasMoreTasks) {
+      // 分页后目标可能在未加载页：全量重拉，tasks 更新后本 effect 重试
+      void load({ full: true })
+    } else {
+      // 已删或拉取失败：放弃并回报父级清除
+      handledFocusTsRef.current = focusTask.ts
+      onFocusHandled?.()
+    }
+  }, [focusTask, tasks, loadFailed, hasMoreTasks, load, openDrawer, onFocusHandled])
 
   const VIEWS: { key: AffairsView; labelKey: string; Icon: typeof CalendarDays }[] = [
     { key: 'board', labelKey: 'affairs.viewBoard', Icon: LayoutGrid },
@@ -138,6 +178,15 @@ export function AffairsTab({ projectId, projectType, stage, refreshSignal, focus
       {view === 'calendar' && (
         <CalendarView tasks={tasks} onOpenDrawer={openDrawer}
           onCreateTask={(d) => { setFormPrefill(d); setFormTask(null) }} />
+      )}
+      {view !== 'calendar' && hasMoreTasks && (
+        <button
+          className={s.loadMoreBtn}
+          onClick={() => { void loadMoreTasks() }}
+          disabled={loadingMoreTasks}
+        >
+          {loadingMoreTasks ? t('common.loading') : t('common.loadMore')}
+        </button>
       )}
       {drawerTask && (
         <TaskDrawer task={drawerTask} projectId={projectId}

@@ -102,53 +102,52 @@ def test_encode_runs_under_global_lock(monkeypatch):
     assert seen == {"held": True, "non_reentrant": True}
 
 
-# ── docling 首次转换独占 ──
+# ── docling 首次转换独占（_ThreadsafeConverter，per-converter 锁）──
 
 
-class _FakeConverter:
-    """记录每次 convert 执行时首次转换锁是否被持有。"""
+def _make_wrapper():
+    """构造带可观测内部 converter 的 _ThreadsafeConverter：记录每次 convert
+    执行时首转锁是否被持有。"""
+    wrapper = dp._ThreadsafeConverter(None)
 
-    def __init__(self):
-        self.calls = []
+    class _FakeConverter:
+        def convert(self, path):
+            wrapper.calls.append((path, wrapper._first_convert_lock.locked()))
+            return f"result({path})"
 
-    def convert(self, path):
-        self.calls.append((path, dp._docling_first_convert_lock.locked()))
-        return f"result({path})"
-
-
-@pytest.fixture(autouse=True)
-def _reset_warmed():
-    """模块级 warmed 标志在用例间隔离（测后复位）。"""
-    dp._docling_warmed = False
-    yield
-    dp._docling_warmed = False
+    wrapper.calls = []
+    wrapper._converter = _FakeConverter()
+    return wrapper
 
 
 def test_first_convert_runs_serialized():
     """冷启动首次 convert 在独占锁内执行，完成后置 warmed。"""
-    conv = _FakeConverter()
-    out = dp._convert_threadsafe(conv, "a.pdf")
+    wrapper = _make_wrapper()
+    out = wrapper.convert("a.pdf")
     assert out == "result(a.pdf)"
-    assert conv.calls == [("a.pdf", True)]  # 锁内执行
-    assert dp._docling_warmed is True
+    assert wrapper.calls == [("a.pdf", True)]  # 锁内执行
+    assert wrapper._warmed is True
 
 
 def test_subsequent_convert_bypasses_lock():
     """已 warmed → 锁外直通（稳态零开销，不阻塞并发转换）。"""
-    dp._docling_warmed = True
-    conv = _FakeConverter()
-    out = dp._convert_threadsafe(conv, "a.pdf")
+    wrapper = _make_wrapper()
+    wrapper._warmed = True
+    out = wrapper.convert("a.pdf")
     assert out == "result(a.pdf)"
-    assert conv.calls == [("a.pdf", False)]  # 锁外执行
+    assert wrapper.calls == [("a.pdf", False)]  # 锁外执行
 
 
 def test_failure_still_marks_warmed():
     """首次 convert 抛异常也置 warmed——懒加载状态已被污染/初始化，
     重试竞态初始化路径只会重新打开竞态窗口。"""
+    wrapper = dp._ThreadsafeConverter(None)
+
     class _Boom:
         def convert(self, path):
             raise RuntimeError("boom")
 
+    wrapper._converter = _Boom()
     with pytest.raises(RuntimeError, match="boom"):
-        dp._convert_threadsafe(_Boom(), "a.pdf")
-    assert dp._docling_warmed is True
+        wrapper.convert("a.pdf")
+    assert wrapper._warmed is True

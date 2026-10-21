@@ -82,8 +82,10 @@ describe('TodayTodo (3.0 三期 Task 4)', () => {
     expect(ev).toBeTruthy()
   })
 
-  it('renders nothing when tasks empty', () => {
+  it('keeps section with empty state when tasks empty (Ruling 4 空数据保留)', () => {
     const { container } = render(<TodayTodo tasks={[]} onOpenProject={vi.fn()} />)
-    expect(container.querySelector('section')).toBeNull()
+    const text = container.textContent!
+    expect(text).toContain('homeTodo.title')
+    expect(text).toContain('homeTodo.empty')
   })
 })

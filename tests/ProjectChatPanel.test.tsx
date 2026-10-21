@@ -13,6 +13,11 @@ import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import React from 'react'
 import { ProjectChatPanel } from '../src/features/project/ProjectChatPanel'
 
+// 组件现含占位符表单发送守卫（useToast），无需真实 Toast 容器
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => vi.fn(),
+}))
+
 const invokeMock = vi.fn()
 
 // jsdom 未实现 scrollIntoView（messagesEndRef 自动滚动依赖）

@@ -45,7 +45,7 @@ class _ScriptedLLM:
     def __init__(self, script):
         self.script = list(script)
 
-    async def chat_full(self, messages, settings):
+    async def chat_full(self, messages):
         step = self.script.pop(0)
         if isinstance(step, Exception):
             raise step
@@ -239,7 +239,6 @@ class _SectionDoneRunner:
         yield ProgressEvent("complete", {
             "content_path": "/tmp/x.md", "total_sections": 1,
             "total_words": 100, "registry_size": 1,
-            "token_usage": {"total_tokens": 10},
         })
 
 

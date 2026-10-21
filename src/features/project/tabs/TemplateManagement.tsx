@@ -6,6 +6,9 @@ import { useToast } from '../../knowledge/Toast'
 import { TemplateEditor } from './TemplateEditor'
 import s from './TemplateManagement.module.css'
 import { useConfirm } from '../../../components/ConfirmDialog'
+import { FormTemplatePanel } from './FormTemplatePanel'
+import { PptTemplatePanel } from './PptTemplatePanel'
+import { useActivity } from '../../activity/ActivityContext'
 
 interface TemplateItem {
   template_id: string
@@ -78,9 +81,11 @@ type EditorMode = 'new-blank' | 'new-from-sample' | 'new-from-copy' | 'edit'
 
 interface TemplateManagementProps {
   projectType?: string  // Optional: global mode doesn't filter by project type
+  /** 外部导航初始分区（2.3 §4.2）：通知/首页点击 PPT 模板任务 → 直落 PPT模板 Tab */
+  initialSection?: 'reports' | 'forms' | 'ppt'
 }
 
-export function TemplateManagement({ projectType }: TemplateManagementProps) {
+export function TemplateManagement({ projectType, initialSection }: TemplateManagementProps) {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const showToast = useToast()
@@ -102,6 +107,18 @@ export function TemplateManagement({ projectType }: TemplateManagementProps) {
   // Detail drawer tab: overview (structured) or json (full source)
   const [detailTab, setDetailTab] = useState<'overview' | 'json'>('overview')
 
+  // 页内分区（2.4 §5.1 全局页扩展；PPT 分区 2.3 §4.2）：报告模板 | 填表模板 | PPT 模板；
+  // initialSection 为外部落点，页面已开时再次导航（如新通知点击）也响应切换
+  const [section, setSection] = useState<'reports' | 'forms' | 'ppt'>(initialSection ?? 'reports')
+  useEffect(() => {
+    if (initialSection) setSection(initialSection)
+  }, [initialSection])
+
+  // PPT 模板任务活跃态（2.3 §4.2）：页内「PPT模板」Tab running 呼吸点 / awaiting_input 醒目点
+  const { items: pptActiveItems } = useActivity('ppt')
+  const tplAwaiting = pptActiveItems.filter((a) => a.container === 'templates' && a.status === 'awaiting_input')
+  const tplRunning = pptActiveItems.filter((a) => a.container === 'templates' && a.status !== 'awaiting_input')
+
   // Editor state
   const [editorMode, setEditorMode] = useState<EditorMode | null>(null)
   const [editorInitialData, setEditorInitialData] = useState<Partial<any>>({})
@@ -109,6 +126,7 @@ export function TemplateManagement({ projectType }: TemplateManagementProps) {
   const [editorInitialError, setEditorInitialError] = useState('')
   const [extracting, setExtracting] = useState(false)
   const [extractError, setExtractError] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
 
   const loadTemplates = useCallback(async () => {
     try {
@@ -148,6 +166,21 @@ export function TemplateManagement({ projectType }: TemplateManagementProps) {
 
   const presetTotalPages = Math.ceil(filteredPreset.length / pageSize)
   const customTotalPages = Math.ceil(filteredCustom.length / pageSize)
+
+  // ── Refresh: force reload preset + custom templates server-side, then re-pull list (2.5 §2.5) ──
+  const handleRefreshTemplates = async () => {
+    setRefreshing(true)
+    try {
+      const res: any = await window.electronAPI.invoke('reports:refreshTemplates')
+      await loadTemplates()
+      showToast(t('project.template.refreshDone', { total: res?.total ?? 0 }), 'success')
+    } catch (err) {
+      console.error('Failed to refresh templates:', err)
+      showToast(t('project.template.refreshFailed'), 'error')
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   // ── View detail (open drawer) ──
   const handleView = async (tpl: TemplateItem) => {
@@ -474,6 +507,42 @@ export function TemplateManagement({ projectType }: TemplateManagementProps) {
         <h3 className={s.title}>{t('project.template.management')}</h3>
       </div>
 
+      {/* 页内分区 Tab：报告模板 | 填表模板（2.4 §5.1）| PPT 模板（2.3 §4.2）*/}
+      <div className={s.pageTabs}>
+        <button
+          className={section === 'reports' ? `${s.tab} ${s.tabActive}` : s.tab}
+          onClick={() => setSection('reports')}
+        >{t('project.forms.tpl.reportSection')}</button>
+        <button
+          className={section === 'forms' ? `${s.tab} ${s.tabActive}` : s.tab}
+          onClick={() => setSection('forms')}
+        >{t('project.forms.tpl.section')}</button>
+        <button
+          className={section === 'ppt' ? `${s.tab} ${s.tabActive}` : s.tab}
+          onClick={() => setSection('ppt')}
+        >{t('project.pptTpl.section')}
+          {tplAwaiting.length > 0 ? (
+            <span
+              className={`${s.pptTabDot} ${s.pptTabDotAlert}`}
+              title={t('activity.tipPptTemplatesAwaiting', { count: tplAwaiting.length })}
+            />
+          ) : tplRunning.length > 0 ? (
+            <span
+              className={s.pptTabSpinnerWrap}
+              title={t('activity.tipPptTemplates', { count: tplRunning.length })}
+            >
+              <Loader2 size={12} className={s.pptTabSpinner} />
+            </span>
+          ) : null}
+        </button>
+      </div>
+
+      {section === 'forms' ? (
+        <FormTemplatePanel />
+      ) : section === 'ppt' ? (
+        <PptTemplatePanel />
+      ) : (
+      <>
       {/* Full-width list area */}
       <div className={s.listArea}>
         {/* Filter bar */}
@@ -501,6 +570,15 @@ export function TemplateManagement({ projectType }: TemplateManagementProps) {
               <option value="after">{t('project.stage.after')}</option>
               <option value="other">{t('project.stage.other')}</option>
             </select>
+            <button
+              className={s.refreshBtn}
+              onClick={handleRefreshTemplates}
+              disabled={refreshing}
+              title={t('project.template.refreshHint')}
+            >
+              {refreshing ? <Loader2 size={14} className={s.spinIcon} /> : <RefreshCw size={14} />}
+              {t('project.template.refresh')}
+            </button>
           </div>
         </div>
 
@@ -752,6 +830,8 @@ export function TemplateManagement({ projectType }: TemplateManagementProps) {
             )}
           </div>
         </>
+      )}
+      </>
       )}
     </div>
   )

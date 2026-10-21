@@ -1,4 +1,5 @@
-/** tests/HomePage.test.tsx — 3.0 三期 Task 5:首页装配(待办/日历/卡片墙替换最近项目) */
+/** tests/HomePage.test.tsx — 3.0 三期 Task 5:首页装配(待办/日历/卡片墙;0.5 §4.2 打样修订 2026-10-18:
+ *  概览统计卡 + 全宽 dashboard 网格,服务告警上移 SystemAlerts 后不再消费 getHealth) */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('react-i18next', () => ({
@@ -16,6 +17,8 @@ const cssMock = vi.hoisted(() => ({ default: new Proxy({}, { get: (_t: unknown, 
 vi.mock('../src/features/home/HomePage.module.css', () => cssMock)
 vi.mock('../src/features/home/TodayTodo.module.css', () => cssMock)
 vi.mock('../src/features/home/UpcomingCalendar.module.css', () => cssMock)
+vi.mock('../src/features/home/HomeOverviewBar.module.css', () => cssMock)
+vi.mock('../src/features/home/QuickActions.module.css', () => cssMock)
 vi.mock('../src/features/home/ProjectCardWall.module.css', () => cssMock)
 vi.mock('../src/features/project/affairs/HealthDot.module.css', () => cssMock)
 vi.mock('../src/features/knowledge/Toast', () => ({
@@ -36,17 +39,14 @@ const mk = (id: string, due_date: string): DueTask => ({
   created_at: '2026-10-01T00:00:00', project_name: '招聘项目',
 } as DueTask)
 
-const base = { onNavigate: vi.fn(), onOpenSettings: vi.fn(), onSelectProject: vi.fn() }
+const base = { onSelectProject: vi.fn(), onCreateTask: vi.fn(), onCreateProject: vi.fn() }
 const projects = [{ id: 'p1', name: '招聘项目', description: '', type: 'general', stage: 'before', file_count: 0 }] as any[]
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   vi.setSystemTime(new Date('2026-10-10T10:00:00'))
   ledgerItems.length = 0
-  ;(window as any).electronAPI = { invoke: vi.fn(async (channel: string) =>
-    channel === 'system:getHealth'
-      ? { status: 'ok', services: { llm: { status: 'ok' }, vlm: { status: 'ok' }, embedding: { status: 'ok' }, parsing: { status: 'ok' } } }
-      : {}) }
+  ;(window as any).electronAPI = { invoke: vi.fn(async () => ({})) }
 })
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks() })
 
@@ -59,7 +59,23 @@ describe('HomePage workbench assembly (3.0 三期 Task 5)', () => {
     r1.unmount()
     const r2 = render(<HomePage {...base} projects={projects} />)
     await flush()
-    expect(r2.container.textContent).not.toContain('homeTodo.title')
+    // Ruling 4(2026-10-18):空数据模块保留区块,渲染空态而非隐藏
+    expect(r2.container.textContent).toContain('homeTodo.title')
+    expect(r2.container.textContent).toContain('homeTodo.empty')
+  })
+
+  it('overview bar derives counts from dueData and projects (0.5 E1 T3)', async () => {
+    const { container } = render(
+      <HomePage {...base} projects={projects}
+        dueData={{ tasks: [mk('t1', '2026-10-08'), mk('t2', '2026-10-10')], reviews_counts: {} }} />)
+    await flush()
+    const text = container.textContent!
+    expect(text).toContain('home.stat.projects')
+    expect(text).toContain('home.stat.overdue')
+    expect(text).toContain('home.stat.dueToday')
+    // 大数字派生:projects=1,逾期=1(t1,系统时间 2026-10-10),今日=1(t2);进行中=0(mock 无 active)
+    const nums = Array.from(container.querySelectorAll('.num')).map((n) => n.textContent)
+    expect(nums).toEqual(['1', '1', '1', '0'])
   })
 
   it('card wall replaces recent projects list', async () => {
@@ -89,8 +105,6 @@ describe('HomePage workbench assembly (3.0 三期 Task 5)', () => {
 
   it('wires latest ledger entry + due title into card wall (3.0 四期 T9)', async () => {
     ;(window as any).electronAPI = { invoke: vi.fn(async (channel: string) => {
-      if (channel === 'system:getHealth')
-        return { status: 'ok', services: { llm: { status: 'ok' }, vlm: { status: 'ok' }, embedding: { status: 'ok' }, parsing: { status: 'ok' } } }
       if (channel === 'ledger:listLatest')
         return { latest: [{ project_id: 'p1', page_key: 'risk_watchlist', entry_date: '2026-09', entry_type: 'risk', content: '企业被列入经营异常名录' }] }
       return {}

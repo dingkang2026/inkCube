@@ -1,8 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Trash2 } from 'lucide-react'
 import styles from './WebLogins.module.css'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
+import { usePagedList } from '../../hooks/usePagedList'
+import { useToast } from '../knowledge/Toast'
 import { apiErrorText } from '../../i18n/errorCodes'
 import { browserPanelStore } from '../browser/browserPanelStore'
 
@@ -19,27 +22,19 @@ export function WebLogins() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const handleError = useErrorHandler()
-  const [logins, setLogins] = useState<WebLogin[]>([])
-  const [loading, setLoading] = useState(true)
+  const showToast = useToast()
+  // 列表分页（0.1dev-guide 统一约定）：50/页「加载更多」，挂载即拉
+  const {
+    items: logins, hasMore, loadingMore, loading, error: listError, reload, loadMore,
+  } = usePagedList<WebLogin>({ channel: 'weblogin:list', itemsKey: 'logins' })
+  // 列表加载失败提示（对齐 FormsTab m-3：静默吞掉会让列表空白且无任何提示）
+  useEffect(() => {
+    if (listError) showToast(`${t('common.listLoadFailed')}: ${listError}`, 'error')
+  }, [listError, showToast, t])
   const [domain, setDomain] = useState('')
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const [adding, setAdding] = useState(false)
-
-  const load = useCallback(async () => {
-    try {
-      const res = await window.electronAPI.invoke('weblogin:list') as { logins: WebLogin[] }
-      setLogins(res.logins || [])
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setLoading(false)
-    }
-  }, [handleError])
-
-  useEffect(() => {
-    void load()
-  }, [load])
 
   const handleAdd = async () => {
     if (!domain.trim() || adding) return
@@ -55,7 +50,7 @@ export function WebLogins() {
       } else {
         setDomain('')
         setNote('')
-        await load()
+        await reload()
       }
     } catch (err) {
       setError(String(err))
@@ -82,7 +77,7 @@ export function WebLogins() {
     }
     try {
       await window.electronAPI.invoke('weblogin:remove', { domain: d })
-      await load()
+      await reload()
     } catch (err) {
       handleError(err)
     }
@@ -92,7 +87,7 @@ export function WebLogins() {
     <div className={styles.container}>
       <h3 className={styles.heading}>{t('webLogins.title')}</h3>
       <p className={styles.description}>{t('webLogins.description')}</p>
-      <p className={styles.hint}>⚠ {t('webLogins.noPasswordHint')}</p>
+      <p className={styles.hint}>{t('webLogins.noPasswordHint')}</p>
 
       <div className={styles.addRow}>
         <input
@@ -138,11 +133,20 @@ export function WebLogins() {
                   onClick={() => void handleRemove(login.domain)}
                   title={t('webLogins.remove')}
                 >
-                  🗑
+                  <Trash2 size={14} />
                 </button>
               </div>
             </div>
           ))}
+          {hasMore && (
+            <button
+              className={styles.loadMoreBtn}
+              onClick={() => { void loadMore() }}
+              disabled={loadingMore}
+            >
+              {loadingMore ? t('common.loading') : t('common.loadMore')}
+            </button>
+          )}
         </div>
       )}
     </div>

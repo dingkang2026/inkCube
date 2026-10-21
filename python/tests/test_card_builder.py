@@ -28,7 +28,7 @@ class _FakeLLM:
         self.content = content
         self.captured = None
 
-    async def chat_full(self, messages, settings):
+    async def chat_full(self, messages):
         self.captured = messages
         return {"content": self.content, "usage": dict(_ZERO)}
 
@@ -46,7 +46,7 @@ def _raw(source_type):
 
 def _build(raw_results, client):
     return asyncio.run(build_knowledge_cards(
-        raw_results, {"section_id": "s1", "title": "T"}, client, {},
+        raw_results, {"section_id": "s1", "title": "T"}, client,
     ))
 
 
@@ -90,7 +90,7 @@ class TestFallback:
 
     def test_llm_failure_falls_back(self):
         class _Boom:
-            async def chat_full(self, messages, settings):
+            async def chat_full(self, messages):
                 raise RuntimeError("boom")
 
         cards, _, usage = _build([_raw("knowledge")], _Boom())
@@ -175,7 +175,7 @@ class TestIterativeIncremental:
         }]
         cards, sufficiency, _ = asyncio.run(build_knowledge_cards(
             [_raw("knowledge")], {"section_id": "s1", "title": "T"},
-            _FakeLLM(content=content), {},
+            _FakeLLM(content=content),
             existing_cards=existing, used_queries=["q1"],
         ))
         assert len(cards) == 2
@@ -194,7 +194,7 @@ class TestIterativeIncremental:
         }]
         asyncio.run(build_knowledge_cards(
             [_raw("knowledge")], {"section_id": "s1", "title": "T"},
-            client, {}, existing_cards=existing, used_queries=["旧查询"],
+            client, existing_cards=existing, used_queries=["旧查询"],
         ))
         user_msg = client.captured[1]["content"]
         assert "已有知识卡片" in user_msg
@@ -212,7 +212,7 @@ class TestIterativeIncremental:
         }]
         cards, sufficiency, _ = asyncio.run(build_knowledge_cards(
             [_raw("knowledge")], {"section_id": "s1", "title": "T"},
-            _FakeLLM(content="not-json"), {}, existing_cards=existing,
+            _FakeLLM(content="not-json"), existing_cards=existing,
         ))
         assert len(cards) == 2  # existing + fallback(1 raw)
         assert cards[0]["card_id"] == "Cs1_001"

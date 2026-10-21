@@ -5,47 +5,67 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: inkcube:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: inkcube:; frame-src http://127.0.0.1:*"
     />
     <title>墨方 InkCube</title>
     <style>
-      /* 启动加载屏：index.html 解析即显示，填平「窗口已开 → JS bundle 加载解析
+      /* 启动加载屏（品牌化 2026-10-19）：index.html 解析即显示，填平「窗口已开 → JS bundle 加载解析
          → React 挂载」之间的白屏期（2026-10-10）。纯 CSS 无 JS（CSP script-src
          'self' 禁内联脚本）；置于 #root 内，React 首渲自动替换，无需清理代码。
-         配色与 src/styles/global.css :root 同值，避免转场跳色；html/body/#root
-         撑满视口须内联声明——global.css 随 bundle 加载，在此之前无样式可用。 */
+         品牌语言与 AboutDialog 同源：衬线「墨」字 + 呼吸晕开动画承担加载感 + 底部墨渍晕染带；
+         splash 期 global.css 随 bundle 加载、无 CSS 变量可用，色值/字体栈为字面量，
+         与 :root token 同值人工对齐（--bg-primary/--text-primary/--text-secondary/--text-muted/
+         --accent/--font-serif，豁免登记 0.3 §5.3）；html/body/#root 撑满视口须内联声明。 */
       html, body, #root { height: 100%; margin: 0; }
       .bootstrap-splash {
+        position: relative;
         height: 100%;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 16px;
+        gap: 14px;
         background: #ffffff;
         color: #1a1a1a;
         font-family: "Inter", "Noto Sans SC", -apple-system, sans-serif;
         user-select: none;
+        overflow: hidden;
       }
-      .bootstrap-splash-spinner {
-        width: 36px;
-        height: 36px;
-        border: 3px solid #ececec;
-        border-top-color: #2563eb;
-        border-radius: 50%;
-        animation: bootstrap-splash-spin 0.8s linear infinite;
+      /* 品牌墨渍晕染带（AboutDialog inkBottom 同款字面量移植） */
+      .bootstrap-splash-ink {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 120px;
+        background:
+          radial-gradient(ellipse 60% 80% at 80% 90%, rgba(30, 30, 30, 0.4) 0%, transparent 55%),
+          radial-gradient(ellipse 40% 60% at 15% 85%, rgba(50, 50, 50, 0.3) 0%, transparent 50%),
+          radial-gradient(circle at 50% 100%, rgba(20, 20, 20, 0.15) 0%, transparent 45%);
+        filter: blur(5px);
+        pointer-events: none;
       }
-      @keyframes bootstrap-splash-spin {
-        to { transform: rotate(360deg); }
+      /* 品牌墨字：缓慢呼吸晕开，承担加载感（GPU 合成，bundle 就绪即被 React 替换） */
+      .bootstrap-splash-inkchar {
+        font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+        font-size: 56px;
+        font-weight: 900;
+        line-height: 1;
+        letter-spacing: 0.05em;
+        animation: bootstrap-splash-breathe 2.4s ease-in-out infinite;
+      }
+      @keyframes bootstrap-splash-breathe {
+        0%, 100% { transform: scale(1); opacity: 0.88; }
+        50% { transform: scale(1.04); opacity: 1; }
       }
       .bootstrap-splash-brand {
-        font-size: 18px;
+        font-size: 13px;
         font-weight: 600;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.15em;
       }
       .bootstrap-splash-hint {
-        font-size: 13px;
-        color: #6b6b6b;
+        font-size: 12px;
+        color: #9ca3af;
       }
     </style>
   </head>
@@ -53,9 +73,10 @@
     <div id="root">
       <!-- 启动加载屏（React 挂载后被替换）；双语静态文案：i18n 此时尚未加载 -->
       <div class="bootstrap-splash">
-        <div class="bootstrap-splash-spinner"></div>
+        <div class="bootstrap-splash-inkchar">墨</div>
         <div class="bootstrap-splash-brand">墨方 InkCube</div>
         <div class="bootstrap-splash-hint">正在启动 · Loading…</div>
+        <div class="bootstrap-splash-ink"></div>
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>

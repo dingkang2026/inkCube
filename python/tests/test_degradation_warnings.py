@@ -1,8 +1,8 @@
 """python/tests/test_degradation_warnings.py — 降级显式警告单测（0.4 §7.3 v3.6）。
 
 覆盖：
-  - retrieval._tavily_failure_warning()：401/403/402/429/连接类/服务异常 → 自带
-    「设置 > 外部模型」等修正指引的显式文案；
+  - retrieval._search_failure_warning()：401/403/402/429/连接类/服务异常 → 自带
+    修正指引的显式文案（按供应商 Tavily/智谱区分，双供应商重构 2026-10-19）；
   - retrieval._search_internet_channel()：多 query 失败警告去重、缺 Key 显式警告；
   - doc_parser Office→PDF 转换降级：无转换器 / LibreOffice 失败 → (None, 降级说明)；
   - activity_events.complete_file()：降级说明随 completed 通知 detail 显式呈现。
@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import report_generator.retrieval as retrieval
-from report_generator.retrieval import _search_internet_channel, _tavily_failure_warning
+from report_generator.retrieval import _search_internet_channel, _search_failure_warning
 from knowledge import doc_parser
 from knowledge.doc_parser import DocumentParser
 import activity_events
@@ -30,9 +30,9 @@ def _status_error(status: int) -> httpx.HTTPStatusError:
     return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
 
 
-class TestTavilyFailureWarning:
+class TestSearchFailureWarning:
     # (status, 关键词, 是否要求设置页指引)：429/用量类修正动作在服务商控制台，
-    # 不强制设置页指引；Key 类必须指向 设置 > 外部模型
+    # 不强制设置页指引；Key 类必须指向 设置 > 基础配置 > 网络搜索
     @pytest.mark.parametrize("status,keyword,needs_settings", [
         (401, "Key 无效", True),
         (403, "Key 无效", True),
@@ -40,18 +40,23 @@ class TestTavilyFailureWarning:
         (429, "超限", False),
     ])
     def test_config_statuses(self, status, keyword, needs_settings):
-        warning = _tavily_failure_warning(_status_error(status))
+        warning = _search_failure_warning(_status_error(status), "tavily")
         assert keyword in warning
+        assert "Tavily" in warning
         if needs_settings:
-            assert "设置 > 外部模型" in warning
+            assert "设置 > 基础配置 > 网络搜索" in warning
         assert "仅使用项目内材料" in warning
 
+    def test_provider_name_zhipu(self):
+        warning = _search_failure_warning(_status_error(401), "zhipu")
+        assert "智谱" in warning
+
     def test_connection_error(self):
-        warning = _tavily_failure_warning(httpx.ConnectError("conn refused"))
+        warning = _search_failure_warning(httpx.ConnectError("conn refused"), "tavily")
         assert "连接" in warning and "网络" in warning
 
     def test_server_error_still_warns(self):
-        warning = _tavily_failure_warning(_status_error(500))
+        warning = _search_failure_warning(_status_error(500), "tavily")
         assert "暂时异常" in warning
 
 
@@ -61,17 +66,17 @@ class TestInternetChannelWarnings:
         async def _fail(*args, **kwargs):
             raise _status_error(401)
 
-        monkeypatch.setattr(retrieval, "_tavily_search", _fail)
+        monkeypatch.setattr(retrieval, "_web_search_api", _fail)
         results, usage, warnings = asyncio.run(
-            _search_internet_channel(["q1", "q2"], "key", 5)
+            _search_internet_channel(["q1", "q2"], {"provider": "tavily", "key": "k"}, 5)
         )
         assert results == []
         assert len(warnings) == 1
-        assert "设置 > 外部模型" in warnings[0]
+        assert "设置 > 基础配置 > 网络搜索" in warnings[0]
 
     def test_missing_key_warns_explicitly(self):
         results, usage, warnings = asyncio.run(
-            _search_internet_channel(["q"], "", 5)
+            _search_internet_channel(["q"], {"provider": "", "key": ""}, 5)
         )
         assert results == []
         assert len(warnings) == 1

@@ -23,6 +23,8 @@ export interface ServiceHealth {
   code?: string
   message?: string
   suggestion?: string
+  /** 设置页锚点编码（error 项携带；SystemAlerts 红条明细直达用，0.4 §7.5） */
+  action?: 'settings:external' | 'settings:internal'
 }
 
 /** 功能就绪度缺失项（0.4 §7.2）：action 为设置页锚点编码 */

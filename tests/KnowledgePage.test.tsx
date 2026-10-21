@@ -121,9 +121,16 @@ describe('KnowledgePage terminal refetch', () => {
   })
 
   it('renders welcome state without project and never polls', async () => {
-    render(<KnowledgePage selectedProject={null} onProjectDataChanged={onProjectDataChanged} />)
+    // 0.5 E1 T6:欢迎态由调用方注入 welcome 节点(三步引导卡),不再有内置空态文案
+    render(
+      <KnowledgePage
+        selectedProject={null}
+        onProjectDataChanged={onProjectDataChanged}
+        welcome={<div>guide.title</div>}
+      />,
+    )
     await flush()
-    expect(screen.getByText('knowledge.welcomeTitle')).toBeTruthy()
+    expect(screen.getByText('guide.title')).toBeTruthy()
     expect(countBy('knowledge:getFiles')).toBe(0)
     expect(onProjectDataChanged).not.toHaveBeenCalled()
   })

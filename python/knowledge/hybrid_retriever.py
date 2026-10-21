@@ -42,7 +42,7 @@ class HybridRetriever:
         self,
         project_id: str,
         query_text: str,
-        query_vector: list[float],
+        query_vector: Optional[list[float]],
         top_k: int = 5,
         content_type_filter: Optional[str] = None,
         dense_weight: float = 0.7,
@@ -61,7 +61,9 @@ class HybridRetriever:
         Args:
             project_id: Project ID to search within
             query_text: Text query for FTS (e.g., "人工智能")
-            query_vector: Embedding vector for dense search (1024-dim for bge-m3)
+            query_vector: Embedding vector for dense search (1024-dim for
+                bge-m3); None degrades to FTS-only (non-finite fp16
+                embedding, see KnowledgeSearchTool._embed_query)
             top_k: Number of final results to return
             content_type_filter: Optional filter by content type
             dense_weight: Weight for dense search scores (0-1)
@@ -79,13 +81,22 @@ class HybridRetriever:
         if file_id:
             where["file_id"] = file_id
 
-        # Step 1: Dense vector search
-        dense_results = self.vector_store.search_dense(
-            project_id=project_id,
-            query_vector=query_vector,
-            top_k=top_k * 2,  # Retrieve more for fusion
-            where=where if where else None
-        )
+        # Step 1: Dense vector search — None query embedding (non-finite
+        # fp16 inference) degrades to FTS-only, mirroring the FTS-leg
+        # fallback below: either leg may fail without killing retrieval.
+        if query_vector is None:
+            logger.warning(
+                "No usable query embedding, falling back to FTS-only "
+                "(query=%r)", query_text,
+            )
+            dense_results = []
+        else:
+            dense_results = self.vector_store.search_dense(
+                project_id=project_id,
+                query_vector=query_vector,
+                top_k=top_k * 2,  # Retrieve more for fusion
+                where=where if where else None
+            )
         
         # Step 2: Full-text search — degrade to dense-only on FTS failure.
         # The two legs are independent; a broken FTS leg (bad query, index

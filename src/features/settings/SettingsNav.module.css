@@ -1,31 +1,73 @@
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
   padding: 8px;
-  min-width: 140px;
+  min-width: 148px;
   border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+/* 分组容器：组间分隔靠组标题上边距（无标题组紧贴前一组） */
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 组标题：小字弱化，仅作分组视觉锚点（0.3 §4.4 导航分组） */
+.groupLabel {
+  padding: 12px 12px 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.group:first-child .groupLabel {
+  padding-top: 4px;
 }
 
 .item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 8px 12px;
   border: none;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-primary);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .item:hover {
-  background: var(--bg-secondary);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.active {
-  background: var(--bg-secondary);
+/* 当前分类：全站选中语言（bg-selected + accent），与 hover 明确区分 */
+.active,
+.active:hover {
+  background: var(--bg-selected);
+  color: var(--accent);
   font-weight: 600;
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+/* 服务状态点（0.3 §4.4）：与顶部服务异常红条同源（system:getHealth services 段），
+   保存/下载完成经 app:health-changed 边沿即时熄灭；8px 归入 §5.3 装饰点豁免档 */
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--error);
+  margin-left: auto;
+  flex-shrink: 0;
 }

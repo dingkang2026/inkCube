@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 from pathlib import Path
 
 import logging
@@ -86,8 +87,10 @@ from errors import InkCubeError
 from db.database import Database
 from agent.task_agent import TaskAgent
 from knowledge.model_manager import ModelManager
+from scheduler import ScheduleScheduler
 from watchdog import start_watchdog
-from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs
+from maintenance import run_storage_maintenance
+from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs, forms, usage, ppts, ppt_templates, task_templates, schedules
 
 
 @asynccontextmanager
@@ -99,6 +102,10 @@ async def lifespan(app: FastAPI):
     deps.db = Database(db_path)
     deps.db.initialize()
     deps.db.ensure_preset_base_libs()
+
+    # Token usage 记录层 sink 注入（2.10 §4.1）：llm/ 零 DB 依赖，组装期绑定
+    from llm import usage as llm_usage
+    llm_usage.configure(deps.db.insert_llm_usage)
 
     # Seed Wiki schemas on startup (idempotent)
     from db.wiki_seed import get_all_wiki_schemas
@@ -182,6 +189,18 @@ async def lifespan(app: FastAPI):
                 "Auto-archived %d stale tasks (>%d days inactive)", archived_count, archive_days
             )
 
+    # 存储维护（2026-10-20 数据管理审计）：孤儿任务目录清扫 + 保留策略清盘
+    # （归档任务/llm_usage/订阅记录）。后台执行不阻塞启动；显式持引用防 GC
+    # 中途回收（knowledge.py _TRANSFER_BG_TASKS 先例）
+    _maintenance_tasks: set = set()
+    _mt = asyncio.create_task(asyncio.to_thread(
+        run_storage_maintenance, deps.db, data_dir,
+        archived_days=int(settings.get("archived_task_cleanup_days", 30)),
+        usage_days=int(settings.get("llm_usage_retention_days", 90)),
+        runs_days=int(settings.get("schedule_runs_retention_days", 90))))
+    _maintenance_tasks.add(_mt)
+    _mt.add_done_callback(_maintenance_tasks.discard)
+
     start_watchdog()
 
     # ── Activity Hub: 启动清理旧通知（0.4 §3.2，保留最近 100 条） ──
@@ -240,11 +259,44 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "Model download recovery failed", exc_info=True)
 
+    # ── Forms: 预置模板 seed + 崩溃恢复 + 后台拾取（2.4 §3.1/§2.4）──
+    # seed 幂等（已存在不覆盖分析产物）；analyzing/filling 残留重置 pending
+    # 后由 resume_pending_work 在事件循环内拾取重跑。
+    _seeded_forms = deps.db.seed_form_templates(forms.preset_form_templates())
+    _stale_tpl = deps.db.recover_stale_form_templates()
+    _stale_fills = deps.db.recover_stale_form_fills()
+    if _seeded_forms or _stale_tpl or _stale_fills:
+        logging.getLogger(__name__).info(
+            "Forms startup: %d seeded, %d stale template(s) reset, "
+            "%d stale fill(s) reset",
+            len(_seeded_forms), len(_stale_tpl), len(_stale_fills))
+    forms.resume_pending_work(deps.db, data_dir)
+
+    # ── PPT 交付物：启动恢复（2.3 §6）── 泵随进程消失，active 行按 workspace
+    # 产物落位（exports→completed / pending→awaiting / running→paused），不发新泵。
+    try:
+        from ppt_service import service as _ppt_service
+        _ppt_service.recover_orphans(deps.db)
+    except Exception as e:
+        logging.getLogger(__name__).warning("PPT orphan recovery failed: %s", e)
+
+    # ── 定时订阅调度器（2.11 §5.1，E3）── 主进程内 asyncio 循环；启动即错过
+    # 补偿（§5.4，进程残留的 running run 行由 fail_stale_running_runs 启动
+    # 清扫标记失败）。shutdown cancel：在途执行随进程退出，残留行由下次
+    # 启动清扫。worker 注入 §6 档案入库链
+    deps.scheduler = ScheduleScheduler(deps.db, data_dir, agent=deps.task_agent,
+                                       worker=deps.worker)
+    await deps.scheduler.start()
+
     yield
 
     # Shutdown workers
     if deps.worker:
         await deps.worker.stop()
+
+    # 定时订阅调度器（2.11 §5.1，E3）
+    if deps.scheduler:
+        await deps.scheduler.stop()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -298,6 +350,12 @@ app.include_router(web_logins.router)
 app.include_router(reports.router)
 app.include_router(wiki.router)
 app.include_router(affairs.router)
+app.include_router(forms.router)
+app.include_router(usage.router)
+app.include_router(ppts.router)
+app.include_router(ppt_templates.router)
+app.include_router(task_templates.router)
+app.include_router(schedules.router)
 
 
 # ── Global Exception Handlers ──

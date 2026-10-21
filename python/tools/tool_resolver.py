@@ -160,20 +160,3 @@ def resolve_python() -> str | None:
     logger.debug("resolve_python: falling back to sys.executable = %s", sys.executable)
     return sys.executable
 
-
-def get_tool_versions_path() -> Path:
-    """获取 tool-versions.json 的路径。"""
-    return _get_app_data_dir() / "tool-versions.json"
-
-
-def get_all_tool_paths() -> dict[str, str | None]:
-    """获取所有已注册工具的路径，用于诊断和状态展示。
-
-    Returns:
-        {工具名: 路径或None}
-    """
-    result = {}
-    for name in _TOOL_REGISTRY:
-        result[name] = resolve_tool(name)
-    result["python"] = resolve_python()
-    return result

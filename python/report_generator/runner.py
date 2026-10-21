@@ -2,9 +2,9 @@
 
 职责：
   1. 两遍执行（standard 先，post_body 后）
-  2. 每节 checkpoint（outputs/digests/registry/order/token_tracker）
+  2. 每节 checkpoint（outputs/digests/registry/order）
   3. 断点恢复
-  4. 精准 Token 统计追踪
+  4. Token 用量统一收口（llm_usage 表，2.10；本模块仅在 LLM 调用点声明 purpose 上下文）
   5. 智能重试分类
   6. 报告级暂停（章节边界协作生效，2.5 §3.1 修订）
 
@@ -22,7 +22,7 @@ from report_generator.normalizer import (
     validate_execution_outline, get_execution_sections,
 )
 from report_generator.registry import CitationRegistry
-from report_generator.retrieval import retrieve_for_section
+from report_generator.retrieval import retrieve_for_section, web_search_cfg_from_settings
 from report_generator.variable_resolver import resolve_variables
 from report_generator.prompts import (
     build_system_prompt, build_standard_prompt, build_post_body_prompt,
@@ -32,7 +32,7 @@ from report_generator.validator import (
     validate_section, format_retry_feedback, format_violations_brief,
 )
 from report_generator.finalizer import finalize_report
-from report_generator.token_tracker import TokenTracker
+from llm.usage import push_purpose  # 2.10 §4.3 LLM 调用点 purpose 细分
 from errors import (
     actionable,
     LLMInvalidKey, LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
@@ -172,7 +172,6 @@ class ReportRunner:
         self.digests: dict[str, str] = {}
         self.order: list[str] = []
         self.registry = CitationRegistry()
-        self.token_tracker = TokenTracker()
         self.system_prompt = ""
         self.outline: list[dict] = []
         self.sections: list[dict] = []
@@ -201,13 +200,14 @@ class ReportRunner:
             if ckpt_error:
                 yield ProgressEvent("warning", {"message": ckpt_error})
 
-            # 降级显式引导（0.4 §7.3 v3.6）：互联网总开关开启但 Tavily Key 缺失，
-            # 全程实际仅用项目内材料——作为 warning 写入报告日志，而非静默降级
-            if self.internet_enabled and not str(self.llm_settings.get("tavily_key") or "").strip():
+            # 降级显式引导（0.4 §7.3 v3.6）：互联网总开关开启但网络搜索未配置
+            # （未选供应商或所选供应商 Key 缺失），全程实际仅用项目内材料——
+            # 作为 warning 写入报告日志，而非静默降级
+            if self.internet_enabled and not web_search_cfg_from_settings(self.llm_settings)["key"]:
                 yield ProgressEvent("warning", {
                     "message": (
-                        "互联网检索未生效：已开启互联网检索但未配置 Tavily API Key，"
-                        "本次报告仅使用项目内材料。请前往 设置 > 外部模型 配置 Tavily Key 后重新生成。"
+                        "互联网检索未生效：已开启互联网检索但未配置网络搜索，"
+                        "本次报告仅使用项目内材料。请前往 设置 > 基础配置 > 网络搜索 配置后重新生成。"
                     ),
                 })
 
@@ -241,29 +241,30 @@ class ReportRunner:
                     for s in self.order if s in self.digests
                 ]
 
-                # 检索（多通道并行 + LLM 策略 + 卡片构建）
-                retrieval, retrieval_usage = await retrieve_for_section(
-                    section=sec,
-                    search_tool=self.search_tool,
-                    registry=self.registry,
-                    project_id=self.project_id,
-                    llm_client=self.llm_client,
-                    llm_settings=self.llm_settings,
-                    digests=digests_list,
-                    tavily_api_key=self.llm_settings.get("tavily_key", ""),
-                    base_project_ids=self.base_project_ids,
-                    query_parallelism=self.llm_settings.get("report_channel_parallelism", 4),
-                    db=self.db,
-                    data_sources=(
-                        ["knowledge"]
-                        + (["wiki"] if self.wiki_available else [])
-                        + (["internet"] if (self.internet_enabled and self.section_internet.get(sid)) else [])
-                    ),
-                    report_depth=self.report_depth,
-                )
-                self.token_tracker.record(sid, "retrieval", retrieval_usage)
+                # 检索（多通道并行 + LLM 策略 + 卡片构建）；purpose=retrieval
+                # 覆盖内部全部 LLM 调用（query 生成/卡片构建等，2.10 §4.3）
+                with push_purpose("retrieval", detail={"section_id": sid}):
+                    retrieval, _ = await retrieve_for_section(
+                        section=sec,
+                        search_tool=self.search_tool,
+                        registry=self.registry,
+                        project_id=self.project_id,
+                        llm_client=self.llm_client,
+                        llm_settings=self.llm_settings,
+                        digests=digests_list,
+                        web_search_cfg=web_search_cfg_from_settings(self.llm_settings),
+                        base_project_ids=self.base_project_ids,
+                        query_parallelism=self.llm_settings.get("report_channel_parallelism", 4),
+                        db=self.db,
+                        data_sources=(
+                            ["knowledge"]
+                            + (["wiki"] if self.wiki_available else [])
+                            + (["internet"] if (self.internet_enabled and self.section_internet.get(sid)) else [])
+                        ),
+                        report_depth=self.report_depth,
+                    )
 
-                # 检索通道降级警告（如 Tavily Key 无效/额度用尽/网络不通，0.4 §7.3 v3.6）
+                # 检索通道降级警告（如网络搜索 Key 无效/额度用尽/网络不通，0.4 §7.3 v3.6）
                 # → 报告日志显式呈现，用户在报告详情页可见
                 for warning in retrieval.warnings:
                     yield ProgressEvent("warning", {"message": warning})
@@ -436,7 +437,6 @@ class ReportRunner:
                     if not v.startswith("（本节因材料不足已跳过）")
                 ),
                 "registry_size": len(self.registry),
-                "token_usage": self.token_tracker.summary(),
             })
 
         except Exception as e:
@@ -467,17 +467,17 @@ class ReportRunner:
         # 避免重复解析（确定性 + 已付 token）。
         if not self.resolved_variables:
             project = self.db.get_project(self.project_id) if self.db else {}
-            resolved, evidence, resolve_usage = await resolve_variables(
-                self.template, project, self.variables,
-                search_tool=self.search_tool,
-                llm_client=self.llm_client,
-                llm_settings=self.llm_settings,
-                db=self.db,
-                base_project_ids=self.base_project_ids,
-                tavily_api_key=self.llm_settings.get("tavily_key", ""),
-                internet_enabled=self.internet_enabled,
-            )
-            self.token_tracker.record("__resolve__", "variable_resolution", resolve_usage)
+            with push_purpose("variable_resolution"):
+                resolved, evidence, _ = await resolve_variables(
+                    self.template, project, self.variables,
+                    search_tool=self.search_tool,
+                    llm_client=self.llm_client,
+                    llm_settings=self.llm_settings,
+                    db=self.db,
+                    base_project_ids=self.base_project_ids,
+                    web_search_cfg=web_search_cfg_from_settings(self.llm_settings),
+                    internet_enabled=self.internet_enabled,
+                )
             self.resolved_variables = resolved
             self.resolution_evidence = evidence
 
@@ -551,10 +551,8 @@ class ReportRunner:
             self.resolution_evidence = data.get("resolution_evidence", {})
             if "registry" in data:
                 self.registry = CitationRegistry.from_dict(data["registry"])
-            if "token_tracker" in data:
-                self.token_tracker = TokenTracker.from_dict(data["token_tracker"])
-            logger.info("Checkpoint loaded: %d sections done, %d refs, %d token records",
-                        len(self.outputs), len(self.registry), len(self.token_tracker))
+            logger.info("Checkpoint loaded: %d sections done, %d refs",
+                        len(self.outputs), len(self.registry))
             return None
         except Exception as e:
             logger.warning("Failed to load checkpoint: %s", e)
@@ -575,7 +573,6 @@ class ReportRunner:
             "digests": self.digests,
             "order": self.order,
             "registry": self.registry.to_dict(),
-            "token_tracker": self.token_tracker.to_dict(),
             "resolved_variables": self.resolved_variables,
             "resolution_evidence": self.resolution_evidence,
         }
@@ -584,7 +581,7 @@ class ReportRunner:
         os.replace(tmp_path, ckpt_path)
 
     def _write_final_artifacts(self) -> Path:
-        """组装全文 → 全局收尾 → 写 content.md + registry.json + token_usage.json。
+        """组装全文 → 全局收尾 → 写 content.md + registry.json。
 
         run() 收尾时调用，确保全文组装 → 全局收尾 → 落盘产物一致。
 
@@ -599,7 +596,6 @@ class ReportRunner:
         content_path.write_text(final_text, encoding="utf-8")
 
         self.registry.save(self.output_dir / "registry.json")
-        self.token_tracker.save(self.output_dir / "token_usage.json")
         return content_path
 
     async def _generate_with_retry(
@@ -611,7 +607,7 @@ class ReportRunner:
         word_floor_ratio: float = 0.8,
         allow_degrade_retry: bool = True,
     ) -> tuple[str, str]:
-        """生成单节内容，智能重试 + 精准 token 追踪。
+        """生成单节内容，智能重试（token 用量由统一记录层收口，2.10）。
 
         Args:
             is_sparse: sparse 降级节（零材料 degraded），字数校验不启用（§3.6）
@@ -633,11 +629,11 @@ class ReportRunner:
 
         for attempt in range(MAX_RETRIES):
             try:
-                result = await self.llm_client.chat_full(messages, self.llm_settings)
+                with push_purpose("generation", detail={"section_id": sid}):
+                    result = await self.llm_client.chat_full(messages)
                 output = result["content"]
                 usage = result["usage"]
                 finish_reason = result.get("finish_reason", "stop")
-                self.token_tracker.record(sid, "generation", usage)
 
                 # 输出截断可观测（chat_full 不抛错，仅 finish_reason=length）
                 if finish_reason == "length":
@@ -767,8 +763,8 @@ class ReportRunner:
             max_words = 120 if self.report_depth == "full" else 60
         try:
             messages = build_digest_prompt(text, max_words)
-            result = await self.llm_client.chat_full(messages, self.llm_settings)
-            self.token_tracker.record("global", "digest", result["usage"])
+            with push_purpose("digest"):
+                result = await self.llm_client.chat_full(messages)
             return result["content"]
         except Exception as e:
             logger.warning("Failed to generate digest: %s", e)
@@ -785,8 +781,8 @@ class ReportRunner:
 
         try:
             messages = build_extract_numbers_prompt(combined[:8000])
-            result = await self.llm_client.chat_full(messages, self.llm_settings)
-            self.token_tracker.record("global", "extract_numbers", result["usage"])
+            with push_purpose("extract_numbers"):
+                result = await self.llm_client.chat_full(messages)
             return result["content"]
         except Exception as e:
             logger.warning("Failed to extract numbers: %s", e)

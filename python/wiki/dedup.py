@@ -58,7 +58,6 @@ def extract_entity_summaries(db: Any, project_id: str) -> list[dict]:
 async def detect_duplicates(
     summaries: list[dict],
     llm_client: Any,
-    llm_settings: dict,
 ) -> list[dict]:
     """Stage 2: LLM identifies duplicate page groups.
 
@@ -102,7 +101,7 @@ async def detect_duplicates(
     ]
 
     try:
-        output = await llm_client.chat(messages, llm_settings)
+        output = (await llm_client.chat_full(messages))["content"]
     except Exception as e:
         logger.error("Dedup LLM detection failed: %s", e)
         return []
@@ -116,7 +115,6 @@ async def merge_pages(
     canonical_key: str,
     duplicate_keys: list[str],
     llm_client: Any,
-    llm_settings: dict,
 ) -> dict:
     """Stage 3: Merge duplicate pages into canonical page.
 
@@ -156,7 +154,7 @@ async def merge_pages(
         # LLM merge content。合并失败（LLM 异常/超时）时保留 dup 页：删除不可逆，
         # dup 的独特内容不能因一次瞬时失败而静默丢失。
         merged_content = await _llm_merge_content(
-            canonical_content, dup_content, canonical_key, llm_client, llm_settings,
+            canonical_content, dup_content, canonical_key, llm_client,
         )
         if not merged_content:
             logger.error(
@@ -264,7 +262,7 @@ def _parse_dedup_groups(llm_output: str) -> list[dict]:
 
 async def _llm_merge_content(
     canonical: str, duplicate: str, canonical_key: str,
-    llm_client: Any, llm_settings: dict,
+    llm_client: Any,
 ) -> str:
     """Use LLM to merge two page contents, removing duplication."""
     messages = [
@@ -287,7 +285,7 @@ async def _llm_merge_content(
     ]
 
     try:
-        return await llm_client.chat(messages, llm_settings)
+        return (await llm_client.chat_full(messages))["content"]
     except Exception as e:
         logger.error("Dedup content merge LLM failed: %s", e)
         return ""

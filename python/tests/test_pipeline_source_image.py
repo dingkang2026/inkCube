@@ -47,9 +47,10 @@ class TestSourceImageContext:
 
 
 class TestConverterPictureExtraction:
-    """converter 格式级配置（2.2 §4.4）：仅独立图片输入禁用 picture 区域裁剪。
+    """converter 格式级配置（2.2 §4.4，Office 图片无损改造）。
 
-    PDF/Office 转 PDF 的内嵌图提取不受影响（文档理解的图片保留）。
+    双 converter 单例：带图（PDF/独立图片）与无图（仅 DOCX/PPTX 转 PDF 产物，
+    图片改由 office_media 原生提取）各自独立，互不干扰。
     """
 
     def test_image_input_disables_picture_extraction(self, tmp_path):
@@ -60,9 +61,22 @@ class TestConverterPictureExtraction:
             pytest.skip("docling not available")
         from docling.datamodel.base_models import InputFormat
 
-        fmt_opts = conv.format_to_options
+        fmt_opts = conv._converter.format_to_options
         assert fmt_opts[InputFormat.PDF].pipeline_options.generate_picture_images is True
         assert fmt_opts[InputFormat.IMAGE].pipeline_options.generate_picture_images is False
+
+    def test_office_converter_registers_pdf_without_pictures(self, tmp_path):
+        """无图 converter：仅注册 PDF 且禁用图片裁剪（图片由原生提取器负责）。"""
+        from knowledge.doc_parser import _get_docling_converter
+
+        conv = _get_docling_converter(tmp_path, generate_picture_images=False)
+        if conv is None:
+            pytest.skip("docling not available")
+        from docling.datamodel.base_models import InputFormat
+
+        fmt_opts = conv._converter.format_to_options
+        # format_to_options 含全部默认格式映射,断言 PDF 特化项为无图即可
+        assert fmt_opts[InputFormat.PDF].pipeline_options.generate_picture_images is False
 
 
 class _StubRow(dict):

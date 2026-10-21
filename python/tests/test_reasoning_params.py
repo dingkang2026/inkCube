@@ -3,7 +3,7 @@
 覆盖：
   A. _apply_reasoning_params：档位注入 / override 优先（JSON 对象 merge）/
      非法 JSON 忽略 / 非对象忽略 / 双空不注入 / rollback 恢复与删除
-  B. 400 降级：chat / chat_full / chat_stream 收到 400 且含注入参数 →
+  B. 400 降级：chat_full / chat_stream 收到 400 且含注入参数 →
      回滚参数重试一次成功；400 持续或无注入参数时直接抛错
   C. probe()：200→True / 400→False / 网络异常（含读阶段断连）→None
   D. /settings/personal_test：连通 + 三项能力探测结构 / 连接失败 /
@@ -58,48 +58,46 @@ def _ok_response():
 
 class TestApplyReasoningParams:
     def test_effort_injected(self):
-        c = _client()
+        c = _client(reasoning_effort="low")
         body = {"model": "m"}
-        originals = c._apply_reasoning_params(body, {"reasoning_effort": "low"})
+        originals = c._apply_reasoning_params(body)
         assert body["reasoning_effort"] == "low"
         assert originals == {"reasoning_effort": _ABSENT}
 
     def test_override_takes_priority_over_effort(self):
-        c = _client()
-        body = {"model": "m"}
-        originals = c._apply_reasoning_params(
-            body,
-            {"reasoning_effort": "low", "reasoning_override": '{"thinking": {"type": "disabled"}}'},
+        c = _client(
+            reasoning_effort="low",
+            reasoning_override='{"thinking": {"type": "disabled"}}',
         )
+        body = {"model": "m"}
+        originals = c._apply_reasoning_params(body)
         assert body["thinking"] == {"type": "disabled"}
         assert "reasoning_effort" not in body
         assert originals == {"thinking": _ABSENT}
 
     def test_invalid_json_override_falls_back_to_effort(self):
-        c = _client()
+        c = _client(reasoning_effort="low", reasoning_override="{oops")
         body = {"model": "m"}
-        c._apply_reasoning_params(body, {"reasoning_effort": "low", "reasoning_override": "{oops"})
+        c._apply_reasoning_params(body)
         assert body["reasoning_effort"] == "low"
 
     def test_non_object_override_ignored(self):
         # 合法 JSON 但非对象（字符串/数组）→ 忽略，回落档位
-        c = _client()
+        c = _client(reasoning_effort="high", reasoning_override='"xhigh"')
         body = {"model": "m"}
-        c._apply_reasoning_params(body, {"reasoning_effort": "high", "reasoning_override": '"xhigh"'})
+        c._apply_reasoning_params(body)
         assert body["reasoning_effort"] == "high"
 
     def test_empty_settings_inject_nothing(self):
         c = _client()
         body = {"model": "m"}
-        assert c._apply_reasoning_params(body, {}) == {}
+        assert c._apply_reasoning_params(body) == {}
         assert "reasoning_effort" not in body
 
     def test_rollback_restores_preexisting_value(self):
-        c = _client()
+        c = _client(reasoning_override='{"temperature": 1.5, "thinking": "on"}')
         body = {"temperature": 0.7}
-        originals = c._apply_reasoning_params(
-            body, {"reasoning_override": '{"temperature": 1.5, "thinking": "on"}'}
-        )
+        originals = c._apply_reasoning_params(body)
         assert body["temperature"] == 1.5
         c._rollback_reasoning_params(body, originals)
         assert body["temperature"] == 0.7      # 覆盖已有键 → 恢复原值
@@ -110,7 +108,7 @@ class TestApplyReasoningParams:
 
 
 class TestChat400Fallback:
-    def test_chat_retries_without_reasoning_params(self, monkeypatch):
+    def test_chat_full_retries_without_reasoning_params(self, monkeypatch):
         calls = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -122,9 +120,9 @@ class TestChat400Fallback:
 
         _install_transport(monkeypatch, handler)
         result = asyncio.run(
-            _client().chat([{"role": "user", "content": "hi"}], {"reasoning_effort": "low"})
+            _client(reasoning_effort="low").chat_full([{"role": "user", "content": "hi"}])
         )
-        assert result == "ok"
+        assert result["content"] == "ok"
         assert len(calls) == 2
         assert "reasoning_effort" in calls[0]
         assert "reasoning_effort" not in calls[1]
@@ -141,12 +139,11 @@ class TestChat400Fallback:
 
         _install_transport(monkeypatch, handler)
         result = asyncio.run(
-            _client().chat(
-                [{"role": "user", "content": "hi"}],
-                {"reasoning_override": '{"thinking": {"type": "disabled"}, "thinking_budget": 4000}'},
-            )
+            _client(
+                reasoning_override='{"thinking": {"type": "disabled"}, "thinking_budget": 4000}',
+            ).chat_full([{"role": "user", "content": "hi"}])
         )
-        assert result == "ok"
+        assert result["content"] == "ok"
         assert len(calls) == 2
         assert calls[0]["thinking_budget"] == 4000
         assert "thinking" not in calls[1]
@@ -156,7 +153,7 @@ class TestChat400Fallback:
         _install_transport(monkeypatch, lambda request: httpx.Response(400, json={"error": "bad"}))
         with pytest.raises(LLMCallFailed):
             asyncio.run(
-                _client().chat([{"role": "user", "content": "hi"}], {"reasoning_effort": "low"})
+                _client(reasoning_effort="low").chat_full([{"role": "user", "content": "hi"}])
             )
 
     def test_chat_400_without_injected_params_no_retry(self, monkeypatch):
@@ -168,26 +165,8 @@ class TestChat400Fallback:
 
         _install_transport(monkeypatch, handler)
         with pytest.raises(LLMCallFailed):
-            asyncio.run(_client().chat([{"role": "user", "content": "hi"}], {}))
+            asyncio.run(_client().chat_full([{"role": "user", "content": "hi"}]))
         assert len(calls) == 1  # 无注入参数 → 不降级重试
-
-    def test_chat_full_fallback(self, monkeypatch):
-        calls = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            body = json.loads(request.content)
-            calls.append(body)
-            if "reasoning_effort" in body:
-                return httpx.Response(400, json={"error": "unsupported"})
-            return _ok_response()
-
-        _install_transport(monkeypatch, handler)
-        result = asyncio.run(
-            _client().chat_full([{"role": "user", "content": "hi"}], {"reasoning_effort": "low"})
-        )
-        assert result["content"] == "ok"
-        assert len(calls) == 2
-        assert "reasoning_effort" not in calls[1]
 
     def test_fallback_memory_skips_injection(self, monkeypatch):
         # 同一 client 实例：首次 400 降级后，后续调用直接不注入（实例级记忆）
@@ -201,11 +180,10 @@ class TestChat400Fallback:
             return _ok_response()
 
         _install_transport(monkeypatch, handler)
-        c = _client()
-        settings = {"reasoning_effort": "low"}
-        first = asyncio.run(c.chat([{"role": "user", "content": "hi"}], settings))
-        second = asyncio.run(c.chat([{"role": "user", "content": "hi"}], settings))
-        assert first == second == "ok"
+        c = _client(reasoning_effort="low")
+        first = asyncio.run(c.chat_full([{"role": "user", "content": "hi"}]))
+        second = asyncio.run(c.chat_full([{"role": "user", "content": "hi"}]))
+        assert first["content"] == second["content"] == "ok"
         assert len(calls) == 3  # 1st call: inject→400→retry ok; 2nd call: straight ok
         assert "reasoning_effort" not in calls[2]
 
@@ -225,12 +203,10 @@ class TestChat400Fallback:
             return httpx.Response(200, content=sse, headers={"Content-Type": "text/event-stream"})
 
         _install_transport(monkeypatch, handler)
-        c = _client()
+        c = _client(reasoning_effort="low")
 
         async def consume():
-            return [chunk async for chunk in c.chat_stream(
-                [{"role": "user", "content": "hi"}], {"reasoning_effort": "low"}
-            )]
+            return [chunk async for chunk in c.chat_stream([{"role": "user", "content": "hi"}])]
 
         chunks = asyncio.run(consume())
         assert len(calls) == 2

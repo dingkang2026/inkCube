@@ -1,8 +1,10 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 2800;
+  background: var(--bg-overlay);
+  /* 模态层级阶梯（0.3 §5.2）：1000 页面常驻 / 2000 模态面板（与 AboutDialog 同层；
+     Toast 同层但 DOM 后序在上，启动期通知不被向导遮蔽）/ 3000 强制交互（Confirm/Prompt） */
+  z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -14,8 +16,8 @@
   max-width: 460px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
   padding: 28px 24px 20px;
   animation: ob-pop 0.16s ease-out;
 }
@@ -37,32 +39,36 @@
 
 .dotActive {
   width: 20px;
-  border-radius: 4px;
+  border-radius: 999px;
   background: var(--accent);
 }
 
-.logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
+/* 已完成步：accent 实心小点（未到=灰点 / 当前=accent 长条） */
+.dotDone {
   background: var(--accent);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+}
+
+/* 品牌墨字：与 BootstrapSplash / AboutDialog 同语言（--font-serif） */
+.logo {
+  font-family: var(--font-serif);
+  font-size: 40px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  color: var(--text-primary);
   margin-bottom: 14px;
 }
 
 .title {
   margin: 0 0 8px;
-  font-size: 17px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .desc {
   margin: 0 0 20px;
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.7;
   color: var(--text-secondary);
 }
@@ -78,8 +84,8 @@
 .skipLink {
   margin-right: auto;
   padding: 0;
-  font-size: 12px;
-  color: var(--text-tertiary, var(--text-secondary));
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -88,36 +94,6 @@
 .skipLink:hover {
   color: var(--text-primary);
   text-decoration: underline;
-}
-
-.secondaryBtn {
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.secondaryBtn:hover {
-  background: var(--bg-hover);
-}
-
-.primaryBtn {
-  padding: 7px 18px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.primaryBtn:hover {
-  opacity: 0.9;
 }
 
 @keyframes ob-fade {

@@ -1,6 +1,7 @@
 /** src/features/settings/HealthStatus.tsx — Service health status panel. */
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { RefreshCw } from 'lucide-react'
 import type { HealthStatus as HealthStatusType } from '../../types/error'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './HealthStatus.module.css'
@@ -81,7 +82,7 @@ export function HealthStatus() {
             {health.status === 'ok' ? t('health.allOk') : t('health.degraded')}
           </span>
           <button className={s.refreshBtn} onClick={fetchHealth} title={t('health.refresh')}>
-            ↻
+            <RefreshCw size={14} />
           </button>
         </div>
       </div>

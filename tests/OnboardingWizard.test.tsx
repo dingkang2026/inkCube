@@ -30,7 +30,7 @@ afterEach(() => {
   delete (window as any).electronAPI
 })
 
-function setup(over: { onSuspend?: (s: 'externalModel' | 'internalModel') => void; initialStep?: number } = {}) {
+function setup(over: { onSuspend?: (s: 'externalModel' | 'webSearch' | 'internalModel') => void; initialStep?: number } = {}) {
   const onFinish = vi.fn()
   render(
     <OnboardingWizard
@@ -67,24 +67,33 @@ describe('OnboardingWizard 流程连续性', () => {
     expect(onFinish).not.toHaveBeenCalled()
   })
 
-  it('step2「去下载」= 挂起：onSuspend 携带 internalModel', () => {
+  it('step2「去配置」= 挂起：onSuspend 携带 webSearch（网络搜索步，可跳过）', () => {
     const onSuspend = vi.fn()
     setup({ onSuspend, initialStep: 2 })
+
+    fireEvent.click(screen.getByText('onboarding.webSearchAction'))
+    expect(onSuspend).toHaveBeenCalledWith('webSearch')
+    expect(invokeMock).not.toHaveBeenCalledWith('system:setOnboardingDone')
+  })
+
+  it('step3「去下载」= 挂起：onSuspend 携带 internalModel', () => {
+    const onSuspend = vi.fn()
+    setup({ onSuspend, initialStep: 3 })
 
     fireEvent.click(screen.getByText('onboarding.modelAction'))
     expect(onSuspend).toHaveBeenCalledWith('internalModel')
     expect(invokeMock).not.toHaveBeenCalledWith('system:setOnboardingDone')
   })
 
-  it('initialStep 恢复：App 挂起后传 2 → 直接渲染「下载内部模型」步', () => {
-    setup({ initialStep: 2 })
+  it('initialStep 恢复：App 挂起后传 3 → 直接渲染「下载内部模型」步', () => {
+    setup({ initialStep: 3 })
     expect(screen.getByText('onboarding.modelTitle')).toBeTruthy()
-    // 步骤指示器存在（3 点）
+    // 步骤指示器存在（4 点）
     expect(screen.queryByText('onboarding.welcomeTitle')).toBeNull()
   })
 
   it('完成页「开始使用」= 真终点：写标记并 onFinish（挂起恢复后的收尾路径）', async () => {
-    const { onFinish } = setup({ initialStep: 3 })
+    const { onFinish } = setup({ initialStep: 4 })
 
     fireEvent.click(screen.getByText('onboarding.doneAction'))
     expect(invokeMock).toHaveBeenCalledWith('system:setOnboardingDone')

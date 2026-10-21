@@ -1,0 +1,1081 @@
+{
+ "preset_schema_version": 1,
+ "field_count": 29,
+ "file_hash": "73adba0454b9445db8fbe0925bf1397d556a17d46c911efd666f0589c2496a6b",
+ "template_schema": {
+  "schema_version": "2.0",
+  "template_name": "投资推荐项目情况表",
+  "doc_stats": {
+   "top_tables": 1,
+   "nested_tables": 0
+  },
+  "fields": [
+   {
+    "field_key": "project_name",
+    "label": "企业/项目名称",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r0c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "企业/项目名称",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "企业全称 项目名称"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "referral_unit",
+    "label": "推荐单位",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r0c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "推荐单位",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "推荐单位 推荐机构"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "industry",
+    "label": "所属行业",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r1c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "所属行业",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "所属行业 主营业务 赛道"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": false,
+    "options": [
+     "人工智能",
+     "高端装备",
+     "集成电路",
+     "生物医药",
+     "先进材料",
+     "新能源（含汽车）",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "headcount",
+    "label": "人数规模",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r1c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "人数规模",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "员工人数 团队规模"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "reg_addr",
+    "label": "注册地址",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r2c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "注册地址",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "注册地址 工商注册信息"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "office_addr",
+    "label": "办公地址",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r3c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "办公地址",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "办公地址 办公地点"
+    ],
+    "length_hint": null,
+    "confidence": "high"
+   },
+   {
+    "field_key": "financing_round",
+    "label": "本轮融资需求",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "本轮融资需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "融资轮次 本轮融资 天使轮 A轮 B轮"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": false,
+    "options": [
+     "天使轮",
+     "A轮",
+     "B轮",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "finance_amount",
+    "label": "融资金额(万元)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c1#blank1",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "本轮融资需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "融资金额 本轮融资需求 万元"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "unit": "万元"
+   },
+   {
+    "field_key": "pre_valuation",
+    "label": "投前估值(亿元)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r4c1#blank2",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "本轮融资需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "投前估值 估值 亿元"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "unit": "亿元"
+   },
+   {
+    "field_key": "attraction_status",
+    "label": "项目招引情况",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r5c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "项目招引情况",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目招引 落地方式 总部迁入 子公司迁入"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": true,
+    "options": [
+     "区内企业",
+     "企业同意总部迁入区入",
+     "企业同意子公司、分公司、研发中心、销售中心迁入区内",
+     "企业同意生产基地、新产线落地区内",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "credit_report",
+    "label": "企业信用报告",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r6c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "企业信用报告",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "企业信用报告 征信 信用异常"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false,
+    "options": [
+     "无异常",
+     "异常情况说明"
+    ]
+   },
+   {
+    "field_key": "qualifications",
+    "label": "企业资质",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "target": "top0/r7c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "企业资质",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "企业资质 高新技术企业 专精特新 认证"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": true,
+    "options": [
+     "创新型中小企业",
+     "高新技术企业",
+     "专精特新中小企业",
+     "专精特新“小巨人”企业",
+     "其他"
+    ]
+   },
+   {
+    "field_key": "space_need_rent",
+    "label": "空间需求",
+    "fill_type": "checkbox",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "空间需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "空间需求 租赁厂房办公"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "options": [
+     "租赁"
+    ]
+   },
+   {
+    "field_key": "rent_area",
+    "label": "租赁(平方米)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c1#blank1",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "空间需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "租赁面积 平方米 空间需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "unit": "平方米"
+   },
+   {
+    "field_key": "space_need_buy",
+    "label": "空间需求",
+    "fill_type": "checkbox",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c2",
+    "placeholder": null,
+    "context": {
+     "left_label": "空间需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "空间需求 购置厂房办公"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "options": [
+     "购置"
+    ]
+   },
+   {
+    "field_key": "buy_area",
+    "label": "购置(平方米)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c2#blank1",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "空间需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "购置面积 平方米 空间需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "unit": "平方米"
+   },
+   {
+    "field_key": "space_need_land",
+    "label": "空间需求",
+    "fill_type": "checkbox",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "空间需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "空间需求 拿地 土地需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "options": [
+     "拿地"
+    ]
+   },
+   {
+    "field_key": "land_area",
+    "label": "拿地(亩)",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r8c3#blank1",
+    "placeholder": "underline",
+    "context": {
+     "left_label": "空间需求",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "拿地面积 亩 土地需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "unit": "亩"
+   },
+   {
+    "field_key": "tax_commitment",
+    "label": "承诺税收",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r9c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "承诺税收",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "税收承诺 税收贡献 落地承诺"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "output_commitment",
+    "label": "承诺产值",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r9c3",
+    "placeholder": null,
+    "context": {
+     "left_label": "承诺产值",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "产值承诺 产值预测 营收预测"
+    ],
+    "length_hint": null,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "industry_situation",
+    "label": "公司行业发展情况",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r10c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "公司行业发展情况",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "公司行业情况 行业发展趋势 市场分析"
+    ],
+    "length_hint": 400,
+    "confidence": "high"
+   },
+   {
+    "field_key": "product_resources",
+    "label": "公司产品以及外部资源支撑情况（如：技术、产业上下游、客户等）",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r11c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "公司产品以及外部资源支撑情况（如：技术、产业上下游、客户等）",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "公司产品 核心产品 技术支撑 产业上下游 客户资源"
+    ],
+    "length_hint": 500,
+    "confidence": "high"
+   },
+   {
+    "field_key": "financial_status",
+    "label": "公司财务状况（近三年收入、研发、利润情况）",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r12c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "公司财务状况（近三年收入、研发、利润情况）",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "近三年收入 研发投入 利润 财务报表"
+    ],
+    "length_hint": 400,
+    "confidence": "high"
+   },
+   {
+    "field_key": "financing_history",
+    "label": "公司融资情况（最近一次拟融资情况、公司历次融资、估值、投资人情况）",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r13c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "公司融资情况（最近一次拟融资情况、公司历次融资、估值、投资人情况）",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "历次融资 估值 投资人 本轮融资计划"
+    ],
+    "length_hint": 400,
+    "confidence": "high"
+   },
+   {
+    "field_key": "team_situation",
+    "label": "公司团队情况",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r14c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "公司团队情况",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "创始团队 核心团队 背景 履历"
+    ],
+    "length_hint": 400,
+    "confidence": "high"
+   },
+   {
+    "field_key": "regional_synergy",
+    "label": "投资后与本区域协同情况（产业、资源）",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r15c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "投资后与本区域协同情况（产业、资源）",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "区域协同 产业协同 当地产业链配套"
+    ],
+    "length_hint": 400,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "business_terms",
+    "label": "初步商谈的落地 商务条件",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r16c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "初步商谈的落地 商务条件",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "落地商务条件 招商条件 政策诉求"
+    ],
+    "length_hint": 400,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "support_situation",
+    "label": "配套支持情况",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r17c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "配套支持情况",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "配套支持 产业政策 扶持政策"
+    ],
+    "length_hint": 300,
+    "confidence": "medium"
+   },
+   {
+    "field_key": "referral_reason",
+    "label": "推荐理由",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "target": "top0/r18c1",
+    "placeholder": null,
+    "context": {
+     "left_label": "推荐理由",
+     "section_chain": [],
+     "table_header": null,
+     "instruction": null
+    },
+    "kb_query": [
+     "项目亮点 投资价值 核心优势"
+    ],
+    "length_hint": 500,
+    "confidence": "high"
+   }
+  ],
+  "batches": [
+   {
+    "seq": 1,
+    "name": "基本信息与融资需求",
+    "field_keys": [
+     "project_name",
+     "referral_unit",
+     "industry",
+     "headcount",
+     "reg_addr",
+     "office_addr",
+     "financing_round",
+     "finance_amount",
+     "pre_valuation"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 2,
+    "name": "资质、空间与承诺情况",
+    "field_keys": [
+     "attraction_status",
+     "credit_report",
+     "qualifications",
+     "space_need_rent",
+     "rent_area",
+     "space_need_buy",
+     "buy_area",
+     "space_need_land",
+     "land_area",
+     "tax_commitment",
+     "output_commitment"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 3,
+    "name": "公司情况说明",
+    "field_keys": [
+     "industry_situation",
+     "product_resources",
+     "financial_status",
+     "financing_history",
+     "team_situation",
+     "regional_synergy",
+     "business_terms",
+     "support_situation",
+     "referral_reason"
+    ],
+    "depends_on": []
+   }
+  ],
+  "unmapped_cells": []
+ },
+ "llm_mapping": {
+  "fields": [
+   {
+    "index": 0,
+    "field_key": "project_name",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "企业全称 项目名称"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 1,
+    "field_key": "referral_unit",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "推荐单位 推荐机构"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 2,
+    "field_key": "industry",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "所属行业 主营业务 赛道"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": false
+   },
+   {
+    "index": 3,
+    "field_key": "headcount",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "员工人数 团队规模"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 4,
+    "field_key": "reg_addr",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "注册地址 工商注册信息"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 5,
+    "field_key": "office_addr",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "办公地址 办公地点"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 6,
+    "field_key": "financing_round",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "融资轮次 本轮融资 天使轮 A轮 B轮"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": false
+   },
+   {
+    "index": 7,
+    "field_key": "finance_amount",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "融资金额 本轮融资需求 万元"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 8,
+    "field_key": "pre_valuation",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "投前估值 估值 亿元"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 9,
+    "field_key": "attraction_status",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目招引 落地方式 总部迁入 子公司迁入"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": true
+   },
+   {
+    "index": 10,
+    "field_key": "credit_report",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "企业信用报告 征信 信用异常"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": false
+   },
+   {
+    "index": 11,
+    "field_key": "qualifications",
+    "fill_type": "choice",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "企业资质 高新技术企业 专精特新 认证"
+    ],
+    "length_hint": null,
+    "confidence": "high",
+    "multi_select": true
+   },
+   {
+    "index": 12,
+    "field_key": "space_need_rent",
+    "fill_type": "checkbox",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "空间需求 租赁厂房办公"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 13,
+    "field_key": "rent_area",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "租赁面积 平方米 空间需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 14,
+    "field_key": "space_need_buy",
+    "fill_type": "checkbox",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "空间需求 购置厂房办公"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 15,
+    "field_key": "buy_area",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "购置面积 平方米 空间需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 16,
+    "field_key": "space_need_land",
+    "fill_type": "checkbox",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "空间需求 拿地 土地需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 17,
+    "field_key": "land_area",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "拿地面积 亩 土地需求"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 18,
+    "field_key": "tax_commitment",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "税收承诺 税收贡献 落地承诺"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 19,
+    "field_key": "output_commitment",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "产值承诺 产值预测 营收预测"
+    ],
+    "length_hint": null,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 20,
+    "field_key": "industry_situation",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "公司行业情况 行业发展趋势 市场分析"
+    ],
+    "length_hint": 400,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 22,
+    "field_key": "product_resources",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "公司产品 核心产品 技术支撑 产业上下游 客户资源"
+    ],
+    "length_hint": 500,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 24,
+    "field_key": "financial_status",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "近三年收入 研发投入 利润 财务报表"
+    ],
+    "length_hint": 400,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 26,
+    "field_key": "financing_history",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "历次融资 估值 投资人 本轮融资计划"
+    ],
+    "length_hint": 400,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 27,
+    "field_key": "team_situation",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "创始团队 核心团队 背景 履历"
+    ],
+    "length_hint": 400,
+    "confidence": "high",
+    "multi_select": null
+   },
+   {
+    "index": 29,
+    "field_key": "regional_synergy",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "区域协同 产业协同 当地产业链配套"
+    ],
+    "length_hint": 400,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 30,
+    "field_key": "business_terms",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "落地商务条件 招商条件 政策诉求"
+    ],
+    "length_hint": 400,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 31,
+    "field_key": "support_situation",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "配套支持 产业政策 扶持政策"
+    ],
+    "length_hint": 300,
+    "confidence": "medium",
+    "multi_select": null
+   },
+   {
+    "index": 32,
+    "field_key": "referral_reason",
+    "fill_type": "text",
+    "fill_mode": "kb_fill",
+    "kb_query": [
+     "项目亮点 投资价值 核心优势"
+    ],
+    "length_hint": 500,
+    "confidence": "high",
+    "multi_select": null
+   }
+  ],
+  "batches": [
+   {
+    "seq": 1,
+    "name": "基本信息与融资需求",
+    "field_keys": [
+     "project_name",
+     "referral_unit",
+     "industry",
+     "headcount",
+     "reg_addr",
+     "office_addr",
+     "financing_round",
+     "finance_amount",
+     "pre_valuation"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 2,
+    "name": "资质、空间与承诺情况",
+    "field_keys": [
+     "attraction_status",
+     "credit_report",
+     "qualifications",
+     "space_need_rent",
+     "rent_area",
+     "space_need_buy",
+     "buy_area",
+     "space_need_land",
+     "land_area",
+     "tax_commitment",
+     "output_commitment"
+    ],
+    "depends_on": []
+   },
+   {
+    "seq": 3,
+    "name": "公司情况说明",
+    "field_keys": [
+     "industry_situation",
+     "product_resources",
+     "financial_status",
+     "financing_history",
+     "team_situation",
+     "regional_synergy",
+     "business_terms",
+     "support_situation",
+     "referral_reason"
+    ],
+    "depends_on": []
+   }
+  ],
+  "skipped_indexes": [
+   21,
+   23,
+   25,
+   28
+  ]
+ }
+}

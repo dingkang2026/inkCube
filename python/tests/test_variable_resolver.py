@@ -46,7 +46,7 @@ class FakeLLM:
         self.usage = dict(usage or _EXTRACT_USAGE)
         self.calls = []
 
-    async def chat_full(self, messages, settings):
+    async def chat_full(self, messages):
         self.calls.append(messages)
         user = messages[-1]["content"]
         for key, val in self.mapping.items():
@@ -56,7 +56,7 @@ class FakeLLM:
 
 
 class BoomLLM:
-    async def chat_full(self, messages, settings):
+    async def chat_full(self, messages):
         raise RuntimeError("boom")
 
 
@@ -186,22 +186,22 @@ class TestRenderDeps:
 class TestExtractValue:
     def test_scalar_strips(self):
         llm = FakeLLM(default="  通信设备  ")
-        val, usage = asyncio.run(_extract_value("h", {}, "ev", "scalar", llm, {}))
+        val, usage = asyncio.run(_extract_value("h", {}, "ev", "scalar", llm))
         assert val == "通信设备"
         assert usage["total_tokens"] == 8
 
     def test_scalar_empty_unresolved(self):
         llm = FakeLLM(default="   ")
-        val, _ = asyncio.run(_extract_value("h", {}, "ev", "scalar", llm, {}))
+        val, _ = asyncio.run(_extract_value("h", {}, "ev", "scalar", llm))
         assert val is UNRESOLVED
 
     def test_list_parses(self):
         llm = FakeLLM(default='["甲", "乙"]')
-        val, _ = asyncio.run(_extract_value("h", {}, "ev", "list", llm, {}))
+        val, _ = asyncio.run(_extract_value("h", {}, "ev", "list", llm))
         assert val == ["甲", "乙"]
 
     def test_llm_exception_unresolved(self):
-        val, usage = asyncio.run(_extract_value("h", {}, "ev", "scalar", BoomLLM(), {}))
+        val, usage = asyncio.run(_extract_value("h", {}, "ev", "scalar", BoomLLM()))
         assert val is UNRESOLVED
         assert usage["total_tokens"] == 0
 

@@ -1,0 +1,129 @@
+/* 设置 > 基础配置 > 网络搜索（2026-10-19 供应商化）：样式基线对齐
+ * ExternalModelSettings.module.css（section 卡片 / label / input / hint 同源变量） */
+.section {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.heading {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 12px;
+}
+
+.label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--text-base);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color 0.15s;
+  margin-bottom: 12px;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
+  font-family: var(--font-sans);
+  outline: none;
+  transition: border-color 0.15s;
+  margin-bottom: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.select:focus {
+  border-color: var(--accent);
+}
+
+.withAction {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.withAction .input {
+  margin-bottom: 0;
+}
+
+.hint {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+/* ── 供应商单选卡：两张并排，选中态 accent 描边 ── */
+.providerGroup {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.providerCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.providerCard:hover {
+  border-color: var(--accent);
+}
+
+.providerActive {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* 原生 radio 保留无障碍语义，视觉隐藏（卡片本身即选择目标） */
+.providerRadio {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.providerRadio:focus-visible + .providerName {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.providerName {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.providerDesc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}

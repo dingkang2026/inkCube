@@ -43,7 +43,7 @@
 }
 
 .label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   white-space: nowrap;
   transition: color 0.2s;
@@ -60,7 +60,7 @@
 
 .advanceBtn {
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--accent);
   background: transparent;
@@ -73,5 +73,5 @@
 
 .advanceBtn:hover {
   background: var(--accent);
-  color: white;
+  color: var(--text-inverse);
 }

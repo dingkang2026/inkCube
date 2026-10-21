@@ -16,27 +16,27 @@
 }
 
 .title {
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
 }
 
 .overallBadge {
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: 999px;
 }
 
 .ok {
-  background: var(--bg-success, #dcfce7);
-  color: var(--text-success, #16a34a);
+  background: var(--bg-success);
+  color: var(--text-success);
 }
 
 .degraded {
-  background: #fef3c7;
-  color: #d97706;
+  background: var(--bg-warning);
+  color: var(--text-warning);
 }
 
 .refreshBtn {
@@ -50,7 +50,7 @@
   background: var(--bg-primary);
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--text-md);
   transition: background 0.12s;
 }
 
@@ -60,12 +60,12 @@
 
 .loading,
 .error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
 .error {
-  color: var(--text-danger, #dc2626);
+  color: var(--text-danger);
 }
 
 .serviceList {
@@ -81,7 +81,7 @@
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 .statusDot {
@@ -92,11 +92,11 @@
 }
 
 .dotOk {
-  background: var(--text-success, #16a34a);
+  background: var(--text-success);
 }
 
 .dotError {
-  background: var(--text-danger, #dc2626);
+  background: var(--text-danger);
 }
 
 .serviceLabel {
@@ -108,14 +108,14 @@
 .serviceMsg {
   flex: 1;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .fixBtn {
-  font-size: 11px;
+  font-size: var(--text-xs);
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

@@ -30,11 +30,11 @@ class _FakeLLM:
         self.fail = fail
         self.calls = 0
 
-    async def chat(self, messages, settings):
+    async def chat_full(self, messages):
         self.calls += 1
         if self.fail:
             raise RuntimeError("llm boom")
-        return self.reply
+        return {"content": self.reply}
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ class TestMergePages:
         )
 
         result = _run(merge_pages(
-            db, project_id, "paos", ["poly_phosphate"], _FakeLLM(), {},
+            db, project_id, "paos", ["poly_phosphate"], _FakeLLM(),
         ))
 
         assert result["merged"] == 1
@@ -91,7 +91,7 @@ class TestMergePages:
         )
 
         result = _run(merge_pages(
-            db, project_id, "paos", ["poly_phosphate"], _FakeLLM(fail=True), {},
+            db, project_id, "paos", ["poly_phosphate"], _FakeLLM(fail=True),
         ))
 
         assert result["merged"] == 0
@@ -117,7 +117,7 @@ class TestMergePages:
         )
 
         result = _run(merge_pages(
-            db, project_id, "paos", ["long_dup"], _FakeLLM(), {},
+            db, project_id, "paos", ["long_dup"], _FakeLLM(),
         ))
 
         assert result["merged"] == 1
@@ -125,7 +125,7 @@ class TestMergePages:
 
     def test_missing_canonical_is_noop(self, db, project_id):
         result = _run(merge_pages(
-            db, project_id, "ghost", ["poly_phosphate"], _FakeLLM(), {},
+            db, project_id, "ghost", ["poly_phosphate"], _FakeLLM(),
         ))
         assert result["merged"] == 0
         assert result["failed"] == []

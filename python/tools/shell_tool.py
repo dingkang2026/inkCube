@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from tools.base import BaseTool
+from tools.proc_priority import low_priority_kwargs
 from tools.venv_manager import get_venv_bin_dir
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ _DANGEROUS_PATTERNS = [
     r"\breboot\b(?![-_])",
     r"\bhalt\b(?![-_])",
     r"\bpoweroff\b(?![-_])",
+    # Windows recursive deletes against drive roots / system directories
+    r"\b(rd|rmdir)\s+(?:/[sq]\s+)*[a-z]:[\\/]*\s*$",   # e.g. rd /s /q C:\
+    r"\b(rd|rmdir|del|erase)\b[^&|;]*[a-z]:\\(?:windows|program files)\b",
 ]
 _DANGEROUS_RE = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_PATTERNS]
 
@@ -61,7 +65,8 @@ _SAFE_PATTERNS = [
     r"^systeminfo\b",         # Windows system info
     # ── Search ──
     r"^(grep|findstr)\b",
-    r"^find\b",
+    # find: destructive modes (-delete / -exec family) must not auto-approve
+    r"^find\b(?!\s+(?:[^\n]*\s)?(?:-delete|-exec|-execdir|-ok|-okdir)\b)",
     r"^tree\b",
     # ── File info ──
     r"^(wc|stat|file)\b",
@@ -75,17 +80,32 @@ _SAFE_PATTERNS = [
     r"^(tar\s+-[a-zA-Z]*t|unzip\s+-l|zipinfo)\b",
     # ── Network diagnostics (read-only) ──
     r"^(ping|traceroute|tracert|nslookup|dig|ipconfig|ifconfig)\b",
+    # ── Process / session inspection (read-only) ──
+    r"^tasklist\b",
+    r"^query\b",
+    r"^netstat\b",
+    r"^(ps|top|df|du|uptime|free)\b",
 ]
 _SAFE_RE = [re.compile(p, re.IGNORECASE) for p in _SAFE_PATTERNS]
 
 
+# Chain separators: every segment must independently pass the whitelist,
+# otherwise a safe prefix smuggles a dangerous tail (e.g. "echo hi & rd /s /q").
+_CHAIN_SPLIT_RE = re.compile(r"&&|\|\||[|;&\n]")
+
+
 def check_safe_command(command: str) -> bool:
-    """Return True if command matches a safe pattern (auto-approve in smart mode)."""
-    stripped = command.strip()
-    for pat in _SAFE_RE:
-        if pat.search(stripped):
-            return True
-    return False
+    """Return True if every chained segment matches a safe pattern (smart mode)."""
+    segments = [s for s in (seg.strip() for seg in _CHAIN_SPLIT_RE.split(command)) if s]
+    if not segments:
+        return False
+    for seg in segments:
+        # Command substitution runs arbitrary code in POSIX shells
+        if "$(" in seg or "`" in seg:
+            return False
+        if not any(pat.search(seg) for pat in _SAFE_RE):
+            return False
+    return True
 
 
 def check_domain_whitelist(command: str, whitelist: str) -> bool:
@@ -134,6 +154,145 @@ def check_dangerous_command(command: str) -> str | None:
     return None
 
 
+# Timeout guidance returned to the agent so it can correct course instead of
+# retrying the same blocking command (observed: a GUI launch burned ~386s).
+_TIMEOUT_SUGGESTION = (
+    "命令可能启动了不主动退出的长驻进程（GUI/服务器/watch 模式）。"
+    "请改用分离或后台方式启动它，或改用非阻塞命令（语法检查、进程列表等）验证结果。"
+)
+
+
+def _decode_proc_output(data: bytes) -> str:
+    """Decode subprocess output: UTF-8 first, then the ANSI codepage.
+
+    The backend runs with PYTHONUTF8=1 (electron/python-manager.js), so
+    locale.getpreferredencoding() reports utf-8 and cannot decode cmd.exe
+    built-ins (dir/echo/ping emit the local ANSI codepage, e.g. cp936).
+    Kept as defense-in-depth: _ensure_utf8_console flips cmd builtins to
+    UTF-8 at the source; this still covers exotic encodings and the
+    no-console edge case.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    fallbacks = ("mbcs",) if os.name == "nt" else (locale.getpreferredencoding(False),)
+    for enc in fallbacks:
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError, ValueError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+# Windows: preset the console output CP once so every cmd.exe spawned
+# afterwards (Popen per call) emits UTF-8 for built-ins (dir/type/echo).
+# Root-cause note (2026-10 乱码复盘, evidence in tests): cmd.exe caches the
+# console output CP at process init — the originally planned per-command
+# prefix `chcp 65001>nul&&...` does NOT affect its own instance (dir still
+# emitted cp936); the CP change only persists on the shared console and is
+# inherited by NEW cmd.exe processes. Setting it from Python therefore must
+# happen in our process, before the first spawn. Verified working incl.
+# CREATE_NO_WINDOW hidden consoles (the production libuv pipe-spawn shape);
+# on a truly console-less edge case the API just fails and the decoder
+# fallback above still applies.
+_console_cp_done = False
+
+
+def _ensure_utf8_console() -> None:
+    """One-shot SetConsoleOutputCP(65001); idempotent, no-op off Windows."""
+    global _console_cp_done
+    if _console_cp_done or os.name != "nt":
+        return
+    _console_cp_done = True
+    try:
+        import ctypes
+
+        if ctypes.windll.kernel32.SetConsoleOutputCP(65001):
+            logger.info("Console output CP preset to 65001 (UTF-8) for cmd built-ins")
+        else:
+            logger.warning(
+                "SetConsoleOutputCP(65001) failed; cmd built-ins stay ANSI "
+                "(decoder fallback applies)"
+            )
+    except Exception:
+        logger.warning("Console CP preset unavailable", exc_info=True)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill the whole process tree, not just the shell wrapper.
+
+    On Windows, Popen.kill() only terminates cmd.exe; spawned children
+    survive and keep the stdout/stderr pipes open, which stalls the
+    subsequent communicate() cleanup (observed: a 30s timeout hung ~80s).
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+            )
+        else:
+            import signal
+
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        logger.warning("Kill process tree failed for pid=%s", proc.pid, exc_info=True)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _run_shell_sync(
+    command: str, timeout: int, workspace_dir: str, env: dict,
+) -> tuple[str, str, int | None, bool]:
+    """Blocking shell run for asyncio.to_thread; kills the process tree on timeout.
+
+    Returns (stdout, stderr, returncode, timed_out); returncode is None on timeout.
+    Output is raw bytes, decoded by _decode_proc_output (UTF-8 → ANSI codepage).
+    """
+    # 乱码根治：首个 shell 调用前把控制台输出 CP 切到 UTF-8，此后每个新
+    # cmd 实例的内建输出即为 UTF-8（幂等一次性；详见 _ensure_utf8_console 注释）
+    _ensure_utf8_console()
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=workspace_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        # 2.11 §5.6 R3：低优先级（前台交互天然抢占，人工任务同样受益）
+        **low_priority_kwargs(),
+        # POSIX: own process group so killpg reaps the whole tree
+        start_new_session=(os.name != "nt"),
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return (
+            _decode_proc_output(stdout or b""),
+            _decode_proc_output(stderr or b""),
+            proc.returncode,
+            False,
+        )
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        # Tree is dead → pipes hit EOF → returns promptly with any partial
+        # output produced before the timeout.
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except Exception:
+            stdout, stderr = b"", b""
+        hint = f"命令执行超时（超过 {timeout} 秒），已终止整个进程树。"
+        return (
+            _decode_proc_output(stdout or b""),
+            _decode_proc_output(stderr or b"") + "\n" + hint,
+            None,
+            True,
+        )
+
+
 class ShellTool(BaseTool):
     name = "shell"
     description = (
@@ -164,7 +323,7 @@ class ShellTool(BaseTool):
                 "- 文件移动用 `move`（不是 `mv`）\n"
                 "- 文件复制用 `copy`（不是 `cp`）\n"
                 "- 路径用反斜杠 `\\` 或正斜杠 `/` 均可\n"
-                "- **禁止**使用 bash/PowerShell 专有语法（如 `$var`、`|`、`>` 重定向等）\n\n"
+                "- cmd 支持 `|` 管道与 `>` 重定向；变量用 `%var%`（`$var` 无效）\n\n"
             )
         else:
             shell_hint = (
@@ -177,16 +336,17 @@ class ShellTool(BaseTool):
             "在工作目录下执行 shell 命令，返回 stdout/stderr/exit_code。\n\n"
             f"{shell_hint}"
             "用法:\n"
-            "- 运行 pip install 安装依赖（已激活任务 venv，直接 pip install 即可）\n"
-            "- 执行 Python 脚本文件: `python script.py`\n"
+            "- 执行 Python 脚本文件: `python script.py`（PATH 已前插任务 venv，python 命中 venv）\n"
             "- 查看目录内容、系统信息等\n"
             "- 超时限制 30 秒，输出上限 1MB\n\n"
             "示例:\n"
-            '```\n{"command": "pip install requests"}\n'
-            '```\n\n{"command": "python parse_pptx.py"}\n'
+            '```\n{"command": "python parse_data.py"}\n'
+            '```\n\n{"command": "git status"}\n'
             "```\n\n"
             "安全限制: 以下命令被阻止执行: rm -rf /, format, DROP TABLE, shutdown 等危险操作。\n\n"
-            "注意: 执行 Python 代码片段用 code_executor 更方便；shell 适合运行脚本文件或安装依赖。"
+            "注意: 执行 Python 代码片段用 code_executor 更方便；安装 Python 依赖用 package_manager 工具"
+            "（任务 venv 由 uv 创建、不含 pip，勿直接运行 pip——PATH 中的 pip 属于其他环境，会把包装错地方）；"
+            "shell 适合运行脚本文件与系统命令。"
         )
 
     def __init__(self, workspace_dir: str = "", venv_path: str = ""):
@@ -222,44 +382,15 @@ class ShellTool(BaseTool):
             return json.dumps({"error": danger, "exit_code": -1}, ensure_ascii=False)
 
         try:
-            # Run in a worker thread — a blocking subprocess.run on the
+            # Run in a worker thread — a blocking subprocess on the
             # event loop would freeze ALL tasks/APIs/SSE until timeout (H1)
-            result = await asyncio.to_thread(
-                subprocess.run,
+            stdout, stderr, returncode, timed_out = await asyncio.to_thread(
+                _run_shell_sync,
                 command,
-                shell=True,
-                cwd=self.workspace_dir,
-                capture_output=True,
-                # Use explicit encoding with error replacement to avoid
-                # UnicodeDecodeError on non-UTF-8 output (e.g. GBK from cmd.exe)
-                encoding=locale.getpreferredencoding(),
-                errors="replace",
-                timeout=self.timeout,
-                env=self._build_env(),
+                self.timeout,
+                self.workspace_dir,
+                self._build_env(),
             )
-            stdout = result.stdout or ""
-            stderr = result.stderr or ""
-            logger.info("Shell completed: exit_code=%d, stdout_len=%d, stderr_len=%d",
-                       result.returncode, len(stdout), len(stderr))
-            # Truncate large output (Snip strategy)
-            if len(stdout) > MAX_OUTPUT_CHARS:
-                half = MAX_OUTPUT_CHARS // 2
-                stdout = stdout[:half] + "\n[...snipped: output exceeded 1MB...]\n" + stdout[-half:]
-            if len(stderr) > 50000:
-                stderr = stderr[:25000] + "\n[...snipped...]\n" + stderr[-25000:]
-            return json.dumps({
-                "exit_code": result.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-            }, ensure_ascii=False)
-        except subprocess.TimeoutExpired:
-            logger.warning("Shell timeout: command exceeded %ds", self.timeout)
-            return json.dumps({
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"命令执行超时（超过 {self.timeout} 秒）",
-                "error_type": "TimeoutError",
-            }, ensure_ascii=False)
         except Exception as e:
             logger.error("Shell execution failed: %s", str(e), exc_info=True)
             return json.dumps({
@@ -267,3 +398,28 @@ class ShellTool(BaseTool):
                 "stdout": "",
                 "stderr": str(e),
             }, ensure_ascii=False)
+
+        # Truncate large output (Snip strategy)
+        if len(stdout) > MAX_OUTPUT_CHARS:
+            half = MAX_OUTPUT_CHARS // 2
+            stdout = stdout[:half] + "\n[...snipped: output exceeded 1MB...]\n" + stdout[-half:]
+        if len(stderr) > 50000:
+            stderr = stderr[:25000] + "\n[...snipped...]\n" + stderr[-25000:]
+
+        if timed_out:
+            logger.warning("Shell timeout: command exceeded %ds, process tree killed", self.timeout)
+            return json.dumps({
+                "exit_code": -1,
+                "stdout": stdout,
+                "stderr": stderr,
+                "error_type": "TimeoutError",
+                "suggestion": _TIMEOUT_SUGGESTION,
+            }, ensure_ascii=False)
+
+        logger.info("Shell completed: exit_code=%s, stdout_len=%d, stderr_len=%d",
+                   returncode, len(stdout), len(stderr))
+        return json.dumps({
+            "exit_code": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }, ensure_ascii=False)

@@ -1,8 +1,8 @@
 """python/llm/client.py — Lightweight LLM API client (OpenAI-compatible).
 
-Shared by:
-  - agent/react_agent.py   (产业洞察 Chat)
-  - knowledge/rag.py       (知识库 Chat)
+全后端 LLM 管线的唯一 HTTP 出口（agent / report_generator / wiki / form_fill /
+knowledge）。构造期一次性注入 settings（D3 构造期单轨），预算取值经
+llm/budget.py（D2 唯一入口）。
 
 This module only handles HTTP communication with an OpenAI-compatible API.
 It has NO dependency on agent or knowledge subsystems.
@@ -12,6 +12,8 @@ import json
 import logging
 from typing import Any
 
+from llm.budget import context_window, output_tokens
+from llm import usage as usage_record  # 2.10 §4.2 单点记录（零 DB 依赖，sink 由 main 注入）
 from errors import (
     LLMInvalidKey, LLMNetworkError, LLMCallFailed,
     LLMRateLimited, LLMQuotaExhausted, LLMModelNotFound,
@@ -53,19 +55,37 @@ class LLMClient:
     def __init__(self, settings: dict):
         self.api_url = settings.get("api_url", "https://api.openai.com/v1").rstrip("/")
         self.api_key = settings.get("api_key", "")
-        self.model = settings.get("model", "gpt-4o")
+        # 档位制（llm/routing.py）：model 键由消费点经路由解析注入；缺键 →
+        # 空串（请求被网关拒，快速显性失败）。禁止硬编码模型名兜底——否则
+        # 路由漏网变成「向网关请求不存在的模型」的误导性故障（2026-10-20
+        # 实证：gpt-4o 兜底打到智谱端点报 1211 模型不存在）
+        self.model = settings.get("model", "")
         self.temperature = settings.get("temperature", 0.7)
-        self.max_tokens = settings.get("max_tokens", 4096)
+        # 构造期单轨注入（D3）：预算两键经 budget 唯一入口取值，floor 一次到位；
+        # 方法签名不再收 settings——差异化需求用「派生 dict → 构造新 client」表达
+        self.max_tokens = output_tokens(settings)
+        self.context_window = context_window(settings)
         self.top_p = settings.get("top_p", 0.9)
+        # Suppresses the GLM tendency to emit the answer twice in one stop
+        # response (task复盘: prompt bans alone left a ~25% repeat rate).
+        # 0 disables injection — escape hatch for endpoints rejecting the param.
+        self.frequency_penalty = float(settings.get("frequency_penalty", 0.3))
         self.connect_timeout = settings.get("llm_connect_timeout", 30)
         self.read_timeout = settings.get("llm_read_timeout", 300)
+        # Reasoning params snapshot（D3）：原 _apply_reasoning_params 从 settings 现读，
+        # 签名收窄后改读构造期快照
+        self._reasoning_override_raw = str(settings.get("reasoning_override") or "").strip()
+        self._reasoning_effort = str(settings.get("reasoning_effort") or "").strip()
         # Instance-level memory: this endpoint rejected reasoning params with 400
         # → skip injection for the client's lifetime (avoids per-call 400→fallback
         # double requests in agent loops / report pipelines).
         self._reasoning_rejected = False
+        # Instance-level memory: stream ended without usage chunk（端点不支持
+        # stream_options.include_usage）→ 只告警一次，后续同状态降 debug 不刷屏
+        self._stream_usage_missing_logged = False
 
-    def _apply_reasoning_params(self, request_body: dict, settings: dict) -> dict:
-        """Inject reasoning/thinking parameters from settings into request_body.
+    def _apply_reasoning_params(self, request_body: dict) -> dict:
+        """Inject reasoning/thinking parameters (constructor snapshot) into request_body.
 
         Priority: ``reasoning_override`` (free-form JSON object merged into the
         request body top-level — for vendor-specific params like GLM ``thinking``,
@@ -79,12 +99,11 @@ class LLMClient:
         if self._reasoning_rejected:
             logger.debug("Reasoning params skipped — endpoint rejected them earlier (400 fallback memory)")
             return {}
-        override_raw = str(settings.get("reasoning_override") or "").strip()
-        if override_raw:
+        if self._reasoning_override_raw:
             try:
-                override = json.loads(override_raw)
+                override = json.loads(self._reasoning_override_raw)
             except ValueError:
-                logger.warning("reasoning_override is not valid JSON — ignored: %.100s", override_raw)
+                logger.warning("reasoning_override is not valid JSON — ignored: %.100s", self._reasoning_override_raw)
             else:
                 if isinstance(override, dict) and override:
                     originals = {k: request_body.get(k, _ABSENT) for k in override}
@@ -92,10 +111,9 @@ class LLMClient:
                     return originals
                 if not isinstance(override, dict):
                     logger.warning("reasoning_override must be a JSON object — ignored")
-        effort = str(settings.get("reasoning_effort") or "").strip()
-        if effort:
+        if self._reasoning_effort:
             originals = {"reasoning_effort": request_body.get("reasoning_effort", _ABSENT)}
-            request_body["reasoning_effort"] = effort
+            request_body["reasoning_effort"] = self._reasoning_effort
             return originals
         return {}
 
@@ -108,48 +126,55 @@ class LLMClient:
             else:
                 request_body[key] = original
 
-    async def chat(self, messages: list[dict], settings: dict, tools: list[dict] | None = None) -> "str | dict":
-        """Send a chat completion request to the LLM API.
+    def _build_request_body(
+        self, messages: list[dict], tools: list[dict] | None = None, stream: bool = False,
+    ) -> tuple[dict, dict]:
+        """Build the shared chat-completions request body (D4 内部去重).
 
-        Args:
-            messages: Conversation history in OpenAI message format.
-            settings: Application settings dict.
-            tools: Optional list of function/tool definitions for native
-                   function calling.  When provided, the return type changes
-                   from ``str`` to ``dict`` with keys ``content``,
-                   ``tool_calls``, and ``finish_reason``.
-
-        Returns:
-            - ``str`` when *tools* is ``None`` (backward-compatible).
-            - ``dict`` when *tools* is provided:
-              ``{"content": str|None, "tool_calls": list|None, "finish_reason": str}``
+        Returns ``(request_body, reasoning_params)`` where reasoning_params is
+        the injection map consumed by the HTTP-400 fallback paths.
         """
-        # Log per-message breakdown for debugging
-        for i, msg in enumerate(messages):
-            role = msg.get("role", "?")
-            content = msg.get("content", "")
-            content_len = len(content) if isinstance(content, str) else 0
-            logger.info("LLM message [%d/%d]: role=%s, content_len=%d", i + 1, len(messages), role, content_len)
-        logger.info("LLM chat request: model=%s, messages=%d, tools=%s, connect_timeout=%ds, read_timeout=%ds",
-                    self.model, len(messages), "yes" if tools else "no", self.connect_timeout, self.read_timeout)
-        # Allow per-call override of max_tokens via settings parameter
-        max_tokens = int(settings.get("max_tokens", self.max_tokens))
         request_body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": self.max_tokens,
             "top_p": self.top_p,
-            "stream": False,
+            "stream": stream,
         }
+        if self.frequency_penalty:
+            request_body["frequency_penalty"] = self.frequency_penalty
         if tools:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
-        reasoning_params = self._apply_reasoning_params(request_body, settings)
+        reasoning_params = self._apply_reasoning_params(request_body)
+        return request_body, reasoning_params
 
+    def _fallback_reasoning(self, request_body: dict, reasoning_params: dict) -> dict:
+        """Rollback injected reasoning params after HTTP 400 (one-shot fallback).
+
+        Marks the rejection in instance memory so subsequent calls on this
+        client skip injection entirely. Returns the new (empty) state.
+        """
+        logger.warning(
+            "LLM 400 with reasoning params %s — retrying without them",
+            list(reasoning_params),
+        )
+        self._rollback_reasoning_params(request_body, reasoning_params)
+        self._reasoning_rejected = True  # remember for this client's lifetime
+        return {}
+
+    async def _post_json(
+        self, request_body: dict, reasoning_params: dict, has_tools: bool,
+    ) -> httpx.Response:
+        """POST a non-streaming chat completion with retry/fallback (D4 内部去重).
+
+        Shared by chat_full()/chat_stream(): 2 attempts total — transient network
+        errors (timeout / connection) retry once after 2s; HTTP 400 caused by
+        injected reasoning params retries once without them.
+        """
         import asyncio
-        last_err = None
-        for attempt in range(2):  # max 2 attempts (1 retry on transient network errors)
+        for attempt in range(2):
             async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
                 try:
                     response = await client.post(
@@ -163,157 +188,101 @@ class LLMClient:
                     logger.debug("LLM response: status=%d", response.status_code)
                 except httpx.TimeoutException as e:
                     logger.error("LLM timeout (attempt %d/2): %s", attempt + 1, str(e))
-                    last_err = LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
                     if attempt == 0:
                         await asyncio.sleep(2)
                         continue
-                    raise last_err
+                    raise LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
                 except httpx.ConnectError as e:
                     logger.error("LLM connection failed (attempt %d/2): %s", attempt + 1, str(e))
-                    last_err = LLMNetworkError(detail=f"连接失败: {e}")
                     if attempt == 0:
                         await asyncio.sleep(2)
                         continue
-                    raise last_err
+                    raise LLMNetworkError(detail=f"连接失败: {e}")
 
                 if response.status_code != 200:
                     # 400 with reasoning params injected → retry once without them
                     # (model doesn't support the param; see settings > 思考深度)
                     if response.status_code == 400 and reasoning_params and attempt == 0:
-                        logger.warning(
-                            "LLM 400 with reasoning params %s — retrying without them",
-                            list(reasoning_params),
-                        )
-                        self._rollback_reasoning_params(request_body, reasoning_params)
-                        reasoning_params = {}
-                        self._reasoning_rejected = True  # remember for this client's lifetime
+                        reasoning_params = self._fallback_reasoning(request_body, reasoning_params)
                         continue
-                    _raise_api_error(response.status_code, response.text, has_tools=bool(tools))
+                    _raise_api_error(response.status_code, response.text, has_tools=has_tools)
+                return response
 
-                data = response.json()
-                choice = data["choices"][0]
-                msg = choice["message"]
-                finish_reason = choice.get("finish_reason", "unknown")
-                usage = data.get("usage", {})
-                logger.info("LLM response: finish_reason=%s, msg_keys=%s, usage=%s",
-                            finish_reason, list(msg.keys()), usage)
+    async def chat_full(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
+        """Non-streaming completion — the single implementation (former chat() merged in, P3).
 
-                # ── Function Calling path (tools requested) ──
-                if tools is not None:
-                    return {
-                        "content": msg.get("content"),  # may be None when model only returns tool_calls
-                        "tool_calls": msg.get("tool_calls"),  # [{id, function: {name, arguments}}]
-                        "reasoning_content": msg.get("reasoning_content"),  # model internal thinking
-                        "finish_reason": finish_reason,
-                    }
+        Always returns a dict with ``content``, ``finish_reason`` and precise
+        token ``usage``. With *tools* provided (function calling) the dict
+        additionally carries ``tool_calls`` / ``reasoning_content``; content
+        may be None when the model only returns tool calls.
 
-                # ── Legacy text path (no tools) — always return str for backward compatibility
-                content = msg.get("content")
-                reasoning_content = msg.get("reasoning_content")
-
-                # Log when content is empty or null for debugging
-                if not content:
-                    logger.warning(
-                        "LLM empty content (model=%s, finish_reason=%s, "
-                        "content_type=%s, content_repr=%r, reasoning_len=%d, "
-                        "msg_keys=%s, usage=%s)",
-                        self.model, finish_reason,
-                        type(content).__name__, content,
-                        len(reasoning_content) if reasoning_content else 0,
-                        list(msg.keys()), usage,
-                    )
-
-                # Some models return null content (e.g. refusal or tool-call edge cases)
-                if content is None:
-                    # GLM-5 deep-thinking models may put output in reasoning_content
-                    if reasoning_content:
-                        logger.info(
-                            "LLM content is null, falling back to reasoning_content "
-                            "(model=%s, finish_reason=%s, reasoning_len=%d)",
-                            self.model, finish_reason, len(reasoning_content),
-                        )
-                        return reasoning_content
-                    return ""
-                return content
-
-    async def chat_full(self, messages: list[dict], settings: dict) -> dict:
-        """Chat completion that returns content, finish_reason and precise token usage.
-
-        Unlike chat() which returns str for backward compatibility, this method
-        always returns a dict with content and usage information from the API.
+        Text path hardening: some deep-thinking models (GLM-5...) put the
+        answer in ``reasoning_content`` with null ``content`` — fall back to
+        it so text consumers always receive a str (behavior inherited from
+        the former chat(); chat_full previously returned "" here).
 
         Returns:
-            {"content": str, "finish_reason": str,
-             "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}}
+            {"content": str|None, "finish_reason": str, "usage": {...}
+             [, "tool_calls": list|None, "reasoning_content": str|None]}
             finish_reason 为 "length" 时表示输出被 max_tokens 截断，调用方应自检
         """
-        logger.info("LLM chat_full request: model=%s, messages=%d", self.model, len(messages))
-        request_body: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "top_p": self.top_p,
-            "stream": False,
+        logger.info("LLM chat_full request: model=%s, messages=%d, tools=%s",
+                    self.model, len(messages), "yes" if tools else "no")
+        request_body, reasoning_params = self._build_request_body(messages, tools=tools)
+        response = await self._post_json(request_body, reasoning_params, has_tools=tools is not None)
+
+        data = response.json()
+        choice = data["choices"][0]
+        msg = choice["message"]
+        finish_reason = choice.get("finish_reason", "unknown")
+        usage = data.get("usage", {})
+        result = {
+            "finish_reason": finish_reason,
+            "usage": {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            },
         }
-        reasoning_params = self._apply_reasoning_params(request_body, settings)
+        # 2.10 §4.2: 出口收口记录（API 返回的精确 usage；400 降级重试发生在
+        # _post_json 内部，此处只在最终成功响应后执行一次，天然不重复计数）
+        usage_record.record(self.model, "full", result["usage"])
 
-        import asyncio
-        last_err = None
-        for attempt in range(2):  # max 2 attempts (1 retry on transient network errors)
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
-                try:
-                    response = await client.post(
-                        f"{self.api_url}/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {self.api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json=request_body,
-                    )
-                except httpx.TimeoutException as e:
-                    logger.error("LLM timeout (attempt %d/2): %s", attempt + 1, str(e))
-                    last_err = LLMNetworkError(detail=f"请求超时（{self.read_timeout}s），模型可能仍在处理中，请稍后重试")
-                    if attempt == 0:
-                        await asyncio.sleep(2)
-                        continue
-                    raise last_err
-                except httpx.ConnectError as e:
-                    logger.error("LLM connection failed (attempt %d/2): %s", attempt + 1, str(e))
-                    last_err = LLMNetworkError(detail=f"连接失败: {e}")
-                    if attempt == 0:
-                        await asyncio.sleep(2)
-                        continue
-                    raise last_err
+        # ── Function Calling path (tools requested) ──
+        if tools is not None:
+            result["content"] = msg.get("content")  # may be None when model only returns tool_calls
+            result["tool_calls"] = msg.get("tool_calls")  # [{id, function: {name, arguments}}]
+            result["reasoning_content"] = msg.get("reasoning_content")
+            return result
 
-                if response.status_code != 200:
-                    if response.status_code == 400 and reasoning_params and attempt == 0:
-                        logger.warning(
-                            "LLM 400 with reasoning params %s — retrying without them",
-                            list(reasoning_params),
-                        )
-                        self._rollback_reasoning_params(request_body, reasoning_params)
-                        reasoning_params = {}
-                        self._reasoning_rejected = True  # remember for this client's lifetime
-                        continue
-                    # chat_full 不支持 function calling，无 tools 参数（FC 提示仅 chat/chat_stream 适用）
-                    _raise_api_error(response.status_code, response.text, has_tools=False)
+        # ── Text path — content is always a str ──
+        content = msg.get("content")
+        reasoning_content = msg.get("reasoning_content")
 
-                data = response.json()
-                choice = data["choices"][0]
-                content = choice["message"].get("content") or ""
-                finish_reason = choice.get("finish_reason", "unknown")
-                usage = data.get("usage", {})
+        # Log when content is empty or null for debugging
+        if not content:
+            logger.warning(
+                "LLM empty content (model=%s, finish_reason=%s, "
+                "content_type=%s, content_repr=%r, reasoning_len=%d, "
+                "msg_keys=%s, usage=%s)",
+                self.model, finish_reason,
+                type(content).__name__, content,
+                len(reasoning_content) if reasoning_content else 0,
+                list(msg.keys()), usage,
+            )
 
-                return {
-                    "content": content,
-                    "finish_reason": finish_reason,
-                    "usage": {
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
-                        "total_tokens": usage.get("total_tokens", 0),
-                    },
-                }
+        # Some models return null content (e.g. refusal or tool-call edge cases)
+        if content is None:
+            # GLM-5 deep-thinking models may put output in reasoning_content
+            if reasoning_content:
+                logger.info(
+                    "LLM content is null, falling back to reasoning_content "
+                    "(model=%s, finish_reason=%s, reasoning_len=%d)",
+                    self.model, finish_reason, len(reasoning_content),
+                )
+                content = reasoning_content
+        result["content"] = content or ""
+        return result
 
     async def test_connection(self) -> bool:
         logger.info("Testing LLM connection: model=%s, url=%s", self.model, self.api_url)
@@ -342,13 +311,17 @@ class LLMClient:
             return response.status_code == 200
 
     async def chat_stream(
-        self, messages: list[dict], settings: dict, tools: list[dict] | None = None,
+        self, messages: list[dict], tools: list[dict] | None = None,
     ):
         """Streaming chat completion — yields chunks as they arrive.
 
         Yields dicts with one of:
         - {"type": "content", "delta": "..."}       — text chunk
+        - {"type": "reasoning", "delta": "..."}     — thinking chunk (DeepSeek R1 / GLM-5...)
         - {"type": "tool_calls", "tool_calls": [...]} — accumulated tool calls (final)
+        - {"type": "usage", "usage": {...}}         — token usage (optional: OpenAI
+          usage-only chunk, or trailing usage on the last choices chunk per
+          2.10 §4.2; consumers must treat it optional)
         - {"type": "finish", "finish_reason": "..."}  — stream complete
 
         For text mode (tools=None), only yields content + finish.
@@ -358,27 +331,19 @@ class LLMClient:
         logger.info("LLM stream request: model=%s, messages=%d, tools=%s",
                     self.model, len(messages), "yes" if tools else "no")
         if tools:
-            import json as _json
             # Log each tool separately for better debugging
             for i, tool in enumerate(tools):
                 tool_name = tool.get("function", {}).get("name", "unknown")
                 tool_type = tool.get("type", "")
                 logger.info("Tool [%d]: name=%s, type=%s", i, tool_name, tool_type)
             logger.info("Total tools: %d", len(tools))
-        request_body: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "top_p": self.top_p,
-            "stream": True,
-        }
-        if tools:
-            request_body["tools"] = tools
-            request_body["tool_choice"] = "auto"
-        reasoning_params = self._apply_reasoning_params(request_body, settings)
+        request_body, reasoning_params = self._build_request_body(messages, tools=tools, stream=True)
+        # D5: request the trailing usage chunk (OpenAI stream_options extension).
+        # Endpoints that don't recognize the key 400 → retried once without it
+        # below (same one-shot fallback budget as the reasoning rollback).
+        request_body["stream_options"] = {"include_usage": True}
 
-        # 400 with reasoning params → one retry without them (same fallback as chat)
+        # 400 fallback → one retry without the rejected optional keys
         for stream_attempt in range(2):
             async with httpx.AsyncClient(timeout=httpx.Timeout(connect=self.connect_timeout, read=self.read_timeout, write=self.connect_timeout, pool=self.connect_timeout)) as client:
                 try:
@@ -394,20 +359,26 @@ class LLMClient:
                         if response.status_code != 200:
                             body = await response.aread()
                             body_text = body.decode(errors='replace')
-                            if response.status_code == 400 and reasoning_params and stream_attempt == 0:
-                                logger.warning(
-                                    "LLM stream 400 with reasoning params %s — retrying without them",
-                                    list(reasoning_params),
-                                )
-                                self._rollback_reasoning_params(request_body, reasoning_params)
-                                reasoning_params = {}
-                                self._reasoning_rejected = True  # remember for this client's lifetime
-                                continue
+                            if response.status_code == 400 and stream_attempt == 0:
+                                # One-shot retry budget shared by both optional keys:
+                                # drop whichever is present (reasoning params /
+                                # stream_options) and retry once
+                                retried = False
+                                if reasoning_params:
+                                    reasoning_params = self._fallback_reasoning(request_body, reasoning_params)
+                                    retried = True
+                                if "stream_options" in request_body:
+                                    logger.warning("LLM stream 400 with stream_options — retrying without it")
+                                    request_body.pop("stream_options", None)
+                                    retried = True
+                                if retried:
+                                    continue
                             _raise_api_error(response.status_code, body_text, has_tools=bool(tools))
 
                         # FC mode: accumulate tool call deltas
                         tc_accum: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
                         finish_reason = "unknown"
+                        usage_data: dict | None = None  # trailing usage chunk (D5)
 
                         async for line in response.aiter_lines():
                             if not line.startswith("data: "):
@@ -416,14 +387,21 @@ class LLMClient:
                             if data_str.strip() == "[DONE]":
                                 break
                             try:
-                                import json as _json
-                                chunk = _json.loads(data_str)
+                                chunk = json.loads(data_str)
                             except Exception:
                                 continue
 
-                            if not chunk.get("choices"):
+                            choices = chunk.get("choices")
+                            # usage 采集不依赖 choices 形态：OpenAI 官方是 choices=[]
+                            # 的 usage-only chunk；智谱 BigModel / DeepSeek 等兼容端
+                            # 点则附在最后一个带 choices 的 chunk 上（glm-5.3 实测：
+                            # usage 与 finish_reason 同 chunk，无独立 usage chunk，
+                            # 2026-10-16）。只认前者会整条流丢账。
+                            if chunk.get("usage"):
+                                usage_data = chunk["usage"]
+                            if not choices:
                                 continue
-                            choice = chunk["choices"][0]
+                            choice = choices[0]
                             delta = choice.get("delta", {})
                             fr = choice.get("finish_reason")
                             if fr:
@@ -472,6 +450,31 @@ class LLMClient:
                             yield {"type": "tool_calls", "tool_calls": tool_calls_list}
 
                         logger.debug("Stream finished: finish_reason=%s", finish_reason)
+                        # 2.10 §4.2: real token usage before finish (optional event —
+                        # absent only when the stream carried no usage chunk at all;
+                        # §7 宁缺勿估，告警一次可观测)
+                        if usage_data:
+                            usage_result = {
+                                "prompt_tokens": usage_data.get("prompt_tokens", 0),
+                                "completion_tokens": usage_data.get("completion_tokens", 0),
+                                "total_tokens": usage_data.get("total_tokens", 0),
+                            }
+                            # 2.10 §4.2: 收口记录在 yield 之前——usage chunk 一旦
+                            # 生成即已计费，消费者中途断开也不丢账
+                            usage_record.record(self.model, "stream", usage_result)
+                            yield {"type": "usage", "usage": usage_result}
+                        elif not self._stream_usage_missing_logged:
+                            # 端点不支持 include_usage（或 400 降级后 pop 了
+                            # stream_options）：无精确值不落库，告警一次可观测
+                            logger.warning(
+                                "LLM stream ended without usage chunk "
+                                "(endpoint may not support stream_options.include_usage) "
+                                "— tokens NOT recorded for this endpoint's streams"
+                            )
+                            self._stream_usage_missing_logged = True
+                        else:
+                            logger.debug(
+                                "LLM stream without usage chunk — tokens not recorded")
                         yield {"type": "finish", "finish_reason": finish_reason}
 
                 except httpx.TimeoutException as e:
@@ -480,6 +483,12 @@ class LLMClient:
                 except httpx.ConnectError as e:
                     logger.error("Stream connection failed: %s", str(e))
                     raise LLMNetworkError(detail=f"连接失败: {e}")
+            # 成功消费完毕即退出循环。continue（400 降级重试）与 raise（网络错误）
+            # 均不经过此处；缺此 break 时 attempt=0 直接成功的调用会进入第二轮，
+            # 同一请求发两次、两份完整流都被 yield（temperature>0 → 两次采样措辞
+            # 不同 → 上层拼接出两份回答 + token 翻倍；2026-10-14 天眼查任务实证，
+            # 回归：test_llm_stream_replay_guard.py）
+            break
 
     async def probe(self, extra_body: dict) -> bool | None:
         """Send a minimal probe request to test parameter support.

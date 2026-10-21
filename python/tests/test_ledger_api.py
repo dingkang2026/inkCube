@@ -61,7 +61,7 @@ def test_ledger_entries_empty_limit_and_order(client_and_db):
     pid = db.create_project(name="P", project_type="general", stage="before")["id"]
     # 空项目
     r = client.get(f"/wiki/projects/{pid}/ledger/entries")
-    assert r.status_code == 200 and r.json() == {"entries": []}
+    assert r.status_code == 200 and r.json() == {"entries": [], "has_more": False}
     # limit 越界 422(1-100)
     assert client.get(f"/wiki/projects/{pid}/ledger/entries",
                       params={"limit": 0}).status_code == 422

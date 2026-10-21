@@ -3,11 +3,12 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  /* 表单模态面板（0.3 §5.2 阶梯第二级；点蒙板/Esc 不关闭防丢输入，仅按钮关闭） */
+  z-index: 2000;
 }
 
 .modal {
@@ -17,17 +18,17 @@
   overflow-y: auto;
   background: var(--bg-primary);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-lg);
 }
 
 .title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -37,8 +38,8 @@
   box-sizing: border-box;
   padding: 7px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
   color: var(--text-primary);
   background: var(--bg-primary);
 }
@@ -55,8 +56,8 @@
   resize: vertical;
   padding: 7px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
   font-family: inherit;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -75,7 +76,7 @@
 
 .label {
   flex: 0 0 56px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -84,8 +85,8 @@
   min-width: 0;
   padding: 7px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
   color: var(--text-primary);
   background: var(--bg-primary);
 }
@@ -95,8 +96,8 @@
   min-width: 0;
   padding: 7px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
   color: var(--text-primary);
   background: var(--bg-primary);
 }
@@ -108,7 +109,7 @@
 
 .error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--error);
 }
 
@@ -122,9 +123,9 @@
 .btnCancel {
   padding: 7px 14px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-primary);
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -136,10 +137,10 @@
 .btnCreate {
   padding: 7px 14px;
   border: 1px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
-  font-size: 13px;
-  color: #ffffff;
+  font-size: var(--text-base);
+  color: var(--text-inverse);
   cursor: pointer;
 }
 

@@ -20,7 +20,7 @@ import unicodedata
 from typing import Any
 
 from wiki.parser import parse_lint_blocks
-from wiki.llm_routing import get_task_settings
+from llm.routing import get_task_settings
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,7 @@ async def run_semantic_lint(
         effective_llm = LLMClient(effective_settings)
 
     try:
-        output = await effective_llm.chat(messages, effective_settings)
+        output = (await effective_llm.chat_full(messages))["content"]
     except Exception as e:
         logger.error("Semantic lint LLM call failed for project %s: %s", project_id, e)
         raise  # Let API layer return 500 so frontend can show error to user

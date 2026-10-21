@@ -1,8 +1,7 @@
 /* PulseBar.module.css — 项目脉搏带 v1(3.0 §2/§6.1.1;配色用 0.3 §4.3 既有 token,
    warning 态用既有 --text-warning/--bg-warning 对,不新增 token。
    圆点色:常态灰点(--text-muted,§6.1.1 明文)/活跃橙点(--text-warning,对齐原型);
-   呼吸动画为增强,原型无;chip 边框/hover 为浅色字面量(#fecaca 等,固定浅底配色,
-   与仓库既有 chip 写法一致)。 */
+   呼吸动画为增强,原型无;chip 边框/hover 已收敛为 color-mix token 混色(0.3 §5)。 */
 
 .pulse {
   display: flex;
@@ -12,7 +11,7 @@
   margin-bottom: 10px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
 
 .head {
@@ -23,7 +22,7 @@
 }
 
 .sent {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -67,8 +66,8 @@
   align-items: center;
   gap: 5px;
   padding: 3px 12px;
-  border-radius: 99px;
-  font-size: 12px;
+  border-radius: 999px;
+  font-size: var(--text-sm);
   line-height: 1.4;
   cursor: pointer;
   border: 1px solid transparent;
@@ -77,23 +76,23 @@
 }
 
 .chipErr {
-  border-color: #fecaca;
+  border-color: var(--border-danger);
   background: var(--bg-danger);
   color: var(--text-danger);
 }
 
 .chipErr:hover {
-  background: #fee2e2;
+  background: color-mix(in srgb, var(--error) 10%, transparent);
 }
 
 .chipWarn {
-  border-color: #fde68a;
+  border-color: color-mix(in srgb, var(--text-warning) 35%, transparent);
   background: var(--bg-warning);
   color: var(--text-warning);
 }
 
 .chipAcc {
-  border-color: #bfdbfe;
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
   background: var(--bg-selected);
   color: var(--accent);
 }
@@ -104,7 +103,7 @@
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   padding: 2px 6px;
 }
@@ -125,7 +124,7 @@
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   padding: 0;
   text-align: left;
@@ -138,7 +137,7 @@
 .expandHint {
   margin-left: auto;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   flex-shrink: 0;
 }
 

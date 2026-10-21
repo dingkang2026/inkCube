@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 import deps
@@ -49,15 +49,24 @@ def _parse_skill_md_meta(skill_dir: Path) -> dict:
 
 
 @router.get("/skills")
-async def list_skills():
+async def list_skills(
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
     """List all installed skills."""
-    skills = deps.db.list_skills()
-    # Normalize enabled / needs_confirm fields
+    skills = deps.db.list_skills(limit=limit + 1 if limit > 0 else 0, offset=offset)
+    has_more = limit > 0 and len(skills) > limit
+    if has_more:
+        skills = skills[:limit]
+    # Normalize enabled / needs_confirm fields（归一化只作用于当前页行）
     for s in skills:
         s["enabled"] = bool(s.get("enabled", 1))
         s["needs_confirm"] = bool(s.get("needs_confirm", 0))
         s["permissions"] = []  # Agent Skills don't declare permissions
-    return {"skills": skills}
+    total = deps.db.conn.execute(
+        "SELECT COUNT(*) AS n FROM skills"
+    ).fetchone()["n"]
+    return {"skills": skills, "has_more": has_more, "total": total}
 
 
 @router.post("/skills/install")
@@ -218,9 +227,10 @@ async def delete_skill(skill_id: str):
     if not skill:
         return {"error": "Skill 不存在", "code": "SKILL_NOT_FOUND"}
 
-    # 内置 skill（2.8 §9.1）：随应用种子安装，卸载无意义且下次启动会被重新种回
+    # 内置 skill（2.8 §9.1）：随应用种子安装，卸载无意义且下次启动会被重新种回；
+    # 禁用同样禁止（2026-10-19：内置能力是应用功能基线，不允许用户关掉）
     if skill.get("source_type") == "builtin":
-        return {"error": "内置 Skill 不可卸载，可禁用", "code": "SKILL_BUILTIN_PROTECTED"}
+        return {"error": "内置 Skill 受保护，不可卸载或禁用", "code": "SKILL_BUILTIN_PROTECTED"}
 
     # Remove files
     install_path = skill.get("install_path", "")
@@ -235,8 +245,13 @@ async def delete_skill(skill_id: str):
 
 @router.post("/skills/{skill_id}/toggle")
 async def toggle_skill(skill_id: str, body: dict):
-    """Enable or disable a skill."""
+    """Enable or disable a skill（内置 skill 受保护，不允许禁用）."""
     enabled = body.get("enabled", True)
+    if not enabled:
+        skill = next(
+            (s for s in deps.db.list_skills() if s["id"] == skill_id), None)
+        if skill and skill.get("source_type") == "builtin":
+            return {"error": "内置 Skill 受保护，不可禁用", "code": "SKILL_BUILTIN_PROTECTED"}
     deps.db.toggle_skill(skill_id, enabled)
     return {"ok": True}
 
@@ -255,21 +270,22 @@ async def confirm_skill(skill_id: str):
 # Used by the frontend Skill Management page to show both builtin and external skills.
 
 BUILTIN_TOOLS = [
-    {"name": "code_executor", "description": "执行 Python 代码", "icon": "▶"},
-    {"name": "shell", "description": "Shell 命令执行", "icon": "⌘"},
-    {"name": "file_ops", "description": "文件操作（读写/替换/备份）", "icon": "📁"},
-    {"name": "code_search", "description": "代码搜索（正则/文件过滤）", "icon": "🔍"},
-    {"name": "web_search", "description": "网络搜索（Tavily）", "icon": "🔎"},
-    {"name": "code_lint", "description": "代码静态检查", "icon": "🔎"},
-    {"name": "code_format", "description": "代码格式化", "icon": "✨"},
-    {"name": "package_manager", "description": "pip 依赖管理", "icon": "📦"},
-    {"name": "project_scaffold", "description": "项目骨架生成", "icon": "🏗"},
-    {"name": "knowledge_search", "description": "知识库检索", "icon": "📚"},
-    {"name": "doc_generator", "description": "文档生成（PPTX/MD）", "icon": "📄"},
-    {"name": "repo_map", "description": "项目结构概览", "icon": "🗺"},
-    {"name": "skill_runner", "description": "外部 Skill 执行器", "icon": "🧩"},
-    {"name": "git_ops", "description": "Git 版本控制操作", "icon": "📂"},
-    {"name": "lsp_client", "description": "代码智能分析（类型检查/跳转定义/引用查找）", "icon": "🧠"},
+    # icon 不在后端下发（图标属 UI 语言，前端 TOOL_ICONS 按 name 映射 lucide）
+    {"name": "code_executor", "description": "执行 Python 代码"},
+    {"name": "shell", "description": "Shell 命令执行"},
+    {"name": "file_ops", "description": "文件操作（读写/替换/备份）"},
+    {"name": "code_search", "description": "代码搜索（正则/文件过滤）"},
+    {"name": "web_search", "description": "网络搜索（Tavily/智谱）"},
+    {"name": "code_lint", "description": "代码静态检查"},
+    {"name": "code_format", "description": "代码格式化"},
+    {"name": "package_manager", "description": "pip 依赖管理"},
+    {"name": "project_scaffold", "description": "项目骨架生成"},
+    {"name": "knowledge_search", "description": "知识库检索"},
+    {"name": "doc_generator", "description": "文档生成（PPTX/MD）"},
+    {"name": "repo_map", "description": "项目结构概览"},
+    {"name": "skill_runner", "description": "外部 Skill 执行器"},
+    {"name": "git_ops", "description": "Git 版本控制操作"},
+    {"name": "lsp_client", "description": "代码智能分析（类型检查/跳转定义/引用查找）"},
 ]
 
 

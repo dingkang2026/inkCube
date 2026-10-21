@@ -1,8 +1,10 @@
 /** src/features/project/tabs/WikiChangeLog.tsx — Project-wide changelog timeline */
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Clock, Loader2 } from 'lucide-react'
 import { ACTION_LABEL_KEYS } from './wikiUtils'
+import { usePagedList } from '../../../hooks/usePagedList'
+import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
 
 interface ChangeLogEntry {
@@ -23,23 +25,22 @@ interface WikiChangeLogProps {
 
 export function WikiChangeLog({ projectId, onNavigateToPage }: WikiChangeLogProps) {
   const { t, i18n } = useTranslation()
-  const [logs, setLogs] = useState<ChangeLogEntry[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const loadChangeLog = useCallback(async () => {
-    try {
-      const result: any = await window.electronAPI.invoke('wiki:getChangeLog', {
-        projectId, limit: 100,
-      })
-      setLogs(result.changelog || [])
-    } catch (err) {
-      console.error('Failed to load changelog:', err)
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId])
-
-  useEffect(() => { loadChangeLog() }, [loadChangeLog])
+  const showToast = useToast()
+  // 变更日志分页（0.1dev-guide 统一约定）：原 limit=100 一次性拉取改 50/页「加载更多」
+  const {
+    items: logs,
+    hasMore,
+    loadingMore,
+    loading,
+    error: logsError,
+    loadMore,
+  } = usePagedList<ChangeLogEntry>({
+    channel: 'wiki:getChangeLog', itemsKey: 'changelog', params: { projectId },
+  })
+  // 列表加载失败提示（对齐 FormsTab m-3：静默吞掉会让列表空白且无任何提示）
+  useEffect(() => {
+    if (logsError) showToast(`${t('common.listLoadFailed')}: ${logsError}`, 'error')
+  }, [logsError, showToast, t])
 
   if (loading) {
     return (
@@ -117,6 +118,15 @@ export function WikiChangeLog({ projectId, onNavigateToPage }: WikiChangeLogProp
               ))}
             </div>
           ))
+        )}
+        {hasMore && (
+          <button
+            className={s.loadMoreBtn}
+            onClick={() => { void loadMore() }}
+            disabled={loadingMore}
+          >
+            {loadingMore ? t('common.loading') : t('common.loadMore')}
+          </button>
         )}
       </div>
     </div>

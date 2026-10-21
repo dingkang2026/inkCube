@@ -3,6 +3,12 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MessageCircle, X, Send, FileText, Search, ArrowLeft, Trash2, BookPlus, Check } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
+import { UsageText } from '../usage/UsageText'
+import { TaskTemplatePanel } from '../task/TaskTemplatePanel'
+import { usePlaceholderFill } from '../task/usePlaceholderFill'
+import { hasUnfilledPlaceholders } from '../task/promptTemplate'
+import { useToast } from '../knowledge/Toast'
+import type { UsageSummary } from '../../types'
 import s from './ProjectChatPanel.module.css'
 
 interface ChatSource {
@@ -22,6 +28,8 @@ interface ChatMessage {
   sourceQuestion?: string
   /** Whether this is an error message (not archivable) */
   isError?: boolean
+  /** 本轮问答消耗（chat 响应体 usage，2.10 §4.5；无记录不渲染） */
+  usage?: UsageSummary
 }
 
 interface ProjectChatPanelProps {
@@ -44,6 +52,9 @@ const DEFAULT_WIDTH = 720
 const MIN_WIDTH = 260
 const MAX_WIDTH = 720
 
+/** 企业类占位符（zh/en 模板各一）：项目对话场景自动预填项目名（0.5 §4.4） */
+const COMPANY_PH_RE = /\{(企业名|company)\}/g
+
 export function ProjectChatPanel({ projectId, projectName, selectedFileId, selectedFilename, onClearFileScope, chatIpcChannel = 'knowledge:chat', isOpen: controlledIsOpen, onOpen, onClose }: ProjectChatPanelProps) {
   const { t } = useTranslation()
   const [internalIsOpen, setInternalIsOpen] = useState(false)
@@ -56,7 +67,13 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
       setInternalIsOpen(value)
     }
   }
-  const [inputValue, setInputValue] = useState('')
+  // 输入框 + 占位符表单联动（0.5 §4.4）：模板预填后企业类占位符自动填项目名，
+  // 其余变量按名去重、填一次全量替换；手动编辑文本框即接管
+  const phForm = usePlaceholderFill()
+  const inputValue = phForm.text
+  const showToast = useToast()
+  // 未填占位符首次发送 → toast 警示不发送，再次点击放行（与任务聊天同款守卫）
+  const placeholderWarnedRef = useRef(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH)
@@ -132,8 +149,15 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
 
   const handleSend = async () => {
     if (!inputValue.trim() || loading) return
+    // 未填占位符首次发送 → toast 警示不发送；再次点击放行（与任务聊天同款守卫）
+    if (hasUnfilledPlaceholders(inputValue) && !placeholderWarnedRef.current) {
+      placeholderWarnedRef.current = true
+      showToast(t('task.placeholderWarn'), 'error')
+      return
+    }
+    placeholderWarnedRef.current = false
     const userMsg = inputValue.trim()
-    setInputValue('')
+    phForm.reset()
 
     setMessages(prev => [...prev, {
       id: `m-${Date.now()}`,
@@ -159,9 +183,12 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
           content: result.answer || t('knowledge.chatNoAnswer'),
           sources: result.sources || [],
           sourceQuestion: lastUserMsg?.content || '',
+          usage: result.usage || undefined,
         })
         return updated
       })
+      // 单次调用即单轮（2.10 §5.3）：通知 L2 呈现位按去抖节奏重取
+      if (result.usage) window.dispatchEvent(new Event('app:usage-changed'))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setMessages(prev => [...prev, {
@@ -188,6 +215,13 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
     setArchiveSuccessId(null)
     setArchiveErrorMsgId(null)
   }
+
+  // 0.5 §4.4:点模板卡预填；企业类占位符(zh/en)预填项目名，其余变量在占位符
+  // 表单按名去重填写、一次替换全文（usePlaceholderFill 联动）
+  const handlePick = useCallback((prompt: string) => {
+    phForm.start(prompt.replace(COMPANY_PH_RE, projectName))
+    placeholderWarnedRef.current = false
+  }, [projectName, phForm])
 
   // ── Archive to Wiki ──
   const handleArchiveStart = (msgId: string, defaultTitle: string) => {
@@ -293,7 +327,8 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
           <div className={s.messages}>
             {messages.length === 0 && (
               <div className={s.emptyChat}>
-                <p>{t('knowledge.chatHint')}</p>
+                <p>{t('project.chat.emptyHint')}</p>
+                <TaskTemplatePanel scope="project" projectId={projectId} onPick={handlePick} />
               </div>
             )}
             {messages.map((msg) => (
@@ -319,6 +354,8 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
                 {/* Archive to Wiki — assistant messages only, not errors */}
                 {msg.role === 'assistant' && !msg.isError && (
                   <div className={s.messageActions}>
+                    {/* 本轮消耗（2.10 §6.1/线框 3）：「保存为 Wiki」操作行同款小字 */}
+                    <UsageText usage={msg.usage} />
                     {archiveSuccessId === msg.id ? (
                       <span className={s.archiveSuccess}>
                         <Check size={12} />
@@ -382,11 +419,28 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
           </div>
 
           {/* Input */}
+          {/* 占位符表单(0.5 §4.4,模板预填+未接管):变量按名去重,填一次全量替换 */}
+          {!phForm.manual && phForm.names.length > 0 && (
+            <div className={s.phForm}>
+              {phForm.names.map((name) => (
+                <label key={name} className={s.phItem}>
+                  <span className={s.phName}>{name}</span>
+                  <input
+                    className={s.phInput}
+                    value={phForm.values[name] ?? ''}
+                    aria-label={name}
+                    onChange={(e) => phForm.setValue(name, e.target.value)}
+                  />
+                </label>
+              ))}
+              <span className={s.phHint}>{t('task.phFormHint')}</span>
+            </div>
+          )}
           <div className={s.inputRow}>
             <input
               className={s.input}
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => phForm.onInputEdit(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={t('knowledge.chatInputPlaceholder')}
               disabled={loading}

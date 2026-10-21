@@ -1,5 +1,5 @@
 /** src/features/project/tabs/WikiTab.tsx — Wiki tab: container with sidebar + view routing */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   BookOpen, RefreshCw, AlertCircle, CheckCircle, Clock,
@@ -7,6 +7,8 @@ import {
   Maximize2, Minimize2, Square, ListOrdered,
 } from 'lucide-react'
 import type { ProjectType } from '../types'
+import type { UsageSummary } from '../../../types'
+import { UsageText } from '../../usage/UsageText'
 import { WikiHomePage, type LedgerEntry } from './WikiHomePage'
 import { WikiPageReader } from './WikiPageReader'
 import { WikiPageEditor } from './WikiPageEditor'
@@ -16,6 +18,7 @@ import { WikiGraphView } from './WikiGraphView'
 import { WikiLintView } from './WikiLintView'
 import { CompilePanel } from './CompilePanel'
 import { WikiSchemaManager } from './WikiSchemaManager'
+import { usePagedList } from '../../../hooks/usePagedList'
 import { useActivity } from '../../activity/ActivityContext'
 import { useFeatureGuard } from '../../readiness/useReadiness'
 import { useToast } from '../../knowledge/Toast'
@@ -55,6 +58,8 @@ export interface CompileTask {
   error_message: string | null
   created_at: string
   completed_at: string | null
+  /** 该次编译总消耗（wiki:compileStatus 聚合，entity=compile_task 端到端全部调用；无记录为 null，2.10 §4.5） */
+  usage?: UsageSummary | null
 }
 
 /** 父组件下发的编译状态快照（wiki:compileStatus 返回结构） */
@@ -81,14 +86,14 @@ interface WikiPage {
   updated_at: string
 }
 
-interface Review {
-  id: string
-  type: string
-  title: string
-  description: string
+/** 分型审查计数（wiki:listReviews 响应 counts，0.1dev-guide「列表分页统一约定」）：
+ *  reviews 分页后数组不再完整，徽章/健康卡计数改消费服务端分型计数 */
+interface ReviewCountBucket {
+  pending: number
   resolved: number
-  created_at: string
+  total: number
 }
+type ReviewCounts = Record<string, ReviewCountBucket>
 type ViewMode = 'home' | 'read' | 'edit' | 'changelog' | 'search' | 'graph' | 'lint' | 'schema'
 
 const PREVIEW_DEFAULT_WIDTH = 720
@@ -107,9 +112,14 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [selectedPage, setSelectedPage] = useState<WikiPage | null>(null)
   const [pageDetail, setPageDetail] = useState<any>(null)
   const [compileTask, setCompileTask] = useState<CompileTask | null>(null)
-  const [reviews, setReviews] = useState<Review[]>([])
+  const [reviewCounts, setReviewCounts] = useState<ReviewCounts>({})
   const [schemas, setSchemas] = useState<Array<{ page_key: string; title: string }>>([])
-  const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([])
+  // pages 分页（0.1dev-guide 统一约定）：复合响应（同包 purpose/overview/source_pages 等
+  // 全量元数据），不适配 usePagedList，按 useTasks limitsRef 模式手写 limit 递增全量重拉
+  const pagesLimitRef = useRef(50)
+  const [pagesHasMore, setPagesHasMore] = useState(false)
+  const [pagesLoadingMore, setPagesLoadingMore] = useState(false)
+  const [pagesTotal, setPagesTotal] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [compiling, setCompiling] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('home')
@@ -117,6 +127,13 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [isResumed, setIsResumed] = useState(false)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
   const [showRecompileConfirm, setShowRecompileConfirm] = useState(false)
+  // 重编译确认：Esc = 取消（强制交互确认语义 0.3 §5.2，同 ConfirmDialog）
+  useEffect(() => {
+    if (!showRecompileConfirm) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowRecompileConfirm(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [showRecompileConfirm])
   const [graphHighlightNode, setGraphHighlightNode] = useState<string | undefined>(undefined)
   const [previewPageKey, setPreviewPageKey] = useState<string | null>(null)
   const [isEditing, setIsEditing] = useState(false)
@@ -169,13 +186,29 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const latestPidRef = useRef(projectId)
   useEffect(() => { latestPidRef.current = projectId }, [projectId])
 
-  // Load pages list + purpose/overview/source_pages
+  // 同类型项目切换清预览态（review H-2）：selectedPage/pageDetail/previewPageKey
+  // 属于旧项目数据，残留会让预览面板显示旧项目页——同类型结构页标题一致无违和感，
+  // 用户编辑保存会以新 projectId 整页覆盖 B 项目同名页且置 user_edited（永久脱离编译）
+  useEffect(() => {
+    setSelectedPage(null)
+    setPageDetail(null)
+    setPreviewPageKey(null)
+    setIsEditing(false)
+  }, [projectId])
+
+  // Load pages list + purpose/overview/source_pages（pages 按 pagesLimitRef 分页，
+  // purpose/overview/source_pages 等元数据始终全量返回）
   const loadPages = useCallback(async () => {
     const pid = projectId
     try {
-      const result: any = await window.electronAPI.invoke('wiki:listPages', { projectId: pid })
+      const result: any = await window.electronAPI.invoke('wiki:listPages', {
+        projectId: pid,
+        limit: pagesLimitRef.current,
+      })
       if (latestPidRef.current !== pid) return
       setPages(result.pages || [])
+      setPagesHasMore(!!result.has_more)
+      setPagesTotal(typeof result.total === 'number' ? result.total : null)
       setPendingCount(result.pending_compile_count || 0)
       setPurpose(result.wiki_purpose || '')
       setOverview(result.wiki_overview || '')
@@ -187,17 +220,38 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     }
   }, [projectId])
 
-  // Load reviews
-  const loadReviews = useCallback(async () => {
+  // 加载更多页面：limit 递增全量重拉（useTasks limitsRef 模式，不退回第一页）
+  const loadMorePages = useCallback(async () => {
+    if (!pagesHasMore || pagesLoadingMore) return
+    setPagesLoadingMore(true)
+    try {
+      pagesLimitRef.current += 50
+      await loadPages()
+    } finally {
+      setPagesLoadingMore(false)
+    }
+  }, [pagesHasMore, pagesLoadingMore, loadPages])
+
+  // 分型审查计数（徽章/健康卡数据源）：分页后 reviews 数组不再完整，
+  // 改消费响应 counts（服务端全量分型计数，与 limit 无关）；limit=1 最小负载
+  const loadReviewCounts = useCallback(async () => {
     const pid = projectId
     try {
-      const result: any = await window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false })
+      const result: any = await window.electronAPI.invoke('wiki:listReviews', {
+        projectId: pid, resolved: false, limit: 1,
+      })
       if (latestPidRef.current !== pid) return
-      setReviews(result.reviews || [])
+      setReviewCounts(result.counts || {})
     } catch (err) {
-      console.error('Failed to load reviews:', err)
+      console.error('Failed to load review counts:', err)
     }
   }, [projectId])
+
+  // 侧栏 lint 徽章：待处理（未解决）总数 = 各型 pending 之和
+  const pendingReviewTotal = useMemo(
+    () => Object.values(reviewCounts).reduce((sum, c) => sum + (c.pending || 0), 0),
+    [reviewCounts],
+  )
 
   // Load schemas（结构页定义，知识首页完成度数据源，3.0 一期 Task 6）
   const loadSchemas = useCallback(async () => {
@@ -211,28 +265,35 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     }
   }, [projectId])
 
-  // Load ledger entries（台账条目，知识首页时间轴数据源，3.0 四期 T7；limit 20 同设计 §5.2）
-  const loadLedgerEntries = useCallback(async () => {
-    const pid = projectId
-    try {
-      const result: any = await window.electronAPI.invoke('wiki:listLedgerEntries', { projectId: pid, limit: 20 })
-      if (latestPidRef.current !== pid) return
-      setLedgerEntries(result.entries || [])
-    } catch (err) {
-      console.error('Failed to load ledger entries:', err)
-    }
-  }, [projectId])
+  // 台账条目时间轴（3.0 四期 T7；20/页「加载更多」，§列表分页统一约定）
+  const {
+    items: ledgerEntries,
+    hasMore: hasMoreLedger,
+    loadingMore: loadingMoreLedger,
+    error: ledgerError,
+    reload: reloadLedgerEntries,
+    loadMore: loadMoreLedgerEntries,
+  } = usePagedList<LedgerEntry>({
+    channel: 'wiki:listLedgerEntries', itemsKey: 'entries', params: { projectId }, pageSize: 20,
+  })
+  // 列表加载失败提示（对齐 FormsTab m-3：静默吞掉会让列表空白且无任何提示）
+  useEffect(() => {
+    if (ledgerError) showToast(`${t('common.listLoadFailed')}: ${ledgerError}`, 'error')
+  }, [ledgerError, showToast, t])
 
   // 台账解析心跳（3.0 四期）：本项目 ledger_parse 活跃 → 时间轴卡头「解析中」提示（旧条目照常可读）
   const ledgerParsing = useActivity('ledger_parse').items.some((a) => a.project_id === projectId)
 
-  // Initial load（编译状态不再自行拉取，改由父组件 #4 轮询下发，v1.7 迁移自原 #3 独立轮询，0.4 §8.1）
+  // Initial load（编译状态不再自行拉取，改由父组件 #4 轮询下发，v1.7 迁移自原 #3 独立轮询，0.4 §8.1）；
+  // 台账时间轴由 usePagedList 自管首拉；projectId 切换时 pages 游标重置回单页量
+  useEffect(() => {
+    pagesLimitRef.current = 50
+  }, [projectId])
   useEffect(() => {
     loadPages()
-    loadReviews()
+    loadReviewCounts()
     loadSchemas()
-    loadLedgerEntries()
-  }, [loadPages, loadReviews, loadSchemas, loadLedgerEntries])
+  }, [loadPages, loadReviewCounts, loadSchemas])
 
   // 直达信号（consume-once）：脉搏带矛盾/缺口 chip 或健康卡「去处理」→ 治理视图（3.0 §6.1.1；
   // ts 保证重复点击同型 chip 也能再次触发，语义同 handleGoLint；应用后即回调置空，
@@ -272,11 +333,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     if (status && ['completed', 'failed', 'stopped'].includes(status)) {
       setCompiling(false)
       void loadPages()
-      void loadReviews()
+      void loadReviewCounts()
       void loadSchemas()
-      void loadLedgerEntries()
+      void reloadLedgerEntries()
     }
-  }, [compileTask?.status, loadPages, loadReviews, loadSchemas, loadLedgerEntries])
+  }, [compileTask?.status, loadPages, loadReviewCounts, loadSchemas, reloadLedgerEntries])
 
   // 明细面板展开/收起上报父组件（#4 轮询据此降至 2s，0.4 §8.1）；
   // unmount 时上报 false，避免父组件在 Tab 切走后仍以 2s 高频轮询
@@ -302,14 +363,18 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
 
   // Load page detail when selected for reading
   const loadPageDetail = useCallback(async (page: WikiPage) => {
+    const pid = projectId
     try {
       const result: any = await window.electronAPI.invoke('wiki:getPage', {
-        projectId,
+        projectId: pid,
         pageKey: page.page_key,
       })
+      if (latestPidRef.current !== pid) return
       setPageDetail(result)
     } catch (err) {
       console.error('Failed to load page detail:', err)
+      // 失败不留旧详情（本文件五个 loader 唯一漏网，review H-2 补齐同款守卫）
+      if (latestPidRef.current === pid) setPageDetail(null)
     }
   }, [projectId])
 
@@ -321,14 +386,28 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   }, [loadPageDetail])
 
   // Navigate to page by key (from wiki-links, backlinks, etc.)
-  const handleNavigateToPage = useCallback((pageKey: string) => {
+  const handleNavigateToPage = useCallback(async (pageKey: string) => {
     const page = pages.find((p) => p.page_key === pageKey)
     if (page) {
       handleSelectPage(page)
-    } else {
+      return
+    }
+    // pages 分页后目标页可能不在已加载列表（wiki-links/backlinks 深跳转）：
+    // 按 key 直拉详情兜底（getPage 不分页），避免「加载更多」前深链跳转失效
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:getPage', { projectId, pageKey })
+      if (latestPidRef.current !== projectId) return
+      if (!result?.page) {
+        console.warn('Page not found:', pageKey)
+        return
+      }
+      setSelectedPage(result.page)
+      setPageDetail(result)
+      setPreviewPageKey(pageKey)
+    } catch {
       console.warn('Page not found:', pageKey)
     }
-  }, [pages, handleSelectPage])
+  }, [pages, projectId, handleSelectPage])
 
   // Go to home view
   const handleGoHome = useCallback(() => {
@@ -358,6 +437,21 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setIsEditing(false)
   }, [loadPages, selectedPage, loadPageDetail])
 
+  // 页面已删除（§5.3）：关预览 + 刷新列表与审查计数（后端已级联清理 reviews/refs）
+  const handlePageDeleted = useCallback(() => {
+    setSelectedPage(null)
+    setPageDetail(null)
+    setPreviewPageKey(null)
+    setIsEditing(false)
+    void loadPages()
+    void loadReviewCounts()
+  }, [loadPages, loadReviewCounts])
+
+  // 页面内容已变化（§7.1 富化写回）：重拉 pageDetail（传 selectedPage 仅为取 page_key，后端以 key 查最新）
+  const handleRefreshPageDetail = useCallback(() => {
+    if (selectedPage) void loadPageDetail(selectedPage)
+  }, [selectedPage, loadPageDetail])
+
   // Go to changelog
   const handleGoChangelog = useCallback(() => {
     setViewMode('changelog')
@@ -381,9 +475,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
 
   // 治理动作后：重拉发现项计数 + 上报父级刷新脉搏带（0.4 §3.1「操作后刷新」，3.0 一期最终 review）
   const handleFindingsChanged = useCallback(() => {
-    void loadReviews()
+    void loadReviewCounts()
     onReviewsChanged?.()
-  }, [loadReviews, onReviewsChanged])
+  }, [loadReviewCounts, onReviewsChanged])
 
   // Trigger compile (V2 per-file ingest, continuous run); entry guard per 0.4 §7.3
   const handleCompile = (force = false) => {
@@ -430,7 +524,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', force: true })
       // 触发成功后才清空本地列表（后端此时才 wipe）；失败时保留原数据仅提示
       setPages([])
-      setReviews([])
+      setReviewCounts({})
+      pagesLimitRef.current = 50
+      setPagesHasMore(false)
       setSelectedPage(null)
       setPreviewPageKey(null)
       setViewMode('home')
@@ -556,6 +652,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 {t('project.wiki.compileDone', { count: compileTask.pages_completed ?? 0, defaultValue: `编译完成 (${compileTask.pages_completed ?? 0} 个文件)` })}
               </span>
             )}
+            {/* 该次编译总消耗（2.10 §6.1/线框 6）：entity=compile_task 端到端全部调用 */}
+            {compileTask.usage?.calls ? (<> · <UsageText usage={compileTask.usage} /></>) : null}
             {/* 重试失败（2.6 §13.3）：非 force 增量——失败文件无 source_pages 记录天然重跑，
                 已成功文件 skip-if-unchanged 跳过；与 failed/stopped 状态条的重试同一语义 */}
             {ingestSummaries.some(s => s.error) && (
@@ -680,8 +778,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             >
               <Shield size={13} />
               <span>{t('project.wiki.lint')}</span>
-              {reviews.length > 0 && (
-                <span className={s.navBadge}>{reviews.length}</span>
+              {pendingReviewTotal > 0 && (
+                <span className={s.navBadge}>{pendingReviewTotal}</span>
               )}
             </div>
             <div
@@ -712,14 +810,21 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               onCompile={() => handleCompile()}
               onMetaSaved={() => void loadPages()}
               reviewCounts={{
-                contradiction: reviews.filter((r) => r.type === 'contradiction').length,
-                gap: reviews.filter((r) => r.type === 'data-gap' || r.type === 'missing-page').length,
-                deadLink: reviews.filter((r) => r.type === 'broken-link').length,
+                contradiction: reviewCounts.contradiction?.pending ?? 0,
+                gap: (reviewCounts['data-gap']?.pending ?? 0) + (reviewCounts['missing-page']?.pending ?? 0),
+                deadLink: reviewCounts['broken-link']?.pending ?? 0,
               }}
               onOpenLint={() => setViewMode('lint')}
               schemas={schemas}
+              pagesTotal={pagesTotal}
+              hasMorePages={pagesHasMore}
+              pagesLoadingMore={pagesLoadingMore}
+              onLoadMorePages={() => { void loadMorePages() }}
               ledgerEntries={ledgerEntries}
               ledgerParsing={ledgerParsing}
+              hasMoreLedger={hasMoreLedger}
+              ledgerLoadingMore={loadingMoreLedger}
+              onLoadMoreLedger={() => { void loadMoreLedgerEntries() }}
             />
           ) : viewMode === 'search' ? (
             /* Search view */
@@ -776,6 +881,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               ×
             </button>
           </div>
+          {/* key=page_key：切页强制重挂载——版本/快照/确认框/backlinks 随实例生命周期复位，
+              组件实例复用时晚到响应跨页覆盖的竞态在挂载边界根除 */}
           {isEditing ? (
             <WikiPageEditor
               projectId={projectId}
@@ -785,11 +892,14 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             />
           ) : (
             <WikiPageReader
+              key={pageDetail.page.page_key}
               projectId={projectId}
               pageDetail={pageDetail}
               sourcePages={sourcePages}
               onEdit={handleGoEdit}
               onNavigateToPage={handleNavigateToPage}
+              onDeleted={handlePageDeleted}
+              onRefresh={handleRefreshPageDetail}
             />
           )}
         </div>

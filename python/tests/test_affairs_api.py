@@ -6,6 +6,7 @@ import tempfile
 from datetime import date, timedelta
 
 import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -182,6 +183,23 @@ def test_stage_change_hook_calls_activate(client_and_db, monkeypatch):
     assert calls == ["during"]
     asyncio.run(update_project(pid, ProjectUpdate(name="P2")))       # 改名不触发
     assert calls == ["during"]
+
+
+def test_stage_kept_when_activate_fails(client_and_db, monkeypatch):
+    """M-2：activate_phase 失败上抛 → 500 且 stage 保持旧值（先激活后写 stage，
+    不留「阶段已换、任务未铺出」中间态）。原实现后置调用且吞异常。"""
+    client, db = client_and_db
+    pid = db.create_project(name="P", project_type="recruitment", stage="before")["id"]
+
+    def boom(db_, pid_, stage):
+        raise RuntimeError("activate failed")
+
+    monkeypatch.setattr(affairs_service, "activate_phase", boom)
+    from routers.knowledge import update_project, ProjectUpdate
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(update_project(pid, ProjectUpdate(stage="during")))
+    assert ei.value.status_code == 500
+    assert db.get_project(pid)["stage"] == "before"
 
 
 def test_heartbeat_hook_calls_roll(client_and_db, monkeypatch):

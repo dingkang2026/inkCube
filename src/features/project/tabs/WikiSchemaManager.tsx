@@ -4,7 +4,7 @@
  * 在每次编译时注入两阶段 prompt 作为结构指引。后端 CRUD 端点与 IPC 四通道
  * (wiki:getSchemas/createSchema/updateSchema/deleteSchema)早已预留,本组件为首个前端接入点。
  * 变更经 DB 层 _notify_schema_change 使同类型项目 pending_compile_count+1(首页
- * 「待编译」提示自动出现);已编译页面不回溯,重新编译后按新结构重建。
+ * 「待编译」提示自动出现）;已编译页面不回溯，重新编译后按新结构重建。
  */
 import { useState, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'

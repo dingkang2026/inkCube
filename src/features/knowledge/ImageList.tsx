@@ -1,7 +1,7 @@
 /** src/features/knowledge/ImageList.tsx */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { X, RefreshCw, Package } from 'lucide-react'
+import { X, RefreshCw, Package, Trash2 } from 'lucide-react'
 import type { ImageRecord, KnowledgeIpcChannels } from './types'
 import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { useToast } from './Toast'
@@ -101,6 +101,18 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
     }
   }
 
+  // 删除：向量/磁盘/记录后端一并清除；confirm 默认红色确认钮（破坏性操作）
+  const handleDelete = async (imageId: string) => {
+    if (!(await confirmDialog({ title: t('knowledge.deleteImage'), message: t('knowledge.confirmDeleteImage') }))) return
+    try {
+      await window.electronAPI.invoke(ipc.deleteImage, { projectId, imageId })
+      loadImages()
+      showToast(t('knowledge.deleteSuccess'), 'success')
+    } catch (err) {
+      handleError(err)
+    }
+  }
+
   const handleRetryFailed = async () => {
     try {
       await window.electronAPI.invoke(ipc.retryFailedImages, { projectId, fileId })
@@ -191,6 +203,9 @@ export function ImageList({ projectId, fileId, onClose, ipcChannels }: ImageList
                     <Package size={13} />
                   </button>
                 )}
+                <button className={s.actionBtn} onClick={() => handleDelete(img.id)} title={t('knowledge.deleteImage')}>
+                  <Trash2 size={13} />
+                </button>
               </div>
             </div>
           ))}

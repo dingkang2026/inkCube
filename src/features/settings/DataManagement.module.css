@@ -14,7 +14,7 @@
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -29,9 +29,9 @@
 .openDirBtn {
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: white;
-  font-size: 11px;
+  border-radius: 2px;
+  background: var(--bg-primary);
+  font-size: var(--text-xs);
   cursor: pointer;
   color: var(--accent);
   white-space: nowrap;
@@ -48,7 +48,7 @@
   padding: 8px 12px;
   background: var(--bg-muted);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
 }
 
@@ -78,16 +78,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
-  font-size: 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-lg);
   flex-shrink: 0;
 }
 
 .categoryIcon.logs { background: #fef3c7; }
-.categoryIcon.conversations { background: #dbeafe; }
 .categoryIcon.knowledge { background: #dcfce7; }
 .categoryIcon.settings { background: #f3e8ff; }
 .categoryIcon.models { background: #fee2e2; }
+.categoryIcon.tasks { background: #dbeafe; }
+.categoryIcon.reports { background: #ffedd5; }
+.categoryIcon.extras { background: #ccfbf1; }
+.categoryIcon.uv_cache { background: #e0e7ff; }
+.categoryIcon.fetched { background: #fce7f3; }
 
 .categoryInfo {
   flex: 1;
@@ -95,19 +99,19 @@
 }
 
 .categoryName {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--text-primary);
 }
 
 .categoryDesc {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
 
 .categorySize {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   font-family: var(--font-mono);
   white-space: nowrap;
@@ -118,9 +122,9 @@
 .cleanBtn {
   padding: 5px 12px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: white;
-  font-size: 12px;
+  border-radius: 2px;
+  background: var(--bg-primary);
+  font-size: var(--text-sm);
   cursor: pointer;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -129,12 +133,86 @@
 .cleanBtn:hover {
   background: var(--bg-hover);
   color: var(--text-danger);
-  border-color: #fca5a5;
+  border-color: color-mix(in srgb, var(--text-danger) 40%, transparent);
 }
 
 .cleanBtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 不可整体清理的分类占位（reports/extras，清理走各自功能页） */
+.notCleanable {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* 保留策略区块：数字输入走 SettingsPage 自动保存链路，非即时生效（启动期执行） */
+.retentionSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.retentionTitle {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.retentionDesc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.retentionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.retentionLabel {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.retentionInputWrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.retentionInput {
+  width: 72px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  text-align: right;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.retentionInput:focus {
+  border-color: var(--accent);
+}
+
+.retentionUnit {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.retentionHint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 .divider {
@@ -149,35 +227,35 @@
   gap: 8px;
   padding: 12px;
   background: var(--bg-danger);
-  border: 1px solid #fecaca;
+  border: 1px solid color-mix(in srgb, var(--text-danger) 25%, transparent);
   border-radius: var(--radius-sm);
 }
 
 .resetTitle {
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
-  color: #991b1b;
+  color: var(--text-danger);
 }
 
 .resetDesc {
-  font-size: 12px;
-  color: #b91c1c;
+  font-size: var(--text-sm);
+  color: var(--text-danger);
 }
 
 .resetBtn {
   align-self: flex-start;
   padding: 6px 16px;
-  border: 1px solid #fca5a5;
-  border-radius: 4px;
-  background: white;
-  font-size: 12px;
+  border: 1px solid color-mix(in srgb, var(--text-danger) 40%, transparent);
+  border-radius: 2px;
+  background: var(--bg-primary);
+  font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
-  color: #991b1b;
+  color: var(--text-danger);
 }
 
 .resetBtn:hover {
-  background: #fee2e2;
+  background: var(--bg-danger);
 }
 
 .resetBtn:disabled {
@@ -191,15 +269,15 @@
   justify-content: center;
   padding: 32px;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 .refreshBtn {
   padding: 4px 10px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: white;
-  font-size: 11px;
+  border-radius: 2px;
+  background: var(--bg-primary);
+  font-size: var(--text-xs);
   cursor: pointer;
   color: var(--text-secondary);
 }

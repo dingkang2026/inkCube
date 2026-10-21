@@ -24,15 +24,28 @@ def db(tmp_path):
 
 class TestTaskMaxIterationsExposed:
     def test_get_settings_default_contains_key(self, db):
-        """默认表含 task_max_iterations=25（白名单回归）。"""
-        assert db.get_settings()["task_max_iterations"] == 25
+        """默认表含 task_max_iterations=60（白名单回归）。"""
+        assert db.get_settings()["task_max_iterations"] == 60
 
     def test_saved_value_round_trips(self, db):
         """已保存值经白名单回读不丢失（save → get 往返）。"""
-        db.save_settings({"task_max_iterations": 60})
-        assert db.get_settings()["task_max_iterations"] == 60
+        db.save_settings({"task_max_iterations": 99})
+        assert db.get_settings()["task_max_iterations"] == 99
 
     def test_settings_model_declares_field(self):
         """SettingsModel 声明该字段（POST /settings 反序列化不丢键）。"""
-        assert SettingsModel().task_max_iterations == 25
+        assert SettingsModel().task_max_iterations == 60
         assert SettingsModel(task_max_iterations=99).task_max_iterations == 99
+
+
+class TestTaskTimeoutDefault:
+    """task_timeout 默认 30（2026-10-17 回滚）：chat 单命令护栏；
+    ppt-master 等工作流型长脚本链由 ORIGIN_PRESETS 专用键落地 600 覆盖
+    （2.3 §3.2），通用键不为此放大——白名单默认值会破坏「未设置」判定
+    （ORIGIN_PRESETS 曾因此整体失效，见 test_ppt_service.py 回归）。"""
+
+    def test_get_settings_default(self, db):
+        assert db.get_settings()["task_timeout"] == 30
+
+    def test_settings_model_default(self):
+        assert SettingsModel().task_timeout == 30

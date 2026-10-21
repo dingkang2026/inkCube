@@ -1,5 +1,6 @@
 /** src/features/knowledge/types.ts */
 import type { ProjectType, ProjectStage } from '../project/types'
+import type { UsageSummary } from '../../types'
 
 export interface Project {
   id: string
@@ -11,9 +12,13 @@ export interface Project {
   credit_code?: string
   /** AI 状态句(3.0 四期):编译时点快照,空串/未生成 = 回落规则句 */
   pulse_ai_status?: string | null
+  /** 归档时间(非空 = 已归档,生命周期软关闭;NULL = 有效) */
+  archived_at?: string | null
   file_count: number
   chunk_count: number
   created_at: string
+  /** 项目累计 token 消耗（listProjects 聚合；无记录为 null，2.10 §4.5） */
+  usage?: UsageSummary | null
 }
 
 /** 创建项目回调(3.0 二期裁决 8):成功返回 id + 铺入任务数(创建确认态展示),失败/取消返回 undefined */
@@ -66,6 +71,8 @@ export const IMAGE_CATEGORIES = [
   'table',
   'formula',
   'logo',
+  'invoice',
+  'certificate',
   'qr_code',
   'signature',
   'seal',
@@ -113,6 +120,7 @@ export interface KnowledgeIpcChannels {
   recentChunks: string
   getProjectImages: string
   getImages: string
+  deleteImage: string
   retryImage: string
   updateImageCategory: string
   archiveImage: string
@@ -133,6 +141,7 @@ export const DEFAULT_KNOWLEDGE_IPC_CHANNELS: KnowledgeIpcChannels = {
   recentChunks: 'knowledge:recentChunks',
   getProjectImages: 'knowledge:getProjectImages',
   getImages: 'knowledge:getImages',
+  deleteImage: 'knowledge:deleteImage',
   retryImage: 'knowledge:retryImage',
   updateImageCategory: 'knowledge:updateImageCategory',
   archiveImage: 'knowledge:archiveImage',

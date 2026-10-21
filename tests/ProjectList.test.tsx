@@ -1,111 +1,137 @@
-/** tests/ProjectList.test.tsx — 3.0 二期 Task 13:创建确认态(裁决 8) */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-
-vi.mock('react-i18next', () => ({
-  // 带参序列化(Task 9 口径):插值断言(如确认态 seeded count '24')才可达
-  useTranslation: () => ({ t: (k: string, o?: Record<string, unknown>) =>
-    (o ? `${k}:${JSON.stringify(o)}` : k) as string }),
-}))
-vi.mock('../src/features/activity/ActivityContext', () => ({
-  useActivity: () => ({ byProject: new Map(), items: [] }),
-}))
-vi.mock('../src/features/knowledge/ProjectList.module.css', () => ({
-  default: new Proxy({}, { get: (_t, k) => String(k) }),
-}))
-
-import { render, fireEvent, cleanup, act } from '@testing-library/react'
+/** tests/ProjectList.test.tsx — 项目列表导出/导入入口（2.9project-transfer-design.md §8）
+ *  覆盖：菜单导出项渲染/回调、导入按钮渲染/回调、导出中菜单禁用、导入中按钮进度态。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import type { ComponentProps } from 'react'
 import { ProjectList } from '../src/features/knowledge/ProjectList'
 
-const flush = async () => {
-  for (let i = 0; i < 6; i++) {
-    await act(async () => { await Promise.resolve() })
+// useActivity 双形态（ActivityContext.tsx：无参返回含 byProject 的完整 ctx——ProjectList
+// 活跃点用；带 kind 返回 ActivityKindView——导出/导入进度态用）。按 kind 注入视图。
+const activityViews = vi.hoisted(() => new Map<string, { items: unknown[]; isActive: boolean }>())
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (k: string) => k }),
+}))
+
+vi.mock('../src/features/activity/ActivityContext', () => ({
+  useActivity: (kind?: string) => {
+    if (!kind) {
+      return {
+        byProject: new Map(),
+        activeProjectIds: new Set(),
+        status: null,
+        feed: [],
+        applyStatus: vi.fn(),
+        markRead: vi.fn(),
+      }
+    }
+    const v = activityViews.get(kind)
+    return { kind, items: v?.items ?? [], isActive: v?.isActive ?? false }
+  },
+}))
+
+vi.mock('../src/features/project/affairs/HealthDot', () => ({
+  HealthDot: () => null,
+}))
+
+const baseProject = {
+  id: 'p1',
+  name: 'Alpha',
+  description: '',
+  file_count: 0,
+  chunk_count: 0,
+  created_at: '2026-10-16T00:00:00Z',
+} as ComponentProps<typeof ProjectList>['projects'][number]
+
+function renderList(props: Partial<ComponentProps<typeof ProjectList>> = {}) {
+  const base: ComponentProps<typeof ProjectList> = {
+    projects: [baseProject],
+    selectedProject: null,
+    onSelect: () => {},
+    onDelete: () => {},
+    activeTab: 'active',
+    onTabChange: () => {},
+    archivedCount: 0,
+    onArchiveProject: () => {},
+    onUnarchiveProject: () => {},
   }
+  return render(<ProjectList {...base} {...props} />)
 }
 
-const base = { projects: [], selectedProject: null, onSelect: vi.fn(), onDelete: vi.fn() }
+describe('ProjectList 导出/导入入口（2.9 §8）', () => {
+  beforeEach(() => activityViews.clear())
 
-beforeEach(() => vi.clearAllMocks())
-afterEach(() => cleanup())
-
-const openAndFill = (getByPlaceholderText: (s: string) => HTMLElement, getByText: (s: string | RegExp) => HTMLElement, name = '新园区') => {
-  fireEvent.click(getByText('knowledge.newProject'))
-  fireEvent.change(getByPlaceholderText('knowledge.projectName'), { target: { value: name } })
-}
-
-describe('ProjectList create confirm (裁决 8)', () => {
-  it('switches to confirm state with seeded count after create resolves', async () => {
-    const onCreate = vi.fn().mockResolvedValue({ id: 'p9', seeded_tasks_count: 24 })
-    const { getByPlaceholderText, getByText, container, queryByPlaceholderText } = render(
-      <ProjectList {...base} onCreate={onCreate} />)
-    openAndFill(getByPlaceholderText, getByText)
-    fireEvent.click(getByText('knowledge.create'))
-    await flush()
-    const text = container.textContent!
-    expect(text).toContain('knowledge.wizardConfirmDesc')
-    expect(text).toContain('24')
-    expect(queryByPlaceholderText('knowledge.projectName')).toBeNull()   // 表单已切走,modal 未关
+  it('提供 onExportProject 时菜单含导出项，点击回调携带项目 id 与名称', () => {
+    const onExportProject = vi.fn()
+    renderList({ onExportProject })
+    fireEvent.click(screen.getByLabelText('knowledge.projectActions'))
+    fireEvent.click(screen.getByText('knowledge.exportProject'))
+    expect(onExportProject).toHaveBeenCalledWith('p1', 'Alpha')
   })
 
-  it('adjust button dispatches navigate-project-tab with affairs tab and closes', async () => {
-    const onCreate = vi.fn().mockResolvedValue({ id: 'p9', seeded_tasks_count: 24 })
-    const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
-    const { getByPlaceholderText, getByText, queryByText } = render(
-      <ProjectList {...base} onCreate={onCreate} />)
-    openAndFill(getByPlaceholderText, getByText)
-    fireEvent.click(getByText('knowledge.create'))
-    await flush()
-    dispatchSpy.mockClear()
-    fireEvent.click(getByText('knowledge.wizardConfirmAdjust'))
-    const ev = dispatchSpy.mock.calls.map(([e]) => e as CustomEvent)
-      .find((e) => e.type === 'app:navigate-project-tab')
-    expect(ev).toBeTruthy()
-    expect((ev as CustomEvent).detail).toEqual({ projectId: 'p9', tab: 'affairs' })
-    expect(queryByText('knowledge.wizardConfirmAdjust')).toBeNull()      // modal 已关
+  it('未提供 onExportProject 时不渲染导出项', () => {
+    renderList()
+    fireEvent.click(screen.getByLabelText('knowledge.projectActions'))
+    expect(screen.queryByText('knowledge.exportProject')).toBeNull()
   })
 
-  it('falls back to legacy close when onCreate resolves without result', async () => {
-    const onCreate = vi.fn().mockResolvedValue(undefined)
-    const { getByPlaceholderText, getByText, queryByPlaceholderText } = render(
-      <ProjectList {...base} onCreate={onCreate} />)
-    openAndFill(getByPlaceholderText, getByText)
-    fireEvent.click(getByText('knowledge.create'))
-    await flush()
-    expect(queryByPlaceholderText('knowledge.projectName')).toBeNull()   // 直接关,原行为
+  it('提供 onImportProject 时渲染导入图标钮，点击触发回调', () => {
+    const onImportProject = vi.fn()
+    renderList({ onImportProject })
+    fireEvent.click(screen.getByTitle('knowledge.importProject'))
+    expect(onImportProject).toHaveBeenCalledTimes(1)
   })
 
-  it('discards stale confirm state if modal closed while create is in-flight (M1)', async () => {
-    let resolveCreate!: (v: { id: string; seeded_tasks_count: number }) => void
-    const onCreate = vi.fn().mockImplementation(
-      () => new Promise<{ id: string; seeded_tasks_count: number }>((res) => { resolveCreate = res }))
-    const { getByPlaceholderText, getByText, queryByText } = render(
-      <ProjectList {...base} onCreate={onCreate} />)
-    openAndFill(getByPlaceholderText, getByText)
-    fireEvent.click(getByText('knowledge.create'))
-    // 在途期间 Escape 关闭 modal(resetAndClose)
-    fireEvent.keyDown(getByPlaceholderText('knowledge.projectName'), { key: 'Escape' })
-    await act(async () => { resolveCreate({ id: 'p9', seeded_tasks_count: 24 }) })
-    await flush()
-    // 重开 modal 必须是表单态,不得残留上一个项目的确认态(陈旧 projectId 可致误导航)
-    fireEvent.click(getByText('knowledge.newProject'))
-    expect(queryByText('knowledge.wizardConfirmTitle')).toBeNull()
-    expect(getByPlaceholderText('knowledge.projectName')).toBeTruthy()
-  })
-})
-
-describe('ProjectList health dot (3.0 三期 Task 3)', () => {
-  const proj = { id: 'p1', name: 'P1', file_count: 0, description: '', type: 'general', stage: 'before' }
-
-  it('renders health dot with level class and i18n title when healthData provided', () => {
-    const { container } = render(
-      <ProjectList {...base} projects={[proj]}
-        healthData={{ p1: { overdue: 2, weekDue: 1, reviewsPending: 0 } }} />)
-    const dot = container.querySelector('span[class*="red"]')   // css mock: 类名=键名
-    expect(dot).toBeTruthy()
-    expect(dot!.getAttribute('title')).toContain('homeTodo.healthRed')
+  it('未提供 onImportProject 时不渲染导入图标钮', () => {
+    renderList()
+    expect(screen.queryByTitle('knowledge.importProject')).toBeNull()
   })
 
-  it('omits health dot without healthData (未接线/降级态)', () => {
-    const { container } = render(<ProjectList {...base} projects={[proj]} />)
-    expect(container.querySelector('span[title]')).toBeNull()
+  it('导出中：菜单项禁用（2.9 §8.2 幂等防重）', () => {
+    activityViews.set('project_export', {
+      items: [{ entity_type: 'project_export', project_id: 'p1', progress: 40 }],
+      isActive: true,
+    })
+    renderList({ onExportProject: vi.fn() })
+    fireEvent.click(screen.getByLabelText('knowledge.projectActions'))
+    expect(screen.getByText('knowledge.exportProject')).toHaveProperty('disabled', true)
+  })
+
+  it('导入中：图标钮禁用且 title 回显进度（2.9 §8.2）', () => {
+    activityViews.set('project_import', {
+      items: [{ entity_type: 'project_import', project_id: null, progress: 45 }],
+      isActive: true,
+    })
+    renderList({ onImportProject: vi.fn() })
+    expect(screen.getByTitle('knowledge.importing 45%')).toHaveProperty('disabled', true)
+  })
+
+  it('createSignal 递增自动打开创建模态（0.5 E1 T4 首页「新建项目」信号）', () => {
+    const full: ComponentProps<typeof ProjectList> = {
+      projects: [baseProject], selectedProject: null, onSelect: () => {}, onDelete: () => {},
+      activeTab: 'active', onTabChange: () => {}, archivedCount: 0,
+      onArchiveProject: () => {}, onUnarchiveProject: () => {}, createSignal: 0,
+    }
+    const view = render(<ProjectList {...full} />)
+    expect(screen.queryByText('knowledge.createProject')).toBeNull()
+    view.rerender(<ProjectList {...full} createSignal={1} />)
+    expect(screen.getByText('knowledge.createProject')).toBeTruthy()
+  })
+
+  it('createSignal 消费即复位：回调被调用且重挂载后不再重放（E1 review M1）', () => {
+    const full: ComponentProps<typeof ProjectList> = {
+      projects: [baseProject], selectedProject: null, onSelect: () => {}, onDelete: () => {},
+      activeTab: 'active', onTabChange: () => {}, archivedCount: 0,
+      onArchiveProject: () => {}, onUnarchiveProject: () => {}, createSignal: 1,
+    }
+    const onConsumed = vi.fn()
+    const view = render(<ProjectList {...full} onCreateSignalConsumed={onConsumed} />)
+    expect(screen.getByText('knowledge.createProject')).toBeTruthy()
+    expect(onConsumed).toHaveBeenCalledTimes(1)
+    // 模拟 ProjectSidebar 条件渲染卸载重挂：父已把 signal 复位为 0，重挂后模态不得无故弹出
+    view.unmount()
+    render(<ProjectList {...full} createSignal={0} onCreateSignalConsumed={onConsumed} />)
+    expect(screen.queryByText('knowledge.createProject')).toBeNull()
   })
 })

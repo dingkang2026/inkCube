@@ -1,0 +1,76 @@
+/* 项目详情页用量徽章 + hover 分拆悬浮层（2.10 §6.1/线框 5） */
+.badgeWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.badge {
+  border: none;
+  background: none;
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.badge:hover {
+  color: var(--text-primary);
+}
+
+/* 自绘悬浮层（原生 title 放不下多行表格，§6.5 线框 5）：hover 显示，样式同 tooltip 家族 */
+.popover {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 60;
+  min-width: 220px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* 6px 视觉间隙用伪元素桥接进悬浮层命中范围：若用 top: calc(100% + 6px)，
+   间隙不属于任何盒，鼠标从徽章移向悬浮层途经时 ：hover 失效 → 悬浮层闪烁
+   关闭（2026-10-16 UI review 实锤）。视觉间距不变，命中不断 */
+.popover::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  height: 6px;
+}
+
+.badgeWrap:hover .popover {
+  display: block;
+}
+
+.popHead {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  white-space: nowrap;
+}
+
+.popRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.popRow .rowLabel {
+  flex-shrink: 0;
+}
+
+.popEmpty {
+  line-height: 20px;
+}

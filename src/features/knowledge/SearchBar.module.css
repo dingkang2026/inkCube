@@ -21,7 +21,7 @@
 }
 
 .searchIcon {
-  font-size: 14px;
+  font-size: var(--text-md);
   flex-shrink: 0;
   opacity: 0.5;
 }
@@ -30,7 +30,7 @@
   flex: 1;
   padding: 9px 0;
   border: none;
-  font-size: 14px;
+  font-size: var(--text-md);
   background: transparent;
   color: var(--text-primary);
   outline: none;
@@ -54,7 +54,7 @@
   border: none;
   background: var(--bg-tertiary);
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--text-md);
   line-height: 1;
   cursor: pointer;
   border-radius: 50%;
@@ -70,8 +70,8 @@
 /* ── Keyboard shortcut hint ── */
 .shortcutHint {
   padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 10px;
+  border-radius: 2px;
+  font-size: var(--text-xs);
   font-weight: 500;
   color: var(--text-muted);
   background: var(--bg-tertiary);
@@ -86,10 +86,10 @@
 .searchBtn {
   padding: 9px 18px;
   background: var(--accent);
-  color: white;
+  color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s;

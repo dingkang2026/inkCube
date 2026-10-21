@@ -1,11 +1,14 @@
 """python/routers/knowledge.py"""
 import os
+import shutil
 import asyncio
 import base64
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -16,6 +19,7 @@ from knowledge.fts_store import FTSStore
 from knowledge.knowledge_search import KnowledgeSearchTool
 from errors import InkCubeError, VLMNotConfigured
 from readiness import ensure_ready
+import activity_events
 from paths import get_data_dir
 
 
@@ -152,7 +156,6 @@ async def _upload_core(project_id: str, upload: FileUpload, db, data_dir, worker
 
     existing = db.find_duplicate_file(project_id, file_hash)
     if existing:
-        import shutil
         shutil.rmtree(files_dir, ignore_errors=True)
         return {
             "success": True, "file_id": existing["id"],
@@ -197,13 +200,16 @@ _QUEUE_PAUSE_KEYS = {
 
 @router.post("/queue/pause")
 async def set_queue_pause(req: QueuePauseRequest):
-    """暂停/恢复后台队列（文件解析/图片描述）。
+    """停止/恢复后台队列（文件解析/图片描述；UI 呈现为「停止/继续」）。
 
-    语义：暂停 = 不再开始新任务——worker 在闸门挂起（pending/queued 排队
-    等恢复）、在跑的任务自然跑完。状态持久化 settings（重启保持，
-    main.py lifespan 恢复）。基础库与项目共用同一队列，天然同暂停。
-    wiki 编译不设队列暂停：其任务级「停止」+ 断点续传已覆盖暂停的全部
-    价值（0.4 §6.7 修订）；报告生成同（报告级「暂停」+「重新生成」双出口，
+    语义：停止 = 不再开始新任务——关闸门 + 清空内存队列积压（DB 状态
+    不动，任务留在 pending）；在跑的任务自然跑完。恢复 = 开闸门，
+    QueueScanner 下一轮（≤ scan_interval）按 DB pending 补投递，断点
+    续传。状态持久化 settings（重启保持，main.py lifespan 恢复）。
+    基础库与项目共用同一队列，天然同停止。心跳口径（activities.
+    _active_files）同步感知：停止后排队中任务不算活跃，只剩在飞收尾。
+    wiki 编译不设队列暂停：其任务级「停止」+ 断点续传已覆盖全部价值
+    （0.4 §6.7 修订）；报告生成同（报告级「暂停」+「重新生成」双出口，
     2.5 §3.1 修订）。
     """
     key = _QUEUE_PAUSE_KEYS.get(req.kind)
@@ -212,21 +218,38 @@ async def set_queue_pause(req: QueuePauseRequest):
     db = get_db()
     db.set_flag(key, req.paused)
     import deps
+    drained: int | None = None
     if deps.worker:
         if req.kind == "parsing":
             deps.worker.set_file_paused(req.paused)
+            if req.paused:
+                drained = deps.worker.drain_file_queue()
         elif req.kind == "describe":
             deps.worker.set_image_paused(req.paused)
-    logger.info("Queue %s %s", req.kind, "paused" if req.paused else "resumed")
+            if req.paused:
+                drained = deps.worker.drain_image_queue()
+    # 大积压场景的核心操作：清掉多少积压是事后排查的关键信号，必须可观测
+    suffix = f", drained {drained} queued items" if drained is not None else ""
+    logger.info("Queue %s %s%s", req.kind, "stopped" if req.paused else "resumed", suffix)
     return {"kind": req.kind, "paused": req.paused}
 
 
 @router.get("/projects")
-async def list_projects():
-    """List all projects with file and chunk counts"""
+async def list_projects(
+    archived: bool = False,
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
+    """List projects with file and chunk counts.
+
+    archived=False 返回有效项目（现状语义），True 返回已归档项目；
+    响应附 archived_count 供侧边栏归档 tab 徽记（一次聚合查询）；
+    total 与列表同口径（archived 过滤后）供分页控件。
+    """
     try:
         db = get_db()
-        cursor = db.conn.execute("""
+        # Offset-based pagination（占位符顺序 LIMIT ? OFFSET ? → 先 append limit+1 再 append offset）
+        sql = """
             SELECT 
                 p.id,
                 p.name,
@@ -235,18 +258,29 @@ async def list_projects():
                 p.stage,
                 p.company_name,
                 p.credit_code,
+                p.archived_at,
                 COUNT(DISTINCT f.id) as file_count,
                 COALESCE(SUM(f.chunk_count), 0) as chunk_count,
                 p.created_at
             FROM projects p
             LEFT JOIN files f ON f.project_id = p.id
-            WHERE p.kind = 'project'
+            WHERE p.kind = 'project' AND (p.archived_at IS NOT NULL) = ?
             GROUP BY p.id
             ORDER BY p.created_at DESC
-        """)
-        
+        """
+        params: list = [1 if archived else 0]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit + 1, offset])
+
+        cursor = db.conn.execute(sql, params)
+        rows = cursor.fetchall()
+        has_more = limit > 0 and len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+
         projects = []
-        for row in cursor.fetchall():
+        for row in rows:
             projects.append({
                 "id": row["id"],
                 "name": row["name"],
@@ -255,12 +289,29 @@ async def list_projects():
                 "stage": row["stage"],
                 "company_name": row["company_name"],
                 "credit_code": row["credit_code"],
+                "archived_at": row["archived_at"],
                 "file_count": row["file_count"],
                 "chunk_count": row["chunk_count"],
                 "created_at": row["created_at"]
             })
         
-        return {"projects": projects}
+        # 2.10 §4.5：项目列表行附加累计消耗（无记录为 null，前端不渲染小字）——只算当前页行
+        usage_map = db.get_usage_by_projects([p["id"] for p in projects])
+        for p in projects:
+            p["usage"] = usage_map.get(p["id"])
+
+        total = db.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM projects "
+            "WHERE kind = 'project' AND (archived_at IS NOT NULL) = ?",
+            (1 if archived else 0,),
+        ).fetchone()["cnt"]
+
+        return {
+            "projects": projects,
+            "has_more": has_more,
+            "total": total,
+            "archived_count": db.count_archived_projects(),
+        }
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -341,7 +392,7 @@ def _file_type_clause(file_type: Optional[str]) -> tuple[str, list]:
 @router.get("/projects/{project_id}/files")
 async def get_project_files(
     project_id: str,
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
     offset: int = 0,
     status: Optional[str] = None,
     file_type: Optional[str] = None,
@@ -605,11 +656,14 @@ async def update_project(project_id: str, body: ProjectUpdate):
         db = get_db()
         if body.name is None and body.description is None and body.type is None and body.stage is None:
             raise HTTPException(status_code=400, detail="No fields to update")
-        # 3.0 §5.3: 阶段切换 → 激活该时期 pending_activation 实例(服务层自行兜底异常)
-        _stage_changed = False
+        # 3.0 §5.3: 阶段切换 → 激活该时期 pending_activation 实例。先激活后写 stage
+        # （review M-2）：激活失败异常上抛→500，stage 保持旧值——避免「阶段已换、
+        # 任务未铺出」的中间态（原实现在 update_project 之后吞异常，失败用户零感知）
         if body.stage:
             _old = db.get_project(project_id)
-            _stage_changed = bool(_old) and (_old.get("stage") != body.stage)
+            if _old and _old.get("stage") != body.stage:
+                import affairs_service
+                affairs_service.activate_phase(db, project_id, body.stage)
         db.update_project(
             project_id,
             name=body.name,
@@ -617,9 +671,79 @@ async def update_project(project_id: str, body: ProjectUpdate):
             type=body.type,
             stage=body.stage,
         )
-        if _stage_changed:
-            import affairs_service
-            affairs_service.activate_phase(db, project_id, body.stage)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _project_active_work(db, project_id: str) -> list[str]:
+    """归档/删除守门：项目内进行中活动清单（解析/报告/填表/Wiki 编译/图片描述），空表 = 可归档可删。"""
+    checks = [
+        ("文件解析", "SELECT COUNT(*) AS c FROM files "
+                     "WHERE project_id = ? AND status IN ('pending', 'parsing')"),
+        ("报告生成", "SELECT COUNT(*) AS c FROM reports "
+                     "WHERE project_id = ? AND status = 'generating'"),
+        ("填表执行", "SELECT COUNT(*) AS c FROM form_fills "
+                     "WHERE project_id = ? AND status IN ('pending', 'filling')"),
+        ("Wiki 编译", "SELECT COUNT(*) AS c FROM wiki_compile_tasks "
+                      "WHERE project_id = ? AND status IN ('queued', 'ingesting', 'storing')"),
+        # 图片 VLM 描述（Minor-3 口径补全）：文件落 done 后描述仍异步在途，
+        # 在途 = pending（待描述）/ processing（worker 已取走）
+        ("图片描述", "SELECT COUNT(*) AS c FROM images "
+                      "JOIN files ON images.file_id = files.id "
+                      "WHERE files.project_id = ? AND images.status IN ('pending', 'processing')"),
+        # PPT 交付（2.3 §7.3 口径对齐）：running 执行中 / awaiting_input 门禁
+        # 等待均算进行中（复用统一活动 status 字段，非新增轮询/活跃谓词）
+        ("PPT 任务", "SELECT COUNT(*) AS c FROM ppts "
+                      "WHERE project_id = ? AND status IN ('running', 'awaiting_input')"),
+    ]
+    return [label for label, sql in checks
+            if db.conn.execute(sql, (project_id,)).fetchone()["c"] > 0]
+
+
+@router.post("/projects/{project_id}/archive")
+async def archive_project(project_id: str):
+    """归档项目（生命周期软关闭：写 archived_at，数据零清理）。
+
+    删除准入 = 已归档；进行中活动（解析/报告/填表/Wiki 编译）拒绝归档。
+    """
+    try:
+        db = get_db()
+        proj = db.get_project(project_id)
+        if not proj or proj.get("kind") != "project":
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        active = _project_active_work(db, project_id)
+        if active:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"项目尚有进行中的活动（{'、'.join(active)}），完成后再归档",
+                    "code": "PROJECT_HAS_ACTIVE_WORK",
+                },
+            )
+        db.archive_project(project_id)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/unarchive")
+async def unarchive_project(project_id: str):
+    """恢复归档项目（清 archived_at，移回有效列表）。"""
+    try:
+        db = get_db()
+        proj = db.get_project(project_id)
+        if not proj or proj.get("kind") != "project":
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if not db.unarchive_project(project_id):
+            return JSONResponse(
+                status_code=409,
+                content={"error": "项目已处于有效状态，无需恢复", "code": "PROJECT_ALREADY_ACTIVE"},
+            )
         return {"success": True}
     except HTTPException:
         raise
@@ -629,16 +753,64 @@ async def update_project(project_id: str, body: ProjectUpdate):
 
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str):
-    """Delete a project and all its data."""
+    """Delete a project and all its data.
+
+    删除准入 = 已归档：未归档项目 409（先归档再删除，归档 tab 才有删除入口）。
+    已归档但仍有在途活动同样 409：归档后详情页仍可发起活动（归档仅是状态层，
+    2.1 §11.6），删除前必须复查，防 runner 写已删行产出孤儿产物（Major-1）。
+    """
     try:
         db = get_db()
         data_dir = get_data_dir()
+
+        proj = db.get_project(project_id)
+        if not proj or proj.get("kind") != "project":
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if not proj.get("archived_at"):
+            return JSONResponse(
+                status_code=409,
+                content={"error": "项目未归档，请先归档再删除", "code": "PROJECT_NOT_ARCHIVED"},
+            )
+        active = _project_active_work(db, project_id)
+        if active:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"项目尚有进行中的活动（{'、'.join(active)}），完成后再删除",
+                    "code": "PROJECT_HAS_ACTIVE_WORK",
+                },
+            )
+
+        # PPT 级联清理（2.3 §7.3）：ppts 无外键、tasks 无 project_id，均不随
+        # db.delete_project 级联——逐行复用 service.delete 既有链路（bounded
+        # 等待 agent 退出 + 关停确认页 + 删任务工作区 + 删 ppts 行）。守门已过
+        # = 无 running/awaiting 行，此处通常瞬间完成；失败即中止（此时索引与
+        # 文件均未动，整单可重试），防半删状态产生不可见残留
+        from ppt_service import service as ppt_service
+        for row in db.list_ppts(project_id):
+            result = await ppt_service.delete(db, row["id"])
+            if not result.get("ok"):
+                import logging
+                logging.getLogger(__name__).error(
+                    "Project delete: ppt cleanup failed project=%s ppt=%s result=%s",
+                    project_id, row["id"], result)
+                raise HTTPException(status_code=500, detail=str(result.get("error")))
+        # 清理后复查（与前置守门同模式）：快照与删除的间隙内归档项目仍可能
+        # 被发起新活动，放行会产生孤儿行——409 后数据未动，重试即可
+        active_after = _project_active_work(db, project_id)
+        if active_after:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"项目尚有进行中的活动（{'、'.join(active_after)}），完成后再删除",
+                    "code": "PROJECT_HAS_ACTIVE_WORK",
+                },
+            )
 
         # Delete from ChromaDB
         chroma_dir = str(Path(data_dir) / "chroma")
         vector_store = VectorStore(chroma_dir)
         vector_store.delete_project(project_id)
-
         # Delete from FTS
         fts_store = FTSStore(db)
         fts_store.delete_project_chunks(project_id)
@@ -646,7 +818,6 @@ async def delete_project(project_id: str):
         # Delete files from disk: data/files/{project_id}/
         files_dir = Path(data_dir) / "files" / project_id
         if files_dir.exists():
-            import shutil
             shutil.rmtree(files_dir, ignore_errors=True)
 
         # Explicit Wiki cleanup before CASCADE (belt-and-suspenders)
@@ -662,12 +833,136 @@ async def delete_project(project_id: str):
                 "Wiki pre-cleanup failed for project %s: %s", project_id, e,
             )
 
+        # 验收-P2（产品验收发现）：目标容器删除联动（对称置空）——指向本项目的订阅
+        # 去向置空并合并一条通知；不联动则每期 archive_failed 幽灵警告（产出
+        # 正常但无处沉淀，根因无处可见）。与「删订阅时 tasks.schedule_id 置
+        # NULL」同构（target_id 无外键，手动等价 ON DELETE SET NULL）。
+        affected = db.clear_schedules_target("project", project_id)
+
+        # 报告产物目录补清（2026-10-20 存储审计）：reports 行随项目级联删，
+        # 但磁盘目录仅在单报告删除端点清理——级联删行后目录变孤儿。
+        # 级联删行前按 project_id 收集 content_path 逐个删除。
+        report_rows = db.conn.execute(
+            "SELECT id, content_path FROM reports WHERE project_id = ?",
+            (project_id,)).fetchall()
+        for row in report_rows:
+            content_path = row["content_path"] or ""
+            if content_path and os.path.isdir(content_path):
+                shutil.rmtree(content_path, ignore_errors=True)
+                logger.info("Project delete: removed report dir %s (report=%s)",
+                            content_path, row["id"])
+
         # Delete from database (cascade handles files, images, wiki_*; kind check prevents base_lib deletion)
         db.delete_project(project_id)
 
+        if affected:
+            names = "、".join(r["name"] for r in affected)
+            activity_events.notify(
+                db, entity_type="schedule",
+                entity_id=f"target_removed_{project_id}",
+                project_id=None, container="project", kind="info",
+                entity_title="定时订阅",
+                detail=(f"项目「{proj['name']}」已删除，{len(affected)} 个订阅"
+                        f"（{names}）的去向已重置为不沉淀"))
+
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Project transfer（2.9project-transfer-design.md §5/§6）──
+
+# asyncio.create_task 仅持弱引用（官方要求显式保存，Review m4）：GC 中途回收
+# 会让导入后台链静默消失、run 永久卡 running（该项目导入永远 409）。
+_TRANSFER_BG_TASKS: set = set()
+
+class ExportProjectBody(BaseModel):
+    target_path: str
+
+
+class ImportProjectBody(BaseModel):
+    source_path: str
+
+
+@router.post("/projects/{project_id}/export")
+def export_project_endpoint(project_id: str, body: ExportProjectBody):
+    """导出项目交换包（2.9 §5；同步执行，大项目分钟级，调用方放宽 HTTP 超时）。"""
+    from transfer import exporter
+    from transfer import service as transfer_service
+    db = get_db()
+    project = db.get_project(project_id)
+    if not project or project.get("kind") != "project":
+        raise HTTPException(status_code=404, detail="Project not found")   # 2.9 §5.1
+    title = project["name"]
+    # 原子防重入（CodeReview M1）：check+start 同临界区，线程池并发不双过 409
+    run_id = transfer_service.try_start_run("project_export", project_id, title)
+    if run_id is None:
+        raise HTTPException(status_code=409, detail="Export already running for this project")
+    try:
+        result = exporter.export_project(
+            db, get_data_dir(), project_id, body.target_path,
+            on_progress=lambda p, m: transfer_service.update_run(
+                run_id, progress=p, message=m))
+    except exporter.TransferError as e:
+        transfer_service.finish_run(run_id)
+        activity_events.fail_transfer(db, "project_export", run_id,
+                                      project_id=project_id, entity_title=title,
+                                      error_message=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        transfer_service.finish_run(run_id)
+        activity_events.fail_transfer(db, "project_export", run_id,
+                                      project_id=project_id, entity_title=title,
+                                      error_message=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    transfer_service.finish_run(run_id)
+    activity_events.complete_transfer(db, "project_export", run_id,
+                                      project_id=project_id, entity_title=title)
+    return result
+
+
+@router.post("/projects/import")
+async def import_project_endpoint(body: ImportProjectBody):
+    """导入项目交换包（2.9 §6）：快速校验后立即返回，后台导入走统一活动。"""
+    from transfer import importer
+    from transfer import service as transfer_service
+    db = get_db()
+    try:
+        manifest = importer.validate_package(body.source_path)
+    except importer.TransferError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    new_pid = str(uuid.uuid4())
+    title = manifest["project"]["name"]
+    # 原子全局单飞（2.9 §6.1 + CodeReview M1）：与导出端点同款原子入口，
+    # 消除同文件两套防护强度差异
+    run_id = transfer_service.try_start_run(
+        "project_import", new_pid, title, dedupe="kind")
+    if run_id is None:
+        raise HTTPException(status_code=409, detail="An import is already running")
+
+    async def _bg():
+        def _on_progress(p, m):
+            transfer_service.update_run(run_id, progress=p, message=m)
+        try:
+            await asyncio.to_thread(
+                importer.run_import, db, get_data_dir(), body.source_path, new_pid,
+                _on_progress)
+        except Exception as e:
+            transfer_service.finish_run(run_id)
+            activity_events.fail_transfer(db, "project_import", run_id,
+                                          project_id=new_pid, entity_title=title,
+                                          error_message=str(e))
+            return
+        transfer_service.finish_run(run_id)
+        activity_events.complete_transfer(db, "project_import", run_id,
+                                          project_id=new_pid, entity_title=title)
+
+    _bg_task = asyncio.create_task(_bg())
+    _TRANSFER_BG_TASKS.add(_bg_task)   # 强引用防 GC 中途回收（Review m4）
+    _bg_task.add_done_callback(_TRANSFER_BG_TASKS.discard)
+    return {"project_id": new_pid, "activity_id": run_id}
 
 
 # ── File Management ──
@@ -1012,10 +1307,10 @@ async def delete_image(project_id: str, image_id: str):
             raise HTTPException(status_code=404, detail="Image not found")
         file_id = img["file_id"]
 
-        # Delete ChromaDB chunk
+        # Delete ChromaDB chunk（按 metadata.image_id 过滤，旧格式存量向量一并删净）
         try:
             vs = VectorStore(str(Path(data_dir) / "chroma"))
-            vs.delete_by_ids(project_id, [f"img_{file_id}_{img.get('page_no', 0)}"])
+            vs.delete_by_image_id(project_id, image_id)
         except Exception:
             pass
 
@@ -1058,10 +1353,10 @@ async def retry_image(project_id: str, image_id: str, force: bool = False):
             raise HTTPException(status_code=404, detail="Image not found")
         file_id = img["file_id"]
 
-        # Clean up existing ChromaDB chunk
+        # Clean up existing ChromaDB chunk（按 metadata.image_id 过滤，旧格式存量向量一并删净）
         try:
             vs = VectorStore(str(Path(data_dir) / "chroma"))
-            vs.delete_by_ids(project_id, [f"img_{file_id}_{img.get('page_no', 0)}"])
+            vs.delete_by_image_id(project_id, image_id)
         except Exception:
             pass
 
@@ -1107,10 +1402,11 @@ async def archive_image(project_id: str, image_id: str):
         file_id = img["file_id"]
 
         # If image was processed (done), delete its vector from ChromaDB
+        # （按 metadata.image_id 过滤，旧格式存量向量一并删净）
         if img.get("status") == "done":
             try:
                 vs = VectorStore(str(Path(data_dir) / "chroma"))
-                vs.delete_by_ids(project_id, [f"img_{file_id}_{img.get('page_no', 0)}"])
+                vs.delete_by_image_id(project_id, image_id)
             except Exception:
                 pass
 
@@ -1148,7 +1444,7 @@ async def retry_failed_images(project_id: str, file_id: str):
         images = [dict(r) for r in cursor.fetchall()]
         for img in images:
             try:
-                vs.delete_by_ids(project_id, [f"img_{file_id}_{img.get('page_no', 0)}"])
+                vs.delete_by_image_id(project_id, img["id"])
             except Exception:
                 pass
             db.update_image_status(img["id"], "pending", error_message=None, clear_vlm_description=True)
@@ -1163,91 +1459,27 @@ async def retry_failed_images(project_id: str, file_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Base Library CRUD ──
-
-
-class BaseLibCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-
-
-class BaseLibUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+# ── Base Library ──
 
 
 @router.get("/base-libs")
-async def list_base_libs():
+async def list_base_libs(
+    limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+):
     """List all base libraries."""
     try:
         db = get_db()
-        libs = db.list_base_libs()
-        return {"base_libs": libs}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/base-libs")
-async def create_base_lib(body: BaseLibCreate):
-    """Create a custom base library."""
-    try:
-        db = get_db()
-        result = db.create_base_lib(
-            name=body.name,
-            description=body.description or "",
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/base-libs/{lib_id}")
-async def update_base_lib(lib_id: str, body: BaseLibUpdate):
-    """Update a custom base library (preset libs cannot be modified)."""
-    try:
-        db = get_db()
-        if not db.update_base_lib(lib_id, name=body.name, description=body.description):
-            raise HTTPException(status_code=404, detail="Base library not found or is preset")
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/base-libs/{lib_id}")
-async def delete_base_lib(lib_id: str):
-    """Delete a custom base library (preset libs cannot be deleted)."""
-    try:
-        db = get_db()
-        data_dir = get_data_dir()
-
-        lib = db.get_base_lib(lib_id)
-        if not lib:
-            raise HTTPException(status_code=404, detail="Base library not found")
-        if lib.get("lib_type", "").startswith("preset_"):
-            raise HTTPException(status_code=403, detail="Preset base libraries cannot be deleted")
-
-        # Delete from ChromaDB
-        chroma_dir = str(Path(data_dir) / "chroma")
-        vector_store = VectorStore(chroma_dir)
-        vector_store.delete_project(lib_id)
-
-        # Delete from FTS
-        fts_store = FTSStore(db)
-        fts_store.delete_project_chunks(lib_id)
-
-        # Delete files from disk
-        files_dir = Path(data_dir) / "files" / lib_id
-        if files_dir.exists():
-            import shutil
-            shutil.rmtree(files_dir, ignore_errors=True)
-
-        # Delete from database
-        db.delete_base_lib(lib_id)
-        return {"success": True}
-    except HTTPException:
-        raise
+        # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
+        libs = db.list_base_libs(
+            limit=limit + 1 if limit > 0 else 0, offset=offset)
+        has_more = limit > 0 and len(libs) > limit
+        if has_more:
+            libs = libs[:limit]
+        total = db.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM projects WHERE kind = 'base_lib'"
+        ).fetchone()["cnt"]
+        return {"base_libs": libs, "has_more": has_more, "total": total}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1258,7 +1490,7 @@ async def delete_base_lib(lib_id: str):
 @router.get("/base-libs/{lib_id}/files")
 async def get_base_lib_files(
     lib_id: str,
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
     offset: int = 0,
     status: Optional[str] = None,
     file_type: Optional[str] = None,

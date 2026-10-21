@@ -10,13 +10,15 @@
  * 治理工作台（§5.5，E2-2026-10）：分型统计 chips + 矛盾两栏对比裁决卡
  * （adjudicateReview）+ 缺口补料上传卡（knowledge:uploadFile）+ 死链分型
  */
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Loader2, Shield, AlertTriangle, AlertCircle,
   Info, Lightbulb, Search, RefreshCw, CheckCircle, Filter, Upload,
+  Eraser, Copy,
 } from 'lucide-react'
 import { useToast } from '../../knowledge/Toast'
+import { usePagedList } from '../../../hooks/usePagedList'
 import { apiErrorText } from '../../../i18n/errorCodes'
 import s from './WikiTab.module.css'
 
@@ -36,6 +38,13 @@ interface LintFinding {
   created_at: string
   /** 矛盾证据结构化（§3.5/§5.5）：摄入产出的 contradiction 携带，存量与 Lint 产物为空 */
   evidence?: { page_key: string; quote: string }[] | null
+}
+
+/** 重复分组（§12.2.10，wiki:dedupDetect → dedup.detect_duplicates 项结构） */
+interface DedupGroup {
+  slugs: string[]
+  reason: string
+  confidence: string
 }
 
 type LintMode = 'structural' | 'semantic' | 'full'
@@ -166,8 +175,6 @@ function cleanDescription(desc: string): string {
 export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }: WikiLintViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
-  const [findings, setFindings] = useState<LintFinding[]>([])
-  const [loading, setLoading] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [lintMode, setLintMode] = useState<LintMode>('full')
   const [typeFilter, setTypeFilter] = useState<string>('all')
@@ -178,28 +185,55 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
   const [uploadingGapId, setUploadingGapId] = useState<string | null>(null)
   const gapFileInputRef = useRef<HTMLInputElement>(null)
   const gapUploadTargetRef = useRef<string | null>(null)
+  // 清扫审查（§5.3）/ 重复检测与合并（§12.2.10）
+  const [sweeping, setSweeping] = useState(false)
+  const [dedupRunning, setDedupRunning] = useState(false)
+  const [dedupGroups, setDedupGroups] = useState<DedupGroup[] | null>(null)
+  const [canonicalChoices, setCanonicalChoices] = useState<Record<number, string>>({})
+  const [mergingGroup, setMergingGroup] = useState<number | null>(null)
+  const [pendingMerge, setPendingMerge] = useState<number | null>(null)
+  // 合并确认：Esc = 取消（合并请求在途不可关，与点蒙板同语义）
+  useEffect(() => {
+    if (pendingMerge === null) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && mergingGroup === null) setPendingMerge(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pendingMerge, mergingGroup])
 
   // 快切项目防乱序:同类型项目切换时本视图实例存活,在途响应晚到会跨项目覆盖
   // findings 且无自愈——与 WikiTab 三个 loader 的 latestPidRef 同款守卫(re-review 建议)
   const latestPidRef = useRef(projectId)
   useEffect(() => { latestPidRef.current = projectId }, [projectId])
 
-  // Load findings (reviews)
-  const loadFindings = useCallback(async () => {
-    const pid = projectId
-    setLoading(true)
-    try {
-      const result: any = await window.electronAPI.invoke('wiki:listReviews', { projectId: pid, resolved: false })
-      if (latestPidRef.current !== pid) return
-      setFindings(result.reviews || [])
-    } catch (err) {
-      console.error('Failed to load lint findings:', err)
-    } finally {
-      setLoading(false)
-    }
+  // 项目切换清空旧项目数据（review M-1）：dedup 分组 + 选择集。
+  // findings 由 usePagedList 按 projectId 自动重拉；旧项目 selectedIds 残留窗口期内
+  // 「批量忽略」会把新项目同名 id 误归档（resolveReview 才 403，页面已被改写且静默），必须清掉
+  useEffect(() => {
+    setDedupGroups(null)
+    setCanonicalChoices({})
+    setPendingMerge(null)
+    setSelectedIds(new Set())
   }, [projectId])
 
-  useEffect(() => { loadFindings() }, [loadFindings])
+  // 发现项列表分页（0.1dev-guide 统一约定）：50/页「加载更多」；处置/扫描后 reload
+  // 按已加载量静默重拉（不置 loading，旧列表保留防闪烁）；筛选 chips 基于已加载数组，
+  // 加载更多后趋于全量
+  const {
+    items: findings,
+    hasMore,
+    loadingMore,
+    loading,
+    error: findingsError,
+    reload: reloadFindings,
+    loadMore: loadMoreFindings,
+  } = usePagedList<LintFinding>({
+    channel: 'wiki:listReviews', itemsKey: 'reviews',
+    params: { projectId, resolved: false },
+  })
+  // 列表加载失败提示（对齐 FormsTab m-3：静默吞掉会让列表空白且无任何提示）
+  useEffect(() => {
+    if (findingsError) showToast(`${t('common.listLoadFailed')}: ${findingsError}`, 'error')
+  }, [findingsError, showToast, t])
 
   // 结构页集合（死链分型用，§5.5）：getSchemas 返回项目类型的 schema 定义
   useEffect(() => {
@@ -221,14 +255,14 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
     try {
       const result: any = await window.electronAPI.invoke('wiki:lint', { projectId, mode: m })
       if (result.success) {
-        await loadFindings()
+        await reloadFindings()
         onFindingsChanged?.()
       }
     } catch (err) {
       console.error('Lint scan failed:', err)
       showToast(t('project.wiki.lintFailed', { defaultValue: '检查失败' }), 'error')
       // full 模式语义层失败时结构层发现项可能已落库,失败路径同样刷新列表与计数(re-review 建议)
-      await loadFindings()
+      await reloadFindings()
       onFindingsChanged?.()
     } finally {
       setScanning(false)
@@ -241,10 +275,12 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
       await window.electronAPI.invoke('wiki:resolveReview', { projectId, reviewId: findingId, action: 'dismiss' })
       selectedIds.delete(findingId)
       setSelectedIds(new Set(selectedIds))
-      await loadFindings()
+      await reloadFindings()
       onFindingsChanged?.()
     } catch (err) {
       console.error('Failed to dismiss finding:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.lintDismissFailed', { reason, defaultValue: '忽略失败: {{reason}}' }), 'error')
     }
   }
 
@@ -267,7 +303,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
       showToast(t('project.wiki.lintAdjudicateFailed', { reason, defaultValue: '裁决失败: {{reason}}' }), 'error')
     } finally {
       setFixingId(null)
-      await loadFindings()
+      await reloadFindings()
       onFindingsChanged?.()
     }
   }
@@ -315,6 +351,112 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
     }
   }
 
+  // 清扫审查（§5.3 两阶段）：RESOLVED 自动核销已由增量编译落地的审查项，
+  // 一阶段确定替换、二阶段 LLM 智能匹配，均不动用户显式保留的项
+  const handleSweep = async () => {
+    setSweeping(true)
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:sweepReviews', { projectId })
+      if (result?.success) {
+        const stage1 = result.stage1_resolved ?? 0
+        const stage2 = result.stage2_resolved ?? 0
+        showToast(
+          stage1 + stage2 > 0
+            ? t('project.wiki.sweepDone', {
+                stage1, stage2, remaining: result.remaining ?? 0,
+                defaultValue: '已自动核销 {{stage1}} 项（确定替换）、{{stage2}} 项（智能匹配），剩余 {{remaining}} 项',
+              })
+            : t('project.wiki.sweepDoneClean', { defaultValue: '没有可清扫的审查项' }),
+          'success',
+        )
+        await reloadFindings()
+        onFindingsChanged?.()
+      } else {
+        showToast(t('project.wiki.sweepFailed', { defaultValue: '清扫失败' }), 'error')
+      }
+    } catch (err) {
+      console.error('Sweep failed:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.sweepFailed', { reason, defaultValue: '清扫失败: {{reason}}' }), 'error')
+    } finally {
+      setSweeping(false)
+    }
+  }
+
+  // 重复检测（§12.2.10）：LLM 对实体摘要分组，结果面板内选 canonical 后再合并
+  const handleDedupDetect = async () => {
+    const pid = projectId
+    setDedupRunning(true)
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:dedupDetect', { projectId: pid })
+      // 快切项目防乱序：晚到的旧项目分组不得填充面板——否则会对新项目误合并（latestPidRef 同款守卫）
+      if (latestPidRef.current !== pid) return
+      const groups: DedupGroup[] = result?.groups || []
+      setDedupGroups(groups)
+      // 每组默认首个 slug 为 canonical，用户可改选
+      setCanonicalChoices(Object.fromEntries(groups.map((g, i) => [i, g.slugs[0]])))
+      if (groups.length === 0) {
+        showToast(t('project.wiki.dedupNone', { defaultValue: '未发现内容重复的页面' }), 'success')
+      }
+    } catch (err) {
+      console.error('Dedup detect failed:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.dedupFailed', { reason, defaultValue: '检测失败: {{reason}}' }), 'error')
+    } finally {
+      setDedupRunning(false)
+    }
+  }
+
+  // 合并重复页（§12.2.10 三阶段）：canonical 保留，其余页删除 + 全库链接重写；
+  // 单页失败不回滚（结果留 dup 页），截断页超出上下文不参与
+  const handleDedupMerge = async (gi: number) => {
+    const group = dedupGroups?.[gi]
+    if (!group) return
+    const canonical = canonicalChoices[gi] || group.slugs[0]
+    const duplicates = group.slugs.filter((k) => k !== canonical)
+    if (duplicates.length === 0) return
+    setMergingGroup(gi)
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:dedupMerge', {
+        projectId, canonicalKey: canonical, duplicateKeys: duplicates,
+      })
+      const failed: Array<{ page_key: string; reason: string }> = result?.failed || []
+      const truncated: string[] = result?.truncated || []
+      if (failed.length === 0 && truncated.length === 0) {
+        showToast(t('project.wiki.dedupMergeDone', {
+          merged: result?.merged ?? duplicates.length + 1,
+          rewritten: result?.rewritten_links ?? 0,
+          defaultValue: '已合并 {{merged}} 个页面，重写 {{rewritten}} 处链接',
+        }), 'success')
+      } else {
+        showToast(t('project.wiki.dedupMergePartial', {
+          failed: failed.length, truncated: truncated.length,
+          defaultValue: '部分合并：{{failed}} 个页面失败、{{truncated}} 个页面内容过长被截断，已保留待处理',
+        }), 'warning')
+      }
+      // 页面已变更：移除本地分组 + 刷新发现项（合并产生 resolved 记录）
+      setDedupGroups((prev) => (prev ? prev.filter((_, i) => i !== gi) : null))
+      setCanonicalChoices((prev) => {
+        const next: Record<number, string> = {}
+        for (const [k, v] of Object.entries(prev)) {
+          const idx = Number(k)
+          if (idx < gi) next[idx] = v
+          else if (idx > gi) next[idx - 1] = v
+        }
+        return next
+      })
+      await reloadFindings()
+      onFindingsChanged?.()
+    } catch (err) {
+      console.error('Failed to merge duplicates:', err)
+      const reason = err instanceof Error ? err.message : String(err)
+      showToast(t('project.wiki.dedupMergeFailed', { reason, defaultValue: '合并失败: {{reason}}' }), 'error')
+    } finally {
+      setMergingGroup(null)
+      setPendingMerge(null)
+    }
+  }
+
   // Toggle selection
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -343,7 +485,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
         action: 'dismiss',
       })
       setSelectedIds(new Set())
-      await loadFindings()
+      await reloadFindings()
       onFindingsChanged?.()
     } catch (err) {
       console.error('Failed to batch dismiss:', err)
@@ -375,7 +517,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
       if (newContent === content) {
         // 无匹配说明发现项已过时（源页面已被修改），提示后刷新列表
         showToast(t('project.wiki.lintFixNoMatch', { defaultValue: '源页面中未找到该死链，发现项可能已过时' }), 'warning')
-        await loadFindings()
+        await reloadFindings()
         onFindingsChanged?.()
         return
       }
@@ -384,7 +526,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
       })
       await window.electronAPI.invoke('wiki:resolveReview', { projectId, reviewId: f.id, action: 'fixed' })
       showToast(t('project.wiki.lintFixSuccess', { defaultValue: '死链已修复' }), 'success')
-      await loadFindings()
+      await reloadFindings()
       onFindingsChanged?.()
     } catch (err) {
       console.error('Failed to fix broken link:', err)
@@ -475,6 +617,29 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
           {scanning ? <Loader2 size={13} className={s.spin} /> : <RefreshCw size={13} />}
           {t('project.wiki.rescan', { defaultValue: '重新扫描' })}
         </button>
+
+        {/* 清扫审查（§5.3）：核销已由增量编译解决的审查项 */}
+        <button
+          className={s.lintScanBtn}
+          onClick={() => void handleSweep()}
+          disabled={sweeping}
+          title={t('project.wiki.sweepHint', { defaultValue: '自动核销对应内容已由增量编译更新的审查项' })}
+        >
+          {sweeping ? <Loader2 size={13} className={s.spin} /> : <Eraser size={13} />}
+          {t('project.wiki.sweepBtn', { defaultValue: '清扫审查' })}
+        </button>
+
+        {/* 重复检测（§12.2.10）：LLM 分组，结果在下方面板处理；
+            合并进行中禁用——合并回调按索引移除分组，检测重拉会令索引指向未合并组 */}
+        <button
+          className={s.lintScanBtn}
+          onClick={() => void handleDedupDetect()}
+          disabled={dedupRunning || mergingGroup !== null}
+          title={t('project.wiki.dedupHint', { defaultValue: '找出内容高度重叠的页面组，人工确认后合并' })}
+        >
+          {dedupRunning ? <Loader2 size={13} className={s.spin} /> : <Copy size={13} />}
+          {t('project.wiki.dedupBtn', { defaultValue: '重复检测' })}
+        </button>
       </div>
 
       {/* 治理面板：分型统计 chips（§5.5）——点击筛选，再点取消 */}
@@ -491,6 +656,75 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
               <span className={s.lintStatChipCount}>{typeCounts[type]}</span>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* 重复检测面板（§12.2.10）：组卡 = 置信徽章 + 理由 + slug 单选（canonical）+ 合并 */}
+      {dedupGroups !== null && (
+        <div className={s.dedupPanel}>
+          <div className={s.dedupPanelHeader}>
+            <Copy size={12} />
+            <span className={s.dedupPanelTitle}>
+              {dedupGroups.length > 0
+                ? t('project.wiki.dedupPanelTitle', { count: dedupGroups.length, defaultValue: '疑似重复页面（{{count}} 组）' })
+                : t('project.wiki.dedupNone', { defaultValue: '未发现内容重复的页面' })}
+            </span>
+            <button
+              className={s.lintDismissBtn}
+              onClick={() => setDedupGroups(null)}
+              title={t('common.close', { defaultValue: '关闭' })}
+            >
+              ×
+            </button>
+          </div>
+          {dedupGroups.map((group, gi) => {
+            const canonical = canonicalChoices[gi] || group.slugs[0]
+            return (
+              <div key={`${group.reason}-${gi}`} className={s.dedupGroup}>
+                <div className={s.dedupGroupHead}>
+                  <span className={`${s.dedupConfidence} ${group.confidence === 'high' ? s.dedupConfidenceHigh : group.confidence === 'medium' ? s.dedupConfidenceMedium : ''}`}>
+                    {group.confidence === 'high'
+                      ? t('project.wiki.dedupConfidenceHigh', { defaultValue: '高' })
+                      : group.confidence === 'medium'
+                        ? t('project.wiki.dedupConfidenceMedium', { defaultValue: '中' })
+                        : t('project.wiki.dedupConfidenceLow', { defaultValue: '低' })}
+                  </span>
+                  <span className={s.dedupReason}>{group.reason}</span>
+                </div>
+                <div className={s.dedupSlugList}>
+                  {group.slugs.map((slug) => (
+                    <label key={slug} className={s.dedupSlug}>
+                      <input
+                        type="radio"
+                        name={`dedup-group-${gi}`}
+                        checked={canonical === slug}
+                        onChange={() => setCanonicalChoices((prev) => ({ ...prev, [gi]: slug }))}
+                      />
+                      <span className={s.dedupSlugKey}>[[{slug}]]</span>
+                      {canonical === slug && (
+                        <span className={s.dedupSlugCanonical}>
+                          {t('project.wiki.dedupCanonical', { defaultValue: '保留此页，其余并入' })}
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+                <div className={s.dedupGroupActions}>
+                  <button
+                    className={s.lintScanBtn}
+                    disabled={mergingGroup !== null}
+                    onClick={() => setPendingMerge(gi)}
+                  >
+                    {mergingGroup === gi && <Loader2 size={12} className={s.spin} />}
+                    {t('project.wiki.dedupMergeBtn', {
+                      count: group.slugs.length,
+                      defaultValue: `合并（${group.slugs.length} → 1）`,
+                    })}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -535,7 +769,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
           <span>{t('project.wiki.selectAll', { defaultValue: '全选' })}</span>
         </label>
         {selectedIds.size > 0 && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
             {t('project.wiki.lintSelectedCount', { count: selectedIds.size, defaultValue: '已选 {{count}} 项' })}
           </span>
         )}
@@ -550,7 +784,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
         </div>
       </div>
 
-      {/* Findings list */}
+      {/* Findings list：loading 时只显示 spinner 不渲染旧列表（防窗口期误点，review M-1） */}
       <div className={s.lintResults}>
         {loading && (
           <div className={s.lintEmpty}>
@@ -565,7 +799,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
           </div>
         )}
 
-        {filtered.map((f) => {
+        {!loading && filtered.map((f) => {
           const severity = extractSeverity(f.description, f.type)
           const pages = extractPages(f.description)
           const suggestion = extractSuggestion(f.description)
@@ -730,7 +964,48 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
             </div>
           )
         })}
+        {hasMore && (
+          <button
+            className={s.loadMoreBtn}
+            onClick={() => { void loadMoreFindings() }}
+            disabled={loadingMore}
+          >
+            {loadingMore ? t('common.loading') : t('common.loadMore')}
+          </button>
+        )}
       </div>
+
+      {/* 合并确认（§12.2.10：dup 页删除 + 全库链接重写不可逆，recompile 确认框同款） */}
+      {pendingMerge !== null && dedupGroups?.[pendingMerge] && (
+        <div className={s.confirmOverlay} onClick={() => mergingGroup === null && setPendingMerge(null)}>
+          <div className={s.confirmDialog} onClick={(e) => e.stopPropagation()}>
+            <div className={s.confirmHeader}>
+              <AlertTriangle size={16} />
+              <span>{t('project.wiki.dedupMergeConfirmTitle', { defaultValue: '合并重复页面' })}</span>
+            </div>
+            <div className={s.confirmBody}>
+              {t('project.wiki.dedupMergeConfirmBody', {
+                count: dedupGroups[pendingMerge].slugs.length - 1,
+                canonical: canonicalChoices[pendingMerge] || dedupGroups[pendingMerge].slugs[0],
+                defaultValue: `将把其余 ${dedupGroups[pendingMerge].slugs.length - 1} 个重复页面合并进「${canonicalChoices[pendingMerge] || dedupGroups[pendingMerge].slugs[0]}」后删除，全库正文中的链接将自动重写。此操作不可撤销，确定合并？`,
+              })}
+            </div>
+            <div className={s.confirmActions}>
+              <button className={s.confirmCancelBtn} onClick={() => setPendingMerge(null)}>
+                {t('common.cancel', { defaultValue: '取消' })}
+              </button>
+              <button
+                className={s.confirmDangerBtn}
+                disabled={mergingGroup !== null}
+                onClick={() => void handleDedupMerge(pendingMerge)}
+              >
+                {mergingGroup !== null && <Loader2 size={13} className={s.spin} />}
+                {t('project.wiki.dedupMergeBtn', { count: dedupGroups[pendingMerge].slugs.length, defaultValue: '合并' })}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -5,7 +5,11 @@
 §6.4 E3）——业务代码只声明，不感知投递。
 
 已收编 kind：file（顺序 3）、report / wiki_compile（顺序 4）、
-task / model_download / 崩溃恢复遗留下载（E2 收尾，v3.9）——全部直调点清零。
+task / model_download / 崩溃恢复遗留下载（E2 收尾，v3.9）、
+form_template / form_fill（2.4 §3.4）——全部直调点清零。
+
+2.11 §3.1：新增 notify 通用入口（信息类 kind，无实体行的扫描器/提醒直调，
+不做 per-entity 包装——无消费方的包装是死代码）。
 
 未读查重保证幂等（§3.2）：防御性双写（pipeline 内部 except 与 task_queue 外层兜底
 各声明一次 fail）只产生一条通知，且查重跳过时同步跳过 SSE 投递（前端已见）。
@@ -211,6 +215,224 @@ def _emit_download(db, name: str, kind: str, detail: str | None) -> None:
         )
     except Exception:
         logger.warning("download terminal event failed for %s", name, exc_info=True)
+
+
+# ── form_template / form_fill（2.4 §3.4）──────────────
+
+def complete_form_template(db, template_id: str, detail: str | None = None) -> None:
+    """模板分析成功终态：写 completed 通知（模板不存在 / 已删除时静默跳过）。"""
+    _emit_form_template(db, template_id, "completed", (detail or "")[:200] or None)
+
+
+def fail_form_template(db, template_id: str, error_message: str | None = None) -> None:
+    """模板分析失败终态（failed / invalid）：写 failed 通知（detail 截 200 字符）。"""
+    _emit_form_template(db, template_id, "failed", (error_message or "")[:200] or None)
+
+
+def _emit_form_template(db, template_id: str, kind: str, detail: str | None) -> None:
+    """写 form_template 终态通知。模板是全局资产不隶属项目（2.4 §5 职责划分），
+    project_id / container 恒空对齐 _emit_task 模式，前端导航固定模板管理页。"""
+    try:
+        row = db.conn.execute(
+            "SELECT name FROM form_templates WHERE id = ?", (template_id,)
+        ).fetchone()
+        if not row:
+            logger.info("form_template terminal event skipped: template %s gone", template_id)
+            return
+        _store_and_publish(
+            db,
+            entity_type="form_template", entity_id=template_id,
+            project_id=None,
+            container="project",
+            kind=kind,
+            entity_title=row["name"] or template_id,
+            detail=detail,
+        )
+    except Exception:
+        logger.warning("form_template terminal event failed for %s", template_id, exc_info=True)
+
+
+def complete_form_fill(db, fill_id: str, detail: str | None = None) -> None:
+    """填表成功终态：写 completed 通知（实例不存在 / 已删除时静默跳过）。"""
+    _emit_form_fill(db, fill_id, "completed", (detail or "")[:200] or None)
+
+
+def fail_form_fill(db, fill_id: str, error_message: str | None = None) -> None:
+    """填表失败终态：写 failed 通知（detail 截 200 字符）。"""
+    _emit_form_fill(db, fill_id, "failed", (error_message or "")[:200] or None)
+
+
+def _emit_form_fill(db, fill_id: str, kind: str, detail: str | None) -> None:
+    """写 form_fill 终态通知。JOIN projects 补 container（基础库项目同报告语义）。"""
+    try:
+        row = db.conn.execute(
+            "SELECT f.project_id, f.title, "
+            "CASE WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container "
+            "FROM form_fills f JOIN projects p ON p.id = f.project_id "
+            "WHERE f.id = ?",
+            (fill_id,),
+        ).fetchone()
+        if not row:
+            logger.info("form_fill terminal event skipped: fill %s gone", fill_id)
+            return
+        _store_and_publish(
+            db,
+            entity_type="form_fill", entity_id=fill_id,
+            project_id=row["project_id"],
+            container=row["container"] or "project",
+            kind=kind,
+            entity_title=row["title"],
+            detail=detail,
+        )
+    except Exception:
+        logger.warning("form_fill terminal event failed for %s", fill_id, exc_info=True)
+
+
+# ── ppt（2.3 §3.5，E1）──────────────────────────
+
+def complete_ppt(db, ppt_id: str, detail: str | None = None) -> None:
+    """PPT 生成成功终态：写 completed 通知（ppt 不存在 / 已删除时静默跳过）。"""
+    _emit_ppt(db, ppt_id, "completed", (detail or "")[:200] or None)
+
+
+def fail_ppt(db, ppt_id: str, error_message: str | None = None) -> None:
+    """PPT 失败终态：写 failed 通知（detail 截 200 字符）。"""
+    _emit_ppt(db, ppt_id, "failed", (error_message or "")[:200] or None)
+
+
+def pause_ppt(db, ppt_id: str, detail: str | None = None) -> None:
+    """PPT 任务被用户手动暂停：稳定态通知，未读查重保证重复声明只产生一条。"""
+    _emit_ppt(db, ppt_id, "paused", (detail or "")[:200] or None)
+
+
+def gate_ppt(db, ppt_id: str, detail: str | None = None) -> None:
+    """PPT 门禁待确认（awaiting_input，2.3 §3.4）：用户可任意时刻应答，
+    不计超时；恢复运行后不再补发 running 通知（无终态语义）。"""
+    _emit_ppt(db, ppt_id, "awaiting_input", (detail or "")[:200] or None)
+
+
+def _emit_ppt(db, ppt_id: str, kind: str, detail: str | None) -> None:
+    """写 ppt 终态/门禁通知。事件写入失败不影响业务主流程（状态已落库，通知是增益）。
+
+    LEFT JOIN：模板工坊任务（kind='template'）是全局资产不隶属项目（2.3 §4.2），
+    project_id 为空串 JOIN 不到 → project_id/container 按 kind 分流
+    （container='templates'，前端导航到模板管理页），对齐 _emit_form_template 先例。"""
+    try:
+        row = db.conn.execute(
+            "SELECT x.title, x.kind, "
+            "CASE WHEN x.kind = 'template' THEN NULL ELSE x.project_id END AS project_id, "
+            "CASE WHEN x.kind = 'template' THEN 'templates' "
+            "     WHEN p.kind = 'base_lib' THEN 'baselib' ELSE 'project' END AS container "
+            "FROM ppts x LEFT JOIN projects p ON p.id = x.project_id "
+            "WHERE x.id = ?",
+            (ppt_id,),
+        ).fetchone()
+        if not row:
+            logger.info("ppt terminal event skipped: ppt %s gone", ppt_id)
+            return
+        _store_and_publish(
+            db,
+            entity_type="ppt", entity_id=ppt_id,
+            project_id=row["project_id"],
+            container=row["container"] or "project",
+            kind=kind,
+            entity_title=row["title"],
+            detail=detail,
+        )
+    except Exception:
+        logger.warning("ppt terminal event failed for %s", ppt_id, exc_info=True)
+
+
+# ── transfer（2.9 §7）：导出/导入终态（run 是进程内存态不落库，
+#    同 _emit_form_fill 无行查询模式，上下文由调用方显式传入）──
+
+def complete_transfer(db, kind: str, entity_id: str, *, project_id: str | None,
+                      entity_title: str, detail: str | None = None) -> None:
+    """项目导出/导入成功终态：写 completed 通知。kind ∈ {project_export, project_import}。"""
+    _emit_transfer(db, kind, entity_id, "completed", project_id=project_id,
+                   entity_title=entity_title, detail=(detail or "")[:200] or None)
+
+
+def fail_transfer(db, kind: str, entity_id: str, *, project_id: str | None,
+                  entity_title: str, error_message: str | None = None) -> None:
+    """项目导出/导入失败终态：写 failed 通知（detail 截 200 字符）。"""
+    _emit_transfer(db, kind, entity_id, "failed", project_id=project_id,
+                   entity_title=entity_title, detail=(error_message or "")[:200] or None)
+
+
+def _emit_transfer(db, entity_type: str, entity_id: str, event_kind: str, *,
+                   project_id: str | None, entity_title: str, detail: str | None) -> None:
+    """写 transfer 终态通知。事件写入失败不影响业务主流程（通知是增益）。"""
+    try:
+        _store_and_publish(
+            db,
+            entity_type=entity_type, entity_id=entity_id,
+            project_id=project_id,
+            container="project",
+            kind=event_kind,
+            entity_title=entity_title,
+            detail=detail,
+        )
+    except Exception:
+        logger.warning("transfer terminal event failed for %s/%s",
+                       entity_type, entity_id, exc_info=True)
+
+
+# ── schedule_run（2.11 §5.5，E3）──────────────────────────
+
+def complete_schedule_run(db, run_id: str, name: str) -> None:
+    """订阅期次完成终态（R4 默认静默：通知中心记录 + 速览更新，不弹 Toast）。"""
+    _emit_schedule_run(db, run_id, "completed", name, None)
+
+
+def fail_schedule_run(db, run_id: str, name: str,
+                      error: str | None = None) -> None:
+    """订阅期次失败终态（R4：失败/熔断必弹 Toast，kind='failed'；熔断文案
+    由调度器拼入 error）。"""
+    _emit_schedule_run(db, run_id, "failed", name, (error or "")[:200] or None)
+
+
+def _emit_schedule_run(db, run_id: str, kind: str, name: str,
+                       detail: str | None) -> None:
+    """写 schedule_run 终态通知。订阅是全局资产不隶属项目（2.11 §2），
+    project_id 恒空对齐 _emit_task 模式，前端导航固定订阅管理台。"""
+    try:
+        _store_and_publish(
+            db,
+            entity_type="schedule_run", entity_id=run_id,
+            project_id=None,
+            container="project",
+            kind=kind,
+            entity_title=name,
+            detail=detail,
+        )
+    except Exception:
+        logger.warning("schedule_run terminal event failed for %s", run_id,
+                       exc_info=True)
+
+
+# ── 信息类通知通用入口（2.11 §3.1）───────────────
+
+def notify(db, *, entity_type: str, entity_id: str, project_id: str | None,
+           container: str, kind: str, entity_title: str,
+           detail: str | None = None) -> None:
+    """信息类通知通用入口：专用语义 kind（file_changed / due / overdue / …）优先，
+    通用 info / warning 仅作无专用语义场景的兑底。与 _emit_transfer 同模式——
+    信息类无实体行可查，上下文由调用方显式传入；走 _store_and_publish 收口，
+    未读查重与 SSE 投递同终态事件实现；写入失败仅告警不影响业务主流程。"""
+    try:
+        _store_and_publish(
+            db,
+            entity_type=entity_type, entity_id=entity_id,
+            project_id=project_id,
+            container=container,
+            kind=kind,
+            entity_title=entity_title,
+            detail=(detail or "")[:200] or None,
+        )
+    except Exception:
+        logger.warning("notify event failed for %s/%s",
+                       entity_type, entity_id, exc_info=True)
 
 
 # ── 事件投递（E3 activity:stream，v3.9）────────────────────────

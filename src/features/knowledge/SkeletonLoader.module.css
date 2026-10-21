@@ -5,7 +5,7 @@
 }
 
 .line {
-  border-radius: 4px;
+  border-radius: 2px;
   background: linear-gradient(
     90deg,
     var(--bg-tertiary) 25%,
@@ -36,7 +36,7 @@
 .fileIcon {
   width: 24px;
   height: 24px;
-  border-radius: 4px;
+  border-radius: 2px;
   flex-shrink: 0;
   background: linear-gradient(
     90deg,

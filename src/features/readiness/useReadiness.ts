@@ -18,6 +18,7 @@ const CACHE_TTL = 30_000
 export function settingsSectionOfAction(action: string): string {
   if (action === 'settings:external') return 'externalModel'
   if (action === 'settings:internal') return 'internalModel'
+  if (action === 'settings:webSearch') return 'webSearch'
   return 'general'
 }
 

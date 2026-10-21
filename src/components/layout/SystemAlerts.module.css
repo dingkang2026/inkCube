@@ -1,0 +1,213 @@
+/* ── SystemAlerts — App 级统一告警区（0.5 §4.2 打样修订 2026-10-18）──
+   统一告警条语言：左侧 3px 色条（红=danger 服务异常 / 橙=warning 杀软授权）
+   + 图标 + 文案 + 白底彩字动作按钮；多条同区堆叠，正常时整区不可见。 */
+
+.area {
+  border-bottom: 1px solid var(--border);
+}
+
+/* 区内无任何条目（服务正常 + 杀软已处理）时整区不占位 */
+.area:empty {
+  display: none;
+}
+
+.alert {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  font-size: var(--text-base);
+  line-height: 1.5;
+}
+
+.alert + .alert {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* 左侧严重度色条 */
+.alertBar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+
+.danger {
+  background: var(--bg-danger);
+}
+
+.danger .alertBar {
+  background: var(--error);
+}
+
+.danger .alertIcon {
+  color: var(--error);
+}
+
+.warning {
+  background: var(--bg-warning);
+}
+
+.warning .alertBar {
+  background: var(--text-warning);
+}
+
+.warning .alertIcon {
+  color: var(--text-warning);
+}
+
+.alertIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.alertText {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+/* 主行 + 缺失明细列（非 ok 服务逐项显示，点击直达对应设置 section，0.4 §7.5） */
+.alertBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.issueList {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.issueItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.issueItem:hover {
+  color: var(--text-primary);
+}
+
+.issueDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-danger);
+  flex-shrink: 0;
+}
+
+/* 第三方杀软条内的信任区路径（可选中，复制按钮失败时的手动兜底） */
+.alertPath {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  word-break: break-all;
+  user-select: text;
+  margin-top: 2px;
+}
+
+/* 主动作：白底彩字细边框（不与告警底色抢对比） */
+.alertAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.danger .alertAction {
+  color: var(--text-danger);
+  border-color: color-mix(in srgb, var(--text-danger) 35%, transparent);
+}
+
+.danger .alertAction:hover {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+.warning .alertAction {
+  color: var(--text-warning);
+  border-color: color-mix(in srgb, var(--text-warning) 35%, transparent);
+}
+
+.warning .alertAction:hover {
+  background: color-mix(in srgb, var(--text-warning) 12%, transparent);
+}
+
+/* 次级动作（暂不/知道了）：不抢占视觉，仅提供退出路径 */
+.alertGhost {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.alertGhost:hover {
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* 条右上角 ×（仅本条会话隐藏） */
+.alertClose {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.alertClose:hover {
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* UAC 等待态 */
+.alertWorking {
+  color: var(--text-warning);
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}
+
+.spin {
+  animation: alertSpin 1s linear infinite;
+}
+
+@keyframes alertSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

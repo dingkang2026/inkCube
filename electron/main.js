@@ -5,7 +5,7 @@ if (process.env.INKCUBE_MERMAID_RENDERER === '1') {
   require('./mermaid-renderer')
 } else {
 
-const { app, BrowserWindow, ipcMain, protocol, net, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, net, shell, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { PythonManager } = require('./python-manager')
@@ -20,6 +20,10 @@ const fetchPool = require('./fetch-pool')
 // that file after ready (with a /json/version liveness probe) and inject it
 // into the Python backend env. Zero TOCTOU vs. pre-probing a port.
 app.commandLine.appendSwitch('remote-debugging-port', '0')
+
+// Windows 通知需要 AppUserModelID（2.11 §4.1）：缺省时 Electron Notification 在
+// Windows 上静默不弹；值与 electron-builder.yml appId 一致，必须在 ready 前设置
+app.setAppUserModelId('com.inkcube.app')
 
 /** Poll DevToolsActivePort until Chromium's CDP server is actually listening.
  *  Returns the port, or null on timeout (browser-fetch will surface a
@@ -74,10 +78,8 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // 2.8 §6.2 V2：BrowserPanel 内嵌浏览器面板。<webview> 无
-      // nodeIntegration、preload 仅设标记，开启本身不授予页面任何
-      // Node 能力（§10 webviewTag 攻击面评估）
-      webviewTag: true,
+      // 2.8 §6.2 V2.1：浏览器承载为主进程 WebContentsView（fetch-pool.js），
+      // 主窗口不再开启 webviewTag（承载迁移后遗留开关已删，攻击面收敛）
     },
   })
 
@@ -87,6 +89,12 @@ async function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist-renderer', 'index.html'))
   }
+
+  // 2.8 §6.2 V2.1：浏览器承载为主进程 WebContentsView 常驻池（playwright 仅
+  // 识别 type=page 的 CDP target，webview guest 不可见——2026-10-14 实证）；
+  // 面板控制通道同处注册（幂等，activate 重建窗口时重入安全）
+  fetchPool.attachPoolView(mainWindow)
+  fetchPool.registerFetchPoolIpc()
 
   // bge-m3 preload fires after the renderer's FIRST full load: loading the
   // model on CUDA during startup competes with the renderer's module-graph
@@ -151,10 +159,26 @@ ipcMain.handle('window:maximize', () => {
   }
 })
 ipcMain.handle('window:close', () => mainWindow?.close())
-ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized() ?? false)
 ipcMain.handle('app:version', () => app.getVersion())
 ipcMain.handle('shell:showItemInFolder', (_event, filePath) => {
   shell.showItemInFolder(filePath)
+})
+
+// OS 系统通知（2.11 §4.2）：主进程无状态投递（D8）——标题/正文/合并决策全在
+// renderer（ActivityMonitor dispatchToasts），main 不解析业务语义；nav 为通知
+// 条目字段子集，点击聚焦窗口后原样回传 renderer 走 navigateToNotification。
+ipcMain.handle('app:osNotify', (_event, { title, body, silent, nav }) => {
+  if (!Notification.isSupported()) return { ok: false, reason: 'unsupported' }
+  const n = new Notification({ title, body, silent: Boolean(silent) })
+  n.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send('app:osNotifyClick', nav)
+  })
+  n.show()
+  return { ok: true }
 })
 
 ipcMain.on('menu:action', (_event, action) => {
@@ -180,22 +204,6 @@ ipcMain.on('menu:action', (_event, action) => {
 // Knowledge base IPC handlers are registered in ipc-handlers.js via registerIpcHandlers()
 // using dynamic pythonManager.getBaseUrl() for correct port resolution.
 
-// BrowserPanel webview 注入（2.8 §6.2）：webPreferences 在 guest 创建时一次性锁定，
-// 渲染层异步写 preload 属性是 no-op（Electron web-view-attributes 无 handleMutation）；
-// 且池标记须对 CDP Runtime.evaluate（main world）可见 → 必须 contextIsolation:false，
-// 否则 preload 落在 isolated world，Python _find_pool_page 永远匹配不到。
-// backgroundThrottling:false 保面板隐藏/窗口最小化时 LLM 驱动不被节流（§8.2）。
-// 仅注入 persist:webfetch 分区的 webview；preload 仅设 window 布尔标记、无 Node API，
-// 目标页可见/可篡改该标记的攻击增量≈0（SSRF 防护在 partition 网络层）。
-app.on('web-contents-created', (_event, contents) => {
-  contents.on('will-attach-webview', (_e, webPreferences, params) => {
-    if (params.partition !== 'persist:webfetch') return
-    webPreferences.preload = fetchPool.PRELOAD_PATH
-    webPreferences.contextIsolation = false
-    webPreferences.backgroundThrottling = false
-  })
-})
-
 app.whenReady().then(async () => {
   // Handle inkcube:// protocol → serve local files (whitelisted)
   protocol.handle('inkcube', (request) => {
@@ -205,21 +213,32 @@ app.whenReady().then(async () => {
       return new Response('Missing file parameter', { status: 400 })
     }
     // Whitelist (H6): only user content under <dataDir>/files (uploads and
-    // the images extracted next to them). The renderer displays
-    // LLM/markdown-derived content, so an unrestricted handler would let
-    // it read ANY local file via inkcube://app?file=...
+    // the images extracted next to them) + PPT 模板库资产（详情页页面原型 SVG，
+    // 2.3 §4.2；E2 库外置后双源：用户库 ppt-library + 随包内置源）。The renderer
+    // displays LLM/markdown-derived content, so an unrestricted handler would
+    // let it read ANY local file via inkcube://app?file=...
     const dataDir = process.env.INKCUBE_DATA_DIR
       ? path.resolve(process.env.INKCUBE_DATA_DIR)
       : (isDev
           ? path.resolve(__dirname, '..', 'python', 'data')
           : path.resolve(app.getPath('userData'), 'data'))
-    const allowedRoot = path.resolve(path.join(dataDir, 'files'))
+    const resourcesRoot = process.resourcesPath
+      || path.resolve(__dirname, '..', 'resources')
+    const allowedRoots = [
+      path.resolve(path.join(dataDir, 'files')),
+      // 用户模板库（E2：收录目标，可管理条目的详情预览源）
+      path.resolve(path.join(dataDir, 'ppt-library', 'templates')),
+      // 随包内置模板源（builtin 条目只读展示的详情预览源）
+      path.resolve(path.join(resourcesRoot, 'skills', 'ppt-master', 'templates')),
+    ]
     // The query param uses forward slashes — convert before resolving so
     // ../ traversal is normalized and caught by the prefix check.
     const resolved = path.resolve(filePath.replace(/\//g, path.sep))
-    const isAllowed = process.platform === 'win32'
-      ? resolved.toLowerCase().startsWith(allowedRoot.toLowerCase() + path.sep)
-      : resolved.startsWith(allowedRoot + path.sep)
+    const isAllowed = allowedRoots.some((root) =>
+      process.platform === 'win32'
+        ? resolved.toLowerCase().startsWith(root.toLowerCase() + path.sep)
+        : resolved.startsWith(root + path.sep)
+    )
     if (!isAllowed) {
       return new Response('Forbidden', { status: 403 })
     }
@@ -227,7 +246,7 @@ app.whenReady().then(async () => {
   })
 
   // Fetch-pool: partition-level SSRF interceptor（2.8 §5.3；V2 池窗口退役，
-  // 浏览器承载为主窗口 BrowserPanel webview，启动即挂拦截器）
+  // 浏览器承载为主窗口内嵌面板，启动即挂拦截器）
   fetchPool.installSsrfInterceptor()
 
   try {

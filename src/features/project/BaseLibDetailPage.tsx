@@ -22,6 +22,9 @@ const BASE_LIB_IPC_CHANNELS: KnowledgeIpcChannels = {
   recentChunks: 'baseLib:recentChunks',
   getProjectImages: 'baseLib:getImages',
   getImages: 'baseLib:getImages',
+  // 删除复用 knowledge 通道：base-lib 的 file 记录 project_id 即 lib_id，
+  // 向量写入/清理同维度（与 retry/archive 复用同构）
+  deleteImage: 'knowledge:deleteImage',
   retryImage: 'knowledge:retryImage',
   updateImageCategory: 'knowledge:updateImageCategory',
   archiveImage: 'knowledge:archiveImage',
@@ -61,7 +64,8 @@ export function BaseLibDetailPage({ baseLibId }: BaseLibDetailPageProps) {
   useEffect(() => {
     const load = async () => {
       try {
-        const result: any = await window.electronAPI.invoke('baseLib:list')
+        // 按 id 反查库信息：limit=0 全量（分页不得截断查找域）
+        const result: any = await window.electronAPI.invoke('baseLib:list', { limit: 0 })
         const libs = result.base_libs || []
         const found = libs.find((l: any) => l.id === baseLibId)
         if (found) {

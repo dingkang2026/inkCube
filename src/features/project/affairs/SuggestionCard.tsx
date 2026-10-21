@@ -1,5 +1,8 @@
 /** src/features/project/affairs/SuggestionCard.tsx — AI 建议卡区块(3.0 四期 T8,3.1 §5.3)
  *  自包含数据域:挂载 + refreshSignal 边沿拉 affairs:listSuggestions(pending),零新增轮询;
+ *  分页契约(0.1dev-guide §16,2026-10-20 补齐):50/页「加载更多」,游标 =
+ *  已消费 offset(+= 每页返回条数);建议队列天然短(pending 即出列),分页是
+ *  契约完备性而非规模需求;
  *  [采纳] affairs:acceptSuggestion → 成功 dispatch app:tasks-changed(侧栏/首页待办
  *    既有刷新链自动生效,三期已铺)+ onAccepted 回调父级刷新看板(整体 review W1:
  *    AffairsTab 不监听该事件,看板 state 需显式重拉)+ 本地移除 + Toast;
@@ -15,12 +18,14 @@ import type { TaskSuggestion } from './types'
 import { useToast } from '../../knowledge/Toast'
 import s from './SuggestionCard.module.css'
 
+const PAGE_SIZE = 50
+
 interface SuggestionCardProps {
   projectId: string
   /** 父级边沿信号(解析/编译终态 useEdgeRefetch 时 +1):变化即重拉,零新增轮询 */
   refreshSignal?: number
-  /** 采纳成功后回调(整体 review W1:看板/侧栏等父级数据域需显式重拉;
-   *  忽略与目标失效不改任务状态,不触发) */
+  /** 采纳成功后回调（整体 review W1：看板/侧栏等父级数据域需显式重拉；
+   *  忽略与目标失效不改任务状态，不触发） */
   onAccepted?: () => void
 }
 
@@ -28,24 +33,50 @@ export function SuggestionCard({ projectId, refreshSignal, onAccepted }: Suggest
   const { t } = useTranslation()
   const showToast = useToast()
   const [suggestions, setSuggestions] = useState<TaskSuggestion[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // 服务端游标：已消费的 offset 位置（+= 每页返回条数）。
+  // 采纳/忽略本地移除后不回退游标（服务端行已出列，剩余页照常衔接）
+  const nextOffsetRef = useRef(0)
   // 单飞互斥:采纳/忽略进行中禁用该行按钮,防双击重复 IPC(重复采纳会建两条任务)
   const [busyId, setBusyId] = useState<string | null>(null)
   const latestPidRef = useRef(projectId)
   useEffect(() => { latestPidRef.current = projectId }, [projectId])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (offset = 0) => {
     const pid = projectId
     try {
-      const r: any = await window.electronAPI.invoke('affairs:listSuggestions', { projectId: pid })
+      const r: any = await window.electronAPI.invoke('affairs:listSuggestions', {
+        projectId: pid, limit: PAGE_SIZE, offset,
+      })
       if (latestPidRef.current !== pid) return
-      setSuggestions(r?.suggestions ?? [])
+      const items: TaskSuggestion[] = r?.suggestions ?? []
+      nextOffsetRef.current = offset + items.length
+      setHasMore(!!r?.has_more)
+      setSuggestions((prev) => {
+        if (offset === 0) return items
+        // append 按 id 去重：刷新边沿与加载更多交错时防重复渲染
+        const seen = new Set(prev.map((p) => p.id))
+        return [...prev, ...items.filter((x) => !seen.has(x.id))]
+      })
     } catch (err) {
       console.error('Failed to load suggestions:', err)
     }
   }, [projectId])
 
-  useEffect(() => { void load() }, [load])
-  useEffect(() => { if (refreshSignal !== undefined && refreshSignal > 0) void load() }, [refreshSignal, load])
+  // 挂载/切项目/refreshSignal 边沿 → 重拉首页
+  useEffect(() => { void load(0) }, [load])
+  useEffect(() => { if (refreshSignal !== undefined && refreshSignal > 0) void load(0) }, [refreshSignal, load])
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      await load(nextOffsetRef.current)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, load])
 
   const removeLocal = (id: string) =>
     setSuggestions((list) => list.filter((x) => x.id !== id))
@@ -117,6 +148,12 @@ export function SuggestionCard({ projectId, refreshSignal, onAccepted }: Suggest
           </div>
         ))}
       </div>
+      {hasMore && (
+        <button className={s.loadMore} onClick={() => void loadMore()}
+          disabled={loadingMore}>
+          {loadingMore ? t('common.loading') : t('common.loadMore')}
+        </button>
+      )}
     </section>
   )
 }

@@ -21,6 +21,21 @@ async function handlePythonResponse(res) {
   throw err
 }
 
+/** 需回传 payload 的动作通道（PPT 增强/归档三通道等）：ipcMain.handle 抛出的异常跨进程
+ *  仅保留 message（Electron #24427），err.errorCode 等结构化字段全部丢失，渲染层
+ *  apiErrorText(code, ...) 恒走 fallback——错误码改经返回值透传，渲染层判 res.ok
+ *  后自行取 payload 与映射文案。语义同 handlePythonResponse，以返回值代替 throw。
+ *  成功时 body 展开进返回值（{ ok: true, ...body }），仅判 ok 的消费方不受影响。 */
+async function structuredPythonResponse(res) {
+  if (res.ok) return { ok: true, ...(await res.json().catch(() => ({}))) }
+  const body = await res.json().catch(() => null)
+  return {
+    ok: false,
+    code: body?.code || 'UNKNOWN_ERROR',
+    error: body?.error || body?.message || `Python backend error (${res.status})`,
+  }
+}
+
 /** 默认超时：全部 IPC handler 的 Python HTTP 调用统一强制超时。
  *  根因背景：Uvicorn 默认 5s 关闭空闲 keep-alive 连接，Node fetch 复用半关闭
  *  socket 时会永久等待且无默认超时，曾导致 ActivityMonitor 轮询循环死亡
@@ -32,6 +47,17 @@ function fetchWithTimeout(url, options = {}, timeoutMs = PY_FETCH_DEFAULT_TIMEOU
     ...options,
     signal: AbortSignal.timeout(timeoutMs),
   })
+}
+
+/** 保存对话框默认文件名净化（非法字符→_、去结尾点/空格、截 80），
+ *  与 Python 后端 _sanitize_filename 同规则——reports:exportReport 与
+ *  form-fill:download 共用，避免双实现漂移。 */
+function sanitizeFilename(title, fallback) {
+  return String(title || fallback)
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 80)
+    .replace(/[. ]+$/g, '') || fallback
 }
 
 /**
@@ -137,9 +163,6 @@ function streamActivities(pythonManager, sender) {
 }
 
 function registerIpcHandlers(ipcMain, pythonManager) {
-  // Expose Python backend base URL for direct HTTP calls (e.g. file upload)
-  ipcMain.handle('python:getBaseUrl', () => pythonManager.getBaseUrl())
-
   // ── System ──
 
   ipcMain.handle('system:getHealth', async () => {
@@ -156,7 +179,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     }
   })
 
-  // Onboarding wizard flag (persisted in backend settings kv table, 0.4lifecycle §5.3)
+  // Onboarding wizard flag (persisted in backend settings kv table, 0.4lifecycle §7.3)
   ipcMain.handle('system:getOnboarding', async () => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/onboarding`)
     return handlePythonResponse(res)
@@ -228,10 +251,39 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('system:cleanData', async (_event, category) => {
+    // 大目录慢删除（chroma/files 累计 GB 级）会超默认 15s：超时会让前端
+    // 循环中断、后续类别不执行（2026-10-20 实证）；60s 是慢删的纵深防御
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/data/${category}`, {
       method: 'DELETE',
-    })
+    }, 60000)
     return handlePythonResponse(res)
+  })
+
+  // 真·全清（2026-10-20 审计 B3+B6）：后端单事务清全表 + data_dir 磁盘；
+  // 网页登录态（cookies/storage）存 Electron partition，python 够不到——
+  // 后端成功后联动 clearAllWebData 收尾。cookies 清理失败不阻断（后端
+  // 已完成的部分不回滚），返回体标 partial 让前端 warning。
+  ipcMain.handle('system:resetAllData', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/system/data/reset-all`, {
+      method: 'POST',
+    }, 120000)
+    const body = handlePythonResponse(res)
+    if (body && body.success) {
+      try {
+        const { clearAllWebData } = require('./fetch-pool')
+        await clearAllWebData()
+      } catch (e) {
+        logElectron('WARN', `resetAllData: web data cleanup failed: ${e.message}`)
+        return {
+          ...body,
+          partial: true,
+          message: body.message
+            ? `${body.message}; web data cleanup failed`
+            : 'Web data cleanup failed',
+        }
+      }
+    }
+    return body
   })
 
   // 数据目录三态解析（环境变量覆盖 > dev=python/data > 打包=userData/data）——
@@ -585,8 +637,19 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('models:download', async (_event, name) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/${name}/download`, {
+    // 模型名进 URL path：统一 encodeURIComponent（与文件内其它通道的编码惯例
+    // 一致；当前 name 来自后端受控列表，防未来开放自定义名时的路径注入）
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/${encodeURIComponent(name)}/download`, {
       method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 单模型删除（2026-10-20 删除功能审计补齐）：业务失败（捆绑/下载中/删失败）
+  // 为 200 + ok:false，随响应体透传
+  ipcMain.handle('models:delete', async (_event, name) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/models/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
@@ -605,8 +668,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // ── Knowledge Base ──
 
-  ipcMain.handle('knowledge:listProjects', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects`)
+  ipcMain.handle('knowledge:listProjects', async (_event, { archived, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (archived) params.set('archived', 'true')
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -620,7 +688,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('knowledge:getFiles', async (_event, { projectId, limit, offset, status, fileType, filenameSearch }) => {
-    const params = new URLSearchParams({ limit: String(limit || 20) })
+    const params = new URLSearchParams({ limit: String(limit ?? 20) })
     if (offset) params.set('offset', String(offset))
     if (status && status !== 'all') params.set('status', status)
     if (fileType) params.set('file_type', fileType)
@@ -665,7 +733,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   ipcMain.handle('knowledge:recentChunks', async (_event, { projectId, limit, fileId }) => {
-    const params = new URLSearchParams({ limit: String(limit || 20) })
+    const params = new URLSearchParams({ limit: String(limit ?? 20) })
     if (fileId) params.set('file_id', fileId)
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/recent-chunks?${params}`)
     return handlePythonResponse(res)
@@ -680,11 +748,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 删除准入 = 已归档；409 PROJECT_NOT_ARCHIVED 经返回值透传（structuredPythonResponse）
   ipcMain.handle('knowledge:deleteProject', async (_event, projectId) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
       method: 'DELETE',
     })
-    return handlePythonResponse(res)
+    return structuredPythonResponse(res)
   })
 
   ipcMain.handle('knowledge:renameProject', async (_event, { projectId, name }) => {
@@ -710,9 +779,24 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 项目归档/恢复（生命周期软关闭；409 守门 code 经返回值透传，见 structuredPythonResponse）
+  ipcMain.handle('knowledge:archiveProject', async (_event, projectId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/archive`, {
+      method: 'POST',
+    })
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('knowledge:unarchiveProject', async (_event, projectId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/unarchive`, {
+      method: 'POST',
+    })
+    return structuredPythonResponse(res)
+  })
+
   // Image management
   ipcMain.handle('knowledge:getProjectImages', async (_event, { projectId, limit, offset, fileId, status, category, search, size }) => {
-    const params = new URLSearchParams({ limit: String(limit || 40), offset: String(offset || 0) })
+    const params = new URLSearchParams({ limit: String(limit ?? 40), offset: String(offset ?? 0) })
     if (fileId) params.set('file_id', fileId)
     if (status) params.set('status', status)
     if (category) params.set('category', category)
@@ -805,40 +889,18 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // ── Base Library ──
 
-  ipcMain.handle('baseLib:list', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs`)
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('baseLib:create', async (_event, { name, description }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description: description || '' }),
-    })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('baseLib:update', async (_event, { libId, projectId, name, description }) => {
-    const id = libId || projectId
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description }),
-    })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('baseLib:delete', async (_event, libId) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${libId}`, {
-      method: 'DELETE',
-    })
+  ipcMain.handle('baseLib:list', async (_event, { limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('baseLib:getFiles', async (_event, { libId, projectId, limit, offset, status, fileType, filenameSearch }) => {
     const id = libId || projectId
-    const params = new URLSearchParams({ limit: String(limit || 20) })
+    const params = new URLSearchParams({ limit: String(limit ?? 20) })
     if (offset) params.set('offset', String(offset))
     if (status && status !== 'all') params.set('status', status)
     if (fileType) params.set('file_type', fileType)
@@ -890,7 +952,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:recentChunks', async (_event, { libId, projectId, limit, fileId }) => {
     const id = libId || projectId
-    const params = new URLSearchParams({ limit: String(limit || 20) })
+    const params = new URLSearchParams({ limit: String(limit ?? 20) })
     if (fileId) params.set('file_id', fileId)
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${id}/recent-chunks?${params}`)
     return handlePythonResponse(res)
@@ -925,7 +987,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('baseLib:getImages', async (_event, { libId, projectId, limit, offset, fileId, status, category, search, size }) => {
     const id = libId || projectId
-    const params = new URLSearchParams({ limit: String(limit || 40), offset: String(offset || 0) })
+    const params = new URLSearchParams({ limit: String(limit ?? 40), offset: String(offset ?? 0) })
     if (fileId) params.set('file_id', fileId)
     if (status) params.set('status', status)
     if (category) params.set('category', category)
@@ -968,6 +1030,42 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // ── Task Templates (0.5 §5, E2) ──
+
+  ipcMain.handle('taskTemplates:list', async (_event, { scope, projectId } = {}) => {
+    const params = new URLSearchParams()
+    if (scope) params.set('scope', scope)
+    if (projectId) params.set('projectId', projectId)
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/task-templates${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('taskTemplates:save', async (_event, body) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/task-templates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('taskTemplates:delete', async (_event, id) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/task-templates/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('taskTemplates:togglePin', async (_event, { id, pinned }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/task-templates/${encodeURIComponent(String(id))}/pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned }),
+    })
+    return handlePythonResponse(res)
+  })
+
   // ── Tasks ──
 
   ipcMain.handle('tasks:create', async (_event, { title, workspacePath, mode }) => {
@@ -980,11 +1078,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         mode: mode || 'coding',
       }),
     })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('tasks:get', async (_event, taskId) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}`)
     return handlePythonResponse(res)
   })
 
@@ -1114,8 +1207,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('tasks:readFile', async (_event, { taskId, path }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/files/content?path=${encodeURIComponent(path)}`)
+  ipcMain.handle('tasks:readFile', async (_event, { taskId, path, b64 }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks/${taskId}/files/content?path=${encodeURIComponent(path)}${b64 ? '&b64=1' : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1132,8 +1225,10 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   ipcMain.handle('tasks:listFiltered', async (_event, { status, limit, offset } = {}) => {
     const params = new URLSearchParams()
     if (status) params.set('status', status)
-    if (limit) params.set('limit', String(limit))
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
+    // 2.3 §3.1 形态分离：本通道唯一消费者是任务 Tab，PPT 任务（origin='ppt'）永不入列
+    params.set('origin', 'chat')
     const qs = params.toString()
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/tasks${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
@@ -1198,8 +1293,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // ── Skills ──
 
-  ipcMain.handle('skills:list', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills`)
+  ipcMain.handle('skills:list', async (_event, { limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1284,6 +1383,131 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   // ── Skills list (for slash command autocomplete) ──
   ipcMain.handle('tasks:getSkills', async () => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/skills`)
+    return handlePythonResponse(res)
+  })
+
+  // ── Schedules (2.11 §4.2, E3)；rebuildArchive 通道随档案实现（E3 T10）同变更落地 ──
+
+  ipcMain.handle('schedules:list', async (_event, { category, enabled, q, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (category) params.set('category', category)
+    if (enabled !== undefined && enabled !== null) params.set('enabled', String(enabled))
+    if (q) params.set('q', q)
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:create', async (_event, body) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:update', async (_event, { id, ...fields }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:delete', async (_event, id) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 启停开关专用（2.11 §4.2「=PATCH enabled」）；其余编辑走 schedules:update
+  ipcMain.handle('schedules:toggle', async (_event, { id, enabled }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:runs', async (_event, { id, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/${encodeURIComponent(String(id))}/runs${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  // run-now 异步受理（review P2-6）：后端受理即返回（执行在后台完成，终态
+  // 走通知中心）；超时参数保留为防御（正常毫秒级返回）
+  ipcMain.handle('schedules:runNow', async (_event, id) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/${encodeURIComponent(String(id))}/run-now`, {
+      method: 'POST',
+    }, 600000)
+    return handlePythonResponse(res)
+  })
+
+  // §6 重建档案：同步等待全部分批 LLM 合并完成，超时对齐 runNow（600s）
+  ipcMain.handle('schedules:rebuildArchive', async (_event, id) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/${encodeURIComponent(String(id))}/rebuild-archive`, {
+      method: 'POST',
+    }, 600000)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:summary', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/summary`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:digest', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/digest`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:inbox', async (_event, { unread, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (unread) params.set('unread', '1')
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/runs/inbox${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:markRead', async (_event, runId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/runs/${encodeURIComponent(String(runId))}/read`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 单条删除期次（2.11 §4.1，2026-10-20 审计补齐）：终态 run 可删，running 409
+  ipcMain.handle('schedules:deleteRun', async (_event, runId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/runs/${encodeURIComponent(String(runId))}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('schedules:readReport', async (_event, runId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/runs/${encodeURIComponent(String(runId))}/report`)
+    return handlePythonResponse(res)
+  })
+
+  // LLM 提炼（单次调用，同步等待）：对齐 LLM 测试连接 60s
+  ipcMain.handle('schedules:refinePrompt', async (_event, { taskId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/refine-prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId }),
+    }, 60000)
     return handlePythonResponse(res)
   })
 
@@ -1392,13 +1616,11 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('reports:listReports', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports?project_id=${encodeURIComponent(projectId)}`)
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('reports:getReport', async (_event, reportId) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}`)
+  ipcMain.handle('reports:listReports', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams({ project_id: encodeURIComponent(projectId) })
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports?${params}`)
     return handlePythonResponse(res)
   })
 
@@ -1446,12 +1668,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     let targetPath
     if (saveAs) {
       const win = BrowserWindow.getFocusedWindow()
-      // 默认文件名 {标题}.docx，标题经文件名 sanitize（非法字符/结尾点，与后端 _sanitize_filename 同规则）
-      const safeName = String(title || '报告')
-        .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
-        .replace(/[. ]+$/g, '')
-        .slice(0, 80)
-        .replace(/[. ]+$/g, '') || '报告'
+      // 默认文件名 {标题}.docx（sanitize 与后端 _sanitize_filename 同规则）
+      const safeName = sanitizeFilename(title, '报告')
       const { canceled, filePath } = await dialog.showSaveDialog(win || undefined, {
         title: 'Export Report',
         defaultPath: `${safeName}.docx`,
@@ -1486,6 +1704,58 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return { ...result, opened: true }
   })
 
+  // ── Projects: 导出/导入交换包（2.9project-transfer-design §3.3）──
+  // 对话框只选路径，请求体只传路径（不 base64）；导出同步返回统计（大项目分钟级，
+  // 超时放宽 600s）；导入仅快速校验即返回，后台导入进度走统一活动心跳。
+  ipcMain.handle('projects:exportProject', async (_event, { projectId, projectName }) => {
+    const { dialog, BrowserWindow } = require('electron')
+    const win = BrowserWindow.getFocusedWindow()
+    const safeName = sanitizeFilename(projectName || '项目', '项目')
+    const now = new Date()
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const { canceled, filePath } = await dialog.showSaveDialog(win || undefined, {
+      title: 'Export Project',
+      defaultPath: `${safeName}-${stamp}.inkproj`,
+      filters: [{ name: 'InkCube Project', extensions: ['inkproj'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/knowledge/projects/${encodeURIComponent(projectId)}/export`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_path: filePath }),
+      },
+      600000, // 大项目导出分钟级：对齐报告导出的放宽策略，取更宽松值
+    )
+    const result = await handlePythonResponse(res)
+    logElectron('INFO', `Project exported to ${result.path}`)
+    return { canceled: false, ...result }
+  })
+
+  ipcMain.handle('projects:importProject', async () => {
+    const { dialog, BrowserWindow } = require('electron')
+    const win = BrowserWindow.getFocusedWindow()
+    const { canceled, filePaths } = await dialog.showOpenDialog(win || undefined, {
+      title: 'Import Project',
+      filters: [{ name: 'InkCube Project', extensions: ['inkproj', 'zip'] }],
+      properties: ['openFile'],
+    })
+    if (canceled || !filePaths[0]) return { canceled: true }
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/knowledge/projects/import`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_path: filePaths[0] }),
+      },
+      120000, // 仅快速校验（zip-slip/manifest/embedder），正常秒级；大包解压校验放宽
+    )
+    const result = await handlePythonResponse(res)
+    logElectron('INFO', `Project import started: ${result.project_id}`)
+    return { canceled: false, ...result }
+  })
+
   // Retry failed report
   ipcMain.handle('reports:retryReport', async (_event, { reportId, mode }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/${reportId}/retry`, {
@@ -1512,10 +1782,338 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // ── PPT 交付物（2.3ppt-export-design §6.3）──
+  // 除另存为/打开文件夹走本机文件 IPC 外全为 HTTP 转发；
+  // SVG 预览复用 tasks:readFile（task_id 在 ppt 详情内返回）。
+  ipcMain.handle('ppt:list', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/ppts${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  // imageSelection：{categories, minWidth, pinnedIds}（2.3 §4.1 E2 复合选择，null = 不圈池）
+  ipcMain.handle('ppt:create', async (_event, { projectId, title, sourceReportId, imageSelection, styleRef, notes }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/ppts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        source_report_id: sourceReportId || null,
+        image_selection: imageSelection
+          ? {
+              categories: imageSelection.categories || [],
+              min_width: imageSelection.minWidth ?? null,
+              pinned_ids: imageSelection.pinnedIds || [],
+            }
+          : null,
+        style_ref: styleRef || null,
+        notes: notes || null,
+      }),
+    }, 120000) // 素材就位含 mermaid 同步重绘（秒级×块数、单块上限 30s），放宽对齐 form-template:upload
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:get', async (_event, pptId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:delete', async (_event, pptId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:answer', async (_event, { pptId, text }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text || null }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:pause', async (_event, pptId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/pause`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:resume', async (_event, pptId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/resume`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:cancel', async (_event, pptId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/cancel`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 成品增强（2.3 §4.3 E3）：从项目内交付物 / 本机导入 pptx 两条入口，全 HTTP 转发；
+  // structured 透传错误码（NOT_ENHANCEABLE/ENHANCE_IN_PROGRESS 等），渲染层判 res.ok
+  ipcMain.handle('ppt:enhance', async (_event, { pptId, notes }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/enhance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: notes || null }),
+    }, 120000) // prepare 同步拷源 pptx 到任务 staging，放宽对齐 ppt:create
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('ppt:enhanceImport', async (_event, { projectId, title, sourcePath, notes }) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${projectId}/ppts/enhance-import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        source_path: sourcePath,
+        notes: notes || null,
+      }),
+    }, 120000)
+    return structuredPythonResponse(res)
+  })
+
+  // 另存为导出：workspacePath+exportPath（详情返回的本机路径）拷到用户选定位置
+  ipcMain.handle('ppt:downloadExport', async (_event, { workspacePath, exportPath, title }) => {
+    const { dialog, BrowserWindow } = require('electron')
+    const fs = require('fs')
+    const path = require('path')
+    const full = path.join(workspacePath, exportPath || '')
+    if (!fs.existsSync(full)) return { error: 'PPTX file not found' }
+    const win = BrowserWindow.getFocusedWindow()
+    const { canceled, filePath } = await dialog.showSaveDialog(win || undefined, {
+      title: 'Save PPTX',
+      defaultPath: `${sanitizeFilename(title, 'PPT')}.pptx`,
+      filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    fs.copyFileSync(full, filePath)
+    logElectron('INFO', `PPT exported to ${filePath}`)
+    return { success: true, path: filePath }
+  })
+
+  // 打开所在文件夹（资源管理器中定位导出文件）
+  ipcMain.handle('ppt:revealExport', async (_event, { workspacePath, exportPath }) => {
+    const { shell } = require('electron')
+    const path = require('path')
+    const full = path.join(workspacePath, exportPath || '')
+    shell.showItemInFolder(full)
+    return { ok: true }
+  })
+
+  // ── PPT 模板工坊（2.3 §4.2）：索引聚合/创建任务/删除/重扫全 HTTP 转发，另存为本机操作 ──
+  ipcMain.handle('ppt-template:list', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppt-templates`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt-template:jobs', async (_event, { limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppt-templates/jobs${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  // 模板规范文档（design_spec.md 正文）：详情抽屉「模板规范」渲染源
+  ipcMain.handle('ppt-template:spec', async (_event, { kind, templateId }) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/ppt-templates/${encodeURIComponent(kind)}/${encodeURIComponent(templateId)}/spec`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt-template:create', async (_event, { kind, templateId, templateName, refPaths, notes }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppt-templates/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind,
+        template_id: templateId,
+        template_name: templateName,
+        ref_paths: refPaths || [],
+        notes: notes || null,
+      }),
+    }, 120000) // prepare 同步拷贝参考素材到任务 staging，放宽对齐 ppt:create
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt-template:delete', async (_event, { kind, templateId }) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/ppt-templates/${encodeURIComponent(kind)}/${encodeURIComponent(templateId)}`,
+      { method: 'DELETE' },
+      120000) // 删除链含 N×任务工作区 rmtree + 模板包内大量文件，大工作区可能超 30s；超时后服务端仍继续执行且重试幂等收敛
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('ppt-template:rescan', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppt-templates/rescan`, {
+      method: 'POST',
+    }, 600000) // 自扫用户库索引（秒级），超时上限仅防 UI 挂死兜底
+    return handlePythonResponse(res)
+  })
+
+  // 另存 Review PPTX：previewPath 是详情返回的绝对路径（不同于 ppt:downloadExport 的相对路径拼接）
+  ipcMain.handle('ppt-template:downloadPreview', async (_event, { previewPath, title }) => {
+    const { dialog, BrowserWindow } = require('electron')
+    const fs = require('fs')
+    if (!previewPath || !fs.existsSync(previewPath)) return { error: 'PPTX file not found' }
+    const win = BrowserWindow.getFocusedWindow()
+    const { canceled, filePath } = await dialog.showSaveDialog(win || undefined, {
+      title: 'Save PPTX',
+      defaultPath: `${sanitizeFilename(title, 'template')}.pptx`,
+      filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    fs.copyFileSync(previewPath, filePath)
+    logElectron('INFO', `PPT template preview saved to ${filePath}`)
+    return { success: true, path: filePath }
+  })
+
+  // ── Forms: 填表（2.4forms-design §4）──
+  // 模板通道服务全局资产（模板管理页），实例通道服务项目作用域（FormsTab）。
+  // upload 走手工 multipart（同 _uploadFilesToTask：FormData/Blob 在 Electron
+  // main 不可靠）；download 走 showSaveDialog + 文件流写出（同 tasks:export）。
+
+  ipcMain.handle('form-template:upload', async (_event, { filePath }) => {
+    const fs = require('fs')
+    const path = require('path')
+    const fileData = fs.readFileSync(filePath)
+    const fileName = path.basename(filePath).replace(/"/g, '\\"')
+    const boundary = '----InkCubeBoundary' + Date.now()
+    const parts = [
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`
+      ),
+      fileData,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/templates/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body: Buffer.concat(parts),
+    }, 120000) // 模板文件上传，放宽超时（对齐 _uploadFilesToTask）
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-template:list', async (_event, { q, status, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (q) params.set('q', q)
+    if (status && status !== 'all') params.set('status', status)
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/templates${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-template:detail', async (_event, templateId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/templates/${encodeURIComponent(templateId)}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-template:reanalyze', async (_event, { templateId, userHint }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/templates/${encodeURIComponent(templateId)}/reanalyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_hint: userHint }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-template:delete', async (_event, templateId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/templates/${encodeURIComponent(templateId)}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-fill:create', async (_event, { projectId, templateId, title }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/fills`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: projectId,
+        template_id: templateId,
+        title: title || null,
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-fill:list', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams({ project_id: encodeURIComponent(projectId) })
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/fills?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-fill:detail', async (_event, fillId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/fills/${encodeURIComponent(fillId)}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-fill:update', async (_event, { fillId, values }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/fills/${encodeURIComponent(fillId)}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: values || {} }),
+    }, 60000) // 同步重放：读模板逐字段重写 docx + 落盘，可能超出默认 15s
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('form-fill:download', async (_event, { fillId, title }) => {
+    const { dialog, BrowserWindow } = require('electron')
+    const fs = require('fs')
+    const win = BrowserWindow.getFocusedWindow()
+    // 先弹保存框（对齐 reports:exportReport saveAs 先例），取消不发起请求
+    const safeName = sanitizeFilename(title, '填表')
+    const { canceled, filePath } = await dialog.showSaveDialog(win || undefined, {
+      title: 'Save Form',
+      defaultPath: `${safeName}.docx`,
+      filters: [{ name: 'Word Document', extensions: ['docx'] }],
+    })
+    if (canceled || !filePath) return { canceled: true }
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/forms/fills/${encodeURIComponent(fillId)}/download`, {}, 60000)
+    const contentType = res.headers.get('content-type') || ''
+    if (!res.ok || !contentType.includes('wordprocessingml')) {
+      const body = await res.json().catch(() => null)
+      return { error: body?.error || body?.detail || 'Download failed' }
+    }
+    fs.writeFileSync(filePath, Buffer.from(await res.arrayBuffer()))
+    logElectron('INFO', `Form fill exported to ${filePath}`)
+    return { success: true, path: filePath }
+  })
+
+  ipcMain.handle('form-fill:delete', async (_event, fillId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/forms/fills/${encodeURIComponent(fillId)}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
   // ── Wiki ──
 
-  ipcMain.handle('wiki:listPages', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages`)
+  ipcMain.handle('wiki:listPages', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1538,7 +2136,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // ── Activity Hub (0.4lifecycle-design.md §3.1 #0) ──
+  // ── Activity Hub (0.4lifecycle-design.md §8.1 #0) ──
   ipcMain.handle('activities:getStatus', async () => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/status`)
     return handlePythonResponse(res)
@@ -1549,6 +2147,31 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 通知中心历史面（2.11 §3.4）：分页全量（含已读）+ 一键全部已读
+  ipcMain.handle('notifications:list', async (_event, { offset, limit } = {}) => {
+    const params = new URLSearchParams({
+      offset: String(offset ?? 0),
+      limit: String(limit ?? 50),
+    })
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/notifications?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('notifications:readAll', async () => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/notifications/read-all`, {
+      method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // 单条删除（2.11 §3.4）：通知中心行内删除，幂等 { ok, deleted }
+  ipcMain.handle('notifications:delete', async (_event, { id }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/notifications/${id}`, {
+      method: 'DELETE',
     })
     return handlePythonResponse(res)
   })
@@ -1567,9 +2190,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('wiki:listReviews', async (_event, { projectId, resolved }) => {
-    const params = resolved !== undefined ? `?resolved=${resolved}` : ''
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews${params}`)
+  ipcMain.handle('wiki:listReviews', async (_event, { projectId, resolved, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (resolved !== undefined) params.set('resolved', String(resolved))
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/reviews${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1631,22 +2258,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('wiki:getPurpose', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`)
-    return handlePythonResponse(res)
-  })
-
   ipcMain.handle('wiki:updatePurpose', async (_event, { projectId, purpose }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/purpose`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ purpose }),
     })
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('wiki:getOverview', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/overview`)
     return handlePythonResponse(res)
   })
 
@@ -1664,9 +2281,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('wiki:getChangeLog', async (_event, { projectId, limit }) => {
-    const params = limit ? `?limit=${limit}` : ''
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/changelog${params}`)
+  ipcMain.handle('wiki:getChangeLog', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/changelog${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1694,9 +2314,10 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // Wiki review sweep (two-stage auto-resolution)
   ipcMain.handle('wiki:sweepReviews', async (_event, { projectId }) => {
+    // LLM 型端点（Stage2 最多 5 批语义判断），放宽默认 15s 超时
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/sweep-reviews`, {
       method: 'POST',
-    })
+    }, 180000)
     return handlePythonResponse(res)
   })
 
@@ -1749,8 +2370,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   // Wiki page versions
-  ipcMain.handle('wiki:listVersions', async (_event, { projectId, pageKey, limit }) => {
-    const params = new URLSearchParams({ limit: String(limit || 20) })
+  ipcMain.handle('wiki:listVersions', async (_event, { projectId, pageKey, limit, offset }) => {
+    const params = new URLSearchParams({ limit: String(limit ?? 20) })
+    if (offset) params.set('offset', String(offset))
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/versions?${params}`)
     return handlePythonResponse(res)
   })
@@ -1762,33 +2384,38 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // Wiki duplicate detection (§12.2.10)
   ipcMain.handle('wiki:dedupDetect', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/detect`)
+    // LLM 分组调用（≤100 页摘要一次长上下文请求），放宽默认 15s 超时
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/detect`, {}, 180000)
     return handlePythonResponse(res)
   })
 
   ipcMain.handle('wiki:dedupMerge', async (_event, { projectId, canonicalKey, duplicateKeys }) => {
+    // 每 dup 页串行一次 LLM 内容合并 + 全库链接重写，放宽默认 15s 超时
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ canonical_key: canonicalKey, duplicate_keys: duplicateKeys }),
-    })
+    }, 180000)
     return handlePythonResponse(res)
   })
 
   // Wiki-link enrichment (§12.2.4)
   ipcMain.handle('wiki:enrichWikilinks', async (_event, { projectId, pageKey }) => {
+    // LLM 建议调用（单次长上下文请求），放宽默认 15s 超时
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/enrich-wikilinks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page_key: pageKey }),
-    })
+    }, 180000)
     return handlePythonResponse(res)
   })
 
   // ── Ledger: 台账条目(3.0 四期;知识首页时间轴卡 + 首页卡片墙摘要行)──
-  ipcMain.handle('wiki:listLedgerEntries', async (_event, { projectId, limit } = {}) => {
+  ipcMain.handle('wiki:listLedgerEntries', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams({ limit: String(limit ?? 20) })
+    if (offset) params.set('offset', String(offset))
     const res = await fetchWithTimeout(
-      `${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/ledger/entries?limit=${Number(limit) || 20}`)
+      `${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/ledger/entries?${params}`)
     return handlePythonResponse(res)
   })
 
@@ -1798,8 +2425,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   // ── Affairs: 时期任务(3.0 二期;前缀裁决 tasks:* 已被 TaskAgent 占用)──
-  ipcMain.handle('affairs:listByProject', async (_event, { projectId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks`)
+  ipcMain.handle('affairs:listByProject', async (_event, { projectId, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/tasks${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1851,9 +2482,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   // ── Affairs: 事件驱动任务建议(3.0 四期;采纳/忽略是人类裁决口)──
-  ipcMain.handle('affairs:listSuggestions', async (_event, { projectId, status } = {}) => {
+  ipcMain.handle('affairs:listSuggestions', async (_event, { projectId, status, limit, offset } = {}) => {
+    const params = new URLSearchParams({ status: encodeURIComponent(status || 'pending') })
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
     const res = await fetchWithTimeout(
-      `${pythonManager.getBaseUrl()}/projects/${projectId}/suggestions?status=${encodeURIComponent(status || 'pending')}`)
+      `${pythonManager.getBaseUrl()}/projects/${projectId}/suggestions?${params}`)
     return handlePythonResponse(res)
   })
 
@@ -1873,9 +2507,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // ── Web logins (2.8 §9.2)：登录载体为 BrowserPanel（V2），本组仅存
-  // cookie 清理与登记列表转发；webview preload 由主进程 will-attach-webview
-  // 注入（main.js，2.8 §6.2），不经 IPC ──
+  // ── Web logins (2.8 §9.2)：登录在 BrowserPanel 承载（V2.1 主进程
+  // WebContentsView，persist:webfetch partition）内完成，本组仅存
+  // cookie 清理与登记列表转发 ──
 
   ipcMain.handle('weblogin:remove-cookies', (_event, payload) => {
     return fetchPool.removeCookiesForDomain(payload?.domain)
@@ -1883,8 +2517,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // 登记列表与增删转发 Python REST（2.8 §9.1）。无效域名等业务错误由后端以
   // HTTP 200 + {error} 返回（非异常路径），由前端自行展示；网络/5xx 走 throw。
-  ipcMain.handle('weblogin:list', async () => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/web-logins`)
+  ipcMain.handle('weblogin:list', async (_event, { limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/web-logins${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 
@@ -1902,6 +2540,27 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       `${pythonManager.getBaseUrl()}/web-logins/${encodeURIComponent(payload?.domain ?? '')}`,
       { method: 'DELETE' }
     )
+    return handlePythonResponse(res)
+  })
+
+  // ── Usage: token 用量统计（2.10 §4.5/§5.2）。StatusBar / 设置-用量统计 /
+  // 项目详情徽章共用 summary 通道；taskDetail 供 TaskItem 轮次下钻（UsageRounds）──
+
+  ipcMain.handle('usage:summary', async (_event, { rangeKey, projectId } = {}) => {
+    const params = new URLSearchParams()
+    if (rangeKey) params.set('range_key', rangeKey)
+    if (projectId) params.set('project_id', projectId)
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/usage/summary${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('usage:taskDetail', async (_event, { taskId, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/usage/task/${encodeURIComponent(taskId)}${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
   })
 }

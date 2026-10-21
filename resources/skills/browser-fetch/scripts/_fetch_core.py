@@ -31,9 +31,11 @@ SNAPSHOT_TEXT_LIMIT = 3000               # 快照正文截断（§5.2）
 SNAPSHOT_ELEMENTS_LIMIT = 80             # 快照可交互元素上限（§5.2）
 SNAPSHOT_NAME_LIMIT = 40                 # 元素 name 截断（§5.2）
 # 待命页（close 归位目标 §5.2；前端 BrowserPanel 初始 src 用同值字符串）。
-# data: URL 不产生网络请求，partition 拦截器放行（§5.3 第 2 层）
+# data: URL 不产生网络请求，partition 拦截器放行（§5.3 第 2 层）。
+# charset 必须显式声明：无 charset 的 data: URL 中文按 fallback 编码
+# （GBK/windows-1252）解码乱码（2026-10-14 面板截图实证）
 MARK_PAGE = (
-    f"data:text/html,<title>{POOL_TITLE}</title>"
+    f"data:text/html;charset=utf-8,<title>{POOL_TITLE}</title>"
     # 注意：data: URL 中裸 # 会被解析为 fragment 截断（2026-10-13 review 实证），
     # 正文颜色用关键字 gray，不得用 #888 十六进制
     '<body style="font-family:sans-serif;color:gray">InkCube 网页抓取待命</body>'
@@ -291,40 +293,84 @@ def sanitize_filename(name: str) -> str:
 def snapshot_js() -> str:
     """生成可 evaluate 的快照 JS 源码（() => {…} 形式）。
 
-    结果：{text, truncated, elements: [{role, name, selector}], remaining,
-    total, hasPassword}。selector 生成优先级 #id → [name=] → [data-testid=]
-    → nth-of-type 路径（≤3 层）——selector 与可见文本跨调用稳定，从根上
-    避免 ref 编号漂移（§1 元素定位决策）；视口内元素优先入列。
+    结果：{text, truncated, elements: [{role, name, selector, href?}],
+    remaining, total, hasPassword}。selector 生成优先级 #id → a[href] →
+    [name=] → [data-testid=] → nth-of-type 路径，每一级都过 querySelectorAll
+    唯一性验证（不唯一则降级下一级；路径级从 3 层起逐层延长至唯一）——
+    selector 与可见文本跨调用稳定，从根上避免 ref 编号漂移（§1 元素定位
+    决策）；唯一性验证根治前缀歧义 selector（2026-10-16 天眼查实证：
+    `div:nth-of-type(1) > div > a` 同时命中导航与搜索结果，locator.first
+    点错跳回首页）。链接元素附 href，支持 open <href> 直达导航。
+    视口内元素优先入列。
     """
     return """() => {
   const SEL = 'a[href], button, input:not([type=hidden]), select, textarea, [role], [onclick]';
   const nodes = document.querySelectorAll(SEL);
   const inVp = [], offVp = [];
   const rectOf = (el) => el.getBoundingClientRect();
-  const isVisible = (el) => { const r = rectOf(el); return r.width > 0 || r.height > 0; };
+  const isVisible = (el) => {
+    const r = rectOf(el);
+    if (r.width <= 0 || r.height <= 0) return false;
+    // visibility:hidden/collapse 保留布局、rect 有宽高，几何判定漏掉它——
+    // 快照把隐藏副本列进 elements，agent 照用必撞 actionability 超时
+    // （2026-10-14 天眼查双搜索框实证）；定义对齐 Playwright visible
+    const st = getComputedStyle(el);
+    return st.visibility !== 'hidden' && st.visibility !== 'collapse';
+  };
   const isInside = (el) => {
     const r = rectOf(el);
     return r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
   };
   for (const el of nodes) { if (isVisible(el)) (isInside(el) ? inVp : offVp).push(el); }
 
-  const selectorOf = (el) => {
-    if (el.id) return '#' + CSS.escape(el.id);
-    const nm = el.getAttribute('name');
-    if (nm) return el.tagName.toLowerCase() + '[name="' + nm.replace(/"/g, '\\\\"') + '"]';
-    const dt = el.getAttribute('data-testid');
-    if (dt) return '[data-testid="' + dt.replace(/"/g, '\\\\"') + '"]';
+  const escAttr = (v) => v.replace(/"/g, '\\\\"');
+  const count = (sel) => document.querySelectorAll(sel).length;
+  const segOf = (cur) => {
+    const tag = cur.tagName.toLowerCase();
+    const same = Array.from(cur.parentElement.children).filter((c) => c.tagName === cur.tagName);
+    return same.length > 1 ? tag + ':nth-of-type(' + (same.indexOf(cur) + 1) + ')' : tag;
+  };
+  const pathOf = (el, depth) => {
     const parts = [];
     let cur = el;
-    for (let i = 0; i < 3 && cur && cur !== document.body; i++) {
-      const tag = cur.tagName.toLowerCase();
-      const parent = cur.parentElement;
-      if (!parent) break;
-      const same = Array.from(parent.children).filter((c) => c.tagName === cur.tagName);
-      parts.unshift(same.length > 1 ? tag + ':nth-of-type(' + (same.indexOf(cur) + 1) + ')' : tag);
-      cur = parent;
+    for (let i = 0; i < depth && cur && cur !== document.body; i++) {
+      if (!cur.parentElement) break;
+      parts.unshift(segOf(cur));
+      cur = cur.parentElement;
     }
     return parts.join(' > ');
+  };
+
+  const selectorOf = (el) => {
+    // 唯一性优先级：#id → a[href]（href 相同即同目标，但仍要求唯一——
+    // 重复 href 的 .first 可能是隐藏副本，照用必撞 actionability）→
+    // [name=] → [data-testid=] → nth-of-type 路径。每级都验证唯一，
+    // 未命中则降级下一级；路径从 3 层起逐层延长至唯一（上限 8 层，
+    // 深层 DOM 下 3 层截断路径跨容器重名——天眼查歧义实证）
+    if (el.id) {
+      const sel = '#' + CSS.escape(el.id);
+      if (count(sel) === 1) return sel;
+    }
+    const href = el.getAttribute('href');
+    if (href) {
+      const sel = 'a[href="' + escAttr(href) + '"]';
+      if (count(sel) === 1) return sel;
+    }
+    const nm = el.getAttribute('name');
+    if (nm) {
+      const sel = el.tagName.toLowerCase() + '[name="' + escAttr(nm) + '"]';
+      if (count(sel) === 1) return sel;
+    }
+    const dt = el.getAttribute('data-testid');
+    if (dt) {
+      const sel = '[data-testid="' + escAttr(dt) + '"]';
+      if (count(sel) === 1) return sel;
+    }
+    for (let depth = 3; depth <= 8; depth++) {
+      const sel = pathOf(el, depth);
+      if (sel && count(sel) === 1) return sel;
+    }
+    return pathOf(el, 8);  // 结构性重复（同类列表项）取最深路径
   };
 
   const roleOf = (el) => {
@@ -360,10 +406,18 @@ def snapshot_js() -> str:
     const name = nameOf(el);
     if (!name && role !== 'textbox' && role !== 'select' && role !== 'textarea') continue;
     if (elements.length >= %(elem_limit)d) { remaining++; continue; }
-    elements.push({ role, name, selector: selectorOf(el) });
+    const item = { role, name, selector: selectorOf(el) };
+    const href = el.getAttribute('href');
+    if (href) item.href = href;  // 链接直达：open <href> 比 click 试错稳（天眼查绕道实证）
+    elements.push(item);
   }
 
   const fullText = document.body ? (document.body.innerText || '') : '';
+  // 滚动进度（懒加载/无限流：agent 据此判断是否到底——remaining=0 即视觉
+  // 到底；height 供收敛判断，瀑布流每轮追加加载会推高它）
+  const docH = Math.max(
+    document.body ? document.body.scrollHeight : 0,
+    document.documentElement.scrollHeight);
   return {
     text: fullText.slice(0, %(text_limit)d),
     truncated: fullText.length > %(text_limit)d,
@@ -371,6 +425,11 @@ def snapshot_js() -> str:
     remaining,
     total: nodes.length,
     hasPassword: !!document.querySelector('input[type=password]'),
+    scroll: {
+      y: Math.round(window.scrollY),
+      height: docH,
+      remaining: Math.max(0, docH - window.scrollY - window.innerHeight),
+    },
   };
 }""" % {
         "name_limit": SNAPSHOT_NAME_LIMIT,

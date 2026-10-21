@@ -16,7 +16,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -43,9 +43,9 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 16px;
+  font-size: var(--text-lg);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 2px;
   transition: background 0.12s, color 0.12s;
 }
 
@@ -62,12 +62,12 @@
 
 /* 暂停态：warning 色区分于普通刷新按钮 */
 .pauseBtnActive {
-  color: var(--warning, #d97706);
+  color: var(--text-warning);
 }
 
 .pauseBtnActive:hover {
-  color: var(--warning, #d97706);
-  background: color-mix(in srgb, var(--warning, #d97706) 10%, transparent);
+  color: var(--text-warning);
+  background: color-mix(in srgb, var(--text-warning) 10%, transparent);
 }
 
 .fileItem {
@@ -99,20 +99,20 @@
 
 @keyframes parsingPulse {
   0%, 100% { background: transparent; }
-  50% { background: rgba(37, 99, 235, 0.04); }
+  50% { background: rgba(var(--accent-rgb), 0.04); }
 }
 
 .fileItemSelected {
-  background: rgba(37, 99, 235, 0.05);
+  background: rgba(var(--accent-rgb), 0.05);
 }
 
 .fileItemActive {
-  background: rgba(37, 99, 235, 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .fileItemActive:hover {
-  background: rgba(37, 99, 235, 0.10);
+  background: rgba(var(--accent-rgb), 0.10);
 }
 
 .fileCheckbox {
@@ -124,7 +124,7 @@
 }
 
 .fileIcon {
-  font-size: 18px;
+  font-size: var(--text-xl);
   flex-shrink: 0;
   width: 24px;
   text-align: center;
@@ -137,7 +137,7 @@
 
 .filename {
   display: block;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
@@ -150,7 +150,7 @@
   align-items: center;
   gap: 4px;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
@@ -191,7 +191,7 @@
 }
 
 .progressText {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   min-width: 28px;
   text-align: right;
@@ -221,8 +221,8 @@
 }
 
 @keyframes dotPulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
-  50% { opacity: 0.5; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1); }
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.15); }
+  50% { opacity: 0.5; box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.1); }
 }
 
 .dotPending {
@@ -235,7 +235,7 @@
   padding: 24px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 .emptyFiles p {
@@ -270,7 +270,7 @@
   background: var(--bg-tertiary);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 2px;
   transition: background 0.12s, color 0.12s;
 }
 
@@ -289,7 +289,7 @@
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-md);
   padding: 4px 2px 2px;
   z-index: 10;
 }
@@ -307,9 +307,9 @@
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 2px;
   transition: background 0.12s;
   text-align: left;
   white-space: nowrap;
@@ -320,11 +320,11 @@
 }
 
 .menuItemDanger {
-  color: var(--text-danger, #dc2626);
+  color: var(--text-danger);
 }
 
 .menuItemDanger:hover {
-  background: var(--bg-danger, #fef2f2);
+  background: var(--bg-danger);
 }
 
 /* ── File pagination ── */
@@ -346,7 +346,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-xs);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
   padding: 0 5px;
@@ -365,12 +365,12 @@
 
 .pageBtnActive {
   background: var(--accent) !important;
-  color: #fff !important;
+  color: var(--text-inverse) !important;
   border-color: var(--accent) !important;
 }
 
 .pageInfo {
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   margin-left: 6px;
 }
@@ -384,7 +384,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
@@ -411,7 +411,7 @@
 }
 
 .batchCount {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--text-secondary);
   margin-right: auto;
@@ -423,7 +423,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
@@ -435,10 +435,10 @@
 }
 
 .batchBtn:first-of-type {
-  color: var(--text-danger, #dc2626);
+  color: var(--text-danger);
 }
 
 .batchBtn:first-of-type:hover {
-  border-color: var(--text-danger, #dc2626);
-  background: var(--bg-danger, #fef2f2);
+  border-color: var(--text-danger);
+  background: var(--bg-danger);
 }

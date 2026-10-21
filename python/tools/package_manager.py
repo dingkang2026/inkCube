@@ -1,4 +1,9 @@
-"""package_manager tool — manage Python dependencies using uv pip."""
+"""package_manager tool — manage Python dependencies using uv pip.
+
+装包唯一推荐通道（2026-10-16 装包路径统一，1.1 §2.3）：uv 优先（不依赖
+venv 内 pip——uv 创建的 venv 无 pip.exe）+ 腾讯云镜像 + 300s 超时，
+与 venv_manager 预装链同一标准；pip 仅作 uv 不可用时的兑底。
+"""
 import json
 import logging
 import os
@@ -7,7 +12,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.proc_priority import low_priority_kwargs
+
 from tools.base import BaseTool
+from tools.venv_manager import PYPI_MIRROR
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +24,8 @@ class PackageManagerTool(BaseTool):
     name = "package_manager"
     description = (
         "管理任务虚拟环境中的 Python 依赖包。"
-        "支持安装、卸载、列出已安装的包。使用 uv pip 作为后端。"
+        "支持安装、卸载、列出已安装的包。"
+        "uv 优先（国内镜像 + 300s 超时，不依赖 venv 内 pip），pip 兑底。"
     )
     parameters = {
         "type": "object",
@@ -43,7 +52,9 @@ class PackageManagerTool(BaseTool):
     def prompt_description(self) -> str:
         return (
             "## package_manager\n"
-            "管理任务虚拟环境中的 Python 依赖包（uv pip）。\n\n"
+            "管理任务虚拟环境中的 Python 依赖包（uv 优先，自动使用国内镜像）。\n"
+            "安装 Python 依赖请一律使用本工具，勿在 shell 里直接 pip install"
+            "（任务 venv 由 uv 创建、不含 pip，PATH 中的 pip 属于其他环境）。\n\n"
             "操作:\n"
             "- install: 安装包，支持版本约束如 'flask>=2.0'\n"
             "- uninstall: 卸载包\n"
@@ -52,7 +63,8 @@ class PackageManagerTool(BaseTool):
             '```\n{"action": "install", "packages": ["requests", "pandas"]}\n```\n\n'
             '```\n{"action": "install", "requirements": "requirements.txt"}\n```\n\n'
             '```\n{"action": "list"}\n```\n\n'
-            "注意: 每个任务有独立的虚拟环境，安装的包只在此任务中可用。"
+            "注意: 每个任务有独立的虚拟环境，安装的包只在此任务中可用；"
+            "成功输出中的 venv 字段即目标环境路径。"
         )
 
     def __init__(self, workspace_dir: str = "", venv_path: str = ""):
@@ -74,6 +86,12 @@ class PackageManagerTool(BaseTool):
         else:
             pip = os.path.join(self.venv_path, "bin", "pip")
         return pip if os.path.isfile(pip) else None
+
+    def _venv_python(self) -> str:
+        """Path to the python interpreter inside the task venv."""
+        if sys.platform == "win32":
+            return os.path.join(self.venv_path, "Scripts", "python.exe")
+        return os.path.join(self.venv_path, "bin", "python")
 
     def _find_uv(self) -> str | None:
         """Try to find uv binary."""
@@ -105,18 +123,47 @@ class PackageManagerTool(BaseTool):
             return json.dumps({"error": f"未知操作: {action}"}, ensure_ascii=False)
 
     def _list_packages(self) -> str:
+        """List installed packages. uv first (uv-created venvs have no pip), pip fallback."""
+        uv = self._find_uv()
+        if uv:
+            try:
+                result = subprocess.run(
+                    [uv, "pip", "list", "--python", self._venv_python(),
+                     "--format", "json"],
+                    capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+                    **low_priority_kwargs(),   # 2.11 §5.6 R3
+                )
+                if result.returncode == 0:
+                    pkgs = json.loads(result.stdout) if result.stdout.strip() else []
+                    return json.dumps({
+                        "exit_code": 0,
+                        "backend": "uv",
+                        "venv": self.venv_path,
+                        "packages": pkgs,
+                        "total": len(pkgs),
+                    }, ensure_ascii=False)
+                logger.warning("uv pip list failed (%s), falling back to pip",
+                               (result.stderr or "")[-200:])
+            except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+                logger.warning("uv pip list failed (%s), falling back to pip", e)
+
         pip = self._get_pip()
         if not pip:
-            return json.dumps({"error": "pip 不可用，虚拟环境可能未正确创建"}, ensure_ascii=False)
+            return json.dumps({
+                "error": "uv 与 venv 内 pip 均不可用，虚拟环境可能未正确创建",
+            }, ensure_ascii=False)
 
         try:
             result = subprocess.run(
                 [pip, "list", "--format", "json"],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=15,
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+                **low_priority_kwargs(),   # 2.11 §5.6 R3
             )
             pkgs = json.loads(result.stdout) if result.stdout.strip() else []
             return json.dumps({
                 "exit_code": 0,
+                "backend": "pip",
+                "venv": self.venv_path,
                 "packages": pkgs,
                 "total": len(pkgs),
             }, ensure_ascii=False)
@@ -155,11 +202,11 @@ class PackageManagerTool(BaseTool):
         return None
 
     def _uv_install(self, uv: str, packages: list[str] | None, requirements: str) -> str:
-        cmd = [uv, "pip", "install"]
+        # 镜像：官方源慢网下 resolve 28s~1m37s（2026-10-12 实测），
+        # 与预装链同一常量同一标准（venv_manager.PYPI_MIRROR）
+        cmd = [uv, "pip", "install", "--default-index", PYPI_MIRROR]
         if self.venv_path:
-            cmd.extend(["--python", os.path.join(self.venv_path, "Scripts", "python.exe")
-                        if sys.platform == "win32"
-                        else os.path.join(self.venv_path, "bin", "python")])
+            cmd.extend(["--python", self._venv_python()])
         if requirements and self.workspace_dir:
             workspace = Path(self.workspace_dir).resolve()
             req_path = (workspace / requirements).resolve()
@@ -174,13 +221,17 @@ class PackageManagerTool(BaseTool):
 
         try:
             result = subprocess.run(
-                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+                cmd, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=300,  # playwright ~40MB wheel 冷缓存下载需较长时间（对齐预装链）
                 cwd=self.workspace_dir,
+                **low_priority_kwargs(),   # 2.11 §5.6 R3
             )
             if result.returncode == 0:
                 installed = packages or [f"from {requirements}"]
                 return json.dumps({
                     "exit_code": 0,
+                    "backend": "uv",
+                    "venv": self.venv_path,
                     "installed": installed,
                     "output": result.stdout[-500:] if result.stdout else "",
                 }, ensure_ascii=False)
@@ -190,12 +241,12 @@ class PackageManagerTool(BaseTool):
                     "error": result.stderr[-500:] if result.stderr else "安装失败",
                 }, ensure_ascii=False)
         except subprocess.TimeoutExpired:
-            return json.dumps({"error": "安装超时（120 秒）"}, ensure_ascii=False)
+            return json.dumps({"error": "安装超时（300 秒）"}, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def _pip_install(self, pip: str, packages: list[str] | None, requirements: str) -> str:
-        cmd = [pip, "install"]
+        cmd = [pip, "install", "-i", PYPI_MIRROR]
         if requirements and self.workspace_dir:
             workspace = Path(self.workspace_dir).resolve()
             req_path = (workspace / requirements).resolve()
@@ -210,13 +261,17 @@ class PackageManagerTool(BaseTool):
 
         try:
             result = subprocess.run(
-                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+                cmd, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=300,  # 对齐 uv 分支与预装链
                 cwd=self.workspace_dir,
+                **low_priority_kwargs(),   # 2.11 §5.6 R3
             )
             if result.returncode == 0:
                 installed = packages or [f"from {requirements}"]
                 return json.dumps({
                     "exit_code": 0,
+                    "backend": "pip",
+                    "venv": self.venv_path,
                     "installed": installed,
                     "output": result.stdout[-500:] if result.stdout else "",
                 }, ensure_ascii=False)
@@ -226,7 +281,7 @@ class PackageManagerTool(BaseTool):
                     "error": result.stderr[-500:] if result.stderr else "安装失败",
                 }, ensure_ascii=False)
         except subprocess.TimeoutExpired:
-            return json.dumps({"error": "安装超时（120 秒）"}, ensure_ascii=False)
+            return json.dumps({"error": "安装超时（300 秒）"}, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -234,17 +289,42 @@ class PackageManagerTool(BaseTool):
         if not packages:
             return json.dumps({"error": "请指定要卸载的包"}, ensure_ascii=False)
 
+        # uv 优先：uv 创建的 venv 无 pip.exe（与 install / list 一致）
+        uv = self._find_uv()
+        if uv:
+            try:
+                result = subprocess.run(
+                    [uv, "pip", "uninstall", "--python", self._venv_python(), "-y", *packages],
+                    capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+                    **low_priority_kwargs(),   # 2.11 §5.6 R3
+                )
+                if result.returncode == 0:
+                    return json.dumps({
+                        "exit_code": 0,
+                        "backend": "uv",
+                        "venv": self.venv_path,
+                        "uninstalled": packages,
+                        "output": result.stdout[-500:] if result.stdout else "",
+                    }, ensure_ascii=False)
+                logger.warning("uv pip uninstall failed (%s), falling back to pip",
+                               (result.stderr or "")[-200:])
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("uv pip uninstall failed (%s), falling back to pip", e)
+
         pip = self._get_pip()
         if not pip:
-            return json.dumps({"error": "pip 不可用"}, ensure_ascii=False)
+            return json.dumps({"error": "uv 与 venv 内 pip 均不可用"}, ensure_ascii=False)
 
         cmd = [pip, "uninstall", "-y"] + packages
         try:
             result = subprocess.run(
                 cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+                **low_priority_kwargs(),   # 2.11 §5.6 R3
             )
             return json.dumps({
                 "exit_code": result.returncode,
+                "backend": "pip",
+                "venv": self.venv_path,
                 "uninstalled": packages,
                 "output": result.stdout[-500:] if result.stdout else "",
             }, ensure_ascii=False)

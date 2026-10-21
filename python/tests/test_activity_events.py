@@ -49,6 +49,18 @@ def _insert_compile_task(db, project_id, task_id, status="ingesting"):
     db.conn.commit()
 
 
+def _insert_base_lib(db, lib_id: str, name: str = "共享资料库",
+                     lib_type: str = "preset_test") -> str:
+    """直插 base_lib 行（原 create_base_lib 方法的测试替身，2.9 D4 后方法已删）。"""
+    db.conn.execute(
+        "INSERT INTO projects (id, name, description, kind, lib_type, created_at, updated_at) "
+        "VALUES (?, ?, '', 'base_lib', ?, datetime('now'), datetime('now'))",
+        (lib_id, name, lib_type),
+    )
+    db.conn.commit()
+    return lib_id
+
+
 class TestFileTerminalEvents:
     def test_complete_file_writes_notification(self, db, project_id):
         fid = db.create_file(project_id, "a.pdf", ".pdf", 100, "h1")["id"]
@@ -73,7 +85,7 @@ class TestFileTerminalEvents:
 
     def test_baselib_container(self, db, project_id):
         """基础库容器事实随事件携带（0.4 §3.6 导航分流取数）。"""
-        lib_id = db.create_base_lib(name="共享资料库")["id"]
+        lib_id = _insert_base_lib(db, "lib-test-1")
         fid = db.create_file(lib_id, "c.pdf", ".pdf", 100, "h3")["id"]
         activity_events.complete_file(db, fid)
         assert db.list_unread_notifications()[0]["container"] == "baselib"
@@ -130,7 +142,7 @@ class TestReportTerminalEvents:
 
     def test_baselib_container(self, db):
         """基础库报告终态通知携带 container（旧 main.py 崩溃恢复直调缺此字段）。"""
-        lib_id = db.create_base_lib(name="共享资料库")["id"]
+        lib_id = _insert_base_lib(db, "lib-test-1")
         _insert_report(db, lib_id, "r_lib")
         activity_events.complete_report(db, "r_lib")
         assert db.list_unread_notifications()[0]["container"] == "baselib"
@@ -175,7 +187,7 @@ class TestCompileTerminalEvents:
         assert db.list_unread_notifications() == []
 
     def test_baselib_container(self, db):
-        lib_id = db.create_base_lib(name="共享资料库")["id"]
+        lib_id = _insert_base_lib(db, "lib-test-1")
         _insert_compile_task(db, lib_id, "wc_lib")
         activity_events.complete_compile(db, "wc_lib")
         assert db.list_unread_notifications()[0]["container"] == "baselib"
@@ -253,6 +265,100 @@ class TestDownloadTerminalEvents:
         n = db.list_unread_notifications()[0]
         assert n["kind"] == "failed"
         assert n["detail"] == "所有下载源均失败"
+
+
+class TestNotify:
+    """notify 通用入口（2.11 §3.1）：信息类 kind，上下文显式传入。"""
+
+    def test_notify_writes_notification(self, db):
+        activity_events.notify(
+            db, entity_type="form_template", entity_id="tpl-1",
+            project_id=None, container="project",
+            kind="file_changed", entity_title="投资推荐表",
+        )
+
+        n = db.list_unread_notifications()[0]
+        assert n["entity_type"] == "form_template"
+        assert n["entity_id"] == "tpl-1"
+        assert n["kind"] == "file_changed"
+        assert n["entity_title"] == "投资推荐表"
+        assert n["project_id"] is None
+        assert n["container"] == "project"
+        assert n["detail"] is None
+
+    def test_notify_detail_truncated(self, db):
+        activity_events.notify(
+            db, entity_type="affair", entity_id="a1",
+            project_id="p1", container="project",
+            kind="overdue", entity_title="周报", detail="x" * 300,
+        )
+        assert len(db.list_unread_notifications()[0]["detail"]) == 200  # 截 200 字符
+
+    def test_notify_dedup_unread(self, db):
+        """未读查重（2.11 D6）：同三元组重复通知只落一条。"""
+        for _ in range(2):
+            activity_events.notify(
+                db, entity_type="form_template", entity_id="tpl-1",
+                project_id=None, container="project",
+                kind="file_changed", entity_title="投资推荐表",
+            )
+        assert len(db.list_unread_notifications()) == 1
+
+    def test_notify_failure_does_not_raise(self, db, monkeypatch):
+        """事件写入异常不影响业务主流程（与终态 emit 同约定）。"""
+        def boom(*args, **kwargs):
+            raise RuntimeError("db exploded")
+
+        monkeypatch.setattr(db, "add_notification", boom)
+        activity_events.notify(
+            db, entity_type="affair", entity_id="a1",
+            project_id="p1", container="project",
+            kind="due", entity_title="周报",
+        )  # 不抛
+
+
+class TestNotificationDaily:
+    """add_notification_daily 按天查重（2.11 D9/D1）：未读优先于按天，
+    已读后跨天重发（逾期提醒每天提醒一次）。"""
+
+    def _write(self, db, entity_id="a1", kind="overdue", title="周报"):
+        return db.add_notification_daily(
+            "affair", entity_id, "p1", kind, title, container="project",
+        )
+
+    def test_same_day_read_still_deduped(self, db):
+        """同日已读不重发：date(created_at) = today 命中当天窗口。"""
+        nid = self._write(db)
+        assert nid is not None
+        db.mark_notifications_read([nid])
+        assert self._write(db) is None
+
+    def test_unread_blocks_cross_day(self, db):
+        """未读优先于按天：昨天写入仍未读 → 今天不重发（不轰炸）。"""
+        nid = self._write(db)
+        db.conn.execute(
+            "UPDATE notifications SET created_at = datetime('now', 'localtime', '-1 day') "
+            "WHERE id = ?", (nid,))
+        db.conn.commit()
+        assert self._write(db) is None
+
+    def test_read_resend_next_day(self, db):
+        """已读 + 昨天写入 → 今天重发（D1 逾期提醒跨天重发）。"""
+        nid = self._write(db)
+        db.mark_notifications_read([nid])
+        db.conn.execute(
+            "UPDATE notifications SET created_at = datetime('now', 'localtime', '-1 day') "
+            "WHERE id = ?", (nid,))
+        db.conn.commit()
+        nid2 = self._write(db)
+        assert nid2 is not None and nid2 != nid
+        assert len(db.list_unread_notifications()) == 1
+
+    def test_kinds_independent(self, db):
+        """查重三元组含 kind：due 与 overdue 互不互斥（同实体可并存）。"""
+        self._write(db, kind="due")
+        nid = self._write(db, kind="overdue")
+        assert nid is not None
 
 
 class TestEventPublish:

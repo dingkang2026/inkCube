@@ -1,20 +1,91 @@
-/* 3.0 三期 §7.1:首页今日待办 */
-.section { margin-bottom: 20px; }
-.title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
-.list { display: flex; flex-direction: column; gap: 4px; }
+/* 3.0 三期 §7.1:首页今日待办;打样修订 2026-10-18:due chip 化 + 统一卡片语言 */
+.section {
+  margin-bottom: 24px;
+}
+
+/* 区块标题:与 HomePage.sectionTitle 统一(13px/600/secondary) */
+.title {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+  margin-bottom: 10px;
+}
+
+/* 空态:公共 .empty-block(global.css) */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px; border-radius: var(--radius-sm);
-  background: var(--bg-secondary); cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
-.row:hover { background: var(--bg-hover); }
-.due { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
-.dueOverdue { color: var(--error); font-weight: 600; }
-.text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-primary); }
-.text b { font-weight: 600; }
+
+.row:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-xs);
+}
+
+/* due chip:逾期红 / 今日蓝 / 未来灰 */
+.due {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  flex-shrink: 0;
+}
+
+.dueOverdue {
+  color: var(--text-danger);
+  background: var(--bg-danger);
+  font-weight: 600;
+}
+
+.dueToday {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+}
+
+.text b {
+  font-weight: 600;
+}
+
 .action {
-  border: none; background: transparent; color: var(--accent);
-  font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
-  display: inline-flex; align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
 }
-.action:hover { background: var(--bg-hover); }
+
+.action:hover {
+  background: var(--bg-hover);
+}

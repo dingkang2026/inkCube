@@ -304,7 +304,7 @@ class TestPreinstallFallback:
 
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 1
-        assert cmds[0][cmds[0].index("--default-index") + 1] == vm._PYPI_MIRROR
+        assert cmds[0][cmds[0].index("--default-index") + 1] == vm.PYPI_MIRROR
         assert "--no-cache" not in cmds[0]
 
     def test_transient_rename_retries_then_succeeds(self, monkeypatch):
@@ -326,7 +326,7 @@ class TestPreinstallFallback:
         assert vm.preinstall_packages("fake/py") is True
         assert len(cmds) == 2
         assert "--no-cache" in cmds[1]
-        assert cmds[1][cmds[1].index("--default-index") + 1] == vm._PYPI_MIRROR
+        assert cmds[1][cmds[1].index("--default-index") + 1] == vm.PYPI_MIRROR
 
     def test_transient_exhausted_falls_back_to_mirror(self, monkeypatch):
         """瞬态重试耗尽（2 尝试全败）→ mirror 兑底。"""
@@ -367,8 +367,8 @@ class TestPreinstallFallback:
 
         assert vm.preinstall_packages("fake/py") is False
         assert len(cmds) == 2  # cached（非瞬态直接降级）+ mirror
-        assert cmds[0][cmds[0].index("-i") + 1] == vm._PYPI_MIRROR
-        assert cmds[1][cmds[1].index("-i") + 1] == vm._PYPI_MIRROR
+        assert cmds[0][cmds[0].index("-i") + 1] == vm.PYPI_MIRROR
+        assert cmds[1][cmds[1].index("-i") + 1] == vm.PYPI_MIRROR
 
     def test_stale_tmp_orphans_cleanup(self, tmp_path, monkeypatch):
         """孤儿清扫：仅删 mtime 超时阈值的 .tmp，新目录（可能在途）不动。"""

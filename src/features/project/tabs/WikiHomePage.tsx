@@ -49,6 +49,16 @@ interface WikiHomePageProps {
   ledgerEntries?: LedgerEntry[]
   /** 台账解析进行中（心跳 ledger_parse 含本项目）：卡头灰字提示，旧条目照常可读 */
   ledgerParsing?: boolean
+  /** 页面总数（wiki:listPages 响应 total）：分页后 pages.length 只是已加载数，计数显示优先用 total */
+  pagesTotal?: number | null
+  /** pages 是否还有更多（has_more）+ 加载更多回调/进行中态（0.1dev-guide 统一约定） */
+  hasMorePages?: boolean
+  pagesLoadingMore?: boolean
+  onLoadMorePages?: () => void
+  /** 台账时间轴是否还有更多 + 加载更多回调/进行中态 */
+  hasMoreLedger?: boolean
+  ledgerLoadingMore?: boolean
+  onLoadMoreLedger?: () => void
 }
 
 /** Page type config: icon, label/desc i18n keys, order */
@@ -76,7 +86,9 @@ function extractSummary(content: string | null, maxLen = 80): string {
 export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
   onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, schemas,
-  ledgerEntries, ledgerParsing,
+  ledgerEntries, ledgerParsing, pagesTotal,
+  hasMorePages, pagesLoadingMore, onLoadMorePages,
+  hasMoreLedger, ledgerLoadingMore, onLoadMoreLedger,
 }: WikiHomePageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
@@ -203,7 +215,10 @@ export function WikiHomePage({
             </div>
           </div>
           {pendingCount > 0 && (
-            <button className={s.onboardingAction} onClick={onCompile}>
+            <button
+              className={s.onboardingAction}
+              onClick={onCompile}
+            >
               <Play size={14} />
               {t('project.wiki.homePage.startCompile', { count: pendingCount })}
             </button>
@@ -263,6 +278,15 @@ export function WikiHomePage({
                   </div>
                 </div>
               ))}
+              {hasMoreLedger && (
+                <button
+                  className={s.loadMoreBtn}
+                  onClick={onLoadMoreLedger}
+                  disabled={ledgerLoadingMore}
+                >
+                  {ledgerLoadingMore ? t('common.loading') : t('common.loadMore')}
+                </button>
+              )}
             </div>
           </div>
         </section>
@@ -310,7 +334,10 @@ export function WikiHomePage({
             <h3>{t('project.wiki.purpose')}</h3>
           </div>
           {!editingPurpose && (
-            <button className={s.editBtn} onClick={() => setEditingPurpose(true)}>
+            <button
+              className={s.editBtn}
+              onClick={() => setEditingPurpose(true)}
+            >
               <Edit3 size={12} /> {t('project.wiki.edit')}
             </button>
           )}
@@ -359,7 +386,16 @@ export function WikiHomePage({
             )}
           </div>
           {!editingOverview && (
-            <button className={s.editBtn} onClick={() => overviewExpanded ? setEditingOverview(true) : setOverviewExpanded(true)}>
+            <button
+              className={s.editBtn}
+              onClick={() => {
+                if (overviewExpanded) {
+                  setEditingOverview(true)
+                } else {
+                  setOverviewExpanded(true)
+                }
+              }}
+            >
               <Edit3 size={12} /> {t('project.wiki.edit')}
             </button>
           )}
@@ -407,8 +443,8 @@ export function WikiHomePage({
           <div className={s.homeSectionTitle}>
             <BookOpen size={15} className={s.homeSectionIcon} />
             <h3>{t('project.wiki.homePage.indexTitle')}</h3>
-            {pages.length > 0 && (
-              <span className={s.homeIndexCount}>{t('project.wiki.homePage.pagesCount', { count: pages.length })}</span>
+            {(pagesTotal ?? pages.length) > 0 && (
+              <span className={s.homeIndexCount}>{t('project.wiki.homePage.pagesCount', { count: pagesTotal ?? pages.length })}</span>
             )}
           </div>
           {pages.length > 0 && (
@@ -457,6 +493,15 @@ export function WikiHomePage({
                 </div>
               )
             })}
+            {hasMorePages && (
+              <button
+                className={s.loadMoreBtn}
+                onClick={onLoadMorePages}
+                disabled={pagesLoadingMore}
+              >
+                {pagesLoadingMore ? t('common.loading') : t('common.loadMore')}
+              </button>
+            )}
           </div>
         ) : null}
       </section>
@@ -465,7 +510,7 @@ export function WikiHomePage({
       {(pages.length > 0 || sourcePageCount > 0) && (
         <div className={s.homeStats}>
           <div className={s.homeStatItem} title={t('project.wiki.homePage.statPagesTip')}>
-            <span className={s.homeStatValue}>{pages.length}</span>
+            <span className={s.homeStatValue}>{pagesTotal ?? pages.length}</span>
             <span className={s.homeStatLabel}>{t('project.wiki.wikiPages')}</span>
           </div>
           <div className={s.homeStatItem} title={t('project.wiki.homePage.statFilesTip')}>

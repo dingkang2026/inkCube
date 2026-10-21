@@ -23,15 +23,17 @@ vi.mock('../src/hooks/useErrorHandler', () => ({
   useErrorHandler: () => vi.fn(),
 }))
 
+const confirmState = { value: true }
+
 vi.mock('../src/components/ConfirmDialog', () => ({
-  useConfirm: () => async () => true,
+  useConfirm: () => async () => confirmState.value,
 }))
 
 vi.mock('../src/features/knowledge/ImageList.module.css', () => ({
   default: new Proxy({}, { get: (_t, k) => String(k) }),
 }))
 
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, fireEvent, screen } from '@testing-library/react'
 import { ImageList } from '../src/features/knowledge/ImageList'
 
 const invokeMock = vi.fn()
@@ -53,6 +55,7 @@ import { act } from 'react'
 beforeEach(() => {
   vi.useFakeTimers()
   activityState.items = []
+  confirmState.value = true
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
     if (channel === 'knowledge:getImages') {
@@ -97,5 +100,26 @@ describe('ImageList refresh during describing', () => {
     rerender(<ImageList projectId="p1" fileId="fx" onClose={() => {}} />)
     await flush()
     expect(countBy('knowledge:getImages')).toBe(1)
+  })
+})
+
+describe('ImageList delete image', () => {
+  it('confirm 后经 knowledge:deleteImage 删除并重拉列表', async () => {
+    render(<ImageList projectId="p1" fileId="fx" onClose={() => {}} />)
+    await flush()
+    const before = countBy('knowledge:getImages')
+    fireEvent.click(screen.getByTitle('knowledge.deleteImage'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('knowledge:deleteImage', { projectId: 'p1', imageId: 'i1' })
+    expect(countBy('knowledge:getImages')).toBe(before + 1) // loadImages 重拉
+  })
+
+  it('取消确认不发起删除', async () => {
+    confirmState.value = false
+    render(<ImageList projectId="p1" fileId="fx" onClose={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByTitle('knowledge.deleteImage'))
+    await flush()
+    expect(invokeMock.mock.calls.filter(([c]) => c === 'knowledge:deleteImage').length).toBe(0)
   })
 })

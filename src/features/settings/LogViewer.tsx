@@ -1,6 +1,7 @@
 /** src/features/settings/LogViewer.tsx — Log viewer modal dialog. */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Info, X } from 'lucide-react'
 import { usePolling } from '../../hooks/usePolling'
 import { useErrorHandler } from '../../hooks/useErrorHandler'
 import s from './LogViewer.module.css'
@@ -118,6 +119,13 @@ export function LogViewer({ onClose }: LogViewerProps) {
     return () => window.removeEventListener('app:show-logs', handler)
   }, [])
 
+  // Esc 关闭查看器（模态面板语义 0.3 §5.2，与点蒙板同；组件仅打开时挂载，无需可见性判断）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
     <div className={s.overlay} onClick={onClose}>
       <div className={s.modal} onClick={(e) => e.stopPropagation()}>
@@ -127,7 +135,7 @@ export function LogViewer({ onClose }: LogViewerProps) {
           <div className={s.headerRight}>
             {logInfo && (
               <span className={s.sizeInfo} title={t('log.sizeTooltip')}>
-                📁 {logInfo.totalSizeFormatted} · {logInfo.files.length} {t('log.files')}
+                {logInfo.totalSizeFormatted} · {logInfo.files.length} {t('log.files')}
               </span>
             )}
             <button
@@ -135,9 +143,9 @@ export function LogViewer({ onClose }: LogViewerProps) {
               onClick={() => setShowInfo(!showInfo)}
               title={t('log.showInfo')}
             >
-              ℹ️
+              <Info size={14} />
             </button>
-            <button className={s.closeBtn} onClick={onClose}>×</button>
+            <button className={s.closeBtn} onClick={onClose}><X size={14} /></button>
           </div>
         </div>
 
@@ -182,7 +190,7 @@ export function LogViewer({ onClose }: LogViewerProps) {
                 className={`${s.sourceTab} ${sourceFilter === source ? s.sourceTabActive : ''}`}
                 onClick={() => setSourceFilter(source)}
               >
-                {source === 'ALL' ? t('log.sourceAll') : source === 'python' ? '🐍 Python' : '⚡ Electron'}
+                {source === 'ALL' ? t('log.sourceAll') : source === 'python' ? 'Python' : 'Electron'}
               </button>
             ))}
           </div>
@@ -195,7 +203,7 @@ export function LogViewer({ onClose }: LogViewerProps) {
               onChange={(e) => setSearch(e.target.value)}
             />
             {search && (
-              <button className={s.searchClear} onClick={() => setSearch('')}>×</button>
+              <button className={s.searchClear} onClick={() => setSearch('')}><X size={12} /></button>
             )}
           </div>
         </div>

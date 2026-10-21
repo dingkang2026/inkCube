@@ -9,6 +9,7 @@
   --bg-secondary: #f7f7f8;
   --bg-tertiary: #ececec;
   --bg-hover: #f0f0f1;
+  --bg-overlay: rgba(0, 0, 0, 0.4);   /* 弹窗遮罩 */
   --bg-selected: #e8eaed;
   --bg-muted: #f3f4f6;
   --bg-danger: #fef2f2;
@@ -22,6 +23,10 @@
   --text-warning: #d97706;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
+  --accent-rgb: 37, 99, 235;  /* accent 的 RGB 三元组，供 rgba(var(--accent-rgb), α) 场景 */
+  --text-inverse: #ffffff;   /* 反色文字：主/危险按钮、用户气泡 */
+  --border-danger: #fecaca;  /* 危险/退出横幅的浅红边框 */
+  --win-close-red: #e81123;  /* Windows 窗口关闭按钮惯例红 */
   --accent-color: #2563eb;  /* alias for knowledge components */
   --user-bubble: #2563eb;
   --user-text: #ffffff;
@@ -33,7 +38,23 @@
   --radius-md: 12px;
   --radius-lg: 16px;
   --font-sans: "Inter", "Noto Sans SC", -apple-system, sans-serif;
+  --font-serif: "Noto Serif SC", "Source Han Serif SC", "STSong", serif;  /* 品牌字「墨」（AboutDialog / BootstrapSplash 同语言；splash 期无变量可用，字面量与 token 同值人工对齐） */
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  /* ── Design tokens（2026-10-18 首页打样引入，全页面推广的基础）── */
+  /* Elevation：卡片/浮层的阴影层级 */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.24);   /* 模态/浮层 */
+  --shadow-accent: 0 2px 8px rgba(37, 99, 235, 0.12);
+  /* Typography scale：正文 13px 为基准，大数字/统计用 xl */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
 }
 
 html, body, #root {
@@ -53,12 +74,23 @@ html, body, #root {
   overflow: hidden;
 }
 
+/* ── Empty block（空态公共类：浅底虚线块 + 引导文案，0.5 §4.1 空态即引导）── */
+.empty-block {
+  padding: 20px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
 /* Icon Button */
 .icon-btn {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--text-lg);
   padding: 4px 8px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
@@ -75,10 +107,10 @@ html, body, #root {
   padding: 10px 16px;
   border: none;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .btn:disabled {
@@ -88,7 +120,7 @@ html, body, #root {
 
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: var(--text-inverse);
 }
 
 .btn-primary:hover {
@@ -105,9 +137,35 @@ html, body, #root {
   background: var(--bg-tertiary);
 }
 
+.btn-danger {
+  background: var(--text-danger);
+  color: var(--text-inverse);
+}
+
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--text-danger) 85%, black);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--accent);
+  border: none;
+}
+
+.btn-ghost:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
 .btn-sm {
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
+}
+
+/* 区块标题（0.3 §5.2：与首页 sectionTitle 同语言） */
+.section-title {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 /* Scrollbar */
@@ -122,7 +180,7 @@ html, body, #root {
 
 ::-webkit-scrollbar-thumb {
   background: var(--bg-tertiary);
-  border-radius: 3px;
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -140,25 +198,25 @@ html, body, #root {
   justify-content: center;
   gap: 12px;
   padding: 10px 16px;
-  background: #fef2f2;
-  border-top: 1px solid #fecaca;
-  color: #991b1b;
-  font-size: 13px;
+  background: var(--bg-danger);
+  border-top: 1px solid var(--border-danger);
+  color: var(--text-danger);
+  font-size: var(--text-base);
   z-index: 1000;
 }
 
 .process-exit-banner button {
   padding: 4px 12px;
-  border: 1px solid #fca5a5;
-  border-radius: 4px;
-  background: white;
-  color: #991b1b;
-  font-size: 12px;
+  border: 1px solid var(--border-danger);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-danger);
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 
 .process-exit-banner button:hover {
-  background: #fee2e2;
+  background: color-mix(in srgb, var(--error) 10%, transparent);
 }
 
 /* Mermaid diagram */
@@ -239,10 +297,10 @@ html, body, #root {
 
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--text-base);
   background: var(--bg-tertiary);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .markdown pre {
@@ -264,7 +322,7 @@ html, body, #root {
   width: 100%;
   border-collapse: collapse;
   margin: 12px 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   border: 1px solid var(--border);
 }
 
