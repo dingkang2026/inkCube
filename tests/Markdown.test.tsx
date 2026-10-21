@@ -149,3 +149,42 @@ describe('Markdown regression (existing behaviour)', () => {
     expect(html).toMatch(/wiki-link/)
   })
 })
+
+describe('Markdown resolveImage（工作区图片注入点，FilePreview b64 通道）', () => {
+  const MD = '前文\n\n![架构图](imgs/p6-000.png)\n\n后文'
+
+  it('string return takes over the img src (data:/inkcube: loadable URL)', () => {
+    const { container } = render(
+      <Markdown content={MD} resolveImage={() => 'data:image/png;base64,QUJD'} />,
+    )
+    const img = container.querySelector('img')
+    expect(img?.getAttribute('src')).toBe('data:image/png;base64,QUJD')
+    expect(img?.getAttribute('alt')).toBe('架构图')
+    expect(container.innerHTML).toContain('前文')
+  })
+
+  it('undefined renders pending placeholder with original src in title', () => {
+    const { container } = render(<Markdown content={MD} resolveImage={() => undefined} />)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('span[title="imgs/p6-000.png"]')).toBeTruthy()
+  })
+
+  it('null falls back to CSP rules: external blocked; data: src stripped upstream', () => {
+    const { container } = render(
+      <Markdown
+        content={'![a](https://a.b/c.png)\n\n![b](data:image/png;base64,QUJD)'}
+        resolveImage={() => null}
+      />,
+    )
+    expect(container.querySelector('a[href="https://a.b/c.png"]')).toBeTruthy()
+    // data: 协议在 react-markdown v9 defaultUrlTransform 被剥空 → SafeImage 收到空 src 返回 null；
+    // resolver 接管返回的 data: URI 在组件层生成 img，不经该转换（FilePreview b64 用例覆盖）
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it('without resolver behaviour is unchanged (external still blocked)', () => {
+    const { container } = render(<Markdown content={'![a](https://a.b/c.png)'} />)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('a[href="https://a.b/c.png"]')).toBeTruthy()
+  })
+})

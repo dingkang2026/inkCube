@@ -3,7 +3,7 @@
 单一真相：/health 的 services + features 段与入口 API 前置校验共用本模块，
 依赖矩阵（功能 → 必需/可选依赖）只在此维护，避免两处实现漂移。
 
-- compute_service_status(): 5 服务状态（llm/vlm/web_search/embedding/parsing）
+- compute_service_status(): 4 服务状态（llm/web_search/embedding/parsing）
 - compute_features(): 功能就绪度矩阵（§7.2，missing 项带 action 锚点编码）
 - ensure_ready(feature): 入口 API 前置校验（§7.3 第三层），
   缺必需依赖时抛对应 InkCubeError（CONFIG/RESOURCE 类），
@@ -42,7 +42,6 @@ def _get_setting(db, key: str) -> str:
 # error 项随 services 下发（compute_service_status），供 SystemAlerts 红条明细直达
 _SERVICE_META = {
     "llm": {"kind": "config", "id": "llm", "action": "settings:external"},
-    "vlm": {"kind": "config", "id": "vlm", "action": "settings:external"},
     "web_search": {"kind": "config", "id": "web_search", "action": "settings:webSearch"},
     "embedding": {"kind": "model", "id": "bge-m3", "action": "settings:internal"},
     "parsing": {"kind": "model", "id": "parsing", "action": "settings:internal"},
@@ -75,25 +74,7 @@ def compute_service_status() -> dict:
             "message": f"{model_display} — 已配置" if model_display else "已配置（未命名模型）",
         }
 
-    # 2. VLM — check config exists
-    vlm_key = _get_setting(db, "vlm_api_key")
-    vlm_url = _get_setting(db, "vlm_api_url")
-    vlm_model = _get_setting(db, "vlm_model")
-    if not vlm_key or not vlm_url:
-        services["vlm"] = {
-            "status": "error",
-            "code": "VLM_NOT_CONFIGURED",
-            "message": "VLM API 未配置",
-            "suggestion": "前往 设置 > 外部模型 > VLM 配置 API Key",
-            "action": _SERVICE_META["vlm"]["action"],
-        }
-    else:
-        services["vlm"] = {
-            "status": "ok",
-            "message": f"{vlm_model or 'glm-4v'} — 已配置",
-        }
-
-    # 3. 网络搜索 — 互联网检索（必配，2026-10-19 用户拍板与 llm/vlm 同档：缺失进
+    # 2. 网络搜索 — 互联网检索（必配，2026-10-19 用户拍板与 llm 同档：缺失进
     # OVERALL_REQUIRED_SERVICES 红条与导航状态点；入口拦截仍不因它触发——报告
     # 离线可生成，提示面强、功能面宽容）。供应商用户二选一（tavily/zhipu，
     # 2026-10-19 供应商化）：无默认——未选择或所选供应商 Key 为空均视为未配置
@@ -119,7 +100,7 @@ def compute_service_status() -> dict:
         label = "智谱" if provider == "zhipu" else "Tavily"
         services["web_search"] = {"status": "ok", "message": f"网络搜索（{label}）— 已配置"}
 
-    # 4 & 5. Embedding + Parsing — delegate to ModelManager.verify_model()
+    # 3 & 4. Embedding + Parsing — delegate to ModelManager.verify_model()
     mgr = getattr(deps, "model_manager", None)
     if mgr is None:
         logger.warning("model_manager not initialized yet, reporting models as unavailable")
@@ -170,12 +151,13 @@ def compute_service_status() -> dict:
 
 # ── 功能依赖矩阵（§7.2）──────────────────────────────────────
 # feature -> {required: [service...], optional: [(service, impact)...]}
-# service 为 compute_service_status 的 key；VLM 仅 file_parsing 需要（图片描述），缺失降级不阻断。
+# service 为 compute_service_status 的 key（图片描述走 llm 服务，多模态前提由
+# 设置页 hint 与调用侧错误引导承担，不再单列 vlm 依赖）。
 
 _FEATURE_MATRIX: dict[str, dict] = {
     "file_parsing": {
         "required": ["parsing", "embedding"],
-        "optional": [("vlm", "image_description")],
+        "optional": [],
     },
     "wiki_compile": {"required": ["llm", "embedding"], "optional": []},
     "report": {"required": ["llm", "embedding"], "optional": []},
@@ -188,15 +170,15 @@ _FEATURE_MATRIX: dict[str, dict] = {
 
 # overall 聚合口径（/health status，health.py 消费）。REQUIRED_SERVICES = 功能矩阵
 # required 依赖并集（= llm + embedding + parsing），供 ensure_ready/功能判定；
-# OVERALL_REQUIRED_SERVICES = REQUIRED_SERVICES ∪ {vlm, web_search}（2026-10-19 用户
-# 拍板全必配：五项任一缺失即 degraded，红条 + 导航状态点提示面统一；推翻同日早前
+# OVERALL_REQUIRED_SERVICES = REQUIRED_SERVICES ∪ {web_search}（2026-10-19 用户
+# 拍板全必配：任一缺失即 degraded，红条 + 导航状态点提示面统一；推翻同日早前
 # 「不因可选项缺失显示红条」口径——红条常驻是必配未完成的真实状态，属预期）。
-# 功能面不变：vlm 仍是 file_parsing 的 optional 依赖、web_search 不进矩阵——入口拦截
-# 不因二者触发，报告/解析离线可用（提示面强、功能面宽容）
+# 功能面不变：web_search 不进矩阵——入口拦截不因它触发，报告离线可用
+# （提示面强、功能面宽容）
 REQUIRED_SERVICES = frozenset(
     svc for spec in _FEATURE_MATRIX.values() for svc in spec["required"]
 )
-OVERALL_REQUIRED_SERVICES = REQUIRED_SERVICES | {"vlm", "web_search"}
+OVERALL_REQUIRED_SERVICES = REQUIRED_SERVICES | {"web_search"}
 
 
 def compute_features(services: dict | None = None) -> dict:

@@ -731,7 +731,7 @@ class TaskAgent:
         # LSP client: per-task workspace-aware instance
         lsp_client = LSPClientTool(workspace_dir=workspace_path)
 
-        # VLM 图片理解：per-task workspace-aware instance（无 venv 依赖，
+        # Vision 图片理解：per-task workspace-aware instance（无 venv 依赖，
         # 两种模式同构；fetched 只读根与 file_ops 同源）
         vision = VisionTool(db=self.db)
         vision.set_workspace(workspace_path)

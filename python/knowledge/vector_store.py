@@ -150,7 +150,7 @@ def image_doc_id(file_id: str, page_no, image_id: str) -> str:
     task_queue 文件删除、routers 按前缀清理）；尾部 image_id（SQLite
     images.id，UUID）保证同页多图 id 唯一。事故 2026-10-14：旧格式
     img_{file_id}_{page_no} 同页碰撞，ChromaDB upsert 互相覆盖，498 张图
-    的 VLM 描述检索不到。写入与删除统一走本函数。
+    的图片描述检索不到。写入与删除统一走本函数。
     """
     return f"img_{file_id}_{page_no if page_no is not None else 0}_{image_id}"
 

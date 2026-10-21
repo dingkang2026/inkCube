@@ -17,7 +17,7 @@ from db.database import Database
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
 from knowledge.knowledge_search import KnowledgeSearchTool
-from errors import InkCubeError, VLMNotConfigured
+from errors import LLMNotConfigured
 from readiness import ensure_ready
 import activity_events
 from paths import get_data_dir
@@ -35,26 +35,19 @@ def get_db() -> Database:
         raise HTTPException(status_code=500, detail="Database not initialized")
 
 
-def _validate_vlm_config(db: Database) -> None:
-    """Validate VLM API configuration exists in database.
-    
-    Raises VLMNotConfigured (InkCubeError) if VLM is not configured.
+def _validate_llm_config(db: Database) -> None:
+    """Validate LLM API configuration exists in database.
+
+    Raises LLMNotConfigured (InkCubeError) if LLM is not configured.
     The global exception handler converts it to a proper HTTP response.
     """
-    cursor = db.conn.execute(
-        "SELECT key, value FROM settings WHERE key IN ('vlm_api_url', 'vlm_api_key')"
-    )
-    settings = {}
-    for row in cursor.fetchall():
-        import json
-        val = row["value"]
-        try:
-            settings[row["key"]] = json.loads(val)
-        except (json.JSONDecodeError, TypeError):
-            settings[row["key"]] = val
-    
-    if not settings.get("vlm_api_url") or not settings.get("vlm_api_key"):
-        raise VLMNotConfigured()
+    from llm.routing import resolve_model
+
+    settings = dict(db.get_settings())
+    settings["model"] = resolve_model(settings, "standard")
+    if (not settings.get("api_url") or not settings.get("api_key")
+            or not settings.get("model")):
+        raise LLMNotConfigured()
 
 
 async def _validate_base_lib_exists(db: Database, lib_id: str):
@@ -689,7 +682,7 @@ def _project_active_work(db, project_id: str) -> list[str]:
                      "WHERE project_id = ? AND status IN ('pending', 'filling')"),
         ("Wiki 编译", "SELECT COUNT(*) AS c FROM wiki_compile_tasks "
                       "WHERE project_id = ? AND status IN ('queued', 'ingesting', 'storing')"),
-        # 图片 VLM 描述（Minor-3 口径补全）：文件落 done 后描述仍异步在途，
+        # 图片 LLM 描述（Minor-3 口径补全）：文件落 done 后描述仍异步在途，
         # 在途 = pending（待描述）/ processing（worker 已取走）
         ("图片描述", "SELECT COUNT(*) AS c FROM images "
                       "JOIN files ON images.file_id = files.id "
@@ -1335,18 +1328,18 @@ class ImageCategoryUpdate(BaseModel):
 
 @router.post("/projects/{project_id}/images/{image_id}/retry")
 async def retry_image(project_id: str, image_id: str, force: bool = False):
-    """Retry VLM description for a failed/archived image.
+    """Retry LLM description for a failed/archived image.
     
     Args:
-        force: If True, skip small-image check and force VLM parsing.
+        force: If True, skip small-image check and force LLM description.
     """
     try:
         import deps
         db = get_db()
         data_dir = get_data_dir()
         
-        # Validate VLM config before enqueueing
-        _validate_vlm_config(db)
+        # Validate LLM config before enqueueing
+        _validate_llm_config(db)
         
         img = db.get_image(image_id)
         if not img:
@@ -1390,7 +1383,7 @@ async def update_image_category(project_id: str, image_id: str, body: ImageCateg
 async def archive_image(project_id: str, image_id: str):
     """Manually archive an image. 
     
-    Archived images are excluded from VLM processing and vector search.
+    Archived images are excluded from LLM description and vector search.
     If the image was already processed (done), its vector is deleted from ChromaDB.
     """
     try:
@@ -1432,8 +1425,8 @@ async def retry_failed_images(project_id: str, file_id: str):
         db = get_db()
         data_dir = get_data_dir()
         
-        # Validate VLM config before enqueueing
-        _validate_vlm_config(db)
+        # Validate LLM config before enqueueing
+        _validate_llm_config(db)
         
         vs = VectorStore(str(Path(data_dir) / "chroma"))
 

@@ -1,17 +1,17 @@
-"""python/tools/vision.py — VLM 图片理解工具（chat/任务通用）。
+"""python/tools/vision.py — 图片理解工具（chat/任务通用）。
 
-输入图片或含图文档，内部图片逐张交给已配置的 VLM
-（设置 > 外部模型 > VLM 配置）理解并返回自然语言描述/答案：
-- 图片（png/jpg/jpeg/gif/bmp/webp）：直接 VLM；
-- PDF：PyMuPDF 提取内嵌位图（md5 去重 + 小图/格式/超大过滤）→ 逐张 VLM；
-- DOCX/PPTX：复用 knowledge/office_media 无损提取 → 逐张 VLM。
+输入图片或含图文档，内部图片逐张交给标准/高配 LLM（多模态，
+设置 > 外部模型）理解并返回自然语言描述/答案：
+- 图片（png/jpg/jpeg/gif/bmp/webp）：直接多模态问答；
+- PDF：PyMuPDF 提取内嵌位图（md5 去重 + 小图/格式/超大过滤）→ 逐张问答；
+- DOCX/PPTX：复用 knowledge/office_media 无损提取 → 逐张问答。
 
 设计约束：
 - 不落业务库：提取图写入临时目录，execute 结束即清理（生命周期闭环）；
 - 截断显式声明：文档图数超过 max_images 时在返回中给出 total/truncated
   （对齐 0.1dev-guide §16 列表翻页核查，禁止静默 limit）；
-- 单张失败不中断：某张 VLM 调用失败记入该张 error 项，其余照常；
-- VLM 未配置：前置拦截返回结构化错误（code=VLM_NOT_CONFIGURED），
+- 单张失败不中断：某张调用失败记入该张 error 项，其余照常；
+- LLM 未配置：前置拦截返回结构化错误（code=LLM_NOT_CONFIGURED），
   引导文案指向设置页；全局提示面由 SystemAlerts 红条承担，本工具不重复建 UI。
 """
 import asyncio
@@ -44,7 +44,7 @@ _MAX_IMAGES_CAP = 50
 class VisionTool(BaseTool):
     name = "vision"
     description = (
-        "图片理解工具。用视觉语言模型（VLM）解析图片内容："
+        "图片理解工具。用多模态大模型解析图片内容："
         "支持图片文件（png/jpg/jpeg/gif/bmp/webp），也支持 PDF/DOCX/PPTX "
         "（自动提取内部图片后逐张解析）。可传 question 针对图片提问。"
     )
@@ -71,7 +71,7 @@ class VisionTool(BaseTool):
     def prompt_description(self) -> str:
         return (
             "## vision\n"
-            "图片理解：用 VLM 解析图片或文档内的图片。\n\n"
+            "图片理解：用多模态大模型解析图片或文档内的图片。\n\n"
             "支持输入:\n"
             "- 图片文件: png / jpg / jpeg / gif / bmp / webp\n"
             "- 文档: pdf / docx / pptx（自动提取内部图片逐张解析，"
@@ -90,7 +90,7 @@ class VisionTool(BaseTool):
 
     def __init__(self, db=None):
         self.workspace_dir = ""
-        self.db = db  # Database 实例（读 settings 构造 VLMClient）
+        self.db = db  # Database 实例（读 settings 构造 LLMClient，standard 档）
         # 工作区外的只读根（如 data/fetched），语义对齐 file_ops
         self._readonly_roots: list[str] = []
 
@@ -146,14 +146,18 @@ class VisionTool(BaseTool):
         if not target.exists():
             return json.dumps({"error": f"文件不存在: {file_path}"}, ensure_ascii=False)
 
-        from errors import VLMNotConfigured
-        from knowledge.vlm_client import VLMClient
+        from errors import LLMNotConfigured
+        from llm import LLMClient
+        from llm.routing import resolve_model
 
-        # 前置拦截 VLM 配置缺失：提图成本高（临时目录写盘），先验配置再提图。
-        # from_db 接收连接对象（Database.conn，_LockedConnection 带 execute）
-        client = VLMClient.from_db(self.db.conn)
-        if not client.api_url or not client.api_key:
-            return self._error(VLMNotConfigured())
+        # 前置拦截 LLM 配置缺失：提图成本高（临时目录写盘），先验配置再提图。
+        # 图片理解统一走 LLM（standard 档，D3 派生 dict → 构造 client）
+        settings = dict(self.db.get_settings())
+        settings["model"] = resolve_model(settings, "standard")
+        if (not settings.get("api_url") or not settings.get("api_key")
+                or not settings.get("model")):
+            return self._error(LLMNotConfigured())
+        client = LLMClient(settings)
 
         ext = target.suffix.lower()
         try:
@@ -181,8 +185,10 @@ class VisionTool(BaseTool):
             return self._error(e)
 
     async def _analyze_single(self, client, image_path: Path, question: str) -> str:
-        """单图输入：直接 VLM，返回精简 JSON。"""
-        desc = await client.analyze(str(image_path), question or None)
+        """单图输入：直接 LLM 多模态问答，返回精简 JSON。"""
+        from llm import vision
+
+        desc = await vision.analyze_image(client, str(image_path), question or None)
         return json.dumps({
             "ok": True,
             "file": image_path.name,
@@ -245,7 +251,9 @@ class VisionTool(BaseTool):
                 if item["page"] is not None:
                     entry["page"] = item["page"]
                 try:
-                    desc = await client.analyze(str(item["path"]), question or None)
+                    from llm import vision
+
+                    desc = await vision.analyze_image(client, str(item["path"]), question or None)
                     entry["description"] = desc
                 except Exception as e:
                     # 单张失败不中断整体（对齐 office_media 容错哲学）

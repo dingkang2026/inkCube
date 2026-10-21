@@ -1,6 +1,6 @@
 {
   "name": "inkcube",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "墨方 InkCube - 本地知识库 + 文档生成智能助手",
   "main": "electron/main.js",
   "scripts": {

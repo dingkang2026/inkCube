@@ -106,7 +106,7 @@ def _stage_materials(db, workspace: str, source_report_id: str | None,
 
 
 # 图片来源复合选择物化参数（2.3 §4.1 E2 定稿）：池上限；钉选优先占位，
-# 超限部分按「报告 vs 图片 VLM 描述」向量相关性缩池
+# 超限部分按「报告 vs 图片 LLM 描述」向量相关性缩池
 _IMAGE_POOL_CAP = 120
 
 
@@ -129,7 +129,7 @@ def _report_text(db, source_report_id: str | None) -> str | None:
 
 def _rank_by_report_figure_similarity(project_id: str, pool: list[str],
                                       report_text: str) -> list[str] | None:
-    """figure 向量相关性排序（报告语义 vs 图片 VLM 描述，2.2 检索链路）。
+    """figure 向量相关性排序（报告语义 vs 图片 LLM 描述，2.2 检索链路）。
 
     返回按相关性降序的图片 id（不在池内的自动被调用方过滤）；向量链路不可用
     （bge-m3 未下载 / fp16 NaN / 查询异常）返回 None，调用方降级 created_at 序。

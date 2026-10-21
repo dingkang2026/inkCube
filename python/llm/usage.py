@@ -1,6 +1,6 @@
-"""LLM/VLM token 用量记录层（2.10 §4.1）。
+"""LLM token 用量记录层（2.10 §4.1）。
 
-单一收口：LLMClient / VLMClient 内部调用 record()（每出口一处），业务侧
+单一收口：LLMClient 内部调用 record()（每出口一处），业务侧
 只在入口 push_context() 声明「这次调用属于谁」；本模块零 DB 依赖——sink
 由 main.py 组装期注入（deps.db.insert_llm_usage），llm/ 保持无
 agent/knowledge/db 依赖的既有分层。

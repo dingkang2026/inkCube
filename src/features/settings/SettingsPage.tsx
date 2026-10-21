@@ -180,11 +180,11 @@ export function SettingsPage({ settings, onSave, onSettingsReset, loadFailed = f
 
   // 导航状态点映射（0.3 §4.4）：判定与后端 overall 口径一致——
   // 红（missing）= 必配缺失（2026-10-19 全必配统一 + 供应商化，readiness.OVERALL_REQUIRED_SERVICES）：
-  // llm/vlm（外部模型）、web_search（网络搜索）或 embedding/parsing（内部模型）任一非 ok。
+  // llm（外部模型）、web_search（网络搜索）或 embedding/parsing（内部模型）任一非 ok。
   // services 未拉到（null）按就绪处理，避免首屏闪点
   const svc = (key: string) => (services ? services[key]?.status ?? 'ok' : 'ok')
   const statusFor = (key: string): { missing?: boolean; title?: string } => {
-    if (key === 'externalModel' && (svc('llm') !== 'ok' || svc('vlm') !== 'ok')) {
+    if (key === 'externalModel' && svc('llm') !== 'ok') {
       return { missing: true, title: t('settings.navMissingTitle') }
     }
     if (key === 'webSearch' && svc('web_search') !== 'ok') {

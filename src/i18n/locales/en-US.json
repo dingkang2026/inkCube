@@ -17,7 +17,8 @@
     "viewDetails": "View Details",
     "collapseDetails": "Collapse Details",
     "mdExternalImage": "External image",
-    "mdCspBlocked": "(blocked by CSP)"
+    "mdCspBlocked": "(blocked by CSP)",
+    "mdImagePending": "Loading image…",
   },
   "menu": {
     "file": "File",

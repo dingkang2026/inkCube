@@ -3,7 +3,7 @@
  *  全部条目消失时整区不占位。服务条数据自含：健康拉取与边沿刷新经共享 hook
  *  useHealthServices（挂载一次 + app:health-changed / focus 重拉，零新增轮询，0.4 §8.1；
  *  设置页导航状态点为第二消费方）。红条判定 = overall 全必配聚合（0.4 §7.2，
- *  2026-10-19 必配统一：llm/vlm/tavily/内部模型任一缺失即 degraded）；缺失明细
+ *  2026-10-19 必配统一：llm/网络搜索/内部模型任一缺失即 degraded）；缺失明细
  *  逐项列出，点击直达对应设置
  *  section（0.4 §7.5 suggestion 动作化）。 */
 import { useTranslation } from 'react-i18next'

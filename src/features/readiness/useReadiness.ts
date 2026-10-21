@@ -4,12 +4,10 @@
  * guard 触发时缓存过期则先刷新再判定。判定策略：
  * - 就绪 / 数据不可得（服务 down、未知 feature）→ 放行（第三层后端 ensure_ready 兜底）
  * - 缺必需依赖 → 引导弹层（「去配置 / 去下载」锚点直达设置页）+ 取消中止
- * - 仅缺可选依赖（VLM）→ 提示条 + 放行（缺失降级，不阻断）
  */
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConfirm } from '../../components/ConfirmDialog'
-import { useToast } from '../knowledge/Toast'
 import type { FeatureKey, FeatureReadiness, HealthStatus } from '../../types/error'
 
 const CACHE_TTL = 30_000
@@ -81,13 +79,12 @@ export function useReadiness() {
 }
 
 /**
- * 入口 guard hook（0.4 §7.3 第二层）：缺必需 → 引导弹层；仅缺可选 → 提示条放行。
+ * 入口 guard hook（0.4 §7.3 第二层）：缺必需 → 引导弹层。
  * 返回 Promise<void>，onProceed 只在确认放行时被调用一次。
  */
 export function useFeatureGuard() {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
-  const showToast = useToast()
 
   return useCallback(
     async (feature: FeatureKey, onProceed: () => void): Promise<void> => {
@@ -120,12 +117,10 @@ export function useFeatureGuard() {
         if (ok) navigateToSettings(settingsSectionOfAction(miss.action))
         return
       }
-      // 仅缺可选依赖（VLM）→ 提示条 + 放行（0.4 §7.3）
-      if (info.optional_missing.length > 0) {
-        showToast(t('readiness.optionalVlm'), 'warning')
-      }
+      // 矩阵已无可选依赖（VLM 链路删除，2026-10-21）：optional_missing 恒空，
+      // 后端字段保留作 API 兼容，前端不再分支
       onProceed()
     },
-    [confirmDialog, showToast, t],
+    [confirmDialog, t],
   )
 }

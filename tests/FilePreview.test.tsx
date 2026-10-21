@@ -15,8 +15,23 @@ vi.mock('react-syntax-highlighter', () => ({
   Prism: ({ children }: { children?: unknown }) => <pre>{children as string}</pre>,
 }))
 vi.mock('react-syntax-highlighter/dist/esm/styles/prism', () => ({ oneLight: {} }))
+// Markdown mock：对齐真实 SafeImage 的 ResolveImage 契约（string→接管 / undefined→加载占位 / null→原判定）
 vi.mock('../src/components/Markdown', () => ({
-  Markdown: ({ content }: { content: string }) => <div>{content}</div>,
+  Markdown: ({ content, resolveImage }: {
+    content: string
+    resolveImage?: (src: string) => string | undefined | null
+  }) => (
+    <div data-testid="md">
+      {content.split('\n').map((line: string, i: number) => {
+        const m = /^!\[([^\]]*)\]\(([^)]+)\)\s*$/.exec(line.trim())
+        if (!m) return <p key={i}>{line}</p>
+        const resolved = resolveImage ? resolveImage(m[2]) : null
+        if (typeof resolved === 'string') return <img key={i} data-testid="md-img" src={resolved} alt={m[1]} />
+        if (resolved === undefined) return <span key={i} data-testid="md-img-pending" title={m[2]} />
+        return <span key={i} data-testid="md-img-blocked" />
+      })}
+    </div>
+  ),
 }))
 
 // tasks:readFile 的 binary 响应（abs_path 全链路：python routers/tasks.py → FilePreview.absPath）
@@ -34,6 +49,14 @@ const TEXT_RES = {
   content: 'alpha line\nmiddle\nsecond alpha',
   ext: 'txt',
   abs_path: 'C:\\ws\\a.txt',
+}
+
+// md 响应（工作区图片用例：裸相对路径引用，与用户截图场景同构）
+const MD_IMG_RES = {
+  type: 'text',
+  content: '# T\n\n![fig](imgs/p6-000.png)\n\nplain text',
+  ext: 'md',
+  abs_path: 'D:\\ws\\doc.md',
 }
 
 function mount(invoke: ReturnType<typeof vi.fn>) {
@@ -115,6 +138,52 @@ describe('computeMatches（纯函数：关键词 → 命中行号序列）', () 
     // 同一行多次命中逐个计入（返回行号序列，非字符位置）：'aaaa' 命中 2 次均在第 0 行
     expect(computeMatches('aaaa', 'aa')).toEqual([0, 0])
     expect(computeMatches('aaa', 'aa')).toEqual([0])
+  })
+})
+
+describe('FilePreview md 工作区图片（resolveImage + tasks:readFile b64 通道）', () => {
+  it('relative md image is fetched via b64 channel and rendered as data URI', async () => {
+    const invoke = vi.fn().mockImplementation(async (channel: string, payload?: { path?: string; b64?: boolean }) => {
+      if (channel === 'tasks:readFile' && payload?.b64) {
+        // 相对 md 所在目录归一化后的工作区绝对路径
+        expect(payload.path).toBe('D:/ws/imgs/p6-000.png')
+        return { type: 'file', data: 'QUJD', mime: 'image/png', size: 3 }
+      }
+      return MD_IMG_RES
+    })
+    const { findByTestId } = mountFile(invoke, 'doc.md')
+    const img = await findByTestId('md-img')
+    expect((img as HTMLImageElement).getAttribute('src')).toBe('data:image/png;base64,QUJD')
+  })
+
+  it('failed fetch keeps neutral placeholder instead of broken img (no retry storm)', async () => {
+    const invoke = vi.fn().mockImplementation(async (channel: string, payload?: { b64?: boolean }) => {
+      if (channel === 'tasks:readFile' && payload?.b64) {
+        return { error: '文件不存在', code: 'FILE_NOT_FOUND' }
+      }
+      return MD_IMG_RES
+    })
+    const { findByTestId, container } = mountFile(invoke, 'doc.md')
+    await findByTestId('md-img-pending')
+    await waitFor(() => {
+      // 失败后仍是占位（无 img），且同一图片只发过一次请求（防重试风暴）
+      expect(container.querySelector('[data-testid="md-img"]')).toBeNull()
+      expect(invoke.mock.calls.filter((c) => c[0] === 'tasks:readFile' && (c[1] as { b64?: boolean })?.b64)).toHaveLength(1)
+    })
+  })
+
+  it('external image src is not hijacked (falls through to CSP placeholder)', async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      type: 'text',
+      content: '![a](https://a.b/c.png)',
+      ext: 'md',
+      abs_path: 'D:\\ws\\doc.md',
+    })
+    const { findByTestId, container } = mountFile(invoke, 'doc.md')
+    await findByTestId('md-img-blocked')
+    // 带 scheme 的外链不进 b64 通道
+    expect(invoke.mock.calls.filter((c) => c[0] === 'tasks:readFile' && (c[1] as { b64?: boolean })?.b64)).toHaveLength(0)
+    expect(container.querySelector('[data-testid="md-img"]')).toBeNull()
   })
 })
 

@@ -1,8 +1,7 @@
 """python/routers/health.py — Service health check API.
 
 Checks configuration and model availability for all external services:
-  - LLM (external API)
-  - VLM (external API)
+  - LLM (external API, 多模态前提由设置页 hint 与调用侧引导承担)
   - Web Search (Tavily / Zhipu, provider-configurable)
   - Embedding (bge-m3 model)
   - Parsing (Docling models)
@@ -29,7 +28,7 @@ async def health_check():
     services = compute_service_status()
     features = compute_features(services)
     # overall 全必配聚合（readiness.OVERALL_REQUIRED_SERVICES，§7.2，2026-10-19
-    # 用户拍板 llm/vlm/web_search/内部模型全部必配）：五项任一缺失即 degraded，
+    # 用户拍板 llm/web_search/内部模型全部必配）：任一缺失即 degraded，
     # 红条 + 导航状态点提示面统一；入口拦截仍按功能矩阵（REQUIRED_SERVICES）
     overall = (
         "ok"

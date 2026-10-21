@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import knowledge.vlm_client as vlm_mod
+from errors import VLMCallFailed
 from knowledge.vlm_client import VLMClient
 
 
@@ -161,3 +162,69 @@ class TestVlmMimeAndTruncation:
         text = asyncio.run(_client().analyze(fake_png))
 
         assert text == "完整描述"
+
+
+class TestVlmEmptyContentGuard:
+    """思考型 VLM（GLM-4.6V 系）reasoning 挤占输出预算：零正文 + length
+    曾被包装成 ok:true 返回（2026-10-21 vision 空描述缺陷），守护修复不变量：
+    空正文一律显式抛错，禁止「空描述+截断标记」冒充成功。"""
+
+    def _setup(self, monkeypatch, payload: dict):
+        _RecordingSession.payload = payload
+        _RecordingSession.posted = []
+        monkeypatch.setattr(vlm_mod.aiohttp, "ClientSession", _RecordingSession)
+
+    def test_analyze_empty_content_with_length_raises(self, fake_png, monkeypatch):
+        """零正文 + length（思考耗尽预算缺陷现场）→ 显式抛 VLMCallFailed。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        })
+
+        with pytest.raises(VLMCallFailed):
+            asyncio.run(_client().analyze(fake_png))
+
+    def test_analyze_null_content_raises(self, fake_png, monkeypatch):
+        """content 为 null（部分端点思考耗尽后的返回形态）→ 归一化后同样抛错，
+        而非 AttributeError。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+        })
+
+        with pytest.raises(VLMCallFailed):
+            asyncio.run(_client().analyze(fake_png))
+
+    def test_describe_image_empty_content_raises(self, tmp_path, monkeypatch):
+        """describe 路径空正文同样显式抛错，替代静默空描述标 done。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+        })
+        img = tmp_path / "chart.png"
+        img.write_bytes(b"\x89PNG fake")
+
+        with pytest.raises(VLMCallFailed):
+            asyncio.run(_client().describe_image(img))
+
+    def test_zhipu_endpoint_disables_thinking(self, fake_png, monkeypatch):
+        """智谱端点 payload 附 thinking disabled（思考挤占输出预算的根因修复）。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": "描述"}, "finish_reason": "stop"}],
+        })
+        client = VLMClient(
+            api_url="https://open.bigmodel.cn/api/paas/v4/", api_key="k",
+        )
+
+        asyncio.run(client.analyze(fake_png))
+
+        payload = _RecordingSession.posted[0]["json"]
+        assert payload["thinking"] == {"type": "disabled"}
+
+    def test_non_zhipu_endpoint_keeps_payload_clean(self, fake_png, monkeypatch):
+        """非智谱 OpenAI 兼容端点不附加 thinking（unknown 参数兼容风险归零）。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": "描述"}, "finish_reason": "stop"}],
+        })
+
+        asyncio.run(_client().analyze(fake_png))
+
+        payload = _RecordingSession.posted[0]["json"]
+        assert "thinking" not in payload

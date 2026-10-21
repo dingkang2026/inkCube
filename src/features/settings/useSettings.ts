@@ -21,9 +21,6 @@ const DEFAULT_SETTINGS: LLMSettings = {
   web_search_provider: '',
   zhipu_search_key: '',
   zhipu_search_engine: 'search_pro',
-  vlm_api_url: 'https://open.bigmodel.cn/api/paas/v4/',
-  vlm_api_key: '',
-  vlm_model: 'glm-4.6v',
   max_concurrent_file_parsing: 2,
   max_concurrent_image_description: 2,
   // Wiki compile settings

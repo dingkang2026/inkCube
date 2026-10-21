@@ -97,6 +97,16 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
   const [absPath, setAbsPath] = useState<string>('')
   const [mdRendered, setMdRendered] = useState(true)
   const [importing, setImporting] = useState(false)
+  // ── md 渲染模式的工作区图片解析（根因修复 2026-10-21）──
+  // LLM 产出的 md 用裸相对路径引用工作区图片（imgs/x.png）：既被 SafeImage 的 CSP
+  // 白名单误判为外链，放行后 Electron 相对路径基座也指不到工作区。走既有
+  // tasks:readFile(b64) 通道转 data: URI（端点自带工作区前缀校验 + 50MB 上限），
+  // 不扩 inkcube:// 协议白名单（避免把任意自定义目录任务暴露给渲染进程）；
+  // md→docx 走后端 pandoc 直读磁盘，与本映射无关，不改源文件。
+  const [workspaceImages, setWorkspaceImages] = useState<Record<string, string>>({})
+  const workspaceImagesRef = useRef(workspaceImages)
+  workspaceImagesRef.current = workspaceImages
+  const pendingImagesRef = useRef(new Set<string>())
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const isMarkdown = ext === 'md'
   // ── 文件内查找（关键词定位）：状态机 useInFileFind，命中行高亮为本场景私有 ──
@@ -120,11 +130,46 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
   const { findOpen, findQuery, matches, safeIdx, inputRef, openFind, closeFind, gotoMatch } = find
   const matchLineSet = useMemo(() => new Set(matches), [matches])
 
-  // md 渲染模式下开始查找时自动切回源码：查找对象是文件源文本
+  // md 渲染模式查找自动切源码：查找对象是文件源文本
   const handleFindQueryChange = (v: string) => {
     if (isMarkdown && mdRendered && v) setMdRendered(false)
     find.setFindQuery(v)
   }
+
+  // 相对路径图片 → 工作区绝对路径 → b64 通道拉取 → data: URI（ResolveImage 契约三态）
+  const resolveTaskImage = useCallback((src: string): string | undefined | null => {
+    if (!absPath) return null // md 路径未知（加载中）：落回 SafeImage 原判定，加载完成后重渲染接管
+    if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//')) return null // 带 scheme：原判定
+    // 裸相对 / ./ / ../ 相对路径 → 相对 md 所在目录归一化
+    const baseDir = absPath.replace(/\\/g, '/').split('/').slice(0, -1)
+    const segs = [...baseDir]
+    for (const part of src.split(/[?#]/)[0].replace(/\\/g, '/').split('/')) {
+      if (!part || part === '.') continue
+      if (part === '..') { segs.pop(); continue }
+      segs.push(part)
+    }
+    // 归一化后未落在 md 目录之内（../ 越出）：不接管
+    if (segs.length <= baseDir.length) return null
+    const abs = segs.map((seg) => { try { return decodeURIComponent(seg) } catch { return seg } }).join('/')
+    const hit = workspaceImagesRef.current[abs]
+    if (hit) return hit
+    if (pendingImagesRef.current.has(abs)) return undefined // 加载中/已失败：占位（防重试风暴）
+    pendingImagesRef.current.add(abs)
+    // path 传图片绝对路径：端点 (workspace / path).resolve() 对绝对入参即其本身，
+    // 工作区前缀校验照常生效（越界返回 PATH_OUTSIDE_WORKSPACE）
+    void (async () => {
+      try {
+        const res = await window.electronAPI.invoke('tasks:readFile', { taskId, path: abs, b64: true }) as {
+          type?: string; data?: string; mime?: string; error?: string
+        }
+        if (!res.error && res.type === 'file' && res.data) {
+          setWorkspaceImages((prev) => ({ ...prev, [abs]: `data:${res.mime || 'image/png'};base64,${res.data}` }))
+        }
+        // 失败保持占位（pendingImagesRef 已拦截重复请求）
+      } catch { /* 通道异常同上：保持占位 */ }
+    })()
+    return undefined
+  }, [absPath, taskId])
 
   // Ctrl/Cmd+F 仅在焦点位于预览面板内时接管（不污染全局快捷键）
   useEffect(() => {
@@ -152,6 +197,8 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
     setLoading(true)
     setError('')
     setAbsPath('') // 先失效上一文件的路径：加载失败时头部开目录按钮不得指向旧文件
+    setWorkspaceImages({}) // 图片缓存同批失效，避免切换文件后串图
+    pendingImagesRef.current.clear()
     try {
       const res = await window.electronAPI.invoke('tasks:readFile', { taskId, path: filePath }) as {
         type: string; content?: string; data?: string; mime?: string; size?: number; ext?: string; error?: string
@@ -269,7 +316,7 @@ export function FilePreview({ taskId, filePath, fileName, fileSize, onClose }: F
           </div>
         ) : isMarkdown && mdRendered ? (
           <div className={styles.markdownBody}>
-            <Markdown content={content} />
+            <Markdown content={content} resolveImage={resolveTaskImage} />
           </div>
         ) : (
           <SyntaxHighlighter

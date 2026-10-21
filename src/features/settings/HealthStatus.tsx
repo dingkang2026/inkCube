@@ -8,7 +8,6 @@ import s from './HealthStatus.module.css'
 
 const SERVICE_LABELS: Record<string, string> = {
   llm: 'LLM',
-  vlm: 'VLM',
   embedding: 'Embedding',
   parsing: 'parsing',
 }

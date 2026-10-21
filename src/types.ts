@@ -20,9 +20,6 @@ export interface LLMSettings {
   web_search_provider: string
   zhipu_search_key: string
   zhipu_search_engine: string  // search_std | search_pro（智谱引擎档位）
-  vlm_api_url: string
-  vlm_api_key: string
-  vlm_model: string
   max_concurrent_file_parsing: number
   max_concurrent_image_description: number
   // Wiki compile settings
@@ -111,7 +108,7 @@ export interface PlanData {
   total: number
 }
 
-/** LLM/VLM token 用量聚合（2.10 §3/§4.5；API 返回精确值的聚合，前端禁止二次估算） */
+/** LLM token 用量聚合（2.10 §3/§4.5；API 返回精确值的聚合，前端禁止二次估算） */
 export interface UsageSummary {
   prompt_tokens: number
   completion_tokens: number

@@ -14,6 +14,10 @@ const TREE_WIDTH = 200
 const PREVIEW_WIDTH = 350
 const HANDLE_WIDTH = 4
 
+// 产品决策（2026-10-21）：chat 模式固定编程模式，切换入口暂时隐藏，后续可能恢复。
+// 恢复方式：改回 true 即可——taskMode/onSwitchMode props 链路与 App 层 handleSetTaskMode 均保持原样未删。
+const SHOW_MODE_SWITCHER = false
+
 interface TaskPageProps {
   taskId: string | null
   taskTitle?: string
@@ -131,14 +135,16 @@ export function TaskPage({
       <div className={styles.topBar}>
         <span className={styles.title}>{taskTitle || t('task.newTask')}</span>
         <div className={styles.topBarRight}>
-          <button
-            className={`${styles.modeBadge} ${taskMode === 'general' ? styles.modeGeneral : styles.modeCoding}`}
-            onClick={() => onSwitchMode?.(taskMode === 'coding' ? 'general' : 'coding')}
-            title={t('task.switchMode')}
-          >
-            {taskMode === 'coding' ? <Wrench size={14} /> : <FileText size={14} />} {taskMode === 'coding' ? t('task.modeCoding') : t('task.modeGeneral')}
-            {onSwitchMode && <Repeat size={12} className={styles.modeSwitchIcon} />}
-          </button>
+          {SHOW_MODE_SWITCHER && (
+            <button
+              className={`${styles.modeBadge} ${taskMode === 'general' ? styles.modeGeneral : styles.modeCoding}`}
+              onClick={() => onSwitchMode?.(taskMode === 'coding' ? 'general' : 'coding')}
+              title={t('task.switchMode')}
+            >
+              {taskMode === 'coding' ? <Wrench size={14} /> : <FileText size={14} />} {taskMode === 'coding' ? t('task.modeCoding') : t('task.modeGeneral')}
+              {onSwitchMode && <Repeat size={12} className={styles.modeSwitchIcon} />}
+            </button>
+          )}
           {hasActiveTask && (
             <>
               <button

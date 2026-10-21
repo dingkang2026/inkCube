@@ -17,7 +17,8 @@
     "viewDetails": "查看详情",
     "collapseDetails": "收起详情",
     "mdExternalImage": "外部图片",
-    "mdCspBlocked": "（CSP 阻止直接加载）"
+    "mdCspBlocked": "（CSP 阻止直接加载）",
+    "mdImagePending": "图片加载中…",
   },
   "menu": {
     "file": "文件",
@@ -96,9 +97,9 @@
     "apiUrl": "API 地址",
     "apiKey": "API Key",
     "standardModel": "标准模型",
-    "standardModelHint": "日常任务的默认档位，多数路由默认使用此槽位",
+    "standardModelHint": "日常任务的默认档位，多数路由默认使用此槽位；需为多模态模型（支持图片理解）",
     "highModel": "高配模型",
-    "highModelHint": "复杂任务使用；PPT 生成等默认高配的管线解析到此槽位，两槽互为回退",
+    "highModelHint": "复杂任务使用；PPT 生成等默认高配的管线解析到此槽位，两槽互为回退；需为多模态模型（支持图片理解）",
     "level": {
       "standard": "标准模型",
       "high": "高配模型",
@@ -176,11 +177,6 @@
     },
     "loadFailed": "设置加载失败，当前显示默认值，已暂停编辑以保护现有配置",
     "retryLoad": "重新加载",
-    "vlmConfig": "VLM 视觉模型配置",
-    "vlmApiUrl": "VLM API 地址",
-    "vlmApiKey": "VLM API Key",
-    "vlmModel": "VLM 模型名称",
-    "vlmDescription": "用于知识库中图片描述生成，需支持 OpenAI 兼容格式",
     "internalModel": {
       "title": "本地 AI 模型",
       "description": "知识库运行所需的本地模型，首次使用需下载",
@@ -215,7 +211,7 @@
       "fileParsing": "文件解析并发数",
       "fileParsingHint": "同时解析的文件数。各文件相互独立，同一项目的多个文件也会并行解析；默认 2，调大需重启应用生效",
       "imageDescription": "图片描述并发数",
-      "imageDescriptionHint": "同时描述的图片数。每张图片独立调用视觉模型，互不影响；默认 2，调大需重启应用生效",
+      "imageDescriptionHint": "同时描述的图片数。每张图片独立调用多模态模型，互不影响；默认 2，调大需重启应用生效",
       "compile": "Wiki 编译并发数",
       "compileHint": "同时进行的 Wiki 编译任务数。每个任务对应一个项目，项目内文件按顺序逐个摄入，此值即同时编译的项目数；默认 2，调大需重启应用生效"
     },
@@ -288,7 +284,8 @@
     "tblProject": "项目明细",
     "srcTask": "任务执行",
     "srcChat": "知识问答",
-    "srcVlm": "图片描述",
+    "srcVlm": "图片描述（历史）",
+    "srcKnowledge": "图片描述",
     "srcWiki": "Wiki",
     "srcReport": "报告生成",
     "srcForm": "表单填写",
@@ -432,7 +429,6 @@
     "confirmDeleteImage": "确认删除此图片？相关描述数据也将被移除。",
     "retrySubmitted": "已提交重新描述",
     "retryForceSubmitted": "已提交强制解析",
-    "retryConfigError": "VLM 配置缺失，请先在设置中配置",
     "forceParse": "强制解析",
     "category": "分类",
     "category_all": "全部",
@@ -560,15 +556,6 @@
       "pptSpecNotFound": "模板规范文档不存在",
       "pptLibNotFound": "ppt-master 模板库不存在",
       "pptScriptNotFound": "register_template.py 不存在",
-      "vlmNotConfigured": "VLM API 未配置",
-      "vlmNotConfiguredSug": "前往 设置 > 外部模型 > VLM 配置 API Key",
-      "vlmInvalidKey": "VLM API Key 无效或已失效",
-      "vlmInvalidKeySug": "请前往 设置 > 外部模型 > VLM 更新 API Key 后重试",
-      "vlmNetworkError": "无法连接 VLM 服务",
-      "vlmNetworkErrorSug": "检查网络连接",
-      "vlmRateLimited": "VLM API 调用频率或用量超限",
-      "vlmRateLimitedSug": "稍后重试；若持续出现请检查 VLM 账户用量限额",
-      "vlmCallFailed": "VLM 调用异常",
       "llmNotConfigured": "LLM API 未配置",
       "llmNotConfiguredSug": "前往 设置 > 外部模型 配置 LLM API Key",
       "llmInvalidKey": "LLM API Key 无效或已失效",
@@ -970,7 +957,6 @@
     "serviceAction": "去设置",
     "serviceItem": {
       "LLM_NOT_CONFIGURED": "外部 LLM 未配置",
-      "VLM_NOT_CONFIGURED": "VLM 未配置",
       "WEB_SEARCH_NOT_CONFIGURED": "网络搜索未配置",
       "EMBEDDING_MODEL_MISSING": "Embedding 模型（bge-m3）未下载",
       "PARSING_MODEL_MISSING": "文档解析模型未下载"
@@ -1156,7 +1142,6 @@
     "dialogMessage": "「{{feature}}」需要 {{dep}} 支持才能运行，请先完成配置。",
     "goConfigure": "去配置",
     "goDownload": "去下载",
-    "optionalVlm": "未配置 VLM，图片描述将跳过；文本解析不受影响，可稍后在设置中配置",
     "feature": {
       "file_parsing": "文件解析",
       "wiki_compile": "Wiki 编译",
@@ -1166,7 +1151,6 @@
     },
     "dep": {
       "llm": "外部 LLM API",
-      "vlm": "VLM API",
       "bge-m3": "Embedding 模型（bge-m3）",
       "parsing": "文档解析模型"
     }

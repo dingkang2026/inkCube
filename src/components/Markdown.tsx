@@ -47,7 +47,11 @@ const SafeLink: Components['a'] = ({ href, children, ...rest }) => {
   )
 }
 
-/** Check if an image URL is allowed by CSP (self / data: / inkcube:) */
+/** Check if an image URL is allowed by CSP (self / data: / inkcube:)
+ * 注意：react-markdown v9 defaultUrlTransform 会把 data:/inkcube: 等非 http(s)
+ * 协议在到达本组件前剥空（SafeImage 收到空 src 返回 null），故这些分支在
+ * md 源直写场景下不触达；保留作纵深防御。真正可加载的 data:/inkcube: URI
+ * 须经 resolveImage 接管（组件层生成 img，不经 urlTransform）。 */
 function isSafeImageSrc(src: string): boolean {
   if (!src) return false
   if (src.startsWith('data:') || src.startsWith('inkcube:')) return true
@@ -56,36 +60,69 @@ function isSafeImageSrc(src: string): boolean {
   return false
 }
 
-/** Custom img renderer: block external URLs, show placeholder + link */
-const SafeImage: Components['img'] = ({ src, alt, ...rest }) => {
-  const { t } = useTranslation()
-  if (!src) return null
-  if (isSafeImageSrc(src)) {
-    return <img src={src} alt={alt} {...rest} />
+/** resolveImage 契约：调用方（如 FilePreview）可将相对路径图片接管为可加载 URL。
+ * 返回 string = 接管（img src 用返回值）；undefined = 异步加载中（渲染中性占位）；
+ * null/未传 = 落回 CSP 白名单判定（isSafeImageSrc）。 */
+export type ResolveImage = (src: string) => string | undefined | null
+
+/** Custom img renderer: resolveImage 接管优先，外链仍阻断显示占位 + 链接 */
+function makeSafeImage(resolveImage?: ResolveImage): Components['img'] {
+  return function SafeImage({ src, alt, ...rest }) {
+    const { t } = useTranslation()
+    if (!src) return null
+    const resolved = resolveImage ? resolveImage(src) : null
+    if (typeof resolved === 'string') {
+      return <img src={resolved} alt={alt} {...rest} />
+    }
+    if (resolved === undefined) {
+      // 相对路径图片经异步通道（如 FilePreview 的 b64 通道）加载中：中性占位，title 保留原 src 供排查
+      return (
+        <span
+          title={src}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 8px',
+            background: 'var(--bg-tertiary)',
+            borderRadius: 4,
+            fontSize: '0.85em',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <Image size={12} /> {alt || t('common.mdImagePending')}
+        </span>
+      )
+    }
+    if (isSafeImageSrc(src)) {
+      return <img src={src} alt={alt} {...rest} />
+    }
+    // External image blocked by CSP — show a clickable link instead
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '4px 8px',
+          background: 'var(--bg-tertiary)',
+          borderRadius: 4,
+          fontSize: '0.85em',
+          color: 'var(--text-muted)',
+        }}
+      >
+        <Image size={12} /> <a href={src} target="_blank" rel="noopener noreferrer" onClick={(e) => { e.preventDefault(); window.open(src, '_blank', 'noopener,noreferrer') }}>{alt || t('common.mdExternalImage')}</a>
+        <span style={{ color: 'var(--text-muted)' }}>{t('common.mdCspBlocked')}</span>
+      </span>
+    )
   }
-  // External image blocked by CSP — show a clickable link instead
-  return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 4,
-        padding: '4px 8px',
-        background: 'var(--bg-tertiary)',
-        borderRadius: 4,
-        fontSize: '0.85em',
-        color: 'var(--text-muted)',
-      }}
-    >
-      <Image size={12} /> <a href={src} target="_blank" rel="noopener noreferrer" onClick={(e) => { e.preventDefault(); window.open(src, '_blank', 'noopener,noreferrer') }}>{alt || t('common.mdExternalImage')}</a>
-      <span style={{ color: 'var(--text-muted)' }}>{t('common.mdCspBlocked')}</span>
-    </span>
-  )
 }
 
 interface MarkdownProps {
   content: string
   className?: string
+  /** 相对路径图片接管（见 ResolveImage）；未传维持 CSP 白名单行为 */
+  resolveImage?: ResolveImage
 }
 
 interface Segment {
@@ -405,12 +442,13 @@ function groupLines(content: string): LineChunk[] {
   return chunks
 }
 
-function TextSegment({ content }: { content: string }) {
+function TextSegment({ content, resolveImage }: { content: string; resolveImage?: ResolveImage }) {
+  const imageRenderer = useMemo(() => makeSafeImage(resolveImage), [resolveImage])
   if (!lineHasInlineHtml(content)) {
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={{ img: SafeImage, a: SafeLink }}
+        components={{ img: imageRenderer, a: SafeLink }}
       >
         {content}
       </ReactMarkdown>
@@ -424,7 +462,7 @@ function TextSegment({ content }: { content: string }) {
           return (
             <ReactMarkdown key={key}
               remarkPlugins={[remarkGfm]}
-              components={{ img: SafeImage, a: SafeLink }}
+              components={{ img: imageRenderer, a: SafeLink }}
             >
               {chunk.lines.join('\n')}
             </ReactMarkdown>
@@ -440,7 +478,7 @@ function TextSegment({ content }: { content: string }) {
   )
 }
 
-export function Markdown({ content, className }: MarkdownProps) {
+export function Markdown({ content, className, resolveImage }: MarkdownProps) {
   const processed = preprocessWikiLinks(content)
   const segments = splitSegments(processed)
 
@@ -452,7 +490,7 @@ export function Markdown({ content, className }: MarkdownProps) {
         ) : seg.type === 'svg' ? (
           <SanitizedSvg key={i} source={seg.content} />
         ) : (
-          <TextSegment key={i} content={seg.content} />
+          <TextSegment key={i} content={seg.content} resolveImage={resolveImage} />
         )
       )}
     </div>

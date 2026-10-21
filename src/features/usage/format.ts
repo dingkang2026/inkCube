@@ -25,11 +25,13 @@ export function modelsList(models?: string | string[]): string[] {
   return Array.isArray(models) ? models : models.split(',')
 }
 
-/** source 枚举 → i18n 标签键（2.10 §3.3 枚举；统计页来源表 / 徽章分拆共用） */
+/** source 枚举 → i18n 标签键（2.10 §3.3 枚举；统计页来源表 / 徽章分拆共用）。
+ *  vlm 保留（历史数据渲染；2026-10-21 图片描述改走 knowledge/LLM 链路） */
 export const USAGE_SOURCE_LABEL_KEYS: Record<string, string> = {
   task: 'usage.srcTask',
   chat: 'usage.srcChat',
   vlm: 'usage.srcVlm',
+  knowledge: 'usage.srcKnowledge',
   wiki: 'usage.srcWiki',
   report: 'usage.srcReport',
   form: 'usage.srcForm',

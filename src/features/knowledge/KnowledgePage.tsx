@@ -193,7 +193,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     [selectedProject, loadFiles, showToast, t]
   )
 
-  // 入口 guard（0.4 §7.3 第二层）：缺解析/embedding 模型 → 引导弹层，仅缺 VLM → 提示条放行
+  // 入口 guard（0.4 §7.3 第二层）：缺解析/embedding 模型 → 引导弹层
   const processFiles = (fileList: FileList) => {
     void guard('file_parsing', () => {
       void doProcessFiles(fileList)

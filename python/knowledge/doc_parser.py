@@ -139,7 +139,7 @@ class _ThreadsafeConverter:
 
 @dataclass
 class ImageContext:
-    """Image metadata with context windows for VLM description"""
+    """Image metadata with context windows for LLM description"""
     image_id: str
     file_id: str
     page: Optional[int]

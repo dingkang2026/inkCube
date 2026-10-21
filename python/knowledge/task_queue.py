@@ -4,19 +4,17 @@ Async worker infrastructure for knowledge base processing.
 
 Two worker pools:
 1. File parsing workers: process documents (parse → chunk → embed → store → extract images)
-2. Image description workers: process images (VLM API → store description)
+2. Image description workers: process images (LLM 多模态 → store description)
 
 Each pool has configurable concurrency via asyncio.Semaphore.
 A queue scanner periodically picks up pending items from the database.
 """
 import asyncio
-import json
 import logging
 from pathlib import Path
 from typing import Optional
 
 from knowledge.pipeline import ProcessingPipeline
-from knowledge.vlm_client import VLMClient
 from knowledge.vector_store import VectorStore, image_doc_id
 from errors import InkCubeError, FileNotFound, actionable
 from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
@@ -341,14 +339,10 @@ class KnowledgeWorker:
         logger.info("Setting file %s status to parsing", file_id)
         self.db.update_file_status(file_id, "parsing")
 
-        vlm = self._get_vlm_settings()
         pipeline = ProcessingPipeline(
             db_conn=self.db,
             chroma_persist_dir=str(Path(self.data_dir) / "chroma"),
             models_dir=str(Path(self.data_dir) / "models"),
-            vlm_api_url=vlm.get("vlm_api_url"),
-            vlm_api_key=vlm.get("vlm_api_key"),
-            vlm_model=vlm.get("vlm_model", "glm-4v"),
         )
 
         try:
@@ -375,7 +369,7 @@ class KnowledgeWorker:
             if result["success"]:
                 logger.info("File %s parsed: %d chunks, %d images",
                             file_id, result["chunks_count"], result["images_count"])
-                # Enqueue images for async VLM description
+                # Enqueue images for async LLM description
                 images = self.db.list_images_by_file(file_id)
                 for img in images:
                     if img.get("status", "pending") == "pending":
@@ -439,11 +433,11 @@ class KnowledgeWorker:
                 finally:
                     self._image_queue.task_done()
 
-    # Minimum image dimensions (px) for VLM processing. Smaller images are auto-archived.
+    # Minimum image dimensions (px) for LLM processing. Smaller images are auto-archived.
     MIN_IMAGE_SIZE = 100
 
     async def _process_image(self, image_id: str, force: bool = False):
-        """Process a single image through VLM description.
+        """Process a single image through LLM description.
         
         Args:
             image_id: Image record ID
@@ -462,7 +456,7 @@ class KnowledgeWorker:
 
         # 出队守卫：仅 force（用户显式重试）可重新处理 archived 图片。普通出队
         # 放行 archived 时，队列中残留的重复条目会把已自动归档的图片（seal/qr_code
-        # /signature）再次送去 VLM——事故 2026-10-09/10 重复解析根因之二。
+        # /signature）再次送去 LLM 描述——事故 2026-10-09/10 重复解析根因之二。
         allowed_statuses = ("pending", "error", "archived") if force else ("pending", "error")
         if img.get("status") not in allowed_statuses:
             return
@@ -493,12 +487,12 @@ class KnowledgeWorker:
 
         self.db.update_image_status(image_id, "processing")
 
-        vlm = self._get_vlm_settings()
-        vlm_client = VLMClient(
-            api_url=vlm.get("vlm_api_url"),
-            api_key=vlm.get("vlm_api_key"),
-            model=vlm.get("vlm_model", "glm-4v"),
-        )
+        # 图片描述统一走 LLM（standard 档，D3 派生 dict → 构造 client）
+        from llm import LLMClient, vision
+        from llm.routing import resolve_model
+        settings = dict(self.db.get_settings())
+        settings["model"] = resolve_model(settings, "standard")
+        llm_client = LLMClient(settings)
 
         file_id = img["file_id"]
         project_id = img["project_id"]
@@ -506,12 +500,12 @@ class KnowledgeWorker:
 
         try:
             if img_path.exists():
-                # 2.10 §4.3: 用量环境（source=vlm，归属项目与图片）——worker 协程
+                # 2.10 §4.3: 用量环境（source=knowledge，归属项目与图片）——worker 协程
                 # 独立 context，图片间互不可见
                 with push_context(UsageContext(
-                        source="vlm", purpose="describe",
+                        source="knowledge", purpose="describe",
                         project_id=project_id, entity_id=image_id)):
-                    result = await vlm_client.describe_image(str(img_path), context_text=context_text)
+                    result = await vision.describe_image(llm_client, str(img_path), context_text=context_text)
             else:
                 raise FileNotFound(detail=str(img_path))
 
@@ -541,12 +535,12 @@ class KnowledgeWorker:
             description = result["description"]
             category = result.get("category")
 
-            # Set category from VLM classification
+            # Set category from LLM classification
             if category and category != "other":
                 self.db.update_image_category(image_id, category)
 
             # Auto-archive categories not useful for reports
-            if category in VLMClient.AUTO_ARCHIVE_CATEGORIES:
+            if category in vision.AUTO_ARCHIVE_CATEGORIES:
                 self.db.update_image_status(
                     image_id, "archived",
                     vlm_description=description,
@@ -576,7 +570,7 @@ class KnowledgeWorker:
                     logger.warning("ChromaDB image chunk failed: %s", e)
 
         except InkCubeError as e:
-            logger.error("Image %s VLM error [%s]: %s", image_id, e.code, e.message)
+            logger.error("Image %s describe error [%s]: %s", image_id, e.code, e.message)
             self.db.update_image_status(
                 image_id, "error", error_message=actionable(e)
             )
@@ -881,18 +875,3 @@ class KnowledgeWorker:
             logger.warning("[Startup] Failed to reset compile tasks: %s", e)
 
     # ── Helpers ──
-
-    def _get_vlm_settings(self) -> dict:
-        """Read VLM settings from database."""
-        cursor = self.db.conn.execute(
-            "SELECT key, value FROM settings "
-            "WHERE key IN ('vlm_api_url', 'vlm_api_key', 'vlm_model')"
-        )
-        settings = {}
-        for row in cursor.fetchall():
-            val = row["value"]
-            try:
-                settings[row["key"]] = json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                settings[row["key"]] = val
-        return settings

@@ -7,7 +7,7 @@ Docling 再按 bbox 从页面位图裁剪,两次有损。本模块直接从 DOCX
 约定(方案评审已确认):
 - 同一图片字节(md5)在文件内多处引用只登记首次出现(去重);
 - 提取器内单张图片异常不中断整体(跳过并记日志),容器级失败由调用方转 warning;
-- PIL 无法识别的格式(WMF/EMF 元文件、损坏图)跳过——VLM 无法消费,登记只会
+- PIL 无法识别的格式(WMF/EMF 元文件、损坏图)跳过——无法作为多模态输入,登记只会
   产生 error 记录,跳过数量记入日志。
 """
 import hashlib
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 # 上下文窗口:与 PDF 路一致,图前/图后各取 2 个非空文本块
 _CONTEXT_BLOCKS = 2
 
-# VLM 可消费的位图格式白名单:WMF/EMF 元文件等矢量格式即使 PIL 在部分平台
-# 能读出尺寸,也无法作为 VLM 输入,直接跳过(不写盘不登记)
+# 多模态 LLM 可消费的位图格式白名单:WMF/EMF 元文件等矢量格式即使 PIL 在部分平台
+# 能读出尺寸,也无法作为多模态输入,直接跳过(不写盘不登记)
 _SUPPORTED_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff"}
 
 
@@ -91,7 +91,7 @@ def _save_and_measure(blob: bytes, ext: str, page: Optional[int], idx: int,
     clean_ext = (ext or "png").lower().lstrip(".")
     if clean_ext not in _SUPPORTED_IMAGE_EXTS:
         logger.info(
-            "office_media: skip non-bitmap image (%s), not consumable by VLM", clean_ext,
+            "office_media: skip non-bitmap image (%s), not consumable as multimodal input", clean_ext,
         )
         return None, None, None
     img_path = output_dir / f"page_{page or 0}_img_{idx}.{clean_ext}"

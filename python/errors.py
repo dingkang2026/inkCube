@@ -63,58 +63,6 @@ def describe(e: BaseException) -> str:
     return str(e)
 
 
-# ── VLM Errors ──────────────────────────────────────────────
-
-
-class VLMNotConfigured(InkCubeError):
-    def __init__(self):
-        super().__init__(
-            "VLM_NOT_CONFIGURED", "CONFIG",
-            "VLM API 未配置",
-            "前往 设置 > 外部模型 > VLM 配置 API Key",
-        )
-
-
-class VLMInvalidKey(InkCubeError):
-    def __init__(self, detail: str = ""):
-        super().__init__(
-            "VLM_INVALID_KEY", "CREDENTIAL",
-            "VLM API Key 无效或已失效",
-            "请前往 设置 > 外部模型 > VLM 更新 API Key 后重试",
-            detail=detail,
-        )
-
-
-class VLMNetworkError(InkCubeError):
-    def __init__(self, detail: str = ""):
-        super().__init__(
-            "VLM_NETWORK_ERROR", "NETWORK",
-            "无法连接 VLM 服务",
-            "检查网络连接",
-            detail=detail,
-        )
-
-
-class VLMRateLimited(InkCubeError):
-    def __init__(self, detail: str = ""):
-        super().__init__(
-            "VLM_RATE_LIMITED", "NETWORK",
-            "VLM API 调用频率或用量超限",
-            "稍后重试；若持续出现请检查 VLM 账户用量限额",
-            detail=detail,
-        )
-
-
-class VLMCallFailed(InkCubeError):
-    def __init__(self, detail: str = ""):
-        super().__init__(
-            "VLM_CALL_FAILED", "INTERNAL",
-            "VLM 调用异常",
-            "查看详细错误",
-            detail=detail,
-        )
-
-
 # ── LLM Errors ──────────────────────────────────────────────
 
 

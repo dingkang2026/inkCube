@@ -12,7 +12,6 @@ interface ExternalModelSettingsProps {
 export function ExternalModelSettings({ form, onUpdate }: ExternalModelSettingsProps) {
   const { t } = useTranslation()
   const [showKey, setShowKey] = useState(false)
-  const [showVlmKey, setShowVlmKey] = useState(false)
 
   // L2: validate reasoning_override on input — invalid JSON silently falls back
   // to the effort level on the backend, so surface the error here instead
@@ -134,41 +133,8 @@ export function ExternalModelSettings({ form, onUpdate }: ExternalModelSettingsP
         <p className={styles.hint}>{t('settings.llm.readTimeoutHint')}</p>
       </section>
 
-      {/* 视觉模型：与基础连接同属连接配置，紧跟其后（2026-10-19 规范化重排） */}
-      <section className={styles.section}>
-        <h3 className={styles.heading}>{t('settings.vlmConfig')}</h3>
-        <p className={styles.hint}>{t('settings.vlmDescription')}</p>
-
-        <label className={styles.label}>{t('settings.vlmApiUrl')}</label>
-        <input
-          className={styles.input}
-          value={form.vlm_api_url}
-          onChange={(e) => onUpdate('vlm_api_url', e.target.value)}
-          placeholder="https://open.bigmodel.cn/api/paas/v4/"
-        />
-
-        <label className={styles.label}>{t('settings.vlmApiKey')}</label>
-        <div className={styles.withAction}>
-          <input
-            className={styles.input}
-            type={showVlmKey ? 'text' : 'password'}
-            value={form.vlm_api_key}
-            onChange={(e) => onUpdate('vlm_api_key', e.target.value)}
-            placeholder="sk-..."
-          />
-          <button className="icon-btn" aria-label={showVlmKey ? t('settings.hideKey') : t('settings.showKey')} onClick={() => setShowVlmKey(!showVlmKey)}>
-            {showVlmKey ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        </div>
-
-        <label className={styles.label}>{t('settings.vlmModel')}</label>
-        <input
-          className={styles.input}
-          value={form.vlm_model}
-          onChange={(e) => onUpdate('vlm_model', e.target.value)}
-          placeholder="glm-4.6v"
-        />
-      </section>
+      {/* VLM 独立配置块已删（2026-10-21 架构收敛）：图片理解统一走标准/高配
+          多模态模型（llm/vision.py），模型 hint 注明多模态要求 */}
 
       {/* 模型路由已拆分至独立「模型路由」section（0.3 §4.4：连接配置与路由分离） */}
 

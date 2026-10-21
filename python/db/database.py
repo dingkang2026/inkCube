@@ -369,14 +369,14 @@ class Database:
             CREATE TABLE IF NOT EXISTS llm_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL,                   -- ISO 本地时间，按天分组用 date(ts)
-                source TEXT NOT NULL,               -- task / chat / vlm / wiki / report / form / system / other
+                source TEXT NOT NULL,               -- task / chat / knowledge / wiki / report / form / system / other（vlm 为历史值）
                 purpose TEXT,                       -- 调用用途细分（2.10 §3.3）
                 task_id TEXT,
                 round_id TEXT,                      -- 任务「每次对话」= agent 一次 run 的 uuid
                 project_id TEXT,
                 entity_id TEXT,                     -- report_id / compile_task_id / fill_id / image_id / file_id
                 model TEXT NOT NULL,
-                mode TEXT NOT NULL,                 -- full / stream / vlm
+                mode TEXT NOT NULL,                 -- full / stream（vlm 为历史值）
                 prompt_tokens INTEGER NOT NULL DEFAULT 0,
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -834,6 +834,26 @@ class Database:
         # Migrate: suggestions 幂等约束补项目作用域(整体 review C1)
         self._migrate_task_suggestions_unique()
 
+        # Migrate: 清理独立 VLM 配置三键（2026-10-21 图片理解统一走 LLM 链路）
+        self._migrate_drop_vlm_settings()
+
+    def _migrate_drop_vlm_settings(self):
+        """清理独立 VLM 配置三键（vlm_api_url/vlm_api_key/vlm_model）。
+
+        2026-10-21 架构收敛：图片理解统一走 LLMClient（llm/vision.py），
+        读侧已全删（readiness/tools/knowledge/routers），启动时幂等清理
+        存量键，避免设置页出现无 UI 对应的幽灵键。已删即跳过（DELETE
+        不存在的键 rowcount=0）；失败向上抛（settings 表异常意味着库文件
+        损坏，静默继续不可取）。
+        """
+        cur = self.conn.execute(
+            "DELETE FROM settings WHERE key IN "
+            "('vlm_api_url', 'vlm_api_key', 'vlm_model')"
+        )
+        self.conn.commit()
+        if cur.rowcount:
+            logger.info("Migrated settings: dropped %d legacy vlm keys", cur.rowcount)
+
     def _migrate_task_suggestions_unique(self):
         """task_suggestions 补 UNIQUE(project_id, entry_fingerprint, kind)（整体
         review C1:应用层幂等查询需配套真实唯一索引兑底,且必须项目作用域——
@@ -966,9 +986,6 @@ class Database:
             "web_search_provider": "",
             "zhipu_search_key": "",
             "zhipu_search_engine": "search_pro",  # search_std | search_pro（智谱引擎档位）
-            "vlm_api_url": "https://open.bigmodel.cn/api/paas/v4/",
-            "vlm_api_key": "",
-            "vlm_model": "glm-4.6v",
             "max_concurrent_file_parsing": 2,
             "max_concurrent_image_description": 2,
             # Wiki compile settings（默认 2：并发单位是项目，项目内文件本就串行，

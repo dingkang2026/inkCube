@@ -8,7 +8,6 @@ from datetime import datetime
 from knowledge.doc_parser import DocumentParser, ParseResult, ImageContext, ChunkInfo
 from knowledge.vector_store import VectorStore
 from knowledge.fts_store import FTSStore
-from knowledge.vlm_client import VLMClient
 from errors import actionable
 import activity_events
 
@@ -28,7 +27,7 @@ class ProcessingPipeline:
     3. Chunk text (HybridChunker aligned with bge-m3)
     4. Embed chunks (bge-m3) → store in ChromaDB
     5. Index chunks for keyword search → SQLite FTS5
-    6. Describe images (VLM API) → update ImageContext
+    6. Describe images (LLM 多模态，异步 worker) → update ImageContext
     7. Update file status in database
     
     Supports async execution with progress tracked via database.
@@ -39,9 +38,6 @@ class ProcessingPipeline:
         db_conn,
         chroma_persist_dir: str,
         models_dir: Optional[str] = None,
-        vlm_api_url: Optional[str] = None,
-        vlm_api_key: Optional[str] = None,
-        vlm_model: str = "glm-4v"
     ):
         """
         Initialize pipeline with all required components.
@@ -50,9 +46,6 @@ class ProcessingPipeline:
             db_conn: Database connection (for FTS store and status updates)
             chroma_persist_dir: ChromaDB persistence directory
             models_dir: Path to models directory (auto-detected if None)
-            vlm_api_url: VLM API endpoint
-            vlm_api_key: VLM API key
-            vlm_model: VLM model name
         """
         self.db = db_conn
         
@@ -65,11 +58,6 @@ class ProcessingPipeline:
         self.vector_store = VectorStore(chroma_persist_dir, bge_m3_path=str(bge_m3_path))
         
         self.fts_store = FTSStore(db_conn)
-        self.vlm_client = VLMClient(
-            api_url=vlm_api_url,
-            api_key=vlm_api_key,
-            model=vlm_model
-        )
     
     async def process_file(
         self,
@@ -84,10 +72,10 @@ class ProcessingPipeline:
         Stages:
         1. Parse document (Docling) → text chunks + images
         2. Store chunks in ChromaDB + FTS
-        3. Store image records in SQLite (status=pending, VLM handled by worker)
+        3. Store image records in SQLite (status=pending, 描述由 worker 异步处理)
         4. Finalize
         
-        Image VLM description is NOT done here — it's handled asynchronously
+        Image description is NOT done here — it's handled asynchronously
         by the image description worker in task_queue.py.
         """
         try:
@@ -110,7 +98,7 @@ class ProcessingPipeline:
             # Stage 3: Store image records in DB (75% → 90%)
             # 独立图片文件（IMAGE 输入）：Docling 只 OCR 其文字、doc.pictures 为空
             # （原图是输入而非文档元素），不产生提取记录——将源文件本身登记为唯一
-            # 图片，补齐「图片文件 → 图片库 → VLM 描述 → figure chunk 检索」链路
+            # 图片，补齐「图片文件 → 图片库 → LLM 描述 → figure chunk 检索」链路
             # （2.2 §4.4）
             images = list(parse_result.images)
             if not images:
@@ -167,7 +155,7 @@ class ProcessingPipeline:
         """独立图片文件 → 源文件本身作为唯一图片记录；非图片扩展名返回 None。
 
         IMAGE 输入经 Docling OCR 提取文字后 doc.pictures 为空（原图是输入而非
-        文档元素），不登记则图片文件在图片库不可见、VLM 语义描述链路缺失。
+        文档元素），不登记则图片文件在图片库不可见、语义描述链路缺失。
         page=1 与内嵌图共用 img_ 命名空间；向量 id 唯一性由尾部 image_id
         保证（vector_store.image_doc_id，2.2 §5.3-5）。尺寸读取失败不阻断
         登记（列为可空）。
@@ -269,7 +257,7 @@ class ProcessingPipeline:
         """
         Store image metadata in SQLite images table with status='pending'.
         
-        VLM description is handled asynchronously by the image description
+        Image description is handled asynchronously by the image description
         worker in task_queue.py, not here.
         """
         for img_ctx in images:
