@@ -117,7 +117,7 @@ def test_db_defaults_level_semantics():
     # 档位槽开箱默认（2026-10-19 用户指定：glm-5.3-flash / glm-5.3）
     assert s["standard_model"] == "glm-5.3-flash"
     assert s["high_model"] == "glm-5.3"
-    assert s["vlm_model"] == "glm-4.6v"
+    assert "vlm_model" not in s  # 独立 VLM 链路删除（2026-10-21），vlm 三键退出 settings
     assert "model" not in s  # 旧单模型键已废弃
 
 

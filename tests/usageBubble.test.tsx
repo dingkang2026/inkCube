@@ -87,8 +87,11 @@ describe('format 纯函数', () => {
   it('来源枚举 → i18n 键映射（统计页来源表/徽章分拆共用）', () => {
     expect(USAGE_SOURCE_LABEL_KEYS.task).toBe('usage.srcTask')
     expect(USAGE_SOURCE_LABEL_KEYS.other).toBe('usage.srcOther')
+    // vlm 保留作历史数据渲染；knowledge 为 2026-10-21 图片描述改走 LLM 链路后的新来源
+    expect(USAGE_SOURCE_LABEL_KEYS.vlm).toBe('usage.srcVlm')
+    expect(USAGE_SOURCE_LABEL_KEYS.knowledge).toBe('usage.srcKnowledge')
     expect(Object.keys(USAGE_SOURCE_LABEL_KEYS).sort()).toEqual(
-      ['chat', 'form', 'other', 'report', 'task', 'vlm', 'wiki'],
+      ['chat', 'form', 'knowledge', 'other', 'report', 'task', 'vlm', 'wiki'],
     )
   })
 })

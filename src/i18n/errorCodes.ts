@@ -115,11 +115,6 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   LIB_NOT_FOUND: { msg: 'pptLibNotFound' },
   SCRIPT_NOT_FOUND: { msg: 'pptScriptNotFound' },
   // ── InkCubeError（errors.py 落库链路）──
-  VLM_NOT_CONFIGURED: { msg: 'vlmNotConfigured', sug: 'vlmNotConfiguredSug' },
-  VLM_INVALID_KEY: { msg: 'vlmInvalidKey', sug: 'vlmInvalidKeySug' },
-  VLM_NETWORK_ERROR: { msg: 'vlmNetworkError', sug: 'vlmNetworkErrorSug' },
-  VLM_RATE_LIMITED: { msg: 'vlmRateLimited', sug: 'vlmRateLimitedSug' },
-  VLM_CALL_FAILED: { msg: 'vlmCallFailed' },
   LLM_NOT_CONFIGURED: { msg: 'llmNotConfigured', sug: 'llmNotConfiguredSug' },
   LLM_INVALID_KEY: { msg: 'llmInvalidKey', sug: 'llmInvalidKeySug' },
   LLM_RATE_LIMITED: { msg: 'llmRateLimited', sug: 'llmRateLimitedSug' },

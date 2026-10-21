@@ -19,7 +19,6 @@ interface StructuredError extends Error {
 /** errorCode → 设置页锚点 section（0.4 §7.3 第三层：跳设置带锚点直达） */
 const CODE_SETTINGS_SECTION: Record<string, string> = {
   LLM_NOT_CONFIGURED: 'externalModel',
-  VLM_NOT_CONFIGURED: 'externalModel',
   LLM_INVALID_KEY: 'externalModel',
   EMBEDDING_MODEL_MISSING: 'internalModel',
   PARSING_MODEL_MISSING: 'internalModel',

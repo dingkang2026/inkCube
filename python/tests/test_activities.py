@@ -489,7 +489,6 @@ class TestOnboarding:
 
 ALL_OK = {
     "llm": {"status": "ok"},
-    "vlm": {"status": "ok"},
     "web_search": {"status": "ok"},
     "embedding": {"status": "ok"},
     "parsing": {"status": "ok"},
@@ -509,16 +508,16 @@ class TestComputeFeatures:
         assert features["task"]["missing"][0]["id"] == "llm"
         assert features["task"]["missing"][0]["action"] == "settings:external"
 
-    def test_missing_embedding_blocks_search_only_vlm_optional(self):
-        """VLM 缺失只影响 file_parsing 可选段（§7.2 矩阵）。"""
-        services = {**ALL_OK, "vlm": {"status": "error"}, "embedding": {"status": "error"}}
+    def test_missing_embedding_blocks_file_parsing(self):
+        """embedding 缺失阻断 file_parsing（必需依赖）；optional_missing 恒空
+        （VLM 链路删除后矩阵已无可选依赖）。"""
+        services = {**ALL_OK, "embedding": {"status": "error"}}
         features = readiness.compute_features(services)
 
         assert features["file_parsing"]["ready"] is False
         miss_ids = {m["id"] for m in features["file_parsing"]["missing"]}
-        assert miss_ids == {"bge-m3"}  # VLM 不在必需里
-        opt = features["file_parsing"]["optional_missing"]
-        assert len(opt) == 1 and opt[0]["id"] == "vlm" and opt[0]["impact"] == "image_description"
+        assert miss_ids == {"bge-m3"}
+        assert features["file_parsing"]["optional_missing"] == []
 
         # task 只依赖 llm → embedding 缺失不阻断
         assert features["task"]["ready"] is True
@@ -561,12 +560,6 @@ class TestEnsureReady:
         self._patch_features(monkeypatch, {**ALL_OK, "parsing": {"status": "error"}})
         with pytest.raises(ParsingModelMissing):
             readiness.ensure_ready("file_parsing")
-
-    def test_optional_vlm_never_blocks(self, monkeypatch):
-        """功能面不变：vlm 仍是 file_parsing 可选依赖，ensure_ready 仅缺可选 → 放行
-        （必配升级仅影响提示面红条/状态点，不改入口拦截）。"""
-        self._patch_features(monkeypatch, {**ALL_OK, "vlm": {"status": "error"}})
-        readiness.ensure_ready("file_parsing")  # 仅缺可选 → 放行
 
 
 class TestComputeServiceStatus:
@@ -621,15 +614,6 @@ class TestComputeServiceStatus:
             "file_parsing", "wiki_compile", "report", "task", "knowledge_search",
             "form_fill", "form_analysis",
         }
-
-    def test_health_overall_degraded_on_missing_vlm(self, monkeypatch):
-        """overall 全必配聚合：缺 VLM 打 degraded（2026-10-19 必配统一）。"""
-        from routers import health as health_router
-
-        services = {**ALL_OK, "vlm": {"status": "error", "code": "VLM_NOT_CONFIGURED"}}
-        monkeypatch.setattr(health_router, "compute_service_status", lambda: services)
-        result = asyncio.run(health_router.health_check())
-        assert result["status"] == "degraded"
 
     def test_health_overall_degraded_on_required_missing(self, monkeypatch):
         """必需服务（embedding）缺失仍打 degraded。"""

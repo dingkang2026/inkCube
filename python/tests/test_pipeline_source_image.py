@@ -39,7 +39,7 @@ class TestSourceImageContext:
         f = tmp_path / "broken.jpg"
         f.write_bytes(b"not-an-image")
         ctx = ProcessingPipeline._source_image_context(str(f), "file_abc", "broken.jpg")
-        assert ctx is not None  # 仍登记，图片库/VLM 链路可见
+        assert ctx is not None  # 仍登记，图片库/LLM 链路可见
         assert ctx.width_px is None and ctx.height_px is None
 
     def test_ext_set_matches_upload_whitelist(self):

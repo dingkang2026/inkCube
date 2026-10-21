@@ -1,7 +1,7 @@
 """python/tests/test_knowledge_archive_api.py — 项目归档 API 回归。
 
 覆盖：归档/恢复端点（含 kind 守门 404）、进行中活动守门（409 PROJECT_HAS_ACTIVE_WORK，
-含图片 VLM 描述在途口径；归档与删除端点共用，Major-1）、删除准入（未归档 409
+含图片描述在途口径；归档与删除端点共用，Major-1）、删除准入（未归档 409
 PROJECT_NOT_ARCHIVED，归档后可删；归档后有在途活动则拒绝）、unarchive 独立错误码
 （PROJECT_ALREADY_ACTIVE，Minor-2：不再与 DELETE 共用）、列表分流
 （archived 参数 + archived_count）、首页待办排除归档项目（list_due_phase_tasks）。
@@ -150,7 +150,7 @@ class TestArchiveActiveWorkGuard:
         assert client.post(f"/knowledge/projects/{pid}/archive").status_code == 409
 
     def test_blocked_by_pending_image_description(self, client_and_db):
-        """图片 VLM 描述在途（Minor-3 口径补全）：文件落 done 后描述仍异步在途
+        """图片描述在途（Minor-3 口径补全）：文件落 done 后描述仍异步在途
         （pending=待描述 / processing=worker 已取走），归档不得漏过。"""
         client, db = client_and_db
         pid = _create_project(client)["id"]

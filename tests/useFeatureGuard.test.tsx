@@ -1,6 +1,6 @@
 /** tests/useFeatureGuard.test.tsx — useFeatureGuard 入口准入用例（0.4lifecycle-design.md §7.3，v1.7）
  *  覆盖：就绪放行、缺必需依赖弹层（确认 → 锚点直达设置页 / 取消 → 中止）、
- *  仅缺可选依赖（VLM）提示条放行、数据不可得放行（第三层后端 ensure_ready 兜底）。
+ *  missing 空静默放行（可选层已随 2026-10-21 VLM 链路删除退役）、数据不可得放行（第三层后端 ensure_ready 兜底）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -124,20 +124,15 @@ describe('useFeatureGuard', () => {
     }
   })
 
-  it('warns but proceeds when only optional dependency (VLM) is missing', async () => {
+  it('proceeds silently when ready=false but missing is empty (optional layer retired)', async () => {
+    // 矩阵已无可选依赖（VLM 链路删除，2026-10-21）：missing 空即静默放行，零提示
     invokeMock.mockResolvedValue(
       features({
-        file_parsing: {
-          ready: false,
-          missing: [],
-          optional_missing: [
-            { kind: 'model' as const, id: 'vlm', action: 'settings:internal' as const },
-          ],
-        },
+        file_parsing: { ready: false, missing: [], optional_missing: [] },
       }),
     )
     const onProceed = await runGuard('file_parsing')
-    expect(showToastMock).toHaveBeenCalledWith('readiness.optionalVlm', 'warning')
+    expect(showToastMock).not.toHaveBeenCalled()
     expect(confirmMock).not.toHaveBeenCalled()
     expect(onProceed).toHaveBeenCalledTimes(1)
   })

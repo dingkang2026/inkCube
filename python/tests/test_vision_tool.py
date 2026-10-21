@@ -1,14 +1,14 @@
-"""python/tests/test_vision_tool.py — VisionTool（VLM 图片理解工具）单测。
+"""python/tests/test_vision_tool.py — VisionTool（LLM 图片理解工具）单测。
 
 覆盖：
 - 图片直解 / PDF 提图逐张分析 / DOCX 提图
 - max_images 截断显式声明（total/truncated/hint，禁止静默 limit）
 - 小图过滤显式计数（skipped_small）+ md5 去重
-- VLM 未配置前置拦截（VLM_NOT_CONFIGURED）
+- LLM 未配置前置拦截（LLM_NOT_CONFIGURED）
 - 路径越界拒绝 / 不支持格式 / 单张失败不中断批量
 - fetched 只读根绝对路径回读 / workspace 未设置
 
-VLM 全部 mock（monkeypatch VLMClient.analyze），不依赖外部服务；
+LLM 全部 mock（monkeypatch llm.vision.analyze_image），不依赖外部服务；
 async 用 asyncio.run 驱动（项目惯例，不引入 pytest-asyncio）。
 """
 import asyncio
@@ -92,45 +92,46 @@ def db():
 
 
 @pytest.fixture
-def db_with_vlm(db):
-    for key, val in (("vlm_api_url", "https://vlm.example/api"), ("vlm_api_key", "sk-test")):
-        db.conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?)", (key, json.dumps(val))
-        )
+def db_with_llm(db):
+    """LLM 配置可达：defaults 已有 api_url/standard_model，仅 api_key 默认空。"""
+    db.conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('api_key', ?)",
+        (json.dumps("sk-test"),),
+    )
     db.conn.commit()
     return db
 
 
 @pytest.fixture
-def tool(db_with_vlm, tmp_path):
-    t = VisionTool(db=db_with_vlm)
+def tool(db_with_llm, tmp_path):
+    t = VisionTool(db=db_with_llm)
     t.set_workspace(str(tmp_path))
     return t
 
 
 class FakeAnalyze:
-    """VLMClient.analyze 替身：记录调用并可脚本化成功/失败序列。
+    """llm.vision.analyze_image 替身：记录调用并可脚本化成功/失败序列。
 
-    注意：callable 实例无 descriptor 绑定，client.analyze(path, q) 直接
-    映射到 __call__(self, image_path, question)，不经过 self_client。
+    callable 实例直接 setattr 到 llm.vision.analyze_image，
+    调用签名对齐模块函数：analyze_image(client, image_path, question)。
     """
 
     def __init__(self, fail_first: int = 0):
         self.calls: list[dict] = []
         self.fail_first = fail_first
 
-    async def __call__(self, image_path, question=None):
+    async def __call__(self, client, image_path, question=None):
         self.calls.append({"path": image_path, "question": question})
         if self.fail_first > 0:
             self.fail_first -= 1
-            from errors import VLMRateLimited
+            from errors import LLMRateLimited
 
-            raise VLMRateLimited(detail="429")
+            raise LLMRateLimited(detail="429")
         return f"DESC:{Path(image_path).name}"
 
 
 def _install(monkeypatch, fake: FakeAnalyze):
-    monkeypatch.setattr("knowledge.vlm_client.VLMClient.analyze", fake)
+    monkeypatch.setattr("llm.vision.analyze_image", fake)
 
 
 class TestImageInput:
@@ -219,7 +220,7 @@ class TestDocumentInput:
         assert len(fake.calls) == 1
 
     def test_single_failure_does_not_break_batch(self, tool, tmp_path, monkeypatch):
-        """批量中单张 VLM 失败：该张记 error 项，其余照常。"""
+        """批量中单张 LLM 失败：该张记 error 项，其余照常。"""
         fake = FakeAnalyze(fail_first=1)
         _install(monkeypatch, fake)
         _make_pdf(tmp_path / "doc.pdf", [(300, 200), (320, 240)])
@@ -248,7 +249,7 @@ class TestSizeAndCap:
     office 路径小图/不支持格式过滤（L3/L2）。"""
 
     def test_oversized_single_image_rejected(self, tool, tmp_path, monkeypatch):
-        """单图超限：结构化报错且不触发 VLM，不白传请求体（H1）。"""
+        """单图超限：结构化报错且不触发 LLM，不白传请求体（H1）。"""
         monkeypatch.setattr("tools.vision._MAX_IMAGE_BYTES", 100)
         fake = FakeAnalyze()
         _install(monkeypatch, fake)
@@ -315,7 +316,7 @@ class TestSizeAndCap:
         assert result["analyzed"] == 1
 
     def test_docx_tiff_image_skipped(self, tool, tmp_path, monkeypatch):
-        """DOCX 内嵌 tif（office 白名单放行、VLM MIME 不支持）：显式计数跳过。"""
+        """DOCX 内嵌 tif（office 白名单放行、LLM MIME 不支持）：显式计数跳过。"""
         fake = FakeAnalyze()
         _install(monkeypatch, fake)
 
@@ -337,8 +338,8 @@ class TestSizeAndCap:
 
 
 class TestGuards:
-    def test_vlm_not_configured(self, tmp_path, monkeypatch):
-        """VLM 未配置：前置拦截返回结构化错误，不触发提图。"""
+    def test_llm_not_configured(self, tmp_path, monkeypatch):
+        """LLM 未配置：前置拦截返回结构化错误，不触发提图。"""
         db = Database(":memory:")
         db.initialize()
         tool = VisionTool(db=db)
@@ -347,7 +348,7 @@ class TestGuards:
 
         result = json.loads(_run(tool.execute(file_path="doc.pdf")))
 
-        assert result["code"] == "VLM_NOT_CONFIGURED"
+        assert result["code"] == "LLM_NOT_CONFIGURED"
         assert "设置" in result["suggestion"]
 
     def test_path_traversal_blocked(self, tool, monkeypatch):
@@ -371,8 +372,8 @@ class TestGuards:
         assert "error" in result
         assert ".pdf" in result["supported"]
 
-    def test_workspace_not_set(self, db_with_vlm, monkeypatch):
-        tool = VisionTool(db=db_with_vlm)
+    def test_workspace_not_set(self, db_with_llm, monkeypatch):
+        tool = VisionTool(db=db_with_llm)
         fake = FakeAnalyze()
         _install(monkeypatch, fake)
 
@@ -380,13 +381,13 @@ class TestGuards:
 
         assert "error" in result and "工作目录" in result["error"]
 
-    def test_fetched_readonly_root_absolute_path(self, db_with_vlm, tmp_path, monkeypatch):
+    def test_fetched_readonly_root_absolute_path(self, db_with_llm, tmp_path, monkeypatch):
         """只读根内绝对路径可读（对齐 file_ops fetched 语义）。"""
         fetched = tmp_path / "fetched_root"
         fetched.mkdir()
         (fetched / "shot.png").write_bytes(_make_png(300, 200))
 
-        tool = VisionTool(db=db_with_vlm)
+        tool = VisionTool(db=db_with_llm)
         tool.set_workspace(str(tmp_path / "ws"))
         tool.add_readonly_root(str(fetched))
         fake = FakeAnalyze()
@@ -397,13 +398,13 @@ class TestGuards:
         assert result["ok"] is True
         assert result["description"] == "DESC:shot.png"
 
-    def test_outside_readonly_root_denied(self, db_with_vlm, tmp_path, monkeypatch):
+    def test_outside_readonly_root_denied(self, db_with_llm, tmp_path, monkeypatch):
         """未注册的绝对路径拒绝（沙箱不因只读根放开）。"""
         outside = tmp_path / "outside"
         outside.mkdir()
         (outside / "x.png").write_bytes(_make_png(300, 200))
 
-        tool = VisionTool(db=db_with_vlm)
+        tool = VisionTool(db=db_with_llm)
         tool.set_workspace(str(tmp_path / "ws"))
         fake = FakeAnalyze()
         _install(monkeypatch, fake)

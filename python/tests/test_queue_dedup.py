@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 from db.database import Database
-from knowledge import task_queue as tq
 from knowledge.task_queue import KnowledgeWorker
 
 
@@ -47,22 +46,18 @@ def _insert_file_with_images(db: Database, file_id: str, image_ids: list[str],
     db.conn.commit()
 
 
-class StubVLM:
-    """VLMClient 替身：记录调用，返回 seal（走自动归档分支，不触 ChromaDB）。"""
+class StubDescribe:
+    """llm.vision.describe_image 替身：记录调用，返回 seal（走自动归档分支，不触 ChromaDB）。"""
     calls: list[str] = []
-    AUTO_ARCHIVE_CATEGORIES = ("qr_code", "signature", "seal")
 
-    def __init__(self, api_url=None, api_key=None, model=None):
-        pass
-
-    async def describe_image(self, image_path: str, context_text=None) -> dict:
-        StubVLM.calls.append(image_path)
+    async def __call__(self, client, image_path: str, context_text=None) -> dict:
+        StubDescribe.calls.append(image_path)
         return {"description": "测试描述", "category": "seal"}
 
 
 @pytest.fixture(autouse=True)
 def _reset_stub():
-    StubVLM.calls = []
+    StubDescribe.calls = []
 
 
 class TestEnqueueDedup:
@@ -127,16 +122,16 @@ class TestArchivedDequeueGuard:
         db.conn.commit()
 
     def test_archived_not_reprocessed_without_force(self, monkeypatch):
-        """普通出队遇 archived 直接跳过——不调 VLM、状态不变（事故根因之二）。"""
+        """普通出队遇 archived 直接跳过——不调 LLM、状态不变（事故根因之二）。"""
         async def scenario():
             db = _make_db()
             self._image_row(db, status="archived")
             worker = KnowledgeWorker(db=db, data_dir=".")
-            monkeypatch.setattr(tq, "VLMClient", StubVLM)
+            monkeypatch.setattr("llm.vision.describe_image", StubDescribe())
 
             await worker._process_image("img1", force=False)
 
-            assert StubVLM.calls == []
+            assert StubDescribe.calls == []
             assert db.get_image("img1")["status"] == "archived"
 
         asyncio.run(scenario())
@@ -147,11 +142,11 @@ class TestArchivedDequeueGuard:
             db = _make_db()
             self._image_row(db, status="archived")
             worker = KnowledgeWorker(db=db, data_dir=".")
-            monkeypatch.setattr(tq, "VLMClient", StubVLM)
+            monkeypatch.setattr("llm.vision.describe_image", StubDescribe())
 
             await worker._process_image("img1", force=True)
 
-            assert len(StubVLM.calls) == 1
+            assert len(StubDescribe.calls) == 1
             img = db.get_image("img1")
             assert img["vlm_description"] == "测试描述"
             assert img["status"] == "archived"  # seal → 自动归档终态
@@ -164,11 +159,11 @@ class TestArchivedDequeueGuard:
             db = _make_db()
             self._image_row(db, status="pending")
             worker = KnowledgeWorker(db=db, data_dir=".")
-            monkeypatch.setattr(tq, "VLMClient", StubVLM)
+            monkeypatch.setattr("llm.vision.describe_image", StubDescribe())
 
             await worker._process_image("img1", force=False)
 
-            assert len(StubVLM.calls) == 1
+            assert len(StubDescribe.calls) == 1
 
         asyncio.run(scenario())
 

@@ -18,7 +18,7 @@
     "collapseDetails": "Collapse Details",
     "mdExternalImage": "External image",
     "mdCspBlocked": "(blocked by CSP)",
-    "mdImagePending": "Loading image…",
+    "mdImagePending": "Loading image…"
   },
   "menu": {
     "file": "File",
@@ -97,9 +97,9 @@
     "apiUrl": "API URL",
     "apiKey": "API Key",
     "standardModel": "Standard Model",
-    "standardModelHint": "Default tier for daily tasks; most routings resolve to this slot",
+    "standardModelHint": "Default tier for daily tasks; most routings resolve to this slot. Must be a multimodal model (supports image understanding)",
     "highModel": "High-tier Model",
-    "highModelHint": "For complex tasks; pipelines defaulting to high tier (e.g. PPT) resolve here. Slots fall back to each other",
+    "highModelHint": "For complex tasks; pipelines defaulting to high tier (e.g. PPT) resolve here. Slots fall back to each other. Must be a multimodal model (supports image understanding)",
     "level": {
       "standard": "Standard",
       "high": "High-tier",
@@ -177,11 +177,6 @@
     },
     "loadFailed": "Failed to load settings. Defaults are shown; editing is paused to protect your configuration.",
     "retryLoad": "Reload",
-    "vlmConfig": "VLM Vision Model Configuration",
-    "vlmApiUrl": "VLM API URL",
-    "vlmApiKey": "VLM API Key",
-    "vlmModel": "VLM Model Name",
-    "vlmDescription": "Used for image description in knowledge base. Requires OpenAI-compatible API",
     "internalModel": {
       "title": "Local AI Models",
       "description": "Local models required by the knowledge base. First-time download required.",
@@ -216,7 +211,7 @@
       "fileParsing": "File parsing concurrency",
       "fileParsingHint": "Number of files parsed simultaneously. Files are independent — multiple files of the same project are parsed in parallel. Default 2; increasing it requires an app restart",
       "imageDescription": "Image description concurrency",
-      "imageDescriptionHint": "Number of images described simultaneously. Each image is an independent VLM call. Default 2; increasing it requires an app restart",
+      "imageDescriptionHint": "Number of images described simultaneously. Each image is an independent multimodal model call. Default 2; increasing it requires an app restart",
       "compile": "Wiki compile concurrency",
       "compileHint": "Number of Wiki compile tasks running simultaneously. Each task compiles one project, ingesting its files sequentially — this equals the number of projects compiled in parallel. Default 2; increasing it requires an app restart"
     },
@@ -289,7 +284,8 @@
     "tblProject": "By Project",
     "srcTask": "Task execution",
     "srcChat": "Knowledge Q&A",
-    "srcVlm": "Image description",
+    "srcVlm": "Image description (legacy)",
+    "srcKnowledge": "Image description",
     "srcWiki": "Wiki",
     "srcReport": "Report generation",
     "srcForm": "Form filling",
@@ -433,7 +429,6 @@
     "confirmDeleteImage": "Delete this image? Its description will also be removed.",
     "retrySubmitted": "Re-description submitted",
     "retryForceSubmitted": "Force parse submitted",
-    "retryConfigError": "VLM not configured, please check settings",
     "forceParse": "Force parse",
     "category": "Category",
     "category_all": "All",
@@ -561,15 +556,6 @@
       "pptSpecNotFound": "Design spec not found",
       "pptLibNotFound": "ppt-master template library not found",
       "pptScriptNotFound": "register_template.py not found",
-      "vlmNotConfigured": "VLM API is not configured",
-      "vlmNotConfiguredSug": "Go to Settings > External Models > VLM to set the API key",
-      "vlmInvalidKey": "VLM API key is invalid or expired",
-      "vlmInvalidKeySug": "Update the VLM API key in Settings > External Models, then retry",
-      "vlmNetworkError": "Cannot reach VLM service",
-      "vlmNetworkErrorSug": "Check your network connection",
-      "vlmRateLimited": "VLM API rate or usage limit exceeded",
-      "vlmRateLimitedSug": "Retry later; if it persists, check your VLM account usage quota",
-      "vlmCallFailed": "VLM call failed",
       "llmNotConfigured": "LLM API is not configured",
       "llmNotConfiguredSug": "Go to Settings > External Models to set the LLM API key",
       "llmInvalidKey": "LLM API key is invalid or expired",
@@ -971,7 +957,6 @@
     "serviceAction": "Open Settings",
     "serviceItem": {
       "LLM_NOT_CONFIGURED": "External LLM not configured",
-      "VLM_NOT_CONFIGURED": "VLM not configured",
       "WEB_SEARCH_NOT_CONFIGURED": "Web search not configured",
       "EMBEDDING_MODEL_MISSING": "Embedding model (bge-m3) not downloaded",
       "PARSING_MODEL_MISSING": "Document parsing models not downloaded"
@@ -1157,7 +1142,6 @@
     "dialogMessage": "\"{{feature}}\" requires {{dep}} to run. Please complete the setup first.",
     "goConfigure": "Configure",
     "goDownload": "Download",
-    "optionalVlm": "VLM not configured — image description will be skipped (text parsing unaffected). Configure it later in Settings.",
     "feature": {
       "file_parsing": "File parsing",
       "wiki_compile": "Wiki compilation",
@@ -1167,7 +1151,6 @@
     },
     "dep": {
       "llm": "an external LLM API",
-      "vlm": "a VLM API",
       "bge-m3": "the embedding model (bge-m3)",
       "parsing": "the document parsing model"
     }

@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 from db.database import Database
-from knowledge import task_queue as tq
 from knowledge.task_queue import KnowledgeWorker
 from knowledge.vector_store import VectorStore, image_doc_id
 
@@ -26,15 +25,10 @@ def _make_db() -> Database:
     return db
 
 
-class StubVLM:
-    """VLMClient 替身：返回 chart 类目（走 done + ChromaDB 入库分支）。"""
+class StubDescribe:
+    """llm.vision.describe_image 替身：返回 chart 类目（走 done + ChromaDB 入库分支）。"""
 
-    AUTO_ARCHIVE_CATEGORIES = ("qr_code", "signature", "seal")
-
-    def __init__(self, api_url=None, api_key=None, model=None):
-        pass
-
-    async def describe_image(self, image_path: str, context_text=None) -> dict:
+    async def __call__(self, client, image_path: str, context_text=None) -> dict:
         return {"description": "测试描述", "category": "chart"}
 
 
@@ -83,7 +77,7 @@ class TestImageDocId:
 class TestProcessImageUniqueVectorIds:
     def test_same_page_images_get_unique_ids(self, monkeypatch):
         """同页多张图各自处理后，写入 ChromaDB 的 id 互不相同且含各自 image_id。"""
-        monkeypatch.setattr(tq, "VLMClient", StubVLM)
+        monkeypatch.setattr("llm.vision.describe_image", StubDescribe())
         db = _make_db()
         _insert_same_page_images(db, page_no=29, image_ids=["img-a", "img-b"])
         worker = KnowledgeWorker(db=db, data_dir=".")
@@ -103,7 +97,7 @@ class TestProcessImageUniqueVectorIds:
 
     def test_metadata_keeps_image_id_link(self, monkeypatch):
         """metadata.image_id 与向量 id 尾部一致，保留 ChromaDB ↔ SQLite 关联。"""
-        monkeypatch.setattr(tq, "VLMClient", StubVLM)
+        monkeypatch.setattr("llm.vision.describe_image", StubDescribe())
         db = _make_db()
         _insert_same_page_images(db, page_no=29, image_ids=["img-a"])
         worker = KnowledgeWorker(db=db, data_dir=".")
