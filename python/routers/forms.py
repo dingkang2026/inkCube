@@ -59,14 +59,14 @@ def get_db():
 def preset_form_templates() -> list[dict]:
     """预置模板 seed 清单（main.py lifespan 调用）。
 
-    路径复用报告模板目录解析链路（loader.get_templates_dir），
+    路径复用预置模板目录解析链路（paths.get_templates_dir），
     打包兼容同 renderer 的 reference-doc 模式；文件缺失的条目跳过
     （仅兜底——正常打包模板必然随包存在）。出厂预解析产物（2.4 §3.1）
     存在且与 docx hash 配对时直接携带 schema/mapping/hash（seed 即
     success，新用户零 LLM 调用开箱即用）；否则回退 pending 由运行时
     分析兜住，绝不落与文件错位的 schema。
     """
-    from report_generator.loader import get_templates_dir
+    from paths import get_templates_dir
     base = get_templates_dir()
     seeded = []
     for t in PRESET_FORM_TEMPLATES:

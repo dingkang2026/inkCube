@@ -5,12 +5,17 @@
 （或触发非法类别入库）。
 """
 
+import asyncio
 import inspect
+import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import knowledge.vlm_client as vlm_mod
 from knowledge.vlm_client import VLMClient
 
 
@@ -36,3 +41,123 @@ class TestVlmCategories:
         """prompt 类别表必须由 CATEGORIES 动态拼接（新增类别自动生效，防硬编码漂移）。"""
         source = inspect.getsource(VLMClient._call_external_api)
         assert '"/".join(self.CATEGORIES)' in source
+
+
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status = status
+
+    async def text(self):
+        return json.dumps(self._payload)
+
+    async def json(self):
+        return self._payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _RecordingSession:
+    """记录 post() payload 的 aiohttp.ClientSession 替身（payload 类属性注入响应）。"""
+
+    payload: dict = {}
+    posted: list[dict] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def post(self, url, **kwargs):
+        type(self).posted.append({"url": url, **kwargs})
+        return _FakeResponse(type(self).payload)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def _client() -> VLMClient:
+    return VLMClient(api_url="https://fake.api/v1", api_key="k", model="glm-4v")
+
+
+def _image_url_of(session_cls) -> str:
+    payload = session_cls.posted[0]["json"]
+    return payload["messages"][0]["content"][1]["image_url"]["url"]
+
+
+@pytest.fixture()
+def fake_png(tmp_path):
+    p = tmp_path / "img.png"
+    p.write_bytes(b"\x89PNG fake")
+    return str(p)
+
+
+class TestVlmMimeAndTruncation:
+    """review 修复回归：data URL 真实 MIME（L2）、finish_reason 截断标记（L1）。"""
+
+    def _setup(self, monkeypatch, payload: dict):
+        _RecordingSession.payload = payload
+        _RecordingSession.posted = []
+        monkeypatch.setattr(vlm_mod.aiohttp, "ClientSession", _RecordingSession)
+
+    def test_analyze_sends_real_mime_for_jpg(self, tmp_path, monkeypatch):
+        """jpg 输入 data URL 用真实 image/jpeg，不再谎报 PNG（L2）。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": "描述"}, "finish_reason": "stop"}],
+        })
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8 fake jpeg")
+
+        asyncio.run(_client().analyze(str(img)))
+
+        assert _image_url_of(_RecordingSession).startswith("data:image/jpeg;base64,")
+
+    def test_analyze_png_keeps_png_mime(self, fake_png, monkeypatch):
+        """png 输入映射基线不变：data:image/png。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": "描述"}, "finish_reason": "stop"}],
+        })
+
+        asyncio.run(_client().analyze(fake_png))
+
+        assert _image_url_of(_RecordingSession).startswith("data:image/png;base64,")
+
+    def test_describe_image_sends_real_mime(self, tmp_path, monkeypatch):
+        """describe 路径同样按扩展名映射 MIME（同类问题一次清理）。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": json.dumps(
+                {"category": "chart", "description": "柱状图"}
+            )}, "finish_reason": "stop"}],
+        })
+        img = tmp_path / "chart.webp"
+        img.write_bytes(b"RIFF fake webp")
+
+        asyncio.run(_client().describe_image(img))
+
+        assert _image_url_of(_RecordingSession).startswith("data:image/webp;base64,")
+
+    def test_analyze_marks_truncated_reply(self, fake_png, monkeypatch):
+        """finish_reason=length → 返回尾部显式截断标记，禁止静默缺尾（L1）。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": "半截描述"}, "finish_reason": "length"}],
+        })
+
+        text = asyncio.run(_client().analyze(fake_png))
+
+        assert text.startswith("半截描述")
+        assert text.endswith("[回复因长度上限被截断]")
+
+    def test_analyze_no_mark_when_complete(self, fake_png, monkeypatch):
+        """finish_reason=stop → 无截断标记（不误伤完整回复）。"""
+        self._setup(monkeypatch, {
+            "choices": [{"message": {"content": "完整描述"}, "finish_reason": "stop"}],
+        })
+
+        text = asyncio.run(_client().analyze(fake_png))
+
+        assert text == "完整描述"

@@ -100,3 +100,27 @@ class TestBuildSystemPrompt:
         assert "项目类型" not in prompt
         assert "可用工具:" in prompt  # 基础骨架保留
         assert any("System prompt truncated" in r.message for r in caplog.records)
+
+    def test_incremental_principle_and_chart_policy_both_modes(
+            self, agent, monkeypatch, tmp_path):
+        """增量修改原则与图表选型/尺寸契约在 coding/general 两模式均注入（2026-10-21）。
+
+        - _PROMPT_INCREMENTAL 两模式共用（file_ops 两模式均含 search_replace；
+          general 的研究/写作/文档生成场景恰是「长报告分章、不整体重生成」高发场景）；
+        - _PROMPT_RICH_TEXT 图表选型准则（结构化图表优先 Mermaid）随富文本段两模式注入；
+        - 尺寸契约（A4/PPT 目标介质）同段注入——根因在生成层，预览/导出层仅兜底。
+        固定段不可被预算截断丢弃（仅可选 section 可丢，test_budget_overflow_drops_sections 已验）。
+        """
+        _patch_optional_sources(monkeypatch)
+        _patch_tokens(monkeypatch, tokens=10)
+
+        for mode in ("coding", "general"):
+            prompt = agent._build_system_prompt(str(tmp_path), mode=mode)
+            assert "增量修改原则" in prompt, mode
+            assert "禁止推倒重来" in prompt, mode
+            assert "长文档/报告按章节逐个写入独立文件" in prompt, mode
+            assert "图表选型" in prompt, mode
+            assert "一律优先 Mermaid" in prompt, mode
+            assert "尺寸约束" in prompt, mode
+            assert "A4 文档或 PPT" in prompt, mode
+            assert "graph TD" in prompt, mode

@@ -12,29 +12,10 @@ import logging
 import os
 import shutil
 from copy import deepcopy
-from pathlib import Path
+
+from paths import get_templates_dir  # 资源目录单一来源（paths.py 收敛）
 
 logger = logging.getLogger(__name__)
-
-
-def get_resources_dir() -> str:
-    """Resolve the resources directory path.
-
-    Production: set by Electron via INKCUBE_RESOURCES_DIR env var
-    (python-manager.js injects it on every non-dev spawn).
-    In dev mode: ../../resources relative to this file (python/report_generator/ → resources/).
-    """
-    env_dir = os.environ.get("INKCUBE_RESOURCES_DIR")
-    if env_dir and os.path.isdir(env_dir):
-        return env_dir
-
-    # Dev mode: python/report_generator/loader.py → ../../resources
-    return str(Path(__file__).resolve().parent.parent.parent / "resources")
-
-
-def get_templates_dir() -> str:
-    """Get the preset templates directory path."""
-    return os.path.join(get_resources_dir(), "templates")
 
 
 def get_custom_templates_dir(data_dir: str) -> str:

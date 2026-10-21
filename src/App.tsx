@@ -85,26 +85,34 @@ export default function App() {
     loadMessages: loadTaskMessages,
   } = useTaskChat(activeTaskId, useCallback(() => loadTasks(), []))
 
+  /** 任务句柄统一获取（0.5 §4.4「发送/上传即建任务」）：有选中任务直接返回 id；
+   *  零任务/未选中先创建任务（默认工作区）返回新 id；创建在途 toast 反馈返回 null
+   *  （创建失败 useTasks 已 toast，同样 null），聊天发送与文件上传共用 */
+  const ensureTask = useCallback(async (): Promise<string | null> => {
+    if (activeTaskId) return activeTaskId
+    // 创建在途（侧栏「新建」进行中）：handleCreateTask 防重静默返回 undefined，
+    // 显式反馈避免欢迎页操作被无声吞掉（review Low-2）
+    if (taskCreating) {
+      showToast(t('task.createInProgress'), 'info')
+      return null
+    }
+    return (await handleCreateTask()) ?? null
+  }, [activeTaskId, taskCreating, showToast, t, handleCreateTask])
+
   /** TaskPage 聊天发送统一入口（0.5 §4.4「发送即建任务」，2026-10-19 裁决）：
-   *  有选中任务直接发送；零任务/未选中先创建任务（默认工作区）再以新 id 发出首条，
-   *  达成 §1.5 #6「2 步发起第一个模板任务」。创建失败（含配额 409）已由 useTasks
-   *  toast 反馈，此处 throw 令 TaskChatView 保留输入并复位发送锁供直接重试；
+   *  有选中任务直接发送；零任务/未选中先建任务再以新 id 发出首条，
+   *  达成 §1.5 #6「2 步发起第一个模板任务」。失败（含配额 409）throw 令
+   *  TaskChatView 保留输入并复位发送锁供直接重试；
    *  tasks:chat 的 isGenerating 生命周期归 useTaskChat，此处不 await */
   const handleTaskChatSend = useCallback(async (content: string) => {
     if (activeTaskId) {
       handleTaskSendMessage(content)
       return
     }
-    // 创建在途（侧栏「新建」进行中）：handleCreateTask 防重静默返回 undefined，
-    // 显式反馈避免欢迎页发送被无声吞掉（review Low-2）；throw 保留输入供重试
-    if (taskCreating) {
-      showToast(t('task.createInProgress'), 'info')
-      throw new Error('task creating in progress')
-    }
-    const newId = await handleCreateTask()
+    const newId = await ensureTask()
     if (!newId) throw new Error('create task failed')
     handleTaskSendMessage(content, newId)
-  }, [activeTaskId, taskCreating, showToast, t, handleCreateTask, handleTaskSendMessage])
+  }, [activeTaskId, ensureTask, handleTaskSendMessage])
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -902,11 +910,14 @@ export default function App() {
             onSkillConfirm={handleTaskSkillConfirm}
             onResumeTask={handleTaskResume}
             canResume={taskCanResume}
-            onFilesUploaded={() => {
+            onFilesUploaded={(uploadedTaskId) => {
               loadTasks()
-              // 上传成功后立即刷新消息列表：后端写入的「[系统] 用户上传了文件」马上可见
-              if (activeTaskId) loadTaskMessages(activeTaskId)
+              // 上传成功后立即刷新消息列表：后端写入的「[系统] 用户上传了文件」马上可见。
+              // 必须用回调显式传的 id：零任务态建任务后 state 未反映到本闭包，
+              // 读 activeTaskId 会漏刷（陈旧闭包缺陷，review 2026-10-21）
+              loadTaskMessages(uploadedTaskId)
             }}
+            onEnsureTask={ensureTask}
             onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
           />
         ) : (

@@ -5,7 +5,10 @@ import { TaskHistoryReplay, IterationCard, buildHistoryItems, type IterationGrou
 import s from './TaskMessageList.module.css'
 
 interface TaskMessageListProps {
+  taskId?: string | null
   messages: TaskMessage[]
+  /** 用户主动发送信号（发送受理时递增）：强制贴底，优先于上翻暂停 */
+  forceScrollSignal?: number
   streamContent: string
   streamSteps: StreamStep[]
   streamReasoning?: string
@@ -103,11 +106,16 @@ export function buildStreamGroups(
 // ── Main component ──
 
 export function TaskMessageList({
+  taskId,
+  forceScrollSignal = 0,
   messages, streamContent, streamSteps, streamReasoning,
   streamIteration = 0, streamIterationThoughts, streamIterationReasoning,
   planData, isGenerating,
 }: TaskMessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  // 上翻暂停跟随（LogViewer atBottom 同款判定）：距底 <30px 才自动贴底；
+  // 程序贴底自身会触发 scroll 事件回到 true，用户上翻/滚回自洽
+  const atBottomRef = useRef(true)
   // Combined expand state: autoExpanded tracks which iterations were auto-expanded
   // (so we know which ones to collapse when a new iteration starts).
   // expandedIterations tracks all currently expanded iterations.
@@ -161,12 +169,36 @@ export function TaskMessageList({
 
   const isExpanded = (iter: number) => expandState.expanded.has(iter)
 
+  // 切换任务恢复跟随：新任务历史加载后应停在最新消息，而非沿用上一任务的暂停态
   useEffect(() => {
+    atBottomRef.current = true
+  }, [taskId])
+
+  // 自动滚动（1.2 流式呈现配套）：依赖含 streamReasoning——思考流式期迭代卡长高
+  // 而视口不动（「有时不自动滚」根因一，reasoning_chunk 不在依赖即整段思考不跟随）；
+  // 生成中用 auto 瞬时贴底——smooth 动画被高频 chunk 反复取消重启、永远追不上
+  // 内容增长（根因二）；非生成态新消息保留 smooth
+  useEffect(() => {
+    if (!atBottomRef.current) return
+    bottomRef.current?.scrollIntoView({ behavior: isGenerating ? 'auto' : 'smooth' })
+  }, [messages, streamContent, streamSteps, streamIteration, streamReasoning, planData, isGenerating])
+
+  // 用户主动发送强制贴底：发送是显式意图，优先于上翻暂停——否则上翻阅读时
+  // 补发消息，新消息与 AI 回复都落在视口外；重置后后续流式自然恢复跟随
+  useEffect(() => {
+    if (!forceScrollSignal) return
+    atBottomRef.current = true
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamContent, streamSteps, streamIteration])
+  }, [forceScrollSignal])
 
   return (
-    <div className={s.list}>
+    <div
+      className={s.list}
+      onScroll={(e) => {
+        const el = e.currentTarget
+        atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
+      }}
+    >
       {/* Plan progress card */}
       {planData && planData.steps.length > 0 && (
         <PlanProgressCard plan={planData} />

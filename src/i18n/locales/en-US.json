@@ -761,11 +761,16 @@
     "loadFailed": "Load failed",
     "binaryFileHint": "Binary file, cannot preview",
     "openContainingFolder": "Open Containing Folder",
+    "findInFile": "Find in file (Ctrl+F)",
     "viewSource": "View Source",
     "viewRendered": "View Rendered",
     "imageLoadFailed": "Failed to load image",
     "dropHint": "Drop files here to upload",
     "uploadFailed": "Upload failed",
+    "dropUnsupported": "Cannot resolve paths of the dropped files. Use the attach button instead",
+     "pasteUploadFailed": "Failed to upload pasted screenshot",
+    "uploadDropHint": "Upload files (or drop them into the conversation)",
+    "dropPartialSkipped": "Skipped {{count}} file(s) without a resolvable disk path; the rest were uploaded",
     "loading": "Loading tasks...",
     "slashHint": "view commands",
     "slashHelpDesc": "View available commands and Skills",
@@ -824,6 +829,12 @@
       "git_ops": "Git",
       "lsp_client": "Code Analysis"
     }
+  },
+  "find": {
+    "placeholder": "Find",
+    "prev": "Previous (Shift+Enter)",
+    "next": "Next (Enter)",
+    "close": "Close find (Esc)"
   },
   "schedule": {
     "hintCreate": "Create a subscription — intelligence delivered on schedule",
@@ -1546,6 +1557,7 @@
           "saveAs": "Save as…"
         },
         "noContent": "No content yet",
+        "findInReport": "Find in report (Ctrl+F)",
         "progressLogs": "Progress Logs",
         "noLogs": "No logs yet"
       }

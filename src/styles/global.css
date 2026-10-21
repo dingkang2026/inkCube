@@ -236,6 +236,13 @@ html, body, #root {
   margin: 0 auto;
 }
 
+/* LLM 内联 SVG（SanitizedSvg 渲染在 .markdown 容器内）：超宽产物不撑破容器。
+   height:auto 配合 viewBox 等比缩放，避免只缩宽不缩高变形 */
+.markdown svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* Markdown content */
 .markdown {
   max-width: 100%;

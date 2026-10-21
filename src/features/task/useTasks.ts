@@ -58,7 +58,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
 
   /** 返回新任务 id：欢迎页「发送即建任务」链路（0.5 §4.4）需立即以新 id
    *  发送首条消息，不等渲染回流的 activeTaskId；失败返回 undefined（toast 已反馈） */
-  const handleCreateTask = useCallback(async (mode: 'coding' | 'general' = 'coding'): Promise<string | undefined> => {
+  const handleCreateTask = useCallback(async (mode: 'coding' | 'general' = 'general'): Promise<string | undefined> => {
     if (creating) return
     setCreating(true)
     try {
@@ -81,7 +81,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
     }
   }, [creating, defaultTaskTitle, showToast, t])
 
-  const handleCreateTaskWithDir = useCallback(async (dirPath: string, mode: 'coding' | 'general' = 'coding') => {
+  const handleCreateTaskWithDir = useCallback(async (dirPath: string, mode: 'coding' | 'general' = 'general') => {
     if (creating) return
     // Extract folder name as default title
     const parts = dirPath.replace(/[\/\\]+$/, '').split(/[\/\\]/)

@@ -37,7 +37,9 @@ interface TaskPageProps {
   onSkillConfirm?: (confirmed: boolean) => void
   onResumeTask?: () => void
   canResume?: boolean
-  onFilesUploaded?: () => void
+  onFilesUploaded?: (taskId: string) => void
+  /** 零任务态「上传即建任务」句柄（0.5 §4.4），透传 TaskChatView */
+  onEnsureTask?: () => Promise<string | null>
   onSwitchMode?: (mode: 'coding' | 'general') => void
 }
 
@@ -65,6 +67,7 @@ export function TaskPage({
   onResumeTask,
   canResume,
   onFilesUploaded,
+  onEnsureTask,
   onSwitchMode,
 }: TaskPageProps) {
   const { t } = useTranslation()
@@ -181,6 +184,7 @@ export function TaskPage({
           onResumeTask={onResumeTask}
           canResume={canResume}
           onFilesUploaded={onFilesUploaded}
+          onEnsureTask={onEnsureTask}
         />
         {hasActiveTask && !filePanelCollapsed && (
           <>

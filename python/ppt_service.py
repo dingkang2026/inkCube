@@ -872,8 +872,10 @@ class PptService:
         由调用方放线程池执行；不启动泵——launch() 须在事件循环线程调用。
         """
         from paths import get_data_dir
+        # mode 显式锁定 coding：chat 默认改 general（2026-10-21）后不吃 db 默认——
+        # ppt-master 百轮级工作流在 coding 全工具集（含 code_executor）下实测跑通，行为不变
         task = db.create_task(
-            title=f"[PPT] {title}", data_dir=get_data_dir(), origin="ppt",
+            title=f"[PPT] {title}", data_dir=get_data_dir(), origin="ppt", mode="coding",
         )
         workspace, task_id = task["workspace_path"], task["id"]
         ppt: dict | None = None
@@ -923,7 +925,7 @@ class PptService:
         """
         from paths import get_data_dir
         task = db.create_task(
-            title=f"[PPT模板] {template_name}", data_dir=get_data_dir(), origin="ppt",
+            title=f"[PPT模板] {template_name}", data_dir=get_data_dir(), origin="ppt", mode="coding",
         )
         workspace, task_id = task["workspace_path"], task["id"]
         ppt: dict | None = None
@@ -966,7 +968,7 @@ class PptService:
         """
         from paths import get_data_dir
         task = db.create_task(
-            title=f"[PPT增强] {title}", data_dir=get_data_dir(), origin="ppt",
+            title=f"[PPT增强] {title}", data_dir=get_data_dir(), origin="ppt", mode="coding",
         )
         workspace, task_id = task["workspace_path"], task["id"]
         ppt: dict | None = None

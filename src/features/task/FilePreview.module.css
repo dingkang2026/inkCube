@@ -77,24 +77,6 @@
   color: var(--text-primary);
 }
 
-/* Open folder button for binary files */
-.openFolderBtn {
-  margin-top: 8px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.openFolderBtn:hover {
-  background: var(--bg-tertiary);
-  border-color: var(--text-muted);
-}
-
 .body {
   flex: 1;
   min-height: 0;

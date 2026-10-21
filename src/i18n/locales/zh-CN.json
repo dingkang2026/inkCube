@@ -761,11 +761,16 @@
     "loadFailed": "加载失败",
     "binaryFileHint": "二进制文件，无法预览",
     "openContainingFolder": "打开所在目录",
+    "findInFile": "在文件中查找 (Ctrl+F)",
     "viewSource": "查看源码",
     "viewRendered": "查看渲染",
     "imageLoadFailed": "图片加载失败",
     "dropHint": "拖放文件到此处上传",
     "uploadFailed": "上传失败",
+    "dropUnsupported": "无法获取所拖文件的真实路径，请改用附件按钮上传",
+     "pasteUploadFailed": "截图上传失败",
+    "uploadDropHint": "上传文件（或拖放到对话区）",
+    "dropPartialSkipped": "已跳过 {{count}} 个无法定位磁盘路径的文件，其余已上传",
     "loading": "加载任务中...",
     "slashHint": "查看命令",
     "slashHelpDesc": "查看可用命令和 Skill",
@@ -824,6 +829,12 @@
       "git_ops": "Git",
       "lsp_client": "代码分析"
     }
+  },
+  "find": {
+    "placeholder": "查找内容",
+    "prev": "上一个 (Shift+Enter)",
+    "next": "下一个 (Enter)",
+    "close": "关闭查找 (Esc)"
   },
   "schedule": {
     "hintCreate": "创建定时订阅，情报自动送达",
@@ -1546,6 +1557,7 @@
           "saveAs": "另存为…"
         },
         "noContent": "暂无内容",
+        "findInReport": "在报告中查找 (Ctrl+F)",
         "progressLogs": "进展日志",
         "noLogs": "暂无日志"
       }

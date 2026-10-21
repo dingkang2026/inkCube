@@ -1,15 +1,20 @@
-"""python/tools/mermaid_bridge.py — Mermaid → PNG 离线渲染桥（公共模块）。
+"""python/tools/mermaid_bridge.py — 图形块 → PNG 离线渲染桥（公共模块）。
 
 doc_generator（任务智能体导出）与 report_generator.renderer（报告导出）共用，
-避免双实现。链路：```mermaid 代码块 → 无头 Electron 子进程（electron/mermaid-renderer.js，
-注入项目内置 mermaid.min.js）→ 白底 2× 光栅化 PNG（base64 经 stdout 回传）→
-以 ![diagram](png路径) 替换原代码块 → pandoc。
+避免双实现。覆盖三类 LLM 富文本图形（同为 pandoc 无法直接嵌入 docx 的形态）：
+  - ```mermaid 代码块 → 无头 Electron 子进程（electron/mermaid-renderer.js，
+    注入项目内置 mermaid.min.js）渲染为 SVG
+  - 内联 <svg> 块（_PROMPT_RICH_TEXT 邀请的自绘图形）→ 渲染器直接光栅化
+    （黑名单剥离 script/foreignObject/事件属性/外链引用）
+  - 本地 .svg 文件引用 ![](x.svg)（pandoc 光栅化 svg 需 rsvg-convert，未捆绑）
+三者统一 → 白底 2× 光栅化 PNG（base64 经 stdout 回传）→ 以
+![diagram](png路径) 替换原块/引用 → pandoc。
 
-为何落成 PNG 而非 SVG：Word 的 SVG 引擎丢弃 mermaid SVG 内嵌 <style> 的类样式
+为何落成 PNG 而非 SVG：Word 的 SVG 引擎丢弃 SVG 内嵌 <style> 的类样式
 （填充回退黑块）且按自身字体度量重排文字（中文叠压成乱码），PNG 位图在
 各查看器下渲染一致，且 pandoc 嵌 PNG 不再依赖 rsvg-convert。
 
-降级纪律（§3.7 渲染规则）：单块渲染失败保留原代码块；全部失败返回原文件，
+降级纪律（§3.7 渲染规则）：单块渲染失败保留原样；全部失败返回原文件，
 调用方无需感知 Electron 是否可用。
 """
 import base64
@@ -26,6 +31,20 @@ logger = logging.getLogger(__name__)
 
 # ```mermaid 围栏块（MULTILINE+DOTALL：块内任意内容，以行首 ``` 收尾）
 MERMAID_RE = re.compile(r'^```mermaid\s*\n(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
+
+# 内联 <svg> 块（LLM 富文本自绘图形；可选 <?xml?> 声明前缀，svg 源入
+# 命名组——渲染输入不含 xml 声明）。行首锚：段中内联非图形块不转。
+INLINE_SVG_RE = re.compile(
+    r'^(?:<\?xml[^>]*\?>\s*)?(?P<svg><svg\b.*?</svg>)[ \t]*$',
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+# 本地 .svg 文件引用（相对 md 所在目录解析，与 pandoc 资源基准一致；
+# URL 形式非本地资源，负向前瞻排除）
+LOCAL_SVG_REF_RE = re.compile(
+    r'!\[[^\]]*\]\((?!https?://|file://|data:)([^()\s]+\.svg)\)',
+    re.IGNORECASE,
+)
 
 _MERMAID_RENDER_TIMEOUT = 30  # 单块渲染超时（秒）
 
@@ -81,22 +100,37 @@ def _resolve_renderer_script() -> str:
 
 
 def render_mermaid_to_png(electron: str, code: str) -> bytes | None:
-    """Render a single Mermaid diagram to a white-background PNG via headless Electron.
+    """Render a single Mermaid diagram to a white-background PNG via headless Electron."""
+    return _render_source_to_png(electron, code, '.mmd')
 
-    Mermaid code is written to a temp file passed via argv: a piped stdin
-    yields 0 bytes on Windows Electron (GUI subsystem) child processes,
-    so file input is the only reliable channel. The renderer returns the
-    PNG as base64 on stdout (text-safe on any platform).
+
+def render_svg_to_png(electron: str, code: str) -> bytes | None:
+    """Render a single inline SVG source to a white-background PNG.
+
+    与 mermaid 同桥：文件后缀（.svg）即渲染器的模式开关，渲染器侧做
+    黑名单剥离与宽高解析（viewBox-only 根按比例出图）。
+    """
+    return _render_source_to_png(electron, code, '.svg')
+
+
+def _render_source_to_png(electron: str, source: str, suffix: str) -> bytes | None:
+    """Render mermaid/svg source to PNG via the headless renderer subprocess.
+
+    Source is written to a temp file passed via argv (the suffix doubles as
+    the renderer's mode switch): a piped stdin yields 0 bytes on Windows
+    Electron (GUI subsystem) child processes, so file input is the only
+    reliable channel. The renderer returns the PNG as base64 on stdout
+    (text-safe on any platform).
     """
     renderer_script = _resolve_renderer_script()
     if not os.path.isfile(renderer_script):
         logger.warning('mermaid-renderer.js not found at %s', renderer_script)
         return None
 
-    fd, input_path = tempfile.mkstemp(prefix='inkcube_mmd_input_', suffix='.mmd')
+    fd, input_path = tempfile.mkstemp(prefix='inkcube_mmd_input_', suffix=suffix)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(code)
+            f.write(source)
         result = subprocess.run(
             [electron, renderer_script, input_path],
             capture_output=True,
@@ -131,9 +165,18 @@ def render_mermaid_to_png(electron: str, code: str) -> bytes | None:
     return png if png.startswith(b'\x89PNG') else None
 
 
+def _has_graphics(content: str) -> bool:
+    """md 内是否存在任何可转 PNG 的图形形态（直通判定，避免无谓起子进程）。"""
+    return bool(
+        MERMAID_RE.search(content)
+        or INLINE_SVG_RE.search(content)
+        or LOCAL_SVG_REF_RE.search(content)
+    )
+
+
 def preprocess_mermaid(input_file: Path,
                        image_dir: Path | None = None) -> tuple[Path, str | None]:
-    """Replace ```mermaid blocks with image references.
+    """Replace mermaid blocks / inline <svg> blocks / local .svg refs with PNG refs.
 
     Args:
         input_file: 待预处理的 Markdown 文件路径
@@ -145,12 +188,12 @@ def preprocess_mermaid(input_file: Path,
 
     Returns:
         (actual_input_path, temp_dir_or_None)。
-        无 mermaid 块 / Electron 不可用 / 全部渲染失败时返回原 input_file 与
+        无图形块 / Electron 不可用 / 全部渲染失败时返回原 input_file 与
         None——调用方直接使用 input_file；缺省模式成功时 pandoc 应使用
         actual_input，并在结束后调用 cleanup_temp_dir(temp_dir)。
     """
     content = input_file.read_text(encoding='utf-8')
-    if not MERMAID_RE.search(content):
+    if not _has_graphics(content):
         return input_file, None
 
     electron = find_electron()
@@ -160,7 +203,8 @@ def preprocess_mermaid(input_file: Path,
     if image_dir is not None:
         try:
             image_dir.mkdir(parents=True, exist_ok=True)
-            modified, count = _render_blocks(content, image_dir, electron)
+            modified, count = _render_blocks(
+                content, input_file.parent, image_dir, electron)
             if count:
                 input_file.write_text(modified, encoding='utf-8')
                 logger.info('Mermaid: rendered %d diagram(s) to PNG', count)
@@ -183,31 +227,69 @@ def preprocess_mermaid(input_file: Path,
         return input_file, None
 
 
-def _render_blocks(content: str, image_dir: Path,
+# 块级图形类型表：(正则, 渲染函数名, 日志标签)。函数名运行时经 globals()
+# 延迟解析——单测以 patch("tools.mermaid_bridge.render_*") 注入成功/失败，
+# 直接绑定函数对象会绕过 mock
+_GRAPHIC_BLOCKS = (
+    (MERMAID_RE, 'render_mermaid_to_png', 'mermaid'),
+    (INLINE_SVG_RE, 'render_svg_to_png', 'inline svg'),
+)
+
+
+def _render_blocks(content: str, base_dir: Path, image_dir: Path,
                    electron: str) -> tuple[str, int]:
-    """逐块重绘 mermaid 为 PNG（落 image_dir）并替换引用；返回 (新内容, 成功数)。"""
+    """逐块重绘图形为 PNG（落 image_dir）并替换引用；返回 (新内容, 成功数)。
+
+    覆盖块级图形（mermaid 围栏 / 内联 <svg>）与本地 .svg 文件引用
+    （相对 base_dir 即 md 所在目录解析，与 pandoc 的资源解析基准一致）。
+    单块失败保留原样（降级纪律），不影响其余块。
+    """
     success_count = 0
 
-    def _replace_block(m: re.Match) -> str:
-        nonlocal success_count
-        code = m.group(1)
-        png = render_mermaid_to_png(electron, code)
-        if png:
-            png_path = image_dir / f'diagram_{success_count}.png'
-            png_path.write_bytes(png)
-            success_count += 1
-            return f'![diagram]({png_path})'
-        logger.warning('Mermaid block render failed, keeping as code')
-        return m.group(0)  # leave block unchanged on failure
+    def _replacer(render_fn, label):
+        def _replace(m: re.Match) -> str:
+            nonlocal success_count
+            source = m.group('svg') if 'svg' in m.groupdict() else m.group(1)
+            png = render_fn(electron, source)
+            if png:
+                png_path = image_dir / f'diagram_{success_count}.png'
+                png_path.write_bytes(png)
+                success_count += 1
+                return f'![diagram]({png_path})'
+            logger.warning('%s block render failed, keeping as-is', label)
+            return m.group(0)  # leave block unchanged on failure
+        return _replace
 
-    return MERMAID_RE.sub(_replace_block, content), success_count
+    for regex, fn_name, label in _GRAPHIC_BLOCKS:
+        content = regex.sub(_replacer(globals()[fn_name], label), content)
+
+    def _rewrite_ref(m: re.Match) -> str:
+        nonlocal success_count
+        svg_file = base_dir / m.group(1)
+        if not svg_file.is_file():
+            return m.group(0)
+        try:
+            source = svg_file.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            logger.warning('svg ref unreadable, keeping as-is: %s', svg_file)
+            return m.group(0)
+        png = render_svg_to_png(electron, source)
+        if not png:
+            return m.group(0)
+        png_path = image_dir / f'diagram_{success_count}.png'
+        png_path.write_bytes(png)
+        success_count += 1
+        return f'![diagram]({png_path})'
+
+    return LOCAL_SVG_REF_RE.sub(_rewrite_ref, content), success_count
 
 
 def _render_blocks_to_file(input_file: Path, content: str,
                            tmp_dir: Path, electron: str) -> tuple[Path, str | None]:
     image_dir = tmp_dir / 'images'
     image_dir.mkdir()
-    modified, success_count = _render_blocks(content, image_dir, electron)
+    modified, success_count = _render_blocks(
+        content, input_file.parent, image_dir, electron)
 
     if success_count == 0:
         # All renders failed — no change

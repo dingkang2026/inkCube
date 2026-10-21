@@ -24,6 +24,7 @@ from tools.package_manager import PackageManagerTool
 from tools.project_scaffold import ProjectScaffoldTool
 from tools.task_knowledge_search import TaskKnowledgeSearchTool
 from tools.doc_generator import DocGeneratorTool
+from tools.vision import VisionTool
 from tools.web_search import WebSearchTool
 from tools.repo_map import RepoMapTool
 from tools.skill_runner import SkillRunnerTool
@@ -142,12 +143,28 @@ _PROMPT_SELF_REVIEW = """🔍 自我审查原则：
 
 _PROMPT_RICH_TEXT = """📊 富文本支持：
 你可以在最终回答中使用 Markdown 格式：
-- Mermaid 图表：用 ```mermaid 代码块绘制流程图、时序图、甘特图等
+- Mermaid 图表：用 ```mermaid 代码块绘制流程图、时序图、甘特图、状态图、类图等结构化图表
 - SVG 图形：直接嵌入 <svg> 标签绘制自定义图形（仅图形元素：rect/circle/text/path/g 等）
+- 图表选型：结构化图表（流程/时序/甘特/状态/类图）一律优先 Mermaid（代码可维护、
+  渲染稳定、便于增量修改）；SVG 仅用于 Mermaid 表达不了的自由布局示意图、带图标/
+  装饰效果的视觉设计，禁止用 SVG 手绘流程图等结构化图表
+- 尺寸约束：图形最终会嵌入 A4 文档或 PPT，按目标介质设计——SVG 用显式宽度
+  （如 width="640"）+ 等比 viewBox，纵横比控制在 4:3~16:10（竖版不超过 3:4），
+  文字最小 14px（超宽图缩到页宽后不可读）；PPT 配图用 16:9（viewBox 1280×720）；
+  Mermaid 节点较多时优先纵向布局（graph TD），避免超宽横向图，节点过多拆分多图或用 subgraph 分组
 - 行内样式：用 <span style="color:#663399">标注颜色/强调，style 仅支持视觉属性
   （color、background、font-weight、font-size、padding、border-radius 等）；
   不要在表格单元格内使用 HTML 标签
 - 代码块、表格、列表等标准 Markdown 语法"""
+
+_PROMPT_INCREMENTAL = """🔁 增量修改原则：
+- 修改类请求必须基于前面的结果与 workspace 现有产物：先 read 确认现状再动手
+  （历史消息可能被上下文压缩，文件内容才是最终权威）
+- 除非用户明确要求重做，禁止推倒重来，禁止重新生成已有且仍正确的内容
+- 用户明确指出修改点时（某一段/某一章/某个函数），只改该处：
+  优先 file_ops 的 search_replace / apply_diff 定点修改，不要整文件重写
+- 长文档/报告按章节逐个写入独立文件，全部完成后组装成稿；
+  之后修改某一章时只重写该章文件并重新组装，禁止全文重生成"""
 
 # ── Planner / Editor dual-model prompts ──
 _PLANNER_PROMPT = """你是“架构师”，负责分析用户需求并制定执行计划。
@@ -249,6 +266,7 @@ class TaskAgent:
             "project_scaffold": ProjectScaffoldTool(),
             "knowledge_search": _knowledge_search,
             "doc_generator": DocGeneratorTool(),
+            "vision": VisionTool(db=db),
             "repo_map": RepoMapTool(),
             "skill_runner": SkillRunnerTool(db=db),
             "git_ops": GitOpsTool(),
@@ -486,7 +504,7 @@ class TaskAgent:
         """Generate rich tool descriptions for the system prompt."""
         # In general mode, show file_ops + shell + web/knowledge/doc tools
         if mode == "general":
-            general_tools = ["file_ops", "shell", "web_search", "knowledge_search", "doc_generator", "repo_map", "skill_runner", "git_ops", "lsp_client"]
+            general_tools = ["file_ops", "shell", "web_search", "knowledge_search", "vision", "doc_generator", "repo_map", "skill_runner", "git_ops", "lsp_client"]
             sections = []
             for name in general_tools:
                 if name in self._tools:
@@ -529,6 +547,9 @@ class TaskAgent:
             "",
             _PROMPT_EFFICIENCY,
         ])
+        # 增量修改原则两模式共用：file_ops（含 search_replace）coding/general 均可用；
+        # general（研究/写作/文档生成）恰是「长报告分章、不要整体重生成」的高发场景
+        parts.extend(["", _PROMPT_INCREMENTAL])
         if mode == "coding":
             parts.extend(["", _PROMPT_VERIFICATION])
             parts.extend(["", _PROMPT_EDIT_FORMAT])
@@ -672,8 +693,8 @@ class TaskAgent:
         
         Each concurrent task gets its own tools to avoid workspace/venv conflicts.
         In 'general' mode, returns the general tool subset (file_ops, shell,
-        web_search, knowledge_search, doc_generator, repo_map, skill_runner,
-        git_ops, lsp_client); coding mode returns the full set.
+        web_search, knowledge_search, vision, doc_generator, repo_map,
+        skill_runner, git_ops, lsp_client); coding mode returns the full set.
         """
         doc_generator = DocGeneratorTool()
         doc_generator.set_workspace(workspace_path)
@@ -710,6 +731,12 @@ class TaskAgent:
         # LSP client: per-task workspace-aware instance
         lsp_client = LSPClientTool(workspace_dir=workspace_path)
 
+        # VLM 图片理解：per-task workspace-aware instance（无 venv 依赖，
+        # 两种模式同构；fetched 只读根与 file_ops 同源）
+        vision = VisionTool(db=self.db)
+        vision.set_workspace(workspace_path)
+        vision.add_readonly_root(os.path.join(get_data_dir(), "fetched"))
+
         if mode == "general":
             # General mode: file_ops + shell + web/knowledge/doc tools
             file_ops = FileOpsTool()
@@ -729,6 +756,7 @@ class TaskAgent:
                 "shell": shell,
                 "web_search": web_search,
                 "knowledge_search": knowledge_search,
+                "vision": vision,
                 "doc_generator": doc_generator,
                 "repo_map": repo_map,
                 "skill_runner": skill_runner,
@@ -783,6 +811,7 @@ class TaskAgent:
             "project_scaffold": project_scaffold,
             "knowledge_search": knowledge_search,
             "doc_generator": doc_generator,
+            "vision": vision,
             "repo_map": repo_map,
             "skill_runner": skill_runner,
             "git_ops": git_ops,

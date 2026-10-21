@@ -1,5 +1,6 @@
 const { logElectron, readLogFile, getLogPath, getLogInfo } = require('./log-utils')
 const fetchPool = require('./fetch-pool')
+const { clipboardImageName } = require('./clipboard-image-name')
 
 /**
  * Unified Python response handler — bridges InkCubeError to frontend.
@@ -63,17 +64,31 @@ function sanitizeFilename(title, fallback) {
 /**
  * Upload files to a task workspace using manual multipart construction.
  * Avoids FormData/Blob which are unreliable in Electron main process.
+ * 磁盘路径版：读文件后转调 _postMultipartFiles（与剪贴板截图字节直传共用
+ * 同一份 multipart 拼接逻辑，避免两份实现漂移）。
  */
 async function _uploadFilesToTask(pythonManager, taskId, filePaths) {
   const fs = require('fs')
+  const path = require('path')
+  const files = filePaths.map((fp) => ({
+    name: path.basename(fp),
+    data: fs.readFileSync(fp),
+  }))
+  return _postMultipartFiles(pythonManager, taskId, files)
+}
+
+/**
+ * Shared multipart uploader: files = [{ name, data(Buffer) }].
+ * 剪贴板截图（内存字节，无磁盘路径）与磁盘文件上传共用同一构造与 python 端点。
+ */
+async function _postMultipartFiles(pythonManager, taskId, files) {
   const path = require('path')
   const baseUrl = pythonManager.getBaseUrl()
   const boundary = '----InkCubeBoundary' + Date.now()
 
   const parts = []
-  for (const fp of filePaths) {
-    const fileName = path.basename(fp).replace(/"/g, '\\"')
-    const fileData = fs.readFileSync(fp)
+  for (const { name, data } of files) {
+    const fileName = path.basename(name).replace(/"/g, '\\"')
     parts.push(
       Buffer.from(
         `--${boundary}\r\n` +
@@ -81,7 +96,7 @@ async function _uploadFilesToTask(pythonManager, taskId, filePaths) {
         `Content-Type: application/octet-stream\r\n\r\n`
       )
     )
-    parts.push(fileData)
+    parts.push(data)
     parts.push(Buffer.from('\r\n'))
   }
   parts.push(Buffer.from(`--${boundary}--\r\n`))
@@ -1363,6 +1378,27 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       return { uploaded: [] }
     }
     return _uploadFilesToTask(pythonManager, taskId, result.filePaths)
+  })
+
+  // 剪贴板截图直传：渲染进程 onPaste 捕获的 image/* Blob 无磁盘路径
+  //（webUtils.getPathForFile 不适用）→ base64 过 IPC → main 解码后与磁盘
+  // 文件共用同一 multipart 上传与 python 端点（落盘 + 注入上传通知）
+  ipcMain.handle('tasks:uploadClipboardImage', async (_event, { taskId, dataBase64 }) => {
+    if (typeof dataBase64 !== 'string' || !dataBase64) {
+      return { error: 'empty clipboard image payload', code: 'INVALID_PAYLOAD' }
+    }
+    // base64 护栏（解码后约 3/4 ≈ 30MB）：截图一般 <5MB。该护栏是本路径唯一
+    // 生效的尺寸限制（解码后 ≤30MB 触不到 python 端点的 50MB 校验）；拒绝经
+    // 返回值 {error, code} 透传，前端判 error 转 toast——勿改成静默吞掉
+    if (dataBase64.length > 40 * 1024 * 1024) {
+      return { error: 'clipboard image too large (base64 cap 40MB)', code: 'FILE_TOO_LARGE' }
+    }
+    // 文件名经 clipboard-image-name.js 纯函数：JPEG 魔数嗅探定扩展名（恒 .png
+    // 会把 JPEG 字节谎报为 PNG 被 vlm 严格端点拒收）+ 毫秒时间戳（端点对同名
+    // 覆盖写，秒级时间戳在同秒多图/连续粘贴时静默丢图）
+    const data = Buffer.from(dataBase64, 'base64')
+    const name = clipboardImageName(data, new Date())
+    return _postMultipartFiles(pythonManager, taskId, [{ name, data }])
   })
 
   // ── Pause ──

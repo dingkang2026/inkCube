@@ -202,7 +202,10 @@ class Database:
         self._migrate_add_column("tasks", "venv_path", "TEXT DEFAULT ''")
 
         # Migrate: tasks table - mode for coding/general mode
-        self._migrate_add_column("tasks", "mode", "TEXT DEFAULT 'coding'")
+        # DEFAULT 'general'（2026-10-21 chat 默认改通用模式）：_migrate_add_column 对
+        # 存量库幂等跳过（列已存在，存量列 DEFAULT 不变、存量行不动）；仅新装库生效，
+        # 与应用层默认（schemas/create_task 签名）保持一致
+        self._migrate_add_column("tasks", "mode", "TEXT DEFAULT 'general'")
 
         # Migrate: tasks table - origin (chat / ppt, 2.3 §3.1 形态分离；
         # ppt 任务不进任务 Tab，由报告 Tab PPT 区块承载)
@@ -1473,7 +1476,7 @@ class Database:
 
     # ── Tasks ──
 
-    def create_task(self, title: str, data_dir: str, workspace_path: str = "", mode: str = "coding", origin: str = "chat", schedule_id: str | None = None) -> dict:
+    def create_task(self, title: str, data_dir: str, workspace_path: str = "", mode: str = "general", origin: str = "chat", schedule_id: str | None = None) -> dict:
         now = self._now()
         task_id = self._uuid()
 

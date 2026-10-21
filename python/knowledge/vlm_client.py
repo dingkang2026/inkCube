@@ -70,6 +70,53 @@ class VLMClient:
     # Categories that should be auto-archived (not useful for report illustration)
     AUTO_ARCHIVE_CATEGORIES = ("qr_code", "signature", "seal")
 
+    # data URL MIME 映射：严格校验的兼容端点依赖真实 MIME，谎报 PNG 会被拒收；
+    # 未知后缀兜底 image/png（提取层白名单已保证常规格式）
+    _MIME_BY_EXT = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".bmp": "image/bmp", ".webp": "image/webp",
+    }
+
+    @staticmethod
+    def _mime_for(image_path: str) -> str:
+        return VLMClient._MIME_BY_EXT.get(Path(image_path).suffix.lower(), "image/png")
+
+    async def analyze(self, image_path: str, question: str | None = None) -> str:
+        """通用图片理解（chat vision 工具消费）：自然语言描述或按问题作答。
+
+        与 describe_image（知识库图片库专用：分类 JSON + 自动归档语义）不同，
+        本方法面向 agent 自由问答，返回纯文本，不做分类约束。
+        usage 同样经 2.10 §4.2 出口收口。
+
+        Raises:
+            InkCubeError subclass (VLMNotConfigured, VLMNetworkError, etc.)
+        """
+        if not self.api_url or not self.api_key:
+            raise VLMNotConfigured()
+
+        if question and question.strip():
+            prompt = (
+                "请仔细观察这张图片，回答以下问题：\n"
+                f"{question.strip()}\n\n用中文回答，图中可见的文字、数据请如实引用。"
+            )
+        else:
+            prompt = (
+                "请详细描述这张图片的内容，包括类型、可见文字、数据、"
+                "关键信息等。用中文回答。"
+            )
+
+        logger.info("VLM analyze: path=%s, has_question=%s", image_path, bool(question and question.strip()))
+        image_b64 = self._encode_image(image_path)
+        raw, api_usage, finish_reason = await self._post_vision(
+            image_b64, prompt, max_tokens=1024, mime=self._mime_for(image_path)
+        )
+        usage_record.record(self.model, "vlm", api_usage)
+        text = raw.strip()
+        if finish_reason == "length":
+            # max_tokens 触顶：显式标注，禁止静默缺尾
+            text += "\n\n[回复因长度上限被截断]"
+        return text
+
     async def describe_image(
         self, image_path: str, context_text: str | None = None
     ) -> dict:
@@ -93,23 +140,18 @@ class VLMClient:
         logger.info("VLM result: category=%s, desc_len=%d", result.get("category", ""), len(result.get("description", "")))
         return result
     
-    async def _call_external_api(
-        self, image_path: str, context_text: str | None = None
-    ) -> dict:
-        """Call OpenAI-compatible VLM API, return {description, category}."""
-        image_b64 = self._encode_image(image_path)
+    async def _post_vision(
+        self, image_b64: str, prompt: str, max_tokens: int,
+        mime: str = "image/png",
+    ) -> tuple[str, dict | None, str | None]:
+        """共享 HTTP 层：OpenAI 兼容 vision 调用 + 错误映射 + usage/finish_reason 提取。
 
-        cat_list = "/".join(self.CATEGORIES)
-        prompt = (
-            "请分析这张图片，完成两项任务：\n"
-            f"1. 分类：从以下类别中选择一个：{cat_list}\n"
-            "2. 描述：用中文详细描述图片内容，包括类型、数据趋势、关键信息等\n\n"
-            "请严格按以下JSON格式返回（不要添加任何其他文字或markdown标记）：\n"
-            '{"category": "类别", "description": "详细描述"}'
-        )
-        if context_text:
-            prompt += f"\n\n以下是图片在文档中的上下文，供参考：\n{context_text}"
+        Returns:
+            (模型原始回复文本, 精确 usage dict 或 None, finish_reason 或 None)
 
+        Raises:
+            InkCubeError subclass（401/429/非200/网络/其他）
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -125,13 +167,13 @@ class VLMClient:
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/png;base64,{image_b64}"
+                                "url": f"data:{mime};base64,{image_b64}"
                             },
                         },
                     ],
                 }
             ],
-            "max_tokens": 800,
+            "max_tokens": max_tokens,
         }
 
         async with aiohttp.ClientSession() as session:
@@ -158,17 +200,17 @@ class VLMClient:
                         )
 
                     data = await resp.json()
-                    raw = data["choices"][0]["message"]["content"]
-                    result = self._parse_vlm_response(raw)
-                    # 2.10 §4.2: 提取 API 返回的精确 usage（原被丢弃），随结果
-                    # 返回交由 describe_image 收口记录；无 usage 字段时置 None
+                    choice = data["choices"][0]
+                    raw = choice["message"]["content"]
+                    # 2.10 §4.2: 提取 API 返回的精确 usage 交调用方收口记录；
+                    # 无 usage 字段时置 None
                     api_usage = data.get("usage") or {}
-                    result["usage"] = {
+                    usage = {
                         "prompt_tokens": api_usage.get("prompt_tokens", 0),
                         "completion_tokens": api_usage.get("completion_tokens", 0),
                         "total_tokens": api_usage.get("total_tokens", 0),
                     } if api_usage else None
-                    return result
+                    return raw, usage, choice.get("finish_reason")
             except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError) as e:
                 logger.error("VLM network error: %s", str(e))
                 raise VLMNetworkError(detail=str(e))
@@ -176,6 +218,30 @@ class VLMClient:
                 raise
             except Exception as e:
                 raise VLMCallFailed(detail=str(e))
+
+    async def _call_external_api(
+        self, image_path: str, context_text: str | None = None
+    ) -> dict:
+        """Call OpenAI-compatible VLM API, return {description, category}."""
+        image_b64 = self._encode_image(image_path)
+
+        cat_list = "/".join(self.CATEGORIES)
+        prompt = (
+            "请分析这张图片，完成两项任务：\n"
+            f"1. 分类：从以下类别中选择一个：{cat_list}\n"
+            "2. 描述：用中文详细描述图片内容，包括类型、数据趋势、关键信息等\n\n"
+            "请严格按以下JSON格式返回（不要添加任何其他文字或markdown标记）：\n"
+            '{"category": "类别", "description": "详细描述"}'
+        )
+        if context_text:
+            prompt += f"\n\n以下是图片在文档中的上下文，供参考：\n{context_text}"
+
+        raw, api_usage, _ = await self._post_vision(
+            image_b64, prompt, max_tokens=800, mime=self._mime_for(image_path)
+        )
+        result = self._parse_vlm_response(raw)
+        result["usage"] = api_usage
+        return result
     
     @staticmethod
     def _parse_vlm_response(raw: str) -> dict:

@@ -273,3 +273,43 @@ describe('ReportPreview error recovery (2.5 §3.8.3)', () => {
     expect(invokeMock).toHaveBeenCalledWith('reports:retryReport', { reportId: 'r1', mode: 'restart' })
   })
 })
+
+describe('ReportPreview find-in-report（块级定位，useInFileFind + FindBar 复用）', () => {
+  it('counts leaf-block hits and wraps around via Enter', async () => {
+    // h1 与两个 p 均为叶子块，其中两块含 alpha → 计数 2；末尾 Enter 回绕到首个命中
+    contentSnapshot = {
+      content: '# Alpha 标题\n\n第一段提到 alpha。\n\n无命中段落。',
+      registry: {},
+      report: { id: 'r1', title: 'T', status: 'done' },
+    }
+    render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    const input = screen.getByPlaceholderText('find.placeholder')
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(screen.getByText('1/2')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByText('2/2')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByText('1/2')).toBeTruthy()
+  })
+
+  it('hides the find entry while generating (canFind gate)', async () => {
+    // 生成中无正文可定位：toolbar 无入口 + window 级 Ctrl+F 不接管
+    activityState.items = [{ entity_id: 'r1' }]
+    render(<ReportPreview report={genReport} onBack={() => {}} />)
+    await flush()
+    expect(screen.queryByTitle('project.report.preview.findInReport')).toBeNull()
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
+  })
+
+  it('opens from the toolbar button and closes with Escape on a done report', async () => {
+    render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByTitle('project.report.preview.findInReport'))
+    expect(screen.getByPlaceholderText('find.placeholder')).toBeTruthy()
+    fireEvent.keyDown(screen.getByPlaceholderText('find.placeholder'), { key: 'Escape' })
+    expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
+  })
+})

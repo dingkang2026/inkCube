@@ -1,11 +1,13 @@
-"""python/tests/test_mermaid_bridge.py — Mermaid → PNG 离线渲染桥单测（§3.7）。
+"""python/tests/test_mermaid_bridge.py — 图形块 → PNG 离线渲染桥单测（§3.7）。
 
 覆盖：
-  - MERMAID_RE：```mermaid 围栏匹配、非 mermaid 围栏不识别、多块全匹配
-  - render_mermaid_to_png：非零退出 / 非法 base64 / 非 PNG 内容 / 超时 → None；
-    合法 PNG 原样返回；输入经临时文件传递（Windows 下管道 stdin 读 0 字节，回归用例）
-  - preprocess_mermaid 四条路径：无块 / Electron 不可用 / 成功（替换 + PNG 落盘）/
-    全部失败（保留原文件），调用方契约 (actual_input, temp_dir_or_None)
+  - MERMAID_RE / INLINE_SVG_RE / LOCAL_SVG_REF_RE：各形态匹配与不识别边界
+  - render_mermaid_to_png / render_svg_to_png：非零退出 / 非法 base64 /
+    非 PNG 内容 / 超时 → None；合法 PNG 原样返回；输入经临时文件传递
+    （Windows 下管道 stdin 读 0 字节，回归用例）且后缀即渲染器模式开关
+  - preprocess_mermaid 多条路径：无图形块 / Electron 不可用 / 成功
+    （mermaid + 内联 svg 替换 + PNG 落盘）/ 全部失败（保留原文件），
+    调用方契约 (actual_input, temp_dir_or_None)；本地 .svg 引用改写与缺失降级
   - cleanup_temp_dir：None 安全、删目录
   - _resolve_renderer_script：env 优先（打包路径 C1 修复回归）/ 缺失回退仓库路径
   - TestElectronIntegration：真实 Electron 子进程冒烟（无 electron 环境自动跳过）——
@@ -26,11 +28,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from tools.mermaid_bridge import (  # noqa: E402
+    INLINE_SVG_RE,
+    LOCAL_SVG_REF_RE,
     MERMAID_RE,
     _resolve_renderer_script,
     cleanup_temp_dir,
     preprocess_mermaid,
     render_mermaid_to_png,
+    render_svg_to_png,
 )
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 24
@@ -59,6 +64,57 @@ class TestMermaidRe:
             "```mermaid\npie\ntitle x\n```"
         )
         assert len(MERMAID_RE.findall(text)) == 2
+
+
+# ── INLINE_SVG_RE / LOCAL_SVG_REF_RE ─────────────────────
+
+
+_SVG_SRC = (
+    '<svg viewBox="0 0 900 980" xmlns="http://www.w3.org/2000/svg">\n'
+    '  <rect x="10" y="10" width="80" height="80" fill="blue"/>\n'
+    '  <text x="50" y="55">层一</text>\n'
+    '</svg>'
+)
+
+
+class TestInlineSvgRe:
+    def test_matches_viewbox_only_block(self):
+        text = f"前文\n\n{_SVG_SRC}\n\n后文"
+        m = INLINE_SVG_RE.search(text)
+        assert m is not None
+        # 命名组提取纯 svg 源（不含前后空行）
+        assert m.group("svg").startswith("<svg")
+        assert m.group("svg").endswith("</svg>")
+
+    def test_matches_with_xml_declaration(self):
+        text = '<?xml version="1.0"?>\n<svg viewBox="0 0 10 10"><rect/></svg>'
+        m = INLINE_SVG_RE.search(text)
+        assert m is not None
+        assert m.group("svg").startswith("<svg")  # xml 声明不进渲染输入
+
+    def test_case_insensitive_close_tag(self):
+        text = '<svg viewBox="0 0 2 2"><rect/></SVG>'
+        assert INLINE_SVG_RE.search(text) is not None
+
+    def test_mid_paragraph_inline_not_matched(self):
+        """段中内联（非行首）不是图形块，不转（保文字降级路径）。"""
+        assert INLINE_SVG_RE.search(f"文字 {_SVG_SRC} 尾注") is None
+
+    def test_matches_multiple_blocks(self):
+        text = f"{_SVG_SRC}\n\n中间\n\n{_SVG_SRC}"
+        assert len(INLINE_SVG_RE.findall(text)) == 2
+
+
+class TestLocalSvgRefRe:
+    def test_matches_relative_ref(self):
+        assert LOCAL_SVG_REF_RE.search("![](diagrams/arch.svg)") is not None
+
+    def test_url_ref_not_matched(self):
+        """URL 形式无本地文件可读，不进改写（保留原引用交 pandoc）。"""
+        assert LOCAL_SVG_REF_RE.search("![](https://x.com/a.svg)") is None
+
+    def test_png_ref_not_matched(self):
+        assert LOCAL_SVG_REF_RE.search("![](a.png)") is None
 
 
 # ── render_mermaid_to_png ───────────────────────────────────
@@ -127,6 +183,36 @@ class TestRenderMermaidToPng:
         assert "input" not in captured['kwargs']
         # 渲染结束后临时输入文件已清理
         assert not os.path.exists(captured['argv'][2])
+
+
+class TestRenderSvgToPng:
+    """内联 SVG 与 mermaid 同桥：后缀即渲染器模式开关（.svg 分流）。"""
+
+    def test_svg_suffix_passed_as_mode_switch(self):
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured['suffix'] = Path(argv[2]).suffix
+            return _run_result(stdout=_png_b64())
+
+        with patch("tools.mermaid_bridge.subprocess.run", side_effect=fake_run):
+            assert render_svg_to_png("electron", "<svg><rect/></svg>") == _PNG
+        assert captured['suffix'] == '.svg'
+
+    def test_nonzero_exit_returns_none(self):
+        with patch("tools.mermaid_bridge.subprocess.run",
+                   return_value=_run_result(returncode=1, stderr="boom")):
+            assert render_svg_to_png("electron", "<svg/>") is None
+
+    def test_non_png_output_returns_none(self):
+        with patch("tools.mermaid_bridge.subprocess.run",
+                   return_value=_run_result(stdout=base64.b64encode(b"not png").decode())):
+            assert render_svg_to_png("electron", "<svg/>") is None
+
+    def test_timeout_returns_none(self):
+        with patch("tools.mermaid_bridge.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd="electron", timeout=30)):
+            assert render_svg_to_png("electron", "<svg/>") is None
 
 
 # ── preprocess_mermaid ──────────────────────────────────────
@@ -231,6 +317,93 @@ class TestPreprocessMermaid:
         assert "```mermaid" in src.read_text(encoding="utf-8")
 
 
+class TestPreprocessInlineSvg:
+    """内联 <svg> 块与本地 .svg 引用的预处理（导出丢图根因回归）。"""
+
+    def test_svg_block_replaced_with_png_ref(self, tmp_path):
+        src = tmp_path / "doc.md"
+        src.write_text(f"前文\n\n{_SVG_SRC}\n\n后文", encoding="utf-8")
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"), \
+             patch("tools.mermaid_bridge.render_svg_to_png", return_value=_PNG):
+            actual, tmp_dir = preprocess_mermaid(src)
+        try:
+            assert tmp_dir is not None
+            out = actual.read_text(encoding="utf-8")
+            assert "![diagram](" in out
+            assert "<svg" not in out
+            img_ref = out.split("![diagram](")[1].split(")")[0]
+            assert Path(img_ref).read_bytes() == _PNG
+        finally:
+            cleanup_temp_dir(tmp_dir)
+
+    def test_svg_render_failed_keeps_block(self, tmp_path):
+        """SVG 渲染失败：保留原块（降级纪律），mermaid 块不受牵连。"""
+        src = tmp_path / "doc.md"
+        src.write_text(
+            f"{_SVG_SRC}\n\n```mermaid\ngraph TD\nA-->B\n```", encoding="utf-8")
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"), \
+             patch("tools.mermaid_bridge.render_svg_to_png", return_value=None), \
+             patch("tools.mermaid_bridge.render_mermaid_to_png", return_value=_PNG):
+            actual, tmp_dir = preprocess_mermaid(src)
+        try:
+            out = actual.read_text(encoding="utf-8")
+            assert "<svg" in out          # svg 降级保留
+            assert "![diagram](" in out   # mermaid 正常替换
+        finally:
+            cleanup_temp_dir(tmp_dir)
+
+    def test_mixed_blocks_all_replaced(self, tmp_path):
+        """mermaid + 内联 svg 混合：两类块都替换，PNG 计数连续不互踩。"""
+        src = tmp_path / "doc.md"
+        src.write_text(
+            f"```mermaid\ngraph TD\nA-->B\n```\n\n{_SVG_SRC}", encoding="utf-8")
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"), \
+             patch("tools.mermaid_bridge.render_mermaid_to_png", return_value=_PNG), \
+             patch("tools.mermaid_bridge.render_svg_to_png", return_value=_PNG):
+            actual, tmp_dir = preprocess_mermaid(src)
+        try:
+            out = actual.read_text(encoding="utf-8")
+            refs = [seg.split(")")[0] for seg in out.split("![diagram](")[1:]]
+            assert len(refs) == 2
+            assert len(set(refs)) == 2    # diagram_0 / diagram_1，不互踩
+        finally:
+            cleanup_temp_dir(tmp_dir)
+
+    def test_local_svg_ref_rewritten(self, tmp_path):
+        """本地 .svg 文件引用（相对 md 目录）：读文件同桥转 PNG。"""
+        (tmp_path / "arch.svg").write_text(_SVG_SRC, encoding="utf-8")
+        src = tmp_path / "doc.md"
+        src.write_text("![](arch.svg)", encoding="utf-8")
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"), \
+             patch("tools.mermaid_bridge.render_svg_to_png", return_value=_PNG):
+            actual, tmp_dir = preprocess_mermaid(src)
+        try:
+            out = actual.read_text(encoding="utf-8")
+            assert "arch.svg" not in out
+            img_ref = out.split("![diagram](")[1].split(")")[0]
+            assert Path(img_ref).read_bytes() == _PNG
+        finally:
+            cleanup_temp_dir(tmp_dir)
+
+    def test_local_svg_ref_missing_kept(self, tmp_path):
+        """引用的 svg 文件不存在：保留原引用（降级），不算失败也不阻断。"""
+        src = tmp_path / "doc.md"
+        src.write_text("![](nope.svg)", encoding="utf-8")
+        with patch("tools.mermaid_bridge.find_electron", return_value="electron"):
+            actual, tmp_dir = preprocess_mermaid(src)
+        assert actual == src
+        assert tmp_dir is None
+        assert "nope.svg" in src.read_text(encoding="utf-8")
+
+    def test_png_ref_only_passes_through(self, tmp_path):
+        """仅 png/jpg 引用：无图形块，直通不起子进程。"""
+        src = tmp_path / "doc.md"
+        src.write_text("![](a.png) ![](b.jpg)", encoding="utf-8")
+        actual, tmp_dir = preprocess_mermaid(src)
+        assert actual == src
+        assert tmp_dir is None
+
+
 # ── cleanup_temp_dir ────────────────────────────────────────
 
 
@@ -306,3 +479,33 @@ class TestElectronIntegration:
         """非法语法 → 渲染器 exit 非 0 → None（降级契约）。"""
         png = render_mermaid_to_png(str(_ELECTRON), "this is not a mermaid diagram !!!")
         assert png is None
+
+    def test_inline_svg_viewbox_only_renders_to_png(self):
+        """真实链路回归（导出丢图根因）：viewBox-only + 中文 text 的内联 SVG
+        经真实 Electron 光栅化；尺寸按 viewBox 比例 2× 出图。"""
+        import struct
+        svg = (
+            '<svg viewBox="0 0 300 150" xmlns="http://www.w3.org/2000/svg" '
+            'font-family=\'Microsoft YaHei\'>\n'
+            '  <rect x="10" y="10" width="280" height="130" fill="#eef" stroke="#334"/>\n'
+            '  <text x="150" y="80" text-anchor="middle" font-size="20">架构图</text>\n'
+            '</svg>'
+        )
+        png = render_svg_to_png(str(_ELECTRON), svg)
+        assert png is not None
+        assert png.startswith(b"\x89PNG")
+        w, h = struct.unpack(">II", png[16:24])
+        assert (w, h) == (600, 300), f"期望 viewBox 300×150 的 2× 光栅，得 {w}×{h}"
+
+    def test_inline_svg_external_ref_still_rasterizes(self):
+        """含外链 image/script 的 SVG：渲染器侧剥离后仍出图（不因清洗失败）。"""
+        svg = (
+            '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">\n'
+            '  <script>alert(1)</script>\n'
+            '  <image href="https://evil.example/x.png" width="10" height="10"/>\n'
+            '  <rect x="5" y="5" width="90" height="90" fill="green"/>\n'
+            '</svg>'
+        )
+        png = render_svg_to_png(str(_ELECTRON), svg)
+        assert png is not None
+        assert png.startswith(b"\x89PNG")

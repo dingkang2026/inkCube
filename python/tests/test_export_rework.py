@@ -1,8 +1,8 @@
 """python/tests/test_export_rework.py — 报告导出改造单测（2.5 §1.3 / §3.7 / §5 API 14）。
 
 覆盖：
-  - renderer._resolve_reference_doc：portrait/landscape 模板解析（复用
-    loader.get_templates_dir 链路）、非法方向回退 portrait、模板缺失回退 None
+  - doc_template.resolve_reference_doc：portrait/landscape 模板解析（复用
+    paths.get_templates_dir 链路）、非法方向回退 portrait、模板缺失回退 None
   - reports._sanitize_filename：非法字符替换、首尾点/空白剥离、超长截断、空回退
   - export 端点：orientation 校验（400）、默认位置（sanitize 文件名）、
     target_path 另存为形式、orientation 透传 renderer、无请求体默认 portrait
@@ -31,15 +31,15 @@ _MD = "# 报告\n\n正文内容"
 class TestResolveReferenceDoc:
     @pytest.fixture
     def templates_dir(self, tmp_path, monkeypatch):
-        from report_generator import renderer as renderer_mod
+        from tools import doc_template as doc_template_mod
 
-        monkeypatch.setattr(renderer_mod, "get_templates_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(doc_template_mod, "get_templates_dir", lambda: str(tmp_path))
         return tmp_path
 
     def _resolve(self, orientation):
-        from report_generator.renderer import _resolve_reference_doc
+        from tools.doc_template import resolve_reference_doc
 
-        return _resolve_reference_doc(orientation)
+        return resolve_reference_doc(orientation)
 
     def test_portrait_template_resolved(self, templates_dir):
         (templates_dir / "custom-reference_portrait.docx").write_bytes(b"x")

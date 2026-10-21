@@ -1,4 +1,6 @@
-// ── Mermaid renderer mode (spawned by doc_generator.py for SVG export) ──
+// ── Mermaid/SVG renderer mode (python/tools/mermaid_bridge.py spawns the
+// renderer script directly; this env-guard only guards against a leaked
+// INKCUBE_MERMAID_RENDERER=1 reaching a real main-app launch) ──
 // When INKCUBE_MERMAID_RENDERER=1, this process is a headless one-shot
 // renderer.  Delegate immediately and skip all main-app initialisation.
 if (process.env.INKCUBE_MERMAID_RENDERER === '1') {

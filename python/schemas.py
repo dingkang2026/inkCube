@@ -81,7 +81,7 @@ class SettingsModel(BaseModel):
 class TaskCreateRequest(BaseModel):
     title: str = "新任务"
     workspace_path: str = ""  # empty = auto-create under data_dir
-    mode: str = "coding"  # "coding" or "general"
+    mode: str = "general"  # "coding" or "general"；chat 默认 general（2026-10-21：系统提示骨架更小，通用任务更常见；编程任务手动切 coding）
 
 
 class TaskChatRequest(BaseModel):

@@ -5,9 +5,14 @@ Supports:
   - md_to_docx: Markdown → DOCX (via pandoc)
   - docx_to_pdf: DOCX/PPTX/XLSX → PDF (via MS Office COM or LibreOffice headless)
 
-Mermaid diagrams are pre-processed via a standalone Electron sub-process
-that renders ```mermaid blocks to SVG files using the project's bundled
-mermaid.min.js — no extra dependency (puppeteer / mmdc) needed.
+DOCX/PDF 两条导出链路的 pandoc md→docx 步骤均套用应用统一 Word 样式模板
+（tools/doc_template.resolve_reference_doc，与报告导出同源，§2.5 §3.7）。
+
+Graphics (```mermaid blocks, inline <svg> blocks, local .svg file refs) are
+pre-processed to PNG via a standalone Electron sub-process shared through
+tools/mermaid_bridge.py — no extra dependency (puppeteer / mmdc / rsvg-convert)
+needed; raw SVG breaks in Word's renderer and pandoc cannot embed SVG without
+rsvg-convert.
 """
 import asyncio
 import json
@@ -18,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.base import BaseTool
+from tools.doc_template import resolve_reference_doc
 from tools.mermaid_bridge import cleanup_temp_dir, preprocess_mermaid
 from tools.tool_resolver import resolve_tool
 
@@ -58,6 +64,7 @@ class DocGeneratorTool(BaseTool):
             "- `md_to_pdf`: 将 Markdown 文件转换为 PDF（通过 pandoc + LibreOffice/MS Office）\n"
             "- `md_to_docx`: 将 Markdown 文件转换为 DOCX（通过 pandoc，已内置）\n"
             "- `docx_to_pdf`: 将 DOCX/PPTX/XLSX 文件转换为 PDF（需要 MS Office 或 LibreOffice）\n\n"
+            "DOCX 与 PDF 导出均已套用应用统一 Word 样式模板，无需（也无法）指定样式。\n\n"
             "用法:\n"
             "- input_path 是相对于工作区的路径\n"
             "- output_path 可省略，自动生成（如 report.md → report.pdf）\n"
@@ -131,10 +138,11 @@ class DocGeneratorTool(BaseTool):
         1. pandoc (md → docx) — pandoc is bundled with the app
         2. LibreOffice or MS Office (docx → pdf) — detected at runtime
 
-        Mermaid diagrams are pre-processed to PNG before pandoc (shared
-        mermaid_bridge; SVG embedding breaks in Word's renderer).
+        Graphics (mermaid / inline <svg> / local .svg refs) are pre-processed
+        to PNG before pandoc (shared mermaid_bridge; raw SVG breaks in
+        Word's renderer).
         """
-        # Step 0: Pre-process Mermaid diagrams
+        # Step 0: Pre-process graphics
         actual_input, mmd_tmp = preprocess_mermaid(input_file)
 
         # Step 1: Check pandoc availability
@@ -163,7 +171,9 @@ class DocGeneratorTool(BaseTool):
                 ),
             }, ensure_ascii=False)
 
-        # Step 3: pandoc md → docx (temp file)
+        # Step 3: pandoc md → docx (temp file)；套用统一 Word 样式模板
+        # （任务无方向概念，固定 portrait；模板缺失时 resolve 返回 None，
+        # 不带参数以 pandoc 默认样式导出——仅兜底）
         tmp_docx = output_file.with_suffix(".tmp.docx")
         try:
             cmd_pandoc = [
@@ -173,6 +183,9 @@ class DocGeneratorTool(BaseTool):
                 "--from", "markdown",
                 "--to", "docx",
             ]
+            reference_doc = resolve_reference_doc()
+            if reference_doc:
+                cmd_pandoc += ["--reference-doc", reference_doc]
             result = subprocess.run(
                 cmd_pandoc, capture_output=True, encoding="utf-8", errors="replace", timeout=60,
             )
@@ -220,10 +233,11 @@ class DocGeneratorTool(BaseTool):
     def _md_to_docx(self, input_file: Path, output_file: Path) -> str:
         """Convert Markdown to DOCX using pandoc.
 
-        Mermaid diagrams are pre-processed to PNG before pandoc (shared
-        mermaid_bridge; SVG embedding breaks in Word's renderer).
+        Graphics (mermaid / inline <svg> / local .svg refs) are pre-processed
+        to PNG before pandoc (shared mermaid_bridge; raw SVG breaks in
+        Word's renderer).
         """
-        # Pre-process Mermaid diagrams
+        # Pre-process graphics
         actual_input, mmd_tmp = preprocess_mermaid(input_file)
 
         try:
@@ -248,6 +262,11 @@ class DocGeneratorTool(BaseTool):
                 "--from", "markdown",
                 "--to", "docx",
             ]
+            # 套用统一 Word 样式模板（任务无方向概念，固定 portrait；
+            # 模板缺失时 resolve 返回 None，不带参数以默认样式导出——仅兜底）
+            reference_doc = resolve_reference_doc()
+            if reference_doc:
+                cmd += ["--reference-doc", reference_doc]
 
             result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
             if result.returncode != 0:

@@ -37,7 +37,9 @@ interface TaskChatViewProps {
   onSkillConfirm?: (confirmed: boolean) => void
   onResumeTask?: () => void
   canResume?: boolean
-  onFilesUploaded?: () => void
+  onFilesUploaded?: (taskId: string) => void
+  /** 零任务态「上传即建任务」句柄（0.5 §4.4）：返回新建/现有任务 id，失败返回 null */
+  onEnsureTask?: () => Promise<string | null>
 }
 
 export function TaskChatView({
@@ -62,6 +64,7 @@ export function TaskChatView({
   onResumeTask,
   canResume,
   onFilesUploaded,
+  onEnsureTask,
 }: TaskChatViewProps) {
   const { t } = useTranslation()
   const guard = useFeatureGuard()
@@ -72,6 +75,8 @@ export function TaskChatView({
   const input = phForm.text
   const setInput = phForm.setText
   const [isDragOver, setIsDragOver] = useState(false)
+  // 用户发送强制贴底信号（上翻暂停时发送仍是显式意图，发送受理即递增）
+  const [sendCount, setSendCount] = useState(0)
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([])
   const [slashVisible, setSlashVisible] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
@@ -162,6 +167,7 @@ export function TaskChatView({
     placeholderWarnedRef.current = false
     guardSend(text, () => {
       phForm.reset()
+      setSendCount((c) => c + 1)
     })
   }
 
@@ -235,31 +241,87 @@ export function TaskChatView({
   }
 
   // ── Drag & Drop file upload ──
+  /** 拖放/上传统一入口（0.5 §4.4 上传即建任务）：零任务态先经 onEnsureTask 建任务，
+   *  文件必须挂任务工作区（tasks:uploadFiles 需要 taskId）；建任务失败 useTasks 已
+   *  toast 反馈，句柄为 null 时静默终止。Electron 32+ 移除 File.path，真实磁盘路径
+   *  经 preload webUtils.getPathForFile 换取 */
   const handleUploadFiles = useCallback(async (files: File[]) => {
-    if (!taskId || files.length === 0) return
+    if (files.length === 0) return
+    const id = taskId ?? (await onEnsureTask?.()) ?? null
+    if (!id) return
+    // Electron 32+ 移除 File.path，真实磁盘路径经 preload webUtils.getPathForFile 换取；
+    // 拖入无路径的虚拟文件（如网页图片）：全部无路径明确反馈，混合场景部分跳过同样提示
+    const all = files.map((f) => window.electronAPI.getPathForFile(f))
+    const filePaths = all.filter(Boolean)
+    if (filePaths.length === 0) {
+      showToast(t('task.dropUnsupported'))
+      return
+    }
+    if (filePaths.length < all.length) {
+      showToast(t('task.dropPartialSkipped', { count: all.length - filePaths.length }))
+    }
     try {
-      // Use Electron IPC to upload dropped files
-      const filePaths = files.map((f) => (f as File & { path: string }).path).filter(Boolean)
-      if (filePaths.length === 0) return
-      const result = await window.electronAPI.invoke('tasks:uploadFiles', { taskId, filePaths }) as { uploaded?: { name: string; size: number }[] }
+      const result = await window.electronAPI.invoke('tasks:uploadFiles', { taskId: id, filePaths }) as { uploaded?: { name: string; size: number }[] }
       if (result?.uploaded?.length) {
-        onFilesUploaded?.()
+        // 显式传 id：零任务态建任务后 state 未反映到本闭包，消费方不能依赖外部 task state
+        onFilesUploaded?.(id)
         window.dispatchEvent(new Event('task:refresh-files'))
       }
     } catch (err) {
-      alert(t('task.uploadFailed') + ': ' + (err instanceof Error ? err.message : String(err)))
+      showToast(t('task.uploadFailed') + ': ' + (err instanceof Error ? err.message : String(err)))
     }
-  }, [taskId, onFilesUploaded])
+  }, [taskId, onEnsureTask, onFilesUploaded, showToast, t])
+
+  // ── Clipboard image paste upload ──
+  /** 粘贴截图直传（0.5 §4.4 上传即建任务）：剪贴板 image/* 无磁盘路径，
+   *  webUtils.getPathForFile 不适用 → Blob 转 base64 走 tasks:uploadClipboardImage
+   *  字节通道，main 进程与磁盘上传共用同一 multipart/python 端点。
+   *  零任务态先经 onEnsureTask 建任务；仅拦截图片项，纯文本粘贴不受影响 */
+  const handlePasteFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return
+    const id = taskId ?? (await onEnsureTask?.()) ?? null
+    if (!id) return
+    try {
+      for (const file of files) {
+        const dataBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+          reader.onerror = () => reject(reader.error ?? new Error('read clipboard image failed'))
+          reader.readAsDataURL(file)
+        })
+        const result = await window.electronAPI.invoke('tasks:uploadClipboardImage', { taskId: id, dataBase64 }) as { uploaded?: { name: string; size: number }[]; error?: string }
+        // 护栏拒绝与 python 200-错误体（FILE_TOO_LARGE/TASK_NOT_FOUND）是 resolved 值：
+        // 转 throw 复用下方 catch → toast，否则静默吞掉
+        if (result?.error) throw new Error(result.error)
+        if (result?.uploaded?.length) {
+          onFilesUploaded?.(id)
+          window.dispatchEvent(new Event('task:refresh-files'))
+        }
+      }
+    } catch (err) {
+      showToast(t('task.pasteUploadFailed') + ': ' + (err instanceof Error ? err.message : String(err)))
+    }
+  }, [taskId, onEnsureTask, onFilesUploaded, showToast, t])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const images = Array.from(e.clipboardData?.items ?? [])
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (images.length === 0) return
+    // 仅拦截图片粘贴：防二进制字节以乱码进入输入框；文本粘贴走默认行为
+    e.preventDefault()
+    void handlePasteFiles(images)
+  }, [handlePasteFiles])
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!hasActiveTask) return
     dragCounterRef.current++
     if (e.dataTransfer.types.includes('Files')) {
       setIsDragOver(true)
     }
-  }, [hasActiveTask])
+  }, [])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -281,12 +343,11 @@ export function TaskChatView({
     e.stopPropagation()
     setIsDragOver(false)
     dragCounterRef.current = 0
-    if (!hasActiveTask) return
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) {
       handleUploadFiles(files)
     }
-  }, [hasActiveTask, handleUploadFiles])
+  }, [handleUploadFiles])
 
   return (
     <div
@@ -322,6 +383,8 @@ export function TaskChatView({
         </div>
       ) : (
         <TaskMessageList
+          taskId={taskId}
+          forceScrollSignal={sendCount}
           messages={messages}
           streamContent={streamContent}
           streamSteps={streamSteps}
@@ -406,24 +469,25 @@ export function TaskChatView({
         )}
         <div className={styles.wrapper}>
           <div className={styles.inputRow}>
-            {/* 上传保持任务门控：文件必须挂任务工作区（tasks:pickAndUpload 需要 taskId），
-                与零任务态可输入的「发送即建任务」（0.5 §4.4）不冲突 */}
+            {/* 上传即建任务（0.5 §4.4）：零任务态点击/拖放先经 onEnsureTask 建任务，
+                文件挂新任务工作区；建任务失败 useTasks 已 toast，句柄 null 时静默终止 */}
             <button
               className={styles.uploadBtn}
               onClick={async () => {
-                if (!taskId) return
+                const id = taskId ?? (await onEnsureTask?.()) ?? null
+                if (!id) return
                 try {
-                  const result = await window.electronAPI.invoke('tasks:pickAndUpload', { taskId }) as { uploaded?: { name: string; size: number }[] }
+                  const result = await window.electronAPI.invoke('tasks:pickAndUpload', { taskId: id }) as { uploaded?: { name: string; size: number }[] }
                   if (result?.uploaded?.length) {
-                    onFilesUploaded?.()
+                    onFilesUploaded?.(id)
                     window.dispatchEvent(new Event('task:refresh-files'))
                   }
                 } catch (err) {
-                  alert(t('task.uploadFailed') + ': ' + (err instanceof Error ? err.message : String(err)))
+                  showToast(t('task.uploadFailed') + ': ' + (err instanceof Error ? err.message : String(err)))
                 }
               }}
-              disabled={!hasActiveTask || isGenerating}
-              title={t('task.uploadFiles') + ' (或拖放文件到对话区)'}
+              disabled={isGenerating}
+              title={t('task.uploadDropHint')}
             >
               <Paperclip size={16} />
             </button>
@@ -435,6 +499,7 @@ export function TaskChatView({
               onChange={(e) => phForm.onInputEdit(e.target.value)}
               onKeyDown={handleKeyDown}
               onInput={handleInput}
+              onPaste={handlePaste}
               placeholder={t('task.inputPlaceholder')}
               disabled={isGenerating}
               rows={1}

@@ -230,3 +230,148 @@ describe('TaskMessageList env-setup notes (2.8 §5.5 step_note)', () => {
     expect(noteRow!.querySelector('.spinner')).toBeTruthy()
   })
 })
+
+describe('TaskMessageList 自动滚动（思考流跟随 + 上翻暂停）', () => {
+  /** 覆盖 jsdom 布局度量（getter 可 defineProperty 覆写）*/
+  const setMetrics = (el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight: number) => {
+    Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
+    Object.defineProperty(el, 'scrollTop', { value: scrollTop, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+  }
+  /** 惰性读取：beforeAll 才赋值 mock，describe 收集期直接读是 undefined */
+  const scrollIntoViewMock = () => Element.prototype.scrollIntoView as unknown as ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    scrollIntoViewMock().mockClear()
+  })
+
+  it('思考流式（streamReasoning 变化）触发贴底：根因一回归', () => {
+    const { rerender } = render(
+      <TaskMessageList
+        messages={[]} streamContent="" streamSteps={[]}
+        streamIteration={1} streamReasoning="思考中" isGenerating={true}
+      />,
+    )
+    scrollIntoViewMock().mockClear()
+    rerender(
+      <TaskMessageList
+        messages={[]} streamContent="" streamSteps={[]}
+        streamIteration={1} streamReasoning="思考中...继续推理" isGenerating={true}
+      />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalled()
+  })
+
+  it('生成中 behavior=auto（高频 chunk 下 smooth 动画追不上：根因二回归）', () => {
+    const { rerender } = render(
+      <TaskMessageList messages={[]} streamContent="" streamSteps={[]} isGenerating={true} />,
+    )
+    scrollIntoViewMock().mockClear()
+    rerender(
+      <TaskMessageList messages={[]} streamContent="chunk" streamSteps={[]} isGenerating={true} />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalledWith({ behavior: 'auto' })
+  })
+
+  it('非生成态新消息保留 smooth', () => {
+    const msgs = [msg('user', 'hi')]
+    const { rerender } = render(
+      <TaskMessageList messages={msgs} streamContent="" streamSteps={[]} isGenerating={false} />,
+    )
+    scrollIntoViewMock().mockClear()
+    rerender(
+      <TaskMessageList messages={[...msgs, msg('assistant', '回复')]} streamContent="" streamSteps={[]} isGenerating={false} />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalledWith({ behavior: 'smooth' })
+  })
+
+  it('上翻离底暂停跟随；滚回底部恢复（距底 <30px 判定）', () => {
+    const { container, rerender } = render(
+      <TaskMessageList messages={[]} streamContent="" streamSteps={[]} isGenerating={true} />,
+    )
+    const list = container.firstElementChild as HTMLElement
+    // 用户上翻：距底 500px → 暂停
+    setMetrics(list, 2000, 500, 1000)
+    fireEvent.scroll(list)
+    scrollIntoViewMock().mockClear()
+    rerender(
+      <TaskMessageList messages={[]} streamContent="增量" streamSteps={[]} isGenerating={true} />,
+    )
+    expect(scrollIntoViewMock()).not.toHaveBeenCalled()
+    // 滚回底部附近（距底 20px < 30）→ 恢复跟随
+    setMetrics(list, 2000, 980, 1000)
+    fireEvent.scroll(list)
+    rerender(
+      <TaskMessageList messages={[]} streamContent="增量2" streamSteps={[]} isGenerating={true} />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalled()
+  })
+
+  it('切换任务重置为跟随态（不沿用上一任务的暂停）', () => {
+    const { container, rerender } = render(
+      <TaskMessageList taskId="t1" messages={[]} streamContent="" streamSteps={[]} isGenerating={true} />,
+    )
+    const list = container.firstElementChild as HTMLElement
+    setMetrics(list, 2000, 500, 1000)
+    fireEvent.scroll(list) // 离底暂停
+    scrollIntoViewMock().mockClear()
+    rerender(
+      <TaskMessageList taskId="t2" messages={[]} streamContent="新任务流" streamSteps={[]} isGenerating={true} />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalled()
+  })
+
+  it('上翻暂停期间用户发送（forceScrollSignal 递增）→ 强制贴底且后续流式恢复跟随', () => {
+    const { container, rerender } = render(
+      <TaskMessageList messages={[]} streamContent="" streamSteps={[]} isGenerating={true} forceScrollSignal={0} />,
+    )
+    const list = container.firstElementChild as HTMLElement
+    setMetrics(list, 2000, 500, 1000)
+    fireEvent.scroll(list) // 上翻暂停
+    scrollIntoViewMock().mockClear()
+    // 流式增量不拉回（暂停生效）
+    rerender(
+      <TaskMessageList messages={[]} streamContent="流式增量" streamSteps={[]} isGenerating={true} forceScrollSignal={0} />,
+    )
+    expect(scrollIntoViewMock()).not.toHaveBeenCalled()
+    // 用户发送受理（信号递增）→ 强制贴底，且重置为跟随态
+    rerender(
+      <TaskMessageList
+        messages={[msg('user', '补充一条')]}
+        streamContent=""
+        streamSteps={[]}
+        isGenerating={true}
+        forceScrollSignal={1}
+      />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalledWith({ behavior: 'smooth' })
+    // 后续流式不再被门控（跟随已恢复）
+    rerender(
+      <TaskMessageList
+        messages={[msg('user', '补充一条')]}
+        streamContent="流式继续"
+        streamSteps={[]}
+        isGenerating={true}
+        forceScrollSignal={1}
+      />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalledTimes(2)
+  })
+
+  it('planData 到达（计划卡长高）触发贴底：与 streamReasoning 同根因同修', () => {
+    const { rerender } = render(
+      <TaskMessageList messages={[]} streamContent="" streamSteps={[]} isGenerating={true} />,
+    )
+    scrollIntoViewMock().mockClear()
+    rerender(
+      <TaskMessageList
+        messages={[]}
+        streamContent=""
+        streamSteps={[]}
+        isGenerating={true}
+        planData={{ text: '计划', steps: [{ id: 1, desc: '检索资料', files: [] }], total: 1 }}
+      />,
+    )
+    expect(scrollIntoViewMock()).toHaveBeenCalledWith({ behavior: 'auto' })
+  })
+})
