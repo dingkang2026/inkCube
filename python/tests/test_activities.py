@@ -258,12 +258,14 @@ class TestActivitiesStatus:
         assert activities_router._active_tasks(db) == []
         assert activities_router._active_model_downloads() == []
 
-    def test_active_tasks_exclude_ppt_origin(self, db, monkeypatch):
+    def test_active_tasks_exclude_ppt_origin(self, db, monkeypatch, tmp_path):
         """PPT 借道任务（origin='ppt'）不入 task 源（2.3 审核项 #2）：
         PPT 活动已由 ppt 源（fetch_active）呈现，双源上报造成首页双条目
-        与 running_tasks 假角标；chat 任务照常上报。"""
-        chat_id = db.create_task("对话任务", data_dir="", workspace_path="")['id']
-        ppt_id = db.create_task("PPT 生成", data_dir="", workspace_path="", origin="ppt")['id']
+        与 running_tasks 假角标；chat 任务照常上报。
+        data_dir 必须传 tmp_path：空串会被 create_task 拼成相对路径
+        `tasks/<uuid>`，在 pytest cwd（项目根）下建目录污染仓库。"""
+        chat_id = db.create_task("对话任务", data_dir=str(tmp_path), workspace_path="")['id']
+        ppt_id = db.create_task("PPT 生成", data_dir=str(tmp_path), workspace_path="", origin="ppt")['id']
         agent = SimpleNamespace(_running_task_ids={chat_id, ppt_id})
         monkeypatch.setattr(deps, "task_agent", agent, raising=False)
 
@@ -272,15 +274,16 @@ class TestActivitiesStatus:
         assert rows[0]["entity_type"] == "task"
         assert rows[0]["entity_title"] == "对话任务"
 
-    def test_active_tasks_exclude_shadow_schedule(self, db, monkeypatch):
+    def test_active_tasks_exclude_shadow_schedule(self, db, monkeypatch, tmp_path):
         """影子任务（schedule_id 非空，定时订阅执行）不入 task 源（2.11 D2 复核）：
         订阅执行由 schedule 源（scheduler.fetch_active）呈现；影子任务不进
         人工任务列表（服务端排除），混入 task 源会造成任务假角标与点击落
-        任务页扑空。chat 任务照常。"""
+        任务页扑空。chat 任务照常。
+        data_dir 必须传 tmp_path（同 test_active_tasks_exclude_ppt_origin）。"""
         sch = db.create_schedule("周报订阅", "p", "general", "general",
                                  "weekly", "MON 09:00")
-        chat_id = db.create_task("对话任务", data_dir="", workspace_path="")['id']
-        shadow_id = db.create_task("订阅期次", data_dir="", workspace_path="",
+        chat_id = db.create_task("对话任务", data_dir=str(tmp_path), workspace_path="")['id']
+        shadow_id = db.create_task("订阅期次", data_dir=str(tmp_path), workspace_path="",
                                    schedule_id=sch["id"])['id']
         agent = SimpleNamespace(_running_task_ids={chat_id, shadow_id})
         monkeypatch.setattr(deps, "task_agent", agent, raising=False)
