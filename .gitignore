@@ -59,3 +59,4 @@ dev/
 coverage/
 .pytest_cache/
 *.tsbuildinfo
+.review-head/
