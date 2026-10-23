@@ -3,7 +3,8 @@
  *  - 保存（wiki:editPage）：空内容 → 错误提示不发请求；有内容 → invoke 携带
  *    projectId/pageKey/content/title（标题未改传 null）→ onSaved 回调。
  *  - Ctrl+F 编辑器内查找（textarea 选中式）：打开查找条 → 输入关键词 → textarea
- *    选区定位到首个匹配（selectionStart/End 为字符偏移）+ 命中计数正确。
+ *    选区定位到首个匹配（selectionStart/End 为字符偏移）+ 命中计数正确；查找开着
+ *    时就地编辑正文：焦点/光标不被劫持、计数随新内容更新（review 修复回归）。
  *  - i18n：标题/正文 placeholder 经 t() 渲染（原硬编码中文清理）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -114,6 +115,29 @@ describe('WikiPageEditor in-page find (Ctrl+F, textarea 选中式, 2026-10-23)',
     const start = ta.value.indexOf('第二段')
     expect(ta.selectionStart).toBe(start)
     expect(ta.selectionEnd).toBe(start + '第二段'.length)
+    expect(getByText('1/1')).toBeTruthy()
+  })
+
+  it('查找开着时在 textarea 编辑正文：焦点/光标不被劫持，计数随新内容更新（review 修复回归）', () => {
+    const { container, getByPlaceholderText, getByText } = setup()
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
+    const input = getByPlaceholderText('find.placeholder')
+    // fixture content 中「正文」出现 2 次（第一段正文/第二段正文），定位在第一个 → 1/2
+    fireEvent.change(input, { target: { value: '正文' } })
+    expect(getByText('1/2')).toBeTruthy()
+
+    // 焦点在 textarea 时编辑正文：matches 重算不得劫持焦点/光标
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement
+    ta.focus()
+    const edited = '---\ntype: entity\n---\n\n# Acme\n新正文只有一处'
+    fireEvent.change(ta, { target: { value: edited } })
+
+    expect(document.activeElement).toBe(ta)
+    // 光标未被 setSelectionRange 定位到新内容命中处（未经修复时 selectionStart=30）
+    expect(ta.selectionStart).not.toBe(edited.indexOf('正文'))
+    expect(ta.selectionEnd).not.toBe(edited.indexOf('正文') + '正文'.length)
+    // 计数基于最新 content（1 命中），而非渲染期滞后的旧 DOM 文本
     expect(getByText('1/1')).toBeTruthy()
   })
 

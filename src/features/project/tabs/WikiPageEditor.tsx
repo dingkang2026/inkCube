@@ -1,7 +1,7 @@
 /** src/features/project/tabs/WikiPageEditor.tsx — Wiki 页面编辑器（textarea 源码编辑）。
- *  Ctrl/Cmd+F 编辑器内查找（2026-10-23）：textarea 选中式——compute 返回匹配字符偏移，
- *  locate = setSelectionRange + focus（浏览器自动滚到选区）后把焦点还给查找框；
- *  文案 i18n 同批补齐（原硬编码中文）。 */
+ *  Ctrl/Cmd+F 编辑器内查找（2026-10-23）：textarea 选中式——compute 读闭包 content 返回
+ *  匹配字符偏移（渲染期一致，不读滞后一拍的 DOM）；locate 定位选区 + 还焦点查找框，
+ *  焦点在 textarea（用户编辑中）时跳过定位避免劫持光标；文案 i18n 同批补齐（原硬编码中文）。 */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -36,21 +36,25 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
   }, [title, content, page.title, page.content])
 
   // ── 编辑器内查找（textarea 选中式）：findQueryRef 镜像查询串供 locate 计算选区终点；
-  // compute 依赖 content，编辑文本变化即重算命中
+  // compute 读闭包 content（与 memo 依赖同源），编辑文本变化即重算命中
   const taRef = useRef<HTMLTextAreaElement | null>(null)
   const findQueryRef = useRef('')
   const editorFind = useInFileFind({
     compute: useCallback((q: string) => {
-      const v = taRef.current?.value ?? ''
-      if (!q || !v) return []
+      // 读闭包 content 而非 taRef.current.value：useMemo 在渲染期执行，commit 前 DOM
+      // 仍是旧文本，读 DOM 会使命中滞后一拍且偏移错位
+      if (!q || !content) return []
       const out: number[] = []
-      let i = v.indexOf(q)
-      while (i !== -1) { out.push(i); i = v.indexOf(q, i + q.length) }
+      let i = content.indexOf(q)
+      while (i !== -1) { out.push(i); i = content.indexOf(q, i + q.length) }
       return out
     }, [content]),
     locate: useCallback((pos: number) => {
       const ta = taRef.current
-      if (!ta) return
+      // 焦点在 textarea = 用户正就地编辑：跳过定位。否则 matches 数组身份变化触发的
+      // 重定位会劫持光标/焦点，「定位后就地修改」工作流失效（Enter 导航时焦点在
+      // 查找框，不受影响）
+      if (!ta || document.activeElement === ta) return
       ta.focus()
       ta.setSelectionRange(pos, pos + findQueryRef.current.length)
       // 焦点还给查找框：textarea 独占焦点会吃掉后续 Enter 导航（闭包引用 editorFind，
