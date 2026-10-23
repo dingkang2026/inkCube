@@ -1,6 +1,6 @@
 /** src/features/schedule/ArchiveView.tsx — 档案阅读页（2.11 §8.4，2026-10-23）。
  *  订阅情报档案（{订阅名}·档案.md）的应用内查看页：file:readText 读目标容器内
- *  档案文件 → Markdown 渲染 + Ctrl/Cmd+F 文档内查找（useInFileFind + FindBar，
+ *  档案文件 → Markdown 渲染 + Ctrl/Cmd+F 文档内查找（useMarkdownBlockFind + FindBar，
  *  同 ReadView）；「在文件夹中显示」为唯一定位逃生门——产品主张校准：系统打开
  *  （file:openOriginal）仅限用户主动上传的文件，应用生成物一律应用内查看。
  *  返回：管理台恢复选中订阅（scheduleView 'archive' 形态，App 分发）。 */
@@ -9,11 +9,8 @@ import { useTranslation } from 'react-i18next'
 import { ArrowLeft, FolderOpen } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { FindBar } from '../../components/FindBar'
-import { useInFileFind, scrollElementToCenter } from '../../hooks/useInFileFind'
+import { useMarkdownBlockFind } from '../../hooks/useInFileFind'
 import s from './ArchiveView.module.css'
-
-/** 文档内查找块级选择器（同 ReadView：叶子块匹配避免祖先容器重复计数） */
-const FIND_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, td, th'
 
 interface ArchiveViewProps {
   /** 档案所在目标容器 id（project/baselib 通用文件区，file:readText 的 projectId） */
@@ -76,50 +73,9 @@ export function ArchiveView({ targetId, fileId, scheduleName, onBack }: ArchiveV
     if (absPath) void window.electronAPI.invoke('shell:showItemInFolder', absPath)
   }, [absPath])
 
-  // ── 文档内查找（同 ReadView：叶子块匹配 + 居中滚动 + findFlash 闪烁）──
+  // ── 文档内查找（公共基座 useMarkdownBlockFind：叶子块匹配 + 居中滚动 + 闪烁）──
   const reportRef = useRef<HTMLDivElement | null>(null)
-  // 叶子块元素与文本缓存：元素供定位，文本供匹配（正文渲染后收集，随正文变化重算）
-  const blocksRef = useRef<HTMLElement[]>([])
-  const [blockTexts, setBlockTexts] = useState<string[]>([])
-  useEffect(() => {
-    const container = reportRef.current
-    if (!container) {
-      blocksRef.current = []
-      setBlockTexts([])
-      return
-    }
-    const leaves = Array.from(container.querySelectorAll<HTMLElement>(FIND_BLOCK_SELECTOR))
-      .filter((el) => !el.querySelector(FIND_BLOCK_SELECTOR))
-    blocksRef.current = leaves
-    setBlockTexts(leaves.map((el) => (el.textContent || '').toLowerCase()))
-  }, [content])
-
-  // 闪烁 timer 托管（同 ReadView：1500ms = CSS 动画 1.4s + 100ms 余量）
-  const flashTimerRef = useRef<number | undefined>(undefined)
-  const locateBlock = useCallback((idx: number) => {
-    const container = reportRef.current
-    const el = blocksRef.current[idx]
-    if (!container || !el) return
-    scrollElementToCenter(container, el)
-    window.clearTimeout(flashTimerRef.current)
-    el.classList.remove(s.findFlash)
-    void el.offsetWidth
-    el.classList.add(s.findFlash)
-    flashTimerRef.current = window.setTimeout(() => el.classList.remove(s.findFlash), 1500)
-  }, [])
-
-  const computeBlockMatches = useCallback(
-    (q: string) => {
-      if (!q || blockTexts.length === 0) return []
-      const needle = q.toLowerCase()
-      const out: number[] = []
-      blockTexts.forEach((txt, i) => { if (txt.includes(needle)) out.push(i) })
-      return out
-    },
-    [blockTexts],
-  )
-
-  const find = useInFileFind({ compute: computeBlockMatches, locate: locateBlock })
+  const find = useMarkdownBlockFind(reportRef, content, true)
 
   // Ctrl/Cmd+F：全内容区页 window 级监听（同 ReadView/ReportPreview 先例）
   useEffect(() => {

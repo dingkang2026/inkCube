@@ -374,3 +374,13 @@ html, body, #root {
   border-bottom-style: solid;
   text-decoration: none;
 }
+
+/* ── 文档内查找：命中块定位闪烁（useMarkdownBlockFind 统一基座，2026-10-23 自
+   ReportPreview / ReadView / ArchiveView 三处同款 css module 收编为全局类；
+   时长调整须同步 hook 内 1500ms 清理值）── */
+.find-flash { animation: find-flash-anim 1.4s ease-out; }
+
+@keyframes find-flash-anim {
+  0%, 40% { background: rgba(255, 170, 0, 0.32); }
+  100% { background: transparent; }
+}

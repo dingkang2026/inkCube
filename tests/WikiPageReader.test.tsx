@@ -8,7 +8,8 @@
  *    行内「查看」→ 只读快照渲染；再点收起。
  *  2026-10-16 review 修复轮：快照连点序号守卫（晚到的旧版本响应不覆盖新快照）；
  *  切页经父级 key=page_key 逐页重挂载（2.6 §10.2，版本/快照/确认框随实例复位）。
- */
+ *  2026-10-23：Ctrl+F 文档内查找接入（公共基座 useMarkdownBlockFind + FindBar，
+ *  范围限正文；Markdown mock 同步改为 p 包裹使叶子块可命中。 */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import React from 'react'
 
@@ -33,8 +34,10 @@ vi.mock('../src/features/knowledge/Toast', () => ({
   useToast: () => toastMock,
 }))
 vi.mock('../src/components/Markdown', () => ({
+  // p 叶子块包裹（FIND_BLOCK_SELECTOR 匹配 p/h1-h6/li/...；纯 div 无叶子块会使
+  // 查找永远 0 命中）；textContent 不变，既有用例断言不受影响
   Markdown: ({ content }: { content: string }) =>
-    React.createElement('div', { 'data-testid': 'md' }, content),
+    React.createElement('p', { 'data-testid': 'md' }, content),
 }))
 
 import { render, fireEvent, cleanup, act } from '@testing-library/react'
@@ -247,5 +250,33 @@ describe('WikiPageReader version history (§7.1)', () => {
     await flush()
     expect(container.textContent).not.toContain('v1 历史快照')
     expect(container.textContent).toContain('v2 历史快照')
+  })
+})
+
+describe('WikiPageReader in-page find (Ctrl+F, 2026-10-23)', () => {
+  it('Ctrl+F 打开查找条，正文块命中计数与 Esc 关闭', async () => {
+    const { container, queryByPlaceholderText, getByPlaceholderText, getByText } = setup()
+    await flush()
+
+    expect(queryByPlaceholderText('find.placeholder')).toBeNull()
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
+    const input = getByPlaceholderText('find.placeholder')
+    // fixture 正文 body = '# Acme\n正文内容'（Markdown mock 渲染为单一 p 叶子块），
+    // 「正文」命中 1 块 → FindBar 计数 1/1；版本快照面板未展开不参与
+    fireEvent.change(input, { target: { value: '正文' } })
+    expect(getByText('1/1')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(queryByPlaceholderText('find.placeholder')).toBeNull()
+    expect(container.querySelector('.versionSnapshot')).toBeNull()
+  })
+
+  it('无命中时计数为 0/0', async () => {
+    const { queryByPlaceholderText, getByPlaceholderText, getByText } = setup()
+    await flush()
+
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
+    const input = getByPlaceholderText('find.placeholder')
+    fireEvent.change(input, { target: { value: '不存在的词' } })
+    expect(getByText('0/0')).toBeTruthy()
   })
 })

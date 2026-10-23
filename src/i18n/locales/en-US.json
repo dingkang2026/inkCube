@@ -2047,7 +2047,13 @@
       "dedupMergeConfirmBody": "This will merge the other {{count}} duplicate pages into \"{{canonical}}\" and delete them; links across all pages will be rewritten. This action cannot be undone. Merge?",
       "dedupMergeDone": "Merged {{merged}} pages, rewrote {{rewritten}} links",
       "dedupMergePartial": "Partially merged: {{failed}} failed, {{truncated}} truncated (kept for retry)",
-      "dedupMergeFailed": "Merge failed: {{reason}}"
+      "dedupMergeFailed": "Merge failed: {{reason}}",
+      "editorTitlePlaceholder": "Page title",
+      "editorContentPlaceholder": "Write Markdown here...\n\nUse [[page_key]] syntax to link pages",
+      "editorEmptyContent": "Content cannot be empty",
+      "editorSaveFailed": "Failed to save",
+      "editorHint": "Markdown supported · Use [[page_key]] to link pages · Page status will be marked as \"User Edited\" after save",
+      "editorCharCount": "{{count}} chars"
     },
     "forms": {
       "newForm": "New Form Fill",

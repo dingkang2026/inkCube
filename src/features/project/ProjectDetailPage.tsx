@@ -251,6 +251,11 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     setCurrentStage(project.stage || 'none')
   }, [project.id, project.type, project.stage])
 
+  // 切项目即关编辑弹层（review 复核发现，与上方 re-sync 同款守卫）：editXxx 基于
+  // 打开时的旧 project 回填，而活动 Toast「查看」action / OS 系统通知点击可绕过
+  // 全屏遮罩切换项目——弹层开着时保存会把旧项目字段串写到新项目（静默数据污染）
+  useEffect(() => { setEditOpen(false) }, [project.id])
+
   const handleStageClick = useCallback(async (stage: ProjectStage) => {
     const prevStage = currentStage
     setCurrentStage(stage)
@@ -290,8 +295,8 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
 
   // ── 头部「编辑」弹层（todo「项目创建后不能修改」，2026-10-23）：名称/描述/
   // 企业字段全量回填、保存即所见即所得（后端 PATCH 语义不传不改，此处恒传
-  // 4 字段——清空 = 显式置空；类型侧栏改名走 knowledge:renameProject 独立通道）。
-  // type/stage 仍走头部下拉/脉搏带，不入弹层 ──
+  // 4 字段——清空 = 显式置空；侧栏改名走 knowledge:renameProject 独立通道）。
+  // type/stage 仍走头部下拉/脉搏带，不入弹层；切项目即关（上方守卫 effect）──
   const [editOpen, setEditOpen] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')

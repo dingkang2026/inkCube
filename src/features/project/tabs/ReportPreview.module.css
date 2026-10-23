@@ -436,11 +436,3 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
-
-/* ── 文档内查找：命中块定位闪烁（配 useInFileFind + FindBar） ── */
-.findFlash { animation: findFlashAnim 1.4s ease-out; }
-
-@keyframes findFlashAnim {
-  0%, 40% { background: rgba(255, 170, 0, 0.32); }
-  100% { background: transparent; }
-}

@@ -2047,7 +2047,13 @@
       "dedupMergeConfirmBody": "将把其余 {{count}} 个重复页面合并进「{{canonical}}」后删除，全库正文中的链接将自动重写。此操作不可撤销，确定合并？",
       "dedupMergeDone": "已合并 {{merged}} 个页面，重写 {{rewritten}} 处链接",
       "dedupMergePartial": "部分合并：{{failed}} 个页面失败、{{truncated}} 个页面内容过长被截断，已保留待处理",
-      "dedupMergeFailed": "合并失败: {{reason}}"
+      "dedupMergeFailed": "合并失败: {{reason}}",
+      "editorTitlePlaceholder": "页面标题",
+      "editorContentPlaceholder": "输入 Markdown 内容...\n\n支持 [[page_key]] 语法创建页面间链接",
+      "editorEmptyContent": "内容不能为空",
+      "editorSaveFailed": "保存失败",
+      "editorHint": "支持 Markdown 语法 · 使用 [[page_key]] 创建页面链接 · 保存后页面状态将标记为「用户已编辑」",
+      "editorCharCount": "{{count}} 字符"
     },
     "forms": {
       "newForm": "新建填表",

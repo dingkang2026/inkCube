@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Markdown } from '../../../components/Markdown'
 import { FindBar } from '../../../components/FindBar'
-import { useInFileFind, scrollElementToCenter } from '../../../hooks/useInFileFind'
+import { useMarkdownBlockFind } from '../../../hooks/useInFileFind'
 import { ArrowLeft, FileText, Paperclip, ChevronDown, ChevronUp, Activity, AlertCircle, Info, Loader2, Pause, PauseCircle, Play, RefreshCw, Search } from 'lucide-react'
 import type { Report, ReportLog } from '../types'
 import { useToast } from '../../knowledge/Toast'
@@ -38,9 +38,6 @@ interface ReportPreviewProps {
 // 导出面板方向记忆（§1.3：默认纵向，localStorage 记忆上次选择）
 const ORIENTATION_STORAGE_KEY = 'inkcube.report.export.orientation'
 type ExportOrientation = 'portrait' | 'landscape'
-
-/** 文档内查找的块级选择器：叶子块（不含其他块的最低层）参与匹配，避免祖先容器重复计数 */
-const FIND_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, td, th'
 
 function _loadStoredOrientation(): ExportOrientation {
   try {
@@ -153,56 +150,12 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [showExportPanel])
 
-  // ── 文档内查找（块级定位）：叶子块文本匹配 → 居中滚动 + 短暂闪烁（状态机 useInFileFind）──
+  // ── 文档内查找（块级定位，公共基座 useMarkdownBlockFind + FindBar）──
   // 正文可见（非 generating/paused/error，与 Markdown 渲染分支同条件）才提供查找
   const markdownContent = content?.content || t('project.report.preview.noContent')
   const canFind = status !== 'generating' && status !== 'paused' && status !== 'error'
   const contentAreaRef = useRef<HTMLDivElement | null>(null)
-  // 叶子块元素与文本缓存：元素供定位，文本供匹配（正文渲染后收集，随正文/可见态变化重算）
-  const blocksRef = useRef<HTMLElement[]>([])
-  const [blockTexts, setBlockTexts] = useState<string[]>([])
-
-  useEffect(() => {
-    const container = contentAreaRef.current
-    if (!canFind || !container) {
-      blocksRef.current = []
-      setBlockTexts([])
-      return
-    }
-    const leaves = Array.from(container.querySelectorAll<HTMLElement>(FIND_BLOCK_SELECTOR))
-      .filter((el) => !el.querySelector(FIND_BLOCK_SELECTOR))
-    blocksRef.current = leaves
-    setBlockTexts(leaves.map((el) => (el.textContent || '').toLowerCase()))
-  }, [canFind, markdownContent])
-
-  // 闪烁清理 timer 托管：同一块 1.5s 内重复定位时先取消旧 timer，避免提前掉断新动画
-  // （1500ms 对应 CSS 动画 1.4s + 100ms 余量，调整 CSS 时长须同步此值）
-  const flashTimerRef = useRef<number | undefined>(undefined)
-  const locateBlock = useCallback((idx: number) => {
-    const container = contentAreaRef.current
-    const el = blocksRef.current[idx]
-    if (!container || !el) return
-    scrollElementToCenter(container, el)
-    // 闪烁提示当前命中块（移除→reflow→重加，重启 CSS 动画）
-    window.clearTimeout(flashTimerRef.current)
-    el.classList.remove(s.findFlash)
-    void el.offsetWidth
-    el.classList.add(s.findFlash)
-    flashTimerRef.current = window.setTimeout(() => el.classList.remove(s.findFlash), 1500)
-  }, [])
-
-  const computeBlockMatches = useCallback(
-    (q: string) => {
-      if (!q || blockTexts.length === 0) return []
-      const needle = q.toLowerCase()
-      const out: number[] = []
-      blockTexts.forEach((txt, i) => { if (txt.includes(needle)) out.push(i) })
-      return out
-    },
-    [blockTexts],
-  )
-
-  const find = useInFileFind({ compute: computeBlockMatches, locate: locateBlock })
+  const find = useMarkdownBlockFind(contentAreaRef, markdownContent, canFind)
 
   // Ctrl/Cmd+F 接管：预览视图占满 Tab 内容区，报告即页面主内容（ReportsTab 列表视图与本视图互斥）
   useEffect(() => {

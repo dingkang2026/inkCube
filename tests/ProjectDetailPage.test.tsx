@@ -298,4 +298,17 @@ describe('ProjectDetailPage edit project modal (todo: fields editable after crea
     await flush()
     expect(invokeMock.mock.calls.some((c) => c[0] === 'knowledge:updateProject')).toBe(false)
   })
+
+  it('closes the edit modal when switching to another project (no cross-project write)', async () => {
+    const { container, rerender } = render(<ProjectDetailPage project={companyProject} />)
+    await flush()
+    fireEvent.click(container.querySelector('.editBtn')!)
+    expect(container.querySelector('.editModal')).not.toBeNull()
+    // 弹层开着时切项目（活动 Toast「查看」/OS 通知点击可绕过全屏遮罩）：
+    // 弹层必须随 project.id 变化关闭，否则保存会把旧项目字段串写到新项目
+    rerender(<ProjectDetailPage project={{ ...companyProject, id: 'p2', name: '另一个项目' }} />)
+    await flush()
+    expect(container.querySelector('.editModal')).toBeNull()
+    expect(invokeMock.mock.calls.some((c) => c[0] === 'knowledge:updateProject')).toBe(false)
+  })
 })

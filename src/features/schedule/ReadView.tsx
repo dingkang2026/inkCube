@@ -8,8 +8,8 @@
  *  底部动作条：订阅设置（编辑弹层，去向绑定/更换在③步）；已绑定去向 →
  *  「已沉淀至 {目标名}·档案」可点跳容器（2026-10-23）；失败 run → 原因 + 重跑（runNow）；
  *  running run → 执行中占位 + 头部「执行过程」实时回放可达（2026-10-23）；
- *  Ctrl/Cmd+F 文档内查找（块级定位，复用 useInFileFind + FindBar，2026-10-23）。 */
-import { useCallback, useEffect, useRef, useState } from 'react'
+ *  Ctrl/Cmd+F 文档内查找（块级定位，公共基座 useMarkdownBlockFind + FindBar，2026-10-23）。 */
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
@@ -17,11 +17,8 @@ import { useToast } from '../knowledge/Toast'
 import { ScheduleFormModal } from './ScheduleFormModal'
 import type { ScheduleRow, ScheduleRunRow } from './useSchedules'
 import { FindBar } from '../../components/FindBar'
-import { useInFileFind, scrollElementToCenter } from '../../hooks/useInFileFind'
+import { useMarkdownBlockFind } from '../../hooks/useInFileFind'
 import s from './ReadView.module.css'
-
-/** 文档内查找块级选择器（同 ReportPreview：叶子块匹配避免祖先容器重复计数） */
-const FIND_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, td, th'
 
 interface ReadViewProps {
   runId: string
@@ -141,52 +138,11 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
     }
   }
 
-  // ── 文档内查找（块级定位，复用 ReportPreview 同款框架 useInFileFind + FindBar）──
+  // ── 文档内查找（块级定位，公共基座 useMarkdownBlockFind + FindBar）──
   // canFind 与 Markdown 渲染分支同条件：running 无正文不可查（2026-10-23）
   const canFind = !!run && run.status !== 'running'
   const reportRef = useRef<HTMLDivElement | null>(null)
-  // 叶子块元素与文本缓存：元素供定位，文本供匹配（正文渲染后收集，随正文/可见态变化重算）
-  const blocksRef = useRef<HTMLElement[]>([])
-  const [blockTexts, setBlockTexts] = useState<string[]>([])
-  useEffect(() => {
-    const container = reportRef.current
-    if (!canFind || !container) {
-      blocksRef.current = []
-      setBlockTexts([])
-      return
-    }
-    const leaves = Array.from(container.querySelectorAll<HTMLElement>(FIND_BLOCK_SELECTOR))
-      .filter((el) => !el.querySelector(FIND_BLOCK_SELECTOR))
-    blocksRef.current = leaves
-    setBlockTexts(leaves.map((el) => (el.textContent || '').toLowerCase()))
-  }, [canFind, content])
-
-  // 闪烁 timer 托管（同 ReportPreview：1500ms = CSS 动画 1.4s + 100ms 余量）
-  const flashTimerRef = useRef<number | undefined>(undefined)
-  const locateBlock = useCallback((idx: number) => {
-    const container = reportRef.current
-    const el = blocksRef.current[idx]
-    if (!container || !el) return
-    scrollElementToCenter(container, el)
-    window.clearTimeout(flashTimerRef.current)
-    el.classList.remove(s.findFlash)
-    void el.offsetWidth
-    el.classList.add(s.findFlash)
-    flashTimerRef.current = window.setTimeout(() => el.classList.remove(s.findFlash), 1500)
-  }, [])
-
-  const computeBlockMatches = useCallback(
-    (q: string) => {
-      if (!q || blockTexts.length === 0) return []
-      const needle = q.toLowerCase()
-      const out: number[] = []
-      blockTexts.forEach((txt, i) => { if (txt.includes(needle)) out.push(i) })
-      return out
-    },
-    [blockTexts],
-  )
-
-  const find = useInFileFind({ compute: computeBlockMatches, locate: locateBlock })
+  const find = useMarkdownBlockFind(reportRef, content, canFind)
 
   // Ctrl/Cmd+F 接管：ReadView 为全内容区页，window 级监听（同 ReportPreview 先例）
   useEffect(() => {

@@ -1,4 +1,6 @@
-/** src/features/project/tabs/WikiPageReader.tsx — Wiki page reader with frontmatter, backlinks, sources */
+/** src/features/project/tabs/WikiPageReader.tsx — Wiki page reader with frontmatter, backlinks, sources.
+ *  Ctrl/Cmd+F 文档内查找（公共基座 useMarkdownBlockFind + FindBar，2026-10-23）：
+ *  范围限正文 markdownBody，版本快照弹层不接（只读对比场景）。 */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -6,6 +8,8 @@ import {
   Trash2, Wand2, History, Loader2, X,
 } from 'lucide-react'
 import { Markdown } from '../../../components/Markdown'
+import { FindBar } from '../../../components/FindBar'
+import { useMarkdownBlockFind } from '../../../hooks/useInFileFind'
 import { parseFrontmatter, PAGE_TYPE_LABEL_KEYS, formatChangelogTime, ACTION_LABEL_KEYS } from './wikiUtils'
 import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
@@ -75,6 +79,26 @@ export function WikiPageReader({
   const [snapshot, setSnapshot] = useState<PageVersionSnapshot | null>(null)
   // 快照请求序号：快速连点多版本时以最后一次点击为准（晚到的旧响应不覆盖/不误弹错）
   const snapshotReqRef = useRef(0)
+
+  // ── 文档内查找（公共基座 useMarkdownBlockFind + FindBar）：范围限正文 markdownBody
+  // （扫描根与滚动容器合一，正文长时 overflow 滚动在其自身），版本快照弹层不接
+  // （2026-10-23 裁决：只读对比场景）
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const find = useMarkdownBlockFind(bodyRef, body, true)
+
+  // Ctrl/Cmd+F 接管：readerPage 为预览面板主内容（与编辑器互斥挂载），window 级监听
+  // （同 ReadView/ArchiveView 先例）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        e.stopPropagation()
+        find.openFind()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [find.openFind])
 
   // Load backlinks
   const loadBacklinks = useCallback(async () => {
@@ -270,6 +294,19 @@ export function WikiPageReader({
         </div>
       </div>
 
+      {find.findOpen && (
+        <FindBar
+          inputRef={find.inputRef}
+          query={find.findQuery}
+          count={find.matches.length}
+          current={find.safeIdx}
+          onQueryChange={find.setFindQuery}
+          onPrev={() => find.gotoMatch(find.safeIdx - 1)}
+          onNext={() => find.gotoMatch(find.safeIdx + 1)}
+          onClose={find.closeFind}
+        />
+      )}
+
       {/* Frontmatter panel (collapsible) */}
       {(refs.length > 0 || tags.length > 0) && (
         <div className={s.frontmatterPanel}>
@@ -298,8 +335,8 @@ export function WikiPageReader({
         </div>
       )}
 
-      {/* Markdown content */}
-      <div className={s.markdownBody}>
+      {/* Markdown content（正文查找扫描根，ref 供 useMarkdownBlockFind 使用） */}
+      <div className={s.markdownBody} ref={bodyRef}>
         <Markdown content={body} />
       </div>
 

@@ -1,8 +1,14 @@
-/** src/features/project/tabs/WikiPageEditor.tsx — Wiki page Markdown editor */
-import { useState, useEffect } from 'react'
+/** src/features/project/tabs/WikiPageEditor.tsx — Wiki 页面编辑器（textarea 源码编辑）。
+ *  Ctrl/Cmd+F 编辑器内查找（2026-10-23）：textarea 选中式——compute 返回匹配字符偏移，
+ *  locate = setSelectionRange + focus（浏览器自动滚到选区）后把焦点还给查找框；
+ *  文案 i18n 同批补齐（原硬编码中文）。 */
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Save, X, Loader2, AlertTriangle,
 } from 'lucide-react'
+import { FindBar } from '../../../components/FindBar'
+import { useInFileFind } from '../../../hooks/useInFileFind'
 import s from './WikiTab.module.css'
 
 interface WikiPageEditorProps {
@@ -17,6 +23,7 @@ interface WikiPageEditorProps {
 }
 
 export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEditorProps) {
+  const { t } = useTranslation()
   const [title, setTitle] = useState(page.title)
   const [content, setContent] = useState(page.content || '')
   const [saving, setSaving] = useState(false)
@@ -28,9 +35,50 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
     setHasChanges(changed)
   }, [title, content, page.title, page.content])
 
+  // ── 编辑器内查找（textarea 选中式）：findQueryRef 镜像查询串供 locate 计算选区终点；
+  // compute 依赖 content，编辑文本变化即重算命中
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
+  const findQueryRef = useRef('')
+  const editorFind = useInFileFind({
+    compute: useCallback((q: string) => {
+      const v = taRef.current?.value ?? ''
+      if (!q || !v) return []
+      const out: number[] = []
+      let i = v.indexOf(q)
+      while (i !== -1) { out.push(i); i = v.indexOf(q, i + q.length) }
+      return out
+    }, [content]),
+    locate: useCallback((pos: number) => {
+      const ta = taRef.current
+      if (!ta) return
+      ta.focus()
+      ta.setSelectionRange(pos, pos + findQueryRef.current.length)
+      // 焦点还给查找框：textarea 独占焦点会吃掉后续 Enter 导航（闭包引用 editorFind，
+      // 执行时已初始化）
+      requestAnimationFrame(() => editorFind.inputRef.current?.focus())
+    }, []),
+  })
+  const setEditorQuery = useCallback((v: string) => {
+    findQueryRef.current = v
+    editorFind.setFindQuery(v)
+  }, [editorFind.setFindQuery])
+
+  // Ctrl/Cmd+F 接管：editorPage 为预览面板主内容（与 Reader 互斥挂载），window 级监听
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        e.stopPropagation()
+        editorFind.openFind()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [editorFind.openFind])
+
   const handleSave = async () => {
     if (!content.trim()) {
-      setError('内容不能为空')
+      setError(t('project.wiki.editorEmptyContent'))
       return
     }
     setSaving(true)
@@ -44,7 +92,7 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
       })
       onSaved()
     } catch (err: any) {
-      setError(err?.message || '保存失败')
+      setError(err?.message || t('project.wiki.editorSaveFailed'))
     } finally {
       setSaving(false)
     }
@@ -65,12 +113,12 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
           className={s.editorTitleInput}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="页面标题"
+          placeholder={t('project.wiki.editorTitlePlaceholder')}
         />
         <div className={s.editorActions}>
           {hasChanges && <span className={s.unsavedDot} />}
           <button className={s.editorCancelBtn} onClick={handleCancel}>
-            <X size={12} /> 取消
+            <X size={12} /> {t('project.wiki.cancel')}
           </button>
           <button
             className={s.editorSaveBtn}
@@ -78,10 +126,23 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
             disabled={saving || !hasChanges}
           >
             {saving ? <Loader2 size={12} className={s.spin} /> : <Save size={12} />}
-            保存
+            {t('project.wiki.save')}
           </button>
         </div>
       </div>
+
+      {editorFind.findOpen && (
+        <FindBar
+          inputRef={editorFind.inputRef}
+          query={editorFind.findQuery}
+          count={editorFind.matches.length}
+          current={editorFind.safeIdx}
+          onQueryChange={setEditorQuery}
+          onPrev={() => editorFind.gotoMatch(editorFind.safeIdx - 1)}
+          onNext={() => editorFind.gotoMatch(editorFind.safeIdx + 1)}
+          onClose={editorFind.closeFind}
+        />
+      )}
 
       {/* Error message */}
       {error && (
@@ -94,10 +155,11 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
       {/* Markdown editor */}
       <div className={s.editorBody}>
         <textarea
+          ref={taRef}
           className={s.editorTextarea}
           value={content}
           onChange={(e) => setContent(e.target.value)}
-          placeholder="输入 Markdown 内容...&#10;&#10;支持 [[page_key]] 语法创建页面间链接"
+          placeholder={t('project.wiki.editorContentPlaceholder')}
           spellCheck={false}
         />
       </div>
@@ -105,10 +167,10 @@ export function WikiPageEditor({ projectId, page, onBack, onSaved }: WikiPageEdi
       {/* Editor footer with hints */}
       <div className={s.editorFooter}>
         <span className={s.editorHint}>
-          支持 Markdown 语法 · 使用 [[page_key]] 创建页面链接 · 保存后页面状态将标记为「用户已编辑」
+          {t('project.wiki.editorHint')}
         </span>
         <span className={s.editorCharCount}>
-          {content.length} 字符
+          {t('project.wiki.editorCharCount', { count: content.length })}
         </span>
       </div>
     </div>

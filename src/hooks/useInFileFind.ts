@@ -4,6 +4,7 @@
  *  渲染文档场景=内容块索引），locate 由调用方实现滚动定位。
  *  UI 呈现统一走 <FindBar>（src/components/FindBar.tsx）。 */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import type { RefObject } from 'react'
 
 export interface UseInFileFindOptions {
   /** 关键词 → 目标索引序列（每个命中一项；空关键词返回空数组） */
@@ -61,4 +62,64 @@ export function scrollElementToCenter(container: HTMLElement, el: Element) {
   const cRect = container.getBoundingClientRect()
   const eRect = el.getBoundingClientRect()
   container.scrollTop += eRect.top - cRect.top - container.clientHeight / 2 + eRect.height / 2
+}
+
+/** ── Markdown 块级查找预设（2026-10-23 自 ReportPreview / ReadView / ArchiveView
+ *  三处同构实现收编为公共基座，WikiPageReader 同批接入）──
+ *  叶子块文本匹配 → 居中滚动 + find-flash 闪烁。containerRef 同时是扫描根与
+ *  滚动容器（内容自身 overflow 滚动的容器，如 .report / .markdownBody）；
+ *  content 变化（或 enabled 翻转）时重扫叶子块。 */
+export const FIND_BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, td, th'
+
+/** 命中块闪烁类（global.css 统一定义，不经 css module——hook 直接 classList 操作） */
+const FIND_FLASH_CLASS = 'find-flash'
+
+export function useMarkdownBlockFind(
+  containerRef: RefObject<HTMLElement | null>,
+  /** 正文内容键：变化时重扫叶子块（渲染文档场景 = 正文串） */
+  content: string | null | undefined,
+  enabled: boolean,
+) {
+  // 叶子块元素与文本缓存：元素供定位，文本供匹配
+  const blocksRef = useRef<HTMLElement[]>([])
+  const [blockTexts, setBlockTexts] = useState<string[]>([])
+  useEffect(() => {
+    const container = containerRef.current
+    if (!enabled || !container) {
+      blocksRef.current = []
+      setBlockTexts([])
+      return
+    }
+    const leaves = Array.from(container.querySelectorAll<HTMLElement>(FIND_BLOCK_SELECTOR))
+      .filter((el) => !el.querySelector(FIND_BLOCK_SELECTOR))
+    blocksRef.current = leaves
+    setBlockTexts(leaves.map((el) => (el.textContent || '').toLowerCase()))
+  }, [containerRef, enabled, content])
+
+  // 闪烁 timer 托管：同块 1.5s 内重复定位先取消旧 timer（避免提前掉断新动画）；
+  // 1500ms = CSS 动画 1.4s + 100ms 余量（global.css 调整时长须同步此值）；卸载清理
+  const flashTimerRef = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(flashTimerRef.current), [])
+
+  const locate = useCallback((idx: number) => {
+    const container = containerRef.current
+    const el = blocksRef.current[idx]
+    if (!container || !el) return
+    scrollElementToCenter(container, el)
+    window.clearTimeout(flashTimerRef.current)
+    el.classList.remove(FIND_FLASH_CLASS)
+    void el.offsetWidth
+    el.classList.add(FIND_FLASH_CLASS)
+    flashTimerRef.current = window.setTimeout(() => el.classList.remove(FIND_FLASH_CLASS), 1500)
+  }, [containerRef])
+
+  const compute = useCallback((q: string) => {
+    if (!q || blockTexts.length === 0) return []
+    const needle = q.toLowerCase()
+    const out: number[] = []
+    blockTexts.forEach((txt, i) => { if (txt.includes(needle)) out.push(i) })
+    return out
+  }, [blockTexts])
+
+  return useInFileFind({ compute, locate })
 }
