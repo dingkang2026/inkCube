@@ -559,6 +559,58 @@ describe('ActivityMonitor', () => {
     expect(sharedMocks.showToast.mock.calls[0][1]).toBe('error')
     expect(osCalls(invoke)).toHaveLength(1)
   })
+
+  it('file completed (project) → action「整理进知识页」直达 wiki 编译（无培训整改）', async () => {
+    // 项目文件解析完成 Toast 的 action 从「查看」升级：label 改 completedAction，
+    // 点击派发 navigate-project-tab 携 wikiFocus='compile'，与脉搏带待编译 chip 同链；
+    // 缝合「上传→解析完成→不知道下一步」动线断点
+    const notice = {
+      id: 11, entity_type: 'file', kind: 'completed', entity_title: '招股书.pdf',
+      detail: null, project_id: 'p1', container: 'project',
+    }
+    const invoke = wireWithNotice(notice)
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    // 只捕获导航事件（新终态同时派发 app:usage-changed 第三发信点，非本用例关注）
+    const events: CustomEvent[] = []
+    vi.spyOn(window, 'dispatchEvent').mockImplementation((e) => {
+      if ((e as CustomEvent).type === 'app:navigate-project-tab') events.push(e as CustomEvent)
+      return true
+    })
+    render(<ActivityMonitor />)
+    await flush()
+    await secondRound()
+    expect(sharedMocks.showToast).toHaveBeenCalledTimes(1)
+    const opts = sharedMocks.showToast.mock.calls[0][2]
+    expect(opts.action.label).toBe('activity.file.completedAction')
+    opts.action.onClick()
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ projectId: 'p1', tab: 'wiki', container: 'project', wikiFocus: 'compile' })
+  })
+
+  it('file completed (baselib) → 保持「前往查看」落素材 Tab（基础库不参与编译）', async () => {
+    // 基础库文件无 Wiki 编译场景，特例不命中：通用导航语义不变
+    const notice = {
+      id: 12, entity_type: 'file', kind: 'completed', entity_title: '政策.pdf',
+      detail: null, project_id: 'b1', container: 'baselib',
+    }
+    const invoke = wireWithNotice(notice)
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    // 只捕获导航事件（同上，过滤 app:usage-changed）
+    const events: CustomEvent[] = []
+    vi.spyOn(window, 'dispatchEvent').mockImplementation((e) => {
+      if ((e as CustomEvent).type === 'app:navigate-project-tab') events.push(e as CustomEvent)
+      return true
+    })
+    render(<ActivityMonitor />)
+    await flush()
+    await secondRound()
+    expect(sharedMocks.showToast).toHaveBeenCalledTimes(1)
+    const opts = sharedMocks.showToast.mock.calls[0][2]
+    expect(opts.action.label).toBe('activity.view')
+    opts.action.onClick()
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ projectId: 'b1', tab: 'materials', container: 'baselib' })
+  })
 })
 
 describe('navigateToNotification', () => {

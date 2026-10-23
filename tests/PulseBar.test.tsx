@@ -184,3 +184,20 @@ describe('PulseBar ai status + suggestions (3.0 四期)', () => {
     expect(container.textContent).not.toContain('pulse.chipSuggestions')
   })
 })
+
+describe('PulseBar chip tooltips (无培训整改 2026-10-23)', () => {
+  it('every rendered chip carries a title explaining what it is and what click does', () => {
+    // 裸计数 chip 禁止：六个信号同屏时，每个 chip 必须带 tooltip（pulse.tip* 键）
+    byProject.set('p1', { files: 0, compiles: 0, reports: 1 })
+    const { container } = render(
+      <PulseBar {...base} reviews={{ contradiction: 2, gap: 1 }} pendingCompile={3}
+        suggestionCount={2}
+        dueTasks={{ overdue: 1, weekDue: 0, nearestOverdueTitle: null, nearestOverdueDays: 1 }} />
+    )
+    const chips = Array.from(container.querySelectorAll<HTMLButtonElement>('.chip'))
+    expect(chips.length).toBe(6)
+    for (const chip of chips) {
+      expect(chip.title).toMatch(/^pulse\.tip/)
+    }
+  })
+})

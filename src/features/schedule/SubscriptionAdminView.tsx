@@ -36,12 +36,16 @@ interface SubscriptionAdminViewProps {
   /** 期次行点击（收件箱/期次历史统一进报告页，2.11 §9.1）：App 切 read 态，
    *  携带 run 对象（schedule_id 供返回宿主页时恢复选中） */
   onOpenRead: (run: ScheduleRunRow) => void
-  /** read/replay 返回宿主页时回传的选中订阅 id：重挂载时恢复右列详情视图
+  /** 查看档案（2026-10-23 产品主张校准）：切档案阅读页（ArchiveView，应用内
+   *  渲染）——不再 file:openOriginal 系统打开（系统打开仅限用户上传文件：
+   *  素材列表 / Wiki 来源） */
+  onOpenArchive: (row: ScheduleRow) => void
+  /** read/replay/archive 返回宿主页时回传的选中订阅 id：重挂载时恢复右列详情视图
    *  （未传或空 = 收件箱默认视图；仅挂载时消费） */
   restoreScheduleId?: string
 }
 
-export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: SubscriptionAdminViewProps) {
+export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreScheduleId }: SubscriptionAdminViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
@@ -309,27 +313,11 @@ export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: Subscri
     }))
   }
 
-  /** 查看档案：系统程序直开目标容器内的档案文件（file:openOriginal，
-   *  filename 取 basename 削平；订阅改名后未重建时磁盘名旧 → not_found 提示） */
-  const openArchive = async (row: ScheduleRow) => {
+  /** 查看档案：切档案阅读页（App 分发 archive 态）；去向行渲染条件已保证
+   *  target_id / archive_file_id 非空，此处守卫冗余防御（类型层可空） */
+  const openArchive = (row: ScheduleRow) => {
     if (!row.target_id || !row.archive_file_id) return
-    try {
-      const res = await window.electronAPI.invoke('file:openOriginal', {
-        projectId: row.target_id,
-        fileId: row.archive_file_id,
-        filename: `${row.name}·档案.md`,
-      }) as { success?: boolean; reason?: string; message?: string }
-      if (res && !res.success) {
-        showToast(
-          res.reason === 'not_found'
-            ? t('schedule.archiveNotFound')
-            : t('schedule.openArchiveFailed', { reason: res.message || res.reason }),
-          'error')
-      }
-    } catch (err) {
-      console.error('Open archive failed:', err)
-      showToast(t('schedule.openArchiveFailed', { reason: String(err) }), 'error')
-    }
+    onOpenArchive(row)
   }
 
   return (
@@ -507,7 +495,7 @@ export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: Subscri
                   </button>
                   <span className={s.detailArchiveSpacer} />
                   {selected.archive_file_id && (
-                    <button className={s.detailActBtn} onClick={() => void openArchive(selected)}>
+                    <button className={s.detailActBtn} onClick={() => openArchive(selected)}>
                       {t('schedule.viewArchive')}
                     </button>
                   )}

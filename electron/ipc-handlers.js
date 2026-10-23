@@ -623,6 +623,37 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return { success: true }
   })
 
+  // 读取容器内文本文件内容（2.11 §8.4 档案阅读页，2026-10-23）：与 file:openOriginal
+  // 同构的安全约束（safeSegment + basename 削平，路径锁死 {dataDir}/files/ 子树）。
+  // 系统打开边界 = 用户主动上传的文件（素材列表 / Wiki 来源，见上）；应用生成物
+  // （订阅档案）应用内渲染——本通道仅限 utf-8 文本、2MB 上限（防误读二进制/超大
+  // 文件拖垮渲染进程）。消费方：ArchiveView（订阅档案阅读页）。
+  ipcMain.handle('file:readText', async (_event, { projectId, fileId, filename }) => {
+    const fs = require('fs')
+    const path = require('path')
+    const safeSegment = (seg) => (typeof seg === 'string' && /^[A-Za-z0-9_-]+$/.test(seg) ? seg : null)
+    const pid = safeSegment(projectId)
+    const fid = safeSegment(fileId)
+    if (!pid || !fid || typeof filename !== 'string' || !filename) {
+      return { success: false, reason: 'invalid_args' }
+    }
+    const filePath = path.join(getDataDir(), 'files', pid, fid, path.basename(filename))
+    if (!fs.existsSync(filePath)) {
+      return { success: false, reason: 'not_found' }
+    }
+    try {
+      if (fs.statSync(filePath).size > 2 * 1024 * 1024) {
+        return { success: false, reason: 'too_large' }
+      }
+      const content = fs.readFileSync(filePath, 'utf-8')
+      // abs_path 供「在文件夹中显示」（shell:showItemInFolder）定位逃生门
+      return { success: true, content, abs_path: filePath }
+    } catch (err) {
+      logElectron('WARN', `readText failed: ${err}`)
+      return { success: false, reason: 'read_failed', message: String(err) }
+    }
+  })
+
   ipcMain.handle('settings:get', async () => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/settings`)
     return handlePythonResponse(res)

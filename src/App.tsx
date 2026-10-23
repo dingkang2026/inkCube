@@ -24,6 +24,7 @@ import { ScheduleSideSummary } from './features/schedule/ScheduleSideSummary'
 import { SubscriptionAdminView } from './features/schedule/SubscriptionAdminView'
 import { ReadView } from './features/schedule/ReadView'
 import { RunReplay } from './features/schedule/RunReplay'
+import { ArchiveView } from './features/schedule/ArchiveView'
 import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { navAfterOnboarding } from './features/onboarding/finishNav'
@@ -142,6 +143,7 @@ export default function App() {
     | { type: 'admin'; restoreScheduleId?: string }
     | { type: 'read'; runId: string; from: 'admin' | 'home'; scheduleId?: string }
     | { type: 'replay'; runId: string; taskId: string; from: 'admin' | 'home'; scheduleId?: string }
+    | { type: 'archive'; targetId: string; fileId: string; scheduleName: string; scheduleId: string }
     | null
   >(null)
 
@@ -858,10 +860,17 @@ export default function App() {
           /* Base library is parallel to projects — accessible from any nav */
           <BaseLibDetailPage baseLibId={selectedBaseLibId} />
         ) : scheduleView?.type === 'admin' ? (
-          /* 定时订阅管理台（2.11 §8.1）：restoreScheduleId 供 read/replay 返回时恢复选中 */
+          /* 定时订阅管理台（2.11 §8.1）：restoreScheduleId 供 read/replay/archive 返回时恢复选中 */
           <SubscriptionAdminView
             restoreScheduleId={scheduleView.restoreScheduleId}
             onOpenRead={(run) => setScheduleView({ type: 'read', runId: run.id, from: 'admin', scheduleId: run.schedule_id })}
+            onOpenArchive={(row) => setScheduleView({
+              type: 'archive',
+              targetId: row.target_id!,
+              fileId: row.archive_file_id!,
+              scheduleName: row.name,
+              scheduleId: row.id,
+            })}
           />
         ) : scheduleView?.type === 'read' ? (
           /* 期次阅读页（2.11 §8.2）：头部「返回」回宿主页，「执行过程」切回放 */
@@ -877,6 +886,15 @@ export default function App() {
             taskId={scheduleView.taskId}
             onBack={() => handleScheduleBack(scheduleView.from, scheduleView.scheduleId)}
             onOpenReport={() => setScheduleView({ type: 'read', runId: scheduleView.runId, from: scheduleView.from, scheduleId: scheduleView.scheduleId })}
+          />
+        ) : scheduleView?.type === 'archive' ? (
+          /* 档案阅读页（2.11 §8.4，2026-10-23）：订阅档案应用内查看（Markdown 渲染），
+             入口 = 管理台去向行「查看档案」；返回回管理台恢复选中订阅 */
+          <ArchiveView
+            targetId={scheduleView.targetId}
+            fileId={scheduleView.fileId}
+            scheduleName={scheduleView.scheduleName}
+            onBack={() => handleScheduleBack('admin', scheduleView.scheduleId)}
           />
         ) : activeNav === 'home' ? (
           <HomePage
