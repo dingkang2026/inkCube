@@ -4,7 +4,8 @@
  * 覆盖：标题「{订阅名} · M/D」；消息流经 tasks:getMessages 拉取（只读复用
  * TaskMessageList，isGenerating=false）；无输入区（无 textarea——规则 6 只读，
  * 输入区属 TaskPage，不在本组件）；头部动作条（2026-10-22）：返回 → onBack /
- * 查看报告 → onOpenReport（报告↔回放双向切换）。
+ * 查看报告 → onOpenReport（报告↔回放双向切换）；消息流与报告标题解耦加载
+ * （2026-10-23 review S-1）：报告侧失败仅标题缺省，不连累消息流。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
@@ -91,5 +92,18 @@ describe('RunReplay（2.11 §8.3 只读回放）', () => {
     expect(onBack).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByTestId('replay-open-report'))
     expect(onOpenReport).toHaveBeenCalledTimes(1)
+  })
+
+  it('报告侧失败不连累消息流（S-1 解耦回归）：标题缺省但消息照常渲染', async () => {
+    const invoke = vi.fn((channel: string) => {
+      if (channel === 'tasks:getMessages') return Promise.resolve({ messages: MESSAGES })
+      if (channel === 'schedules:readReport') return Promise.reject(new Error('report gone'))
+      return Promise.resolve({ ok: true })
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    render(<RunReplay runId="run_1" taskId="t1" onBack={onBack} onOpenReport={onOpenReport} />)
+    await flush()
+    expect(screen.getByText('第一期订阅指令')).toBeTruthy()   // 消息流不受连累
+    expect(screen.queryByText(/华润舆情/)).toBeNull()          // 标题缺省
   })
 })

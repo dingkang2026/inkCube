@@ -118,6 +118,11 @@
 .report {
   flex: 1;
   min-height: 0;
+  /* 根因修复（2026-10-23）：缺 overflow 时长报告内容溢出 report 盒子、
+     穿透绘制到 footer 区域——「已沉淀至/设置」被正文覆盖或随页沉底；
+     flex 三件套（flex:1 + min-height:0 + overflow:auto）补齐后报告内滚动、
+     footer 钉底 */
+  overflow-y: auto;
 }
 
 .actions {
@@ -128,13 +133,22 @@
   border-top: 1px solid var(--border);
 }
 
+/* 沉淀去向行（2026-10-23 由纯文本改可点：跳目标容器，全局导航分流事件） */
 .archived {
+  padding: 0;
   font-size: var(--text-sm);
   color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
 }
 
 .archived strong {
   color: var(--text-primary);
+}
+
+.archived:hover strong {
+  color: var(--accent);
 }
 
 .spacer {
@@ -153,4 +167,12 @@
 
 .actionBtn:hover {
   border-color: var(--accent);
+}
+
+/* ── 文档内查找：命中块定位闪烁（配 useInFileFind + FindBar，同 ReportPreview）── */
+.findFlash { animation: findFlashAnim 1.4s ease-out; }
+
+@keyframes findFlashAnim {
+  0%, 40% { background: rgba(255, 170, 0, 0.32); }
+  100% { background: transparent; }
 }

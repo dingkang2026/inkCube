@@ -26,8 +26,9 @@ import s from './ProjectDetailPage.module.css'
 interface ProjectDetailPageProps {
   project: Project
   /** 通知导航信号（App 层 Activity Hub tab 导航）：收到后切换到目标 Tab；
-   *  taskId 可选（首页待办行直达）：affairs Tab 下自动打开该任务执行抽屉（§6.1.8） */
-  tabSignal?: { tab: string; ts: number; taskId?: string } | null
+   *  taskId 可选（首页待办行直达）：affairs Tab 下自动打开该任务执行抽屉（§6.1.8）；
+   *  wikiFocus 可选（file 完成通知「整理进知识页」直达）：wiki Tab 下触发编译（同脉搏带 chip） */
+  tabSignal?: { tab: string; ts: number; taskId?: string; wikiFocus?: 'lint' | 'compile' } | null
   onOpenSettings?: () => void
   onProjectDataChanged?: () => void
 }
@@ -156,6 +157,11 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     }
     if (tabSignal?.taskId && tabSignal.tab === 'affairs') {
       setAffairsFocus({ taskId: tabSignal.taskId, ts: tabSignal.ts })
+    }
+    // file 完成通知「整理进知识页」直达（无培训整改）：wiki Tab + 触发编译，
+    // 与脉搏带待编译 chip 同一 consume-once 链（WikiTab focusSignal）
+    if (tabSignal?.tab === 'wiki' && tabSignal.wikiFocus) {
+      setWikiFocus({ view: tabSignal.wikiFocus, ts: tabSignal.ts })
     }
   }, [tabSignal])
 

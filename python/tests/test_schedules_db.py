@@ -225,7 +225,9 @@ def test_list_run_digest_latest_per_schedule(tmp_db):
 def test_unread_count(tmp_db):
     s1 = tmp_db.create_schedule('a', 'p', 'general', 'general', 'daily', '09:00')
     s2 = tmp_db.create_schedule('b', 'p', 'general', 'general', 'daily', '09:00',
-                                enabled=0)
+                                enabled=0)                     # 手动暂停（0 失败）
+    s3 = tmp_db.create_schedule('c', 'p', 'general', 'general', 'daily', '09:00')
+    tmp_db.set_schedule_state(s3['id'], enabled=0, consecutive_failures=3)
     tmp_db.insert_schedule_run('run_1', s1['id'], None)
     tmp_db.update_schedule_run('run_1', 'done')
     _backdate(tmp_db, 'run_1', finished_at='2026-10-01T09:00:00')
@@ -233,7 +235,8 @@ def test_unread_count(tmp_db):
     tmp_db.update_schedule_run('run_2', 'done')
     tmp_db.mark_run_read('run_2')
     counts = tmp_db.schedule_unread_count()
-    assert counts == {'total': 1, 'abnormal': 1, 'n': 2}   # 未读1 / 禁用1 / 共2
+    # 未读1 / 熔断1（手动暂停不计入，2026-10-23 口径收紧）/ 共3
+    assert counts == {'total': 1, 'abnormal': 1, 'n': 3}
 
 
 # ── 调度器辅助查询 ───────────────────────────────────────────

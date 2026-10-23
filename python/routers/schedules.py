@@ -128,7 +128,8 @@ async def create_schedule(body: ScheduleCreateBody):
 @router.get("/schedules/summary")
 async def schedule_summary():
     """侧栏摘要行计数（T1 schedule_unread_count 的消费端点）：
-    n=订阅总数 / total=未读 done run / abnormal=禁用订阅。"""
+    n=订阅总数 / total=未读 done run / abnormal=熔断订阅（enabled=0
+    且 consecutive_failures>0，手动暂停不计入）。"""
     return {"totals": deps.db.schedule_unread_count()}
 
 
@@ -211,9 +212,10 @@ async def read_run_report(run_id: str):
     if not run:
         return _err(404, "期次不存在", "RUN_NOT_FOUND")
     if not run["report_path"]:
-        if run["status"] == "failed":
-            # T9 修订②：failed run 无副本 → 元数据返回（content 空），
-            # ReadView 走失败卡（§8.4：失败原因 + 重跑可达）
+        if run["status"] in ("failed", "running"):
+            # T9 修订② + 2026-10-23 running 扩展：无副本 → 元数据返回（content 空）。
+            # failed：ReadView 失败卡（§8.4）；running：报告页执行中态，
+            # 头部「执行过程」实时回放可达（原 running 落 404 使期次历史行点击死胡同）
             return {"run": run,
                     "schedule": deps.db.get_schedule(run["schedule_id"]),
                     "content": ""}

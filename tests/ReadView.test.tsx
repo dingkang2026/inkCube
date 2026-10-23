@@ -110,16 +110,23 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.getByText('报告全文段落')).toBeTruthy()
   })
 
-  it('已绑定项目去向 → 已沉淀态显示目标名（列表通道解析）', async () => {
+  it('已绑定项目去向 → 已沉淀态显示目标名（列表通道解析），点击跳容器', async () => {
     const invoke = wireInvoke({
       schedule: { ...SCHEDULE, target_type: 'project', target_id: 'p1' },
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    const events: CustomEvent[] = []
+    const listener = (e: Event) => events.push(e as CustomEvent)
+    window.addEventListener('app:navigate-project-tab', listener)
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByTestId('read-archived')).toBeTruthy()
     expect(screen.getByText('项目甲')).toBeTruthy()
     expect(invoke).toHaveBeenCalledWith('knowledge:listProjects', { limit: 0 })
+    fireEvent.click(screen.getByTestId('read-archived'))
+    window.removeEventListener('app:navigate-project-tab', listener)
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ projectId: 'p1', container: 'project' })
   })
 
   it('已绑定基础库去向 → 目标名经 baseLib:list 解析', async () => {
@@ -137,9 +144,17 @@ describe('ReadView（2.11 §8.2）', () => {
       return Promise.resolve({ ok: true })
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    const events: CustomEvent[] = []
+    const listener = (e: Event) => events.push(e as CustomEvent)
+    window.addEventListener('app:navigate-project-tab', listener)
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByText('自定义库')).toBeTruthy()
+    // 基础库去向分流：container='baselib'（App 导航分流原生支持）
+    fireEvent.click(screen.getByTestId('read-archived'))
+    window.removeEventListener('app:navigate-project-tab', listener)
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ projectId: 'bl-1', container: 'baselib' })
   })
 
   it('失败 run → 显示失败原因与重跑按钮，点击重跑调 runNow', async () => {
@@ -187,6 +202,22 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.getByText('schedule.read.failedNoReason')).toBeTruthy()
   })
 
+  it('running run → 执行中态占位、不调 markRead、回放入口可达（2026-10-23）', async () => {
+    const invoke = wireInvoke({
+      run: { ...RUN_DONE, status: 'running', report_path: null, summary: null, finished_at: null },
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.getByText('schedule.read.state.running')).toBeTruthy()
+    expect(screen.getByText('schedule.read.runningHint')).toBeTruthy()
+    // 仅 done 标已读：running 不调 markRead（否则吞掉终态后的未读点与新产出计数）
+    expect(invoke.mock.calls.some((c) => c[0] === 'schedules:markRead')).toBe(false)
+    // 无失败卡；头部「执行过程」（task_id 存在）可达 → 实时回放
+    expect(screen.queryByText('schedule.read.rerun')).toBeNull()
+    expect(screen.getByTestId('read-open-replay')).toBeTruthy()
+  })
+
   it('头部动作条：「执行过程」回调 onReplay(taskId)（期次行点击统一进报告页后，回放唯一入口）', async () => {
     const onReplay = vi.fn()
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
@@ -213,5 +244,31 @@ describe('ReadView（2.11 §8.2）', () => {
     await flush()
     expect(formModalState.props?.open).toBe(true)
     expect((formModalState.props?.editing as { id?: string }).id).toBe('sch_1')
+  })
+
+  it('Ctrl+F 打开文档内查找，命中计数与 Esc 关闭（2026-10-23）', async () => {
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
+    const input = screen.getByPlaceholderText('find.placeholder')
+    // 命中计数：摘要卡不计（查找范围限 .report 正文块）；fixture 正文含「要点」的
+    // 块仅 li 要点A（要点B 只在 summary 数据不在 CONTENT）→ FindBar「当前/总数」= 1/1
+    fireEvent.change(input, { target: { value: '要点' } })
+    expect(screen.getByText('1/1')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
+  })
+
+  it('running 态 Ctrl+F 不打开查找（无正文可查，2026-10-23）', async () => {
+    const invoke = wireInvoke({
+      run: { ...RUN_DONE, status: 'running', report_path: null, summary: null, finished_at: null },
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
+    expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
   })
 })

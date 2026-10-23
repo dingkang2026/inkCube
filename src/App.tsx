@@ -130,7 +130,7 @@ export default function App() {
   const [runningTaskIds, setRunningTaskIds] = useState<Set<string>>(new Set())
   /** 通知导航到项目 Tab 的信号（tab + 时间戳，ProjectDetailPage 消费后切换 Tab） */
   // taskId 可选:首页待办行点击携带 → 事务 Tab + 自动打开执行抽屉(3.0 §6.1.8)
-  const [projectTabSignal, setProjectTabSignal] = useState<{ tab: string; ts: number; taskId?: string } | null>(null)
+  const [projectTabSignal, setProjectTabSignal] = useState<{ tab: string; ts: number; taskId?: string; wikiFocus?: 'lint' | 'compile' } | null>(null)
   // 0.5 E1 T4:首页「新建项目」信号(纯前端):切到项目导航 + ProjectList 自动打开创建模态
   const [projectCreateSignal, setProjectCreateSignal] = useState(0)
 
@@ -584,9 +584,13 @@ export default function App() {
   // Listen for navigate-project-tab (Activity Hub toast/home feed action) and navigate-tasks
   useEffect(() => {
     const tabHandler = (e: Event) => {
-      const { projectId, tab, container, taskId } = (e as CustomEvent).detail
+      const { projectId, tab, container, taskId, wikiFocus } = (e as CustomEvent).detail
       closeSettings()
       setShowTemplateManagement(false)
+      // 订阅视图（管理台/阅读/回放）同为 peer 页：不清会以 peerPageOpen 挡住
+      // projects 内容区——订阅去向跳转点击「看似无反应」（2026-10-23 根因修复；
+      // 同构参照：模板管理 handler 清 scheduleView，本 handler 原只清模板管理态）
+      setScheduleView(null)
       // 基础库容器（0.4 §3.6 导航分流）：projectId 即 baseLibId，与项目详情互斥；
       // tab 信号只对项目详情页生效，基础库详情内嵌素材区即 file 活动目标位置
       if (container === 'baselib') {
@@ -597,7 +601,7 @@ export default function App() {
         setSelectedProjectId(projectId)
       }
       setActiveNav('projects')
-      if (tab) setProjectTabSignal({ tab, ts: Date.now(), taskId })
+      if (tab) setProjectTabSignal({ tab, ts: Date.now(), taskId, wikiFocus })
     }
     const tasksHandler = () => handleNavChange('tasks')
     window.addEventListener('app:navigate-project-tab', tabHandler)

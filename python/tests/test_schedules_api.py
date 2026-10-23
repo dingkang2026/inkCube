@@ -162,19 +162,23 @@ def test_resume_resets_consecutive_failures(client_and_db):
 
 
 def test_summary_counts(client_and_db):
-    """摘要行计数：n=订阅总数 / total=未读 done run / abnormal=禁用订阅。
+    """摘要行计数：n=订阅总数 / total=未读 done run / abnormal=熔断订阅
+    （enabled=0 且 consecutive_failures>0；手动暂停不计入——用户主动决策
+    非告警，2026-10-23 口径收紧）。
     T1 schedule_unread_count 的消费端点（§2.9：db 方法必须上链）。"""
     client, db, _td = client_and_db
     s1 = client.post("/schedules", json=_CREATE_BODY).json()["schedule"]
     client.post("/schedules", json={**_CREATE_BODY, "name": "乙"})
-    client.patch(f"/schedules/{s1['id']}", json={"enabled": False})
+    s3 = client.post("/schedules", json={**_CREATE_BODY, "name": "丙"}).json()["schedule"]
+    client.patch(f"/schedules/{s1['id']}", json={"enabled": False})      # 手动暂停 → 不计
+    db.set_schedule_state(s3["id"], enabled=0, consecutive_failures=3)   # 熔断 → 计 1
     for i in ("run_1", "run_2"):
         db.insert_schedule_run(i, s1["id"], None)
         db.update_schedule_run(i, "done")
     db.mark_run_read("run_1")
     r = client.get("/schedules/summary")
     assert r.status_code == 200
-    assert r.json() == {"totals": {"n": 2, "total": 1, "abnormal": 1}}
+    assert r.json() == {"totals": {"n": 3, "total": 1, "abnormal": 1}}
 
 
 def test_digest_inbox_and_read(client_and_db):
@@ -254,6 +258,21 @@ def test_run_report_failed_without_report(client_and_db):
     db.insert_schedule_run("run_d", s["id"], None)
     db.update_schedule_run("run_d", "done")                # done 无副本 → 仍 404
     assert client.get("/schedules/runs/run_d/report").status_code == 404
+
+
+def test_run_report_running_returns_metadata(client_and_db):
+    """2026-10-23 running 扩展：running run 无副本 → 200 元数据（content 空），
+    报告页执行中态可达、头部「执行过程」→ 实时回放（原 404 使期次历史行
+    点击死胡同）；markRead 契约：仅 done 调用由前端保证，后端不变。"""
+    client, db, _td = client_and_db
+    s = client.post("/schedules", json=_CREATE_BODY).json()["schedule"]
+    db.insert_schedule_run("run_r", s["id"], None)         # 默认 running，无副本
+    r = client.get("/schedules/runs/run_r/report")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["run"]["status"] == "running"
+    assert body["content"] == ""
+    assert body["schedule"]["id"] == s["id"]
 
 
 def test_run_now_busy_defers(client_and_db, monkeypatch):

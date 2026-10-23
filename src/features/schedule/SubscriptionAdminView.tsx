@@ -266,6 +266,72 @@ export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: Subscri
 
   const selected = schedules.find((r) => r.id === selectedId) ?? null
 
+  // 详情卡去向行目标名懒解析（ReadView 同源列表通道，2026-10-23 动线补全）；
+  // 依赖 selectedId + selected?.id——挂载时列表未拉回（selected null）先跳过，
+  // 列表到位 id 出现触发一次；refreshAll 后对象引用变化但 id 不变不重解析
+  const [targetName, setTargetName] = useState<string | null>(null)
+  useEffect(() => {
+    setTargetName(null)
+    if (!selected?.target_type || !selected.target_id) return
+    let cancelled = false
+    const targetId = selected.target_id
+    const resolve = async () => {
+      try {
+        if (selected.target_type === 'project') {
+          // 选择器形态：limit=0 全量（按 id 反查目标名，分页不得截断）
+          const res = await window.electronAPI.invoke('knowledge:listProjects', { limit: 0 }) as {
+            projects?: { id: string; name: string }[]
+          }
+          if (!cancelled) setTargetName(res.projects?.find((p) => p.id === targetId)?.name ?? null)
+        } else {
+          const res = await window.electronAPI.invoke('baseLib:list', { limit: 0 }) as {
+            base_libs?: { id: string; name: string }[]
+          }
+          if (!cancelled) setTargetName(res.base_libs?.find((b) => b.id === targetId)?.name ?? null)
+        }
+      } catch {
+        if (!cancelled) setTargetName(null)
+      }
+    }
+    void resolve()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖 selectedId/selected?.id：列表到位触发一次，引用刷新不重解析
+  }, [selectedId, selected?.id])
+
+  // 跳目标容器：复用全局导航分流事件（ReadView 沉淀行同款，原生支持 baselib）
+  const jumpTarget = (row: ScheduleRow) => {
+    if (!row.target_type || !row.target_id) return
+    window.dispatchEvent(new CustomEvent('app:navigate-project-tab', {
+      detail: {
+        projectId: row.target_id,
+        container: row.target_type === 'baselib' ? 'baselib' : 'project',
+      },
+    }))
+  }
+
+  /** 查看档案：系统程序直开目标容器内的档案文件（file:openOriginal，
+   *  filename 取 basename 削平；订阅改名后未重建时磁盘名旧 → not_found 提示） */
+  const openArchive = async (row: ScheduleRow) => {
+    if (!row.target_id || !row.archive_file_id) return
+    try {
+      const res = await window.electronAPI.invoke('file:openOriginal', {
+        projectId: row.target_id,
+        fileId: row.archive_file_id,
+        filename: `${row.name}·档案.md`,
+      }) as { success?: boolean; reason?: string; message?: string }
+      if (res && !res.success) {
+        showToast(
+          res.reason === 'not_found'
+            ? t('schedule.archiveNotFound')
+            : t('schedule.openArchiveFailed', { reason: res.message || res.reason }),
+          'error')
+      }
+    } catch (err) {
+      console.error('Open archive failed:', err)
+      showToast(t('schedule.openArchiveFailed', { reason: String(err) }), 'error')
+    }
+  }
+
   return (
     <div className={s.page}>
       {/* ── 左列：筛选 + 订阅列表 ── */}
@@ -326,8 +392,16 @@ export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: Subscri
                 checked={checked.has(row.id)}
                 onChange={(e) => toggleChecked(row.id, e.target.checked)}
               />
-              <button className={s.schedMain} onClick={() => setSelectedId(row.id)}>
-                <span className={`${s.stateDot} ${row.is_running ? s.dotRunning : ''} ${row.consecutive_failures > 0 ? s.dotAbnormal : ''} ${!row.enabled ? s.dotPaused : ''}`} />
+              <button
+                className={`${s.schedMain} ${!row.enabled ? s.rowPaused : ''}`}
+                onClick={() => setSelectedId(row.id)}
+              >
+                {/* 状态点互斥：运行呼吸 > 失败红（含熔断，需行动不淡显）> 手动暂停淡 > 默认灰 */}
+                <span className={`${s.stateDot} ${
+                  row.is_running ? s.dotRunning
+                  : row.consecutive_failures > 0 ? s.dotAbnormal
+                  : !row.enabled ? s.dotPaused : ''
+                }`} />
                 <span className={s.schedName}>{row.name}</span>
                 <span className={s.schedPeriod}>{periodText(row, t)}</span>
                 {unreadScheduleIds.has(row.id) && <span className={s.unreadDot} />}
@@ -403,10 +477,13 @@ export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: Subscri
               <div className={s.detailMeta}>
                 <span>{t(`schedule.tab.${selected.category}`, { defaultValue: selected.category })}</span>
                 <span>·</span>
-                <span>
-                  {selected.enabled
-                    ? t('schedule.stateEnabled')
-                    : t('schedule.statePaused')}
+                <span className={selected.is_running ? s.stateRunning : ''}>
+                  {/* 执行中优先于启用/暂停（is_running 蕴含 enabled；2026-10-23 补详情卡执行中表达） */}
+                  {selected.is_running
+                    ? t('schedule.stateRunning')
+                    : selected.enabled
+                      ? t('schedule.stateEnabled')
+                      : t('schedule.statePaused')}
                 </span>
                 {selected.consecutive_failures > 0 && (
                   <span className={s.abnormalText}>
@@ -414,19 +491,40 @@ export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: Subscri
                   </span>
                 )}
               </div>
-              <p className={s.detailPrompt}>{selected.prompt}</p>
-              <div className={s.detailActions}>
-                <button onClick={() => void runNow(selected)}>
-                  <Play size={13} />{t('schedule.runNow')}
-                </button>
-                {selected.target_id && (
+              {selected.target_id && targetName && (
+                <div className={s.detailArchive}>
+                  {/* 去向行（2026-10-23 动线补全：订阅→沉淀物）：文字跳容器，
+                      档案操作聚合在此——重建自操作条移入 */}
                   <button
+                    className={s.archiveLink}
+                    data-testid="archive-link"
+                    title={t('schedule.archivedJumpHint', { name: selected.name })}
+                    onClick={() => jumpTarget(selected)}
+                  >
+                    {t('schedule.archivedTo')}
+                    <strong>{targetName}</strong>
+                    {t('schedule.archivedUnit')}
+                  </button>
+                  <span className={s.detailArchiveSpacer} />
+                  {selected.archive_file_id && (
+                    <button className={s.detailActBtn} onClick={() => void openArchive(selected)}>
+                      {t('schedule.viewArchive')}
+                    </button>
+                  )}
+                  <button
+                    className={s.detailActBtn}
                     disabled={rebuildingId === selected.id}
                     onClick={() => void rebuildArchive(selected)}
                   >
                     <ArchiveRestore size={13} />{t('schedule.rebuildArchive')}
                   </button>
-                )}
+                </div>
+              )}
+              <p className={s.detailPrompt}>{selected.prompt}</p>
+              <div className={s.detailActions}>
+                <button onClick={() => void runNow(selected)}>
+                  <Play size={13} />{t('schedule.runNow')}
+                </button>
                 <button onClick={() => void toggleEnabled(selected, !selected.enabled)}>
                   {selected.enabled ? t('schedule.pause') : t('schedule.resume')}
                 </button>

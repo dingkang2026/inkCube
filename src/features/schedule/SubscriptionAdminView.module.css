@@ -234,6 +234,13 @@
   color: var(--text-muted);
 }
 
+/* 暂停订阅行文字灰显（对齐速览 rowPaused，§9.2 不变量 1；历史可读——
+   仅降名称/周期对比度，未读点/状态点/checkbox/操作钮不受影响） */
+.rowPaused .schedName,
+.rowPaused .schedPeriod {
+  opacity: 0.45;
+}
+
 .unreadDot {
   position: absolute;
   top: 7px;
@@ -349,6 +356,40 @@
   color: var(--error);
 }
 
+/* 详情卡执行中态（accent 色与状态点呼吸点同色系，2026-10-23） */
+.stateRunning {
+  color: var(--accent);
+}
+
+/* 去向行（2026-10-23 动线补全：订阅→沉淀物）：文字可点跳容器，
+   查看档案/重建档案聚合在行尾 */
+.detailArchive {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.archiveLink {
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.archiveLink strong {
+  color: var(--text-primary);
+}
+
+.archiveLink:hover strong {
+  color: var(--accent);
+}
+
+.detailArchiveSpacer {
+  flex: 1;
+}
+
 .detailPrompt {
   margin: 0;
   padding: 8px;
@@ -366,7 +407,8 @@
   gap: 8px;
 }
 
-.detailActions button {
+.detailActions button,
+.detailActBtn {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -379,6 +421,12 @@
   cursor: pointer;
 }
 
-.detailActions button:hover {
+.detailActBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.detailActions button:hover,
+.detailActBtn:hover:not(:disabled) {
   border-color: var(--accent);
 }

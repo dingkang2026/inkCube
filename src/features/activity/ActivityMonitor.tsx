@@ -215,14 +215,28 @@ export function ActivityMonitor() {
             || n.kind === 'missed' || n.kind === 'interrupted' ? 'warning'
           : 'success'
         const title = t(`activity.${n.entity_type}.${n.kind}`, { title: n.entity_title || '' })
+        // 项目文件解析完成（无培训整改）：action 从「查看」（落素材 Tab）升级为
+        // 「整理进知识页」——直达知识 Tab 并触发编译，缝合「上传→解析完成→不知道
+        // 下一步」的动线断点（编译入口已收口为脉搏带 chip，Toast 是新用户第一次
+        // 遇到「资料→知识」转化的时机）；基础库文件不参与编译，保持原「查看」
+        const projectFileDone = n.entity_type === 'file' && n.kind === 'completed'
+          && (n.container ?? 'project') === 'project' && !!n.project_id
         showToast(
           title,
           type,
           {
             detail: n.detail || undefined,
             action: {
-              label: t('activity.view'),
-              onClick: () => navigateToNotification(n),
+              label: projectFileDone ? t('activity.file.completedAction') : t('activity.view'),
+              onClick: () => {
+                if (projectFileDone) {
+                  window.dispatchEvent(new CustomEvent('app:navigate-project-tab', {
+                    detail: { projectId: n.project_id, tab: 'wiki', container: n.container ?? 'project', wikiFocus: 'compile' },
+                  }))
+                } else {
+                  navigateToNotification(n)
+                }
+              },
             },
           },
         )

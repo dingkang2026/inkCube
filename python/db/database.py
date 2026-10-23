@@ -2100,13 +2100,17 @@ class Database:
             " ORDER BY COALESCE(r.finished_at, r.started_at) DESC, r.rowid DESC").fetchall()]
 
     def schedule_unread_count(self) -> dict:
-        """侧栏摘要行计数：total=未读 done run 数；abnormal=禁用订阅数；n=订阅总数。"""
+        """侧栏摘要行计数：total=未读 done run 数；n=订阅总数；
+        abnormal=熔断订阅数（enabled=0 且 consecutive_failures>0）——手动暂停
+        是用户主动决策非告警，不计入（2026-10-23 口径收紧，对齐管理台
+        abnormal/paused 筛选）。"""
         unread = self.conn.execute(
             "SELECT COUNT(*) AS c FROM task_schedule_runs"
             " WHERE status = 'done' AND read_at IS NULL").fetchone()["c"]
         row = self.conn.execute(
             "SELECT COUNT(*) AS n,"
-            " COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS abnormal"
+            " COALESCE(SUM(CASE WHEN enabled = 0 AND consecutive_failures > 0"
+            " THEN 1 ELSE 0 END), 0) AS abnormal"
             " FROM task_schedules").fetchone()
         return {"total": unread, "abnormal": row["abnormal"], "n": row["n"]}
 

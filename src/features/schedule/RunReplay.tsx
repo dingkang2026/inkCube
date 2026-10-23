@@ -34,26 +34,33 @@ export function RunReplay({ runId, taskId, onBack, onOpenReport }: RunReplayProp
 
   useEffect(() => {
     let cancelled = false
-    const load = async () => {
+    // 消息流与报告标题解耦加载（review S-1）：报告侧失败（期次被删/产物过
+    // 保留期）只影响标题缺省，不得连累可回放的消息流整页留白
+    const loadMessages = async () => {
       try {
-        const [msgRes, reportRes] = await Promise.all([
-          window.electronAPI.invoke('tasks:getMessages', taskId) as Promise<{ messages?: unknown[] }>,
-          window.electronAPI.invoke('schedules:readReport', runId) as Promise<{
-            run?: { started_at: string }
-            schedule?: { name: string }
-          }>,
-        ])
-        if (cancelled) return
-        setMessages((msgRes.messages ?? []) as unknown as Msgs)
-        if (reportRes.schedule?.name && reportRes.run?.started_at) {
-          const d = new Date(reportRes.run.started_at)
-          setTitle(`${reportRes.schedule.name} · ${d.getMonth() + 1}/${d.getDate()}`)
-        }
+        const res = await window.electronAPI.invoke('tasks:getMessages', taskId) as { messages?: unknown[] }
+        if (!cancelled) setMessages((res.messages ?? []) as unknown as Msgs)
       } catch {
-        /* 标题缺省；消息失败留空流（回放失败不阻塞界面） */
+        /* 消息失败留空流（回放失败不阻塞界面） */
       }
     }
-    void load()
+    const loadTitle = async () => {
+      try {
+        const res = await window.electronAPI.invoke('schedules:readReport', runId) as {
+          run?: { started_at: string }
+          schedule?: { name: string }
+        }
+        if (cancelled) return
+        if (res.schedule?.name && res.run?.started_at) {
+          const d = new Date(res.run.started_at)
+          setTitle(`${res.schedule.name} · ${d.getMonth() + 1}/${d.getDate()}`)
+        }
+      } catch {
+        /* 标题缺省 */
+      }
+    }
+    void loadMessages()
+    void loadTitle()
     return () => {
       cancelled = true
     }

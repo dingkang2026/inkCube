@@ -58,14 +58,16 @@ export function PulseBar({ projectId, stageLabel, reviews, pendingCompile, loadF
     localStorage.setItem(`pulsebar:collapsed:${projectId}`, next ? '1' : '0')
   }
 
-  const chips: Array<{ key: string; label: string; count?: number; cls: string; view?: 'lint' | 'compile' }> = []
+  // 无培训可用性：每个 chip 必须带 tooltip 解释「这是什么、点了会发生什么」，
+  // 否则新用户面对「待编译/矛盾/缺口」等自造概念无从下手
+  const chips: Array<{ key: string; label: string; count?: number; cls: string; view?: 'lint' | 'compile'; tip: string }> = []
   const dueTotal = (dueTasks?.overdue ?? 0) + (dueTasks?.weekDue ?? 0)
-  if ((suggestionCount ?? 0) > 0) chips.push({ key: 'suggestions', label: t('pulse.chipSuggestions'), count: suggestionCount, cls: s.chipWarn })
-  if (dueTotal > 0) chips.push({ key: 'due', label: t('pulse.chipDue'), count: dueTotal, cls: s.chipErr })
-  if (reviews.contradiction > 0) chips.push({ key: 'contradiction', label: t('pulse.chipContradiction'), count: reviews.contradiction, cls: s.chipErr, view: 'lint' })
-  if (reviews.gap > 0) chips.push({ key: 'gap', label: t('pulse.chipGap'), count: reviews.gap, cls: s.chipErr, view: 'lint' })
-  if (pendingCompile > 0) chips.push({ key: 'pending', label: t('pulse.chipPendingCompile'), count: pendingCompile, cls: s.chipWarn, view: 'compile' })
-  if (reportsActive) chips.push({ key: 'reports', label: t('pulse.chipReports'), cls: s.chipAcc })
+  if ((suggestionCount ?? 0) > 0) chips.push({ key: 'suggestions', label: t('pulse.chipSuggestions'), count: suggestionCount, cls: s.chipWarn, tip: t('pulse.tipSuggestions') })
+  if (dueTotal > 0) chips.push({ key: 'due', label: t('pulse.chipDue'), count: dueTotal, cls: s.chipErr, tip: t('pulse.tipDue') })
+  if (reviews.contradiction > 0) chips.push({ key: 'contradiction', label: t('pulse.chipContradiction'), count: reviews.contradiction, cls: s.chipErr, view: 'lint', tip: t('pulse.tipContradiction') })
+  if (reviews.gap > 0) chips.push({ key: 'gap', label: t('pulse.chipGap'), count: reviews.gap, cls: s.chipErr, view: 'lint', tip: t('pulse.tipGap') })
+  if (pendingCompile > 0) chips.push({ key: 'pending', label: t('pulse.chipPendingCompile'), count: pendingCompile, cls: s.chipWarn, view: 'compile', tip: t('pulse.tipPendingCompile') })
+  if (reportsActive) chips.push({ key: 'reports', label: t('pulse.chipReports'), cls: s.chipAcc, tip: t('pulse.tipReports') })
 
   // 状态句:AI 句最前(3.0 四期,最新鲜的编译时点快照;空/未生成回落规则链)>
   // 拉取失败 > 逾期 > 矛盾 > 缺口 > 报告生成中 > 一切正常(3.0 §2 规则拼接 v1;
@@ -121,6 +123,7 @@ export function PulseBar({ projectId, stageLabel, reviews, pendingCompile, loadF
         <div className={s.chips}>
           {chips.map((c) => (
             <button key={c.key} className={`${s.chip} ${c.cls}`}
+              title={c.tip}
               onClick={() => { if (c.key === 'due' || c.key === 'suggestions') onOpenAffairs?.(); else onOpenWiki(c.view) }}>
               {c.key === 'reports' && <Loader2 size={12} className={s.spin} />}
               {c.label}{c.count != null ? ` ${c.count}` : ''}
