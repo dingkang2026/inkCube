@@ -234,3 +234,76 @@ class TestPendingExcludesSkipped:
         )
         assert rec["resolved"] == 1
         assert rec["resolved_action"] == "auto_confirmed"
+
+
+class TestPendingCompileCountRealtime:
+    """get_pending_compile_count 实时集合口径（2026-10-22）。
+
+    替代原 projects.pending_compile_count 事件累加计数器（解析+1/删除+1/
+    schema 变更同类全+1/编译启动清零）：原口径随操作序列漂移——删除未编译
+    文件双计、重解析虚增、schema 变更向零文件项目广播。实时口径与编译消费
+    的 get_pending_wiki_files 同一 WHERE（_PENDING_WIKI_FILES_WHERE）。"""
+
+    def test_matches_pending_files_and_shrinks_on_ingest(self, db, project_id):
+        f1 = _add_done_file(db, project_id, "a.pdf")
+        _add_done_file(db, project_id, "b.pdf")
+        assert db.get_pending_compile_count(project_id) == 2
+
+        db.create_or_update_source_page(
+            project_id=project_id, file_id=f1, status="ingested", pages_touched=[])
+
+        assert db.get_pending_compile_count(project_id) == 1
+
+    def test_delete_file_shrinks_without_double_count(self, db, project_id):
+        """删除未编译文件：集合自然收缩（修复前事件计数器再 +1 双计虚增）。"""
+        f1 = _add_done_file(db, project_id, "a.pdf")
+        _add_done_file(db, project_id, "b.pdf")
+        assert db.get_pending_compile_count(project_id) == 2
+
+        db.conn.execute("DELETE FROM files WHERE id = ?", (f1,))
+        db.conn.commit()
+
+        assert db.get_pending_compile_count(project_id) == 1
+
+    def test_only_done_files_counted(self, db, project_id):
+        """仅解析 done 文件计入：pending（解析中）与 error 不进待编译集合。"""
+        _add_done_file(db, project_id, "a.pdf")
+        pending_file = db.create_file(
+            project_id, "p.pdf", ".pdf", 1, "hash_p")   # status=pending
+        err_file = _add_done_file(db, project_id, "e.pdf")
+        db.update_file_status(err_file, "error")
+
+        assert db.get_pending_compile_count(project_id) == 1
+        _ = pending_file
+
+    def test_force_clear_restores_full_count(self, db, project_id):
+        """force 编译清空 source_pages：全量 done 文件如实回到待编译集合
+        （修复前计数器被清零，全量重编期间显示 0）。"""
+        f1 = _add_done_file(db, project_id, "a.pdf")
+        db.create_or_update_source_page(
+            project_id=project_id, file_id=f1, status="ingested", pages_touched=[])
+        assert db.get_pending_compile_count(project_id) == 0
+
+        db.conn.execute(
+            "DELETE FROM wiki_source_pages WHERE project_id = ?", (project_id,))
+        db.conn.commit()
+
+        assert db.get_pending_compile_count(project_id) == 1
+
+    def test_legacy_column_dropped_on_initialize(self, tmp_path):
+        """存量库删列迁移：带 pending_compile_count 列的旧库经 initialize 后列消失
+        （幂等：新库无列时 DROP 失败静默跳过）。"""
+        db_path = str(tmp_path / "legacy.db")
+        db = Database(db_path)
+        db.initialize()
+        # 模拟旧版本库：加回列
+        db.conn.execute(
+            "ALTER TABLE projects ADD COLUMN pending_compile_count INTEGER DEFAULT 0")
+        db.conn.commit()
+        db.conn.close()
+
+        db2 = Database(db_path)
+        db2.initialize()
+        cols = [r["name"] for r in db2.conn.execute("PRAGMA table_info(projects)").fetchall()]
+        assert "pending_compile_count" not in cols
+        db2.conn.close()

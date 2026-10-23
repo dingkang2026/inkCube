@@ -559,3 +559,67 @@ def test_on_finish_done_wires_archive_and_cleanup(
     asyncio.run(sched._on_finish(s, task["id"], "run_w", True))
 
     assert merged == [s["id"]] and cleaned == [s["id"]]
+
+
+# ── 档位制路由回归：归档合并必须注入 model（2026-10-22）────────
+
+
+def test_merge_routes_model_via_tier_slots(tmp_db, tmp_path, frozen_now,
+                                           monkeypatch):
+    """settings["model"] 是派生键（不落库），归档合并构造 LLMClient 前
+    必须经 resolve_model 注入——漏注入则空串发网关报 1211「模型不存在」
+    （档位制改造唯一漏网消费点，期次首次 done 触发归档合并才暴露）。"""
+    tmp_db.save_settings({
+        "api_key": "k",
+        "standard_model": "glm-standard-x",
+        "high_model": "glm-high-x",
+    })
+    sched = ScheduleScheduler(tmp_db, str(tmp_path), agent=object())
+    s = _make_schedule(tmp_db)
+    _make_done_run(tmp_db, tmp_path, s, "run_1", "2026-09-01T09:00:00")
+    constructed = []
+
+    class _CaptureLLM:
+        def __init__(self, settings):
+            constructed.append(dict(settings))
+
+        async def chat_full(self, messages):
+            return {"content": "## 时间线\n### 2026-09-01\n一期要点\n"}
+
+    monkeypatch.setattr(scheduler_mod, "LLMClient", _CaptureLLM)
+    _install_import_chain(monkeypatch)
+
+    asyncio.run(sched._merge_archive(s))
+
+    assert constructed[0]["model"] == "glm-standard-x"   # standard 档默认
+    assert constructed[0]["high_model"] == "glm-high-x"  # 其余键透传
+    assert tmp_db.get_schedule(s["id"])["archive_last_run_id"] == "run_1"
+
+
+def test_merge_unconfigured_tiers_pass_empty_model(tmp_db, tmp_path,
+                                                   frozen_now, monkeypatch):
+    """用户显式清空两档（存空串覆盖出厂默认）：model 空串透传网关显性失败
+    ——禁止硬编码模型名兜底（否则路由漏网变成「向网关请求不存在的模型」
+    的误导故障）。注：未存键时 get_settings 落出厂默认 glm 档，非空。"""
+    tmp_db.save_settings({
+        "standard_model": "",
+        "high_model": "",
+    })
+    sched = ScheduleScheduler(tmp_db, str(tmp_path), agent=object())
+    s = _make_schedule(tmp_db)
+    _make_done_run(tmp_db, tmp_path, s, "run_1", "2026-09-01T09:00:00")
+    constructed = []
+
+    class _CaptureLLM:
+        def __init__(self, settings):
+            constructed.append(dict(settings))
+
+        async def chat_full(self, messages):
+            return {"content": "## 时间线\n### 2026-09-01\n一期要点\n"}
+
+    monkeypatch.setattr(scheduler_mod, "LLMClient", _CaptureLLM)
+    _install_import_chain(monkeypatch)
+
+    asyncio.run(sched._merge_archive(s))
+
+    assert constructed[0]["model"] == ""

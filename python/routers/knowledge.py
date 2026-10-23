@@ -974,11 +974,7 @@ async def delete_file(project_id: str, file_id: str):
             db, vs, fts, file_id, project_id, data_dir,
             remove_file_record=True,
         )
-        # Wiki notification: file deleted → increment pending compile count
-        try:
-            db.increment_pending_compile_count(project_id)
-        except Exception:
-            pass
+        # Wiki 待编译数实时计算：文件行删除后集合自然收缩，无需事件通知（2026-10-22）
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1063,12 +1059,7 @@ async def batch_delete_files(project_id: str, req: BatchFileRequest):
                 deleted += 1
             except Exception:
                 pass
-        # Wiki notification: files deleted → increment pending compile count
-        if deleted > 0:
-            try:
-                db.increment_pending_compile_count(project_id, deleted)
-            except Exception:
-                pass
+        # Wiki 待编译数实时计算：文件行删除后集合自然收缩，无需事件通知（2026-10-22）
         return {"success": True, "deleted_count": deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

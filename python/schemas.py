@@ -53,7 +53,7 @@ class SettingsModel(BaseModel):
     task_timeout: int = 30  # seconds；ppt 长命令由 ORIGIN_PRESETS 落地 600（2.3 §3.2）
     task_max_iterations: int = 60  # FC loop max iterations (TaskSettings UI)
     task_auto_confirm_shell: bool = False  # legacy, kept for backward compat
-    task_shell_confirm_mode: str = "smart"  # strict | smart | auto
+    task_shell_confirm_mode: str = "auto"  # strict | smart | auto（2026-10-22 默认自 smart 改）
     task_shell_domain_whitelist: str = ""  # newline-separated domains auto-approved in smart mode
     task_show_execution_log: bool = True
     task_workspace_max_mb: int = 1024  # max workspace size in MB (0 = unlimited)

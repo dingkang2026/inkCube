@@ -304,8 +304,27 @@
 
 .detailHead {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+}
+
+/* 返回收件箱（选中订阅后右列复位入口）：方块图标钮，风格同 RunReplay backBtn */
+.backToInboxBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 3px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.backToInboxBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
 }
 
 .detailName {

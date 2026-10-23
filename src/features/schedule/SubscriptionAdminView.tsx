@@ -5,7 +5,7 @@
  *  刷新纪律：挂载拉一次 + 写操作后 refresh，零轮询（§9.2 规则 10）。 */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Plus, Search, Play, Pencil, Trash2, ArchiveRestore } from 'lucide-react'
+import { Plus, Search, Play, Pencil, Trash2, ArchiveRestore, ChevronLeft } from 'lucide-react'
 import { useToast } from '../knowledge/Toast'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { apiErrorText } from '../../i18n/errorCodes'
@@ -33,17 +33,20 @@ function periodText(row: ScheduleRow, t: (k: string, p?: Record<string, unknown>
 }
 
 interface SubscriptionAdminViewProps {
-  onOpenRead: (runId: string) => void
-  /** taskId 仅在期次携带 task_id 时回调（收件箱/详情路由已收窄） */
-  onOpenReplay: (runId: string, taskId: string) => void
+  /** 期次行点击（收件箱/期次历史统一进报告页，2.11 §9.1）：App 切 read 态，
+   *  携带 run 对象（schedule_id 供返回宿主页时恢复选中） */
+  onOpenRead: (run: ScheduleRunRow) => void
+  /** read/replay 返回宿主页时回传的选中订阅 id：重挂载时恢复右列详情视图
+   *  （未传或空 = 收件箱默认视图；仅挂载时消费） */
+  restoreScheduleId?: string
 }
 
-export function SubscriptionAdminView({ onOpenRead, onOpenReplay }: SubscriptionAdminViewProps) {
+export function SubscriptionAdminView({ onOpenRead, restoreScheduleId }: SubscriptionAdminViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
 
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(() => restoreScheduleId ?? null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [category, setCategory] = useState<Category>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -367,7 +370,7 @@ export function SubscriptionAdminView({ onOpenRead, onOpenReplay }: Subscription
               {inbox.length === 0 ? (
                 <div className={s.empty}>{t('schedule.inboxEmpty')}</div>
               ) : inbox.map((run) => (
-                <RunRow key={run.id} run={run} onOpen={() => onOpenRead(run.id)}
+                <RunRow key={run.id} run={run} onOpen={() => onOpenRead(run)}
                   onDelete={() => void deleteRun(run, 'inbox')} />
               ))}
               {hasMoreInbox && (
@@ -385,6 +388,15 @@ export function SubscriptionAdminView({ onOpenRead, onOpenReplay }: Subscription
           <>
             <div className={s.detailCard}>
               <div className={s.detailHead}>
+                <button
+                  className={s.backToInboxBtn}
+                  data-testid="back-to-inbox"
+                  title={t('schedule.backToInbox')}
+                  aria-label={t('schedule.backToInbox')}
+                  onClick={() => setSelectedId(null)}
+                >
+                  <ChevronLeft size={15} />
+                </button>
                 <span className={s.detailName}>{selected.name}</span>
                 <span className={s.detailPeriod}>{periodText(selected, t)}</span>
               </div>
@@ -437,10 +449,7 @@ export function SubscriptionAdminView({ onOpenRead, onOpenReplay }: Subscription
                 <RunRow
                   key={run.id}
                   run={run}
-                  onOpen={() => {
-                    if (run.task_id) onOpenReplay(run.id, run.task_id)
-                    else onOpenRead(run.id)
-                  }}
+                  onOpen={() => onOpenRead(run)}
                   onDelete={() => void deleteRun(run, 'runs')}
                 />
               ))}

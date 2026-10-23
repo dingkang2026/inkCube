@@ -29,6 +29,7 @@ from knowledge.file_cleanup import cleanup_file_data
 from knowledge.fts_store import FTSStore
 from knowledge.vector_store import VectorStore
 from llm.client import LLMClient
+from llm.routing import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +467,12 @@ class ScheduleScheduler:
                 for r in pending)
             user = (_archive_header(s, 0) + "## 时间线\n"
                     + "".join(window) + reports)
-            settings = self.db.get_settings()
+            base = self.db.get_settings()
+            # 档位制路由注入（与 routers/schedules 同口径）：settings["model"]
+            # 是派生键不落库，漏注入则空串发网关报 1211「模型不存在」——
+            # 档位制改造（2026-10-19）唯一漏网消费点，期次首次 done 触发
+            # 归档合并才暴露（2026-10-22 实证：sch_ebed51d9）。
+            settings = {**base, "model": resolve_model(base)}
             resp = await LLMClient(settings).chat_full([
                 {"role": "system", "content": ARCHIVE_SYS_PROMPT},
                 {"role": "user", "content": user},

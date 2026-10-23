@@ -1,12 +1,14 @@
 /** src/features/schedule/ReadView.tsx — 期次阅读页（2.11 §8.2，E3 T8）。
  *  挂载即 readReport + markRead（打开即已读，规则 10）；摘要卡 = run.summary
  *  直读（无文件解析，解析失败显示占位不阻塞阅读 §8.3）；Markdown 全文（D5
- *  副本，含来源节）；底部动作条：订阅设置（编辑弹层，去向绑定/更换在③步）/
- *  打开原任务（onReplay → RunReplay）；已绑定去向 → 「已沉淀至 {目标名}·档案」
- *  （目标名经列表通道懒解析）；失败 run → 原因 + 重跑（runNow）。
- *  全内容区替换渲染，无返回按钮，侧栏 NavTabs 切换退出（0.3 §2.1 peer 页惯例）。 */
+ *  副本，含来源节）。
+ *  头部动作条（2026-10-22）：返回（回宿主页：管理台恢复选中 / 首页）+
+ *  执行过程（有 task_id 时切 RunReplay；期次行点击已统一进本页，此为回放唯一入口）；
+ *  底部动作条：订阅设置（编辑弹层，去向绑定/更换在③步）；已绑定去向 →
+ *  「已沉淀至 {目标名}·档案」（目标名经列表通道懒解析）；失败 run → 原因 + 重跑（runNow）。 */
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ArrowLeft } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { useToast } from '../knowledge/Toast'
 import { ScheduleFormModal } from './ScheduleFormModal'
@@ -15,11 +17,13 @@ import s from './ReadView.module.css'
 
 interface ReadViewProps {
   runId: string
-  /** 「打开原任务」：App 切 scheduleView replay 态（RunReplay） */
+  /** 返回宿主页（App 分发：管理台恢复选中订阅 / 首页） */
+  onBack: () => void
+  /** 「执行过程」：App 切 scheduleView replay 态（RunReplay） */
   onReplay: (taskId: string) => void
 }
 
-export function ReadView({ runId, onReplay }: ReadViewProps) {
+export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const [run, setRun] = useState<ScheduleRunRow | null>(null)
@@ -133,11 +137,26 @@ export function ReadView({ runId, onReplay }: ReadViewProps) {
   return (
     <div className={s.page}>
       <header className={s.head}>
+        <button
+          className={s.backBtn}
+          data-testid="read-back-btn"
+          title={t('schedule.back')}
+          aria-label={t('schedule.back')}
+          onClick={onBack}
+        >
+          <ArrowLeft size={15} />
+        </button>
         <h2 className={s.title}>{schedule.name} · {dateLabel}</h2>
         <span className={`${s.state} ${failed ? s.stateFailed : ''}`}>
           {t(`schedule.read.state.${run.status}`)}
         </span>
         {duration && <span className={s.duration}>{duration}</span>}
+        <span className={s.spacer} />
+        {run.task_id && (
+          <button className={s.actionBtn} data-testid="read-open-replay" onClick={() => onReplay(run.task_id!)}>
+            {t('schedule.read.openReplay')}
+          </button>
+        )}
       </header>
       {failed && (
         <div className={s.failedCard}>
@@ -168,11 +187,6 @@ export function ReadView({ runId, onReplay }: ReadViewProps) {
           </span>
         )}
         <span className={s.spacer} />
-        {run.task_id && (
-          <button className={s.actionBtn} onClick={() => onReplay(run.task_id!)}>
-            {t('schedule.read.openTask')}
-          </button>
-        )}
         <button className={s.actionBtn} onClick={() => setFormOpen(true)}>
           {t('schedule.read.settings')}
         </button>

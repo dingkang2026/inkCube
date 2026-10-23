@@ -1276,6 +1276,8 @@ class TaskAgent:
             yield {"type": "done", "data": {}}
             return
         task_origin = (task.get("origin") or "chat")
+        # 影子任务标识（2.11 D2）：schedule_id 非空 = 定时订阅执行，五类确认直行
+        task_schedule_id = str(task.get("schedule_id") or "")
 
         # 档位制任务路由：按 origin 分流解析最终模型名写入 settings["model"]
         settings = self._apply_task_routing(settings, task_origin)
@@ -1519,6 +1521,7 @@ class TaskAgent:
                 ctx_mgr=ctx_mgr,
                 workspace_path=workspace_path,
                 task_origin=task_origin,
+                task_schedule_id=task_schedule_id,
             ):
                 if fc_event.get("type") == "_fc_done":
                     fc_completed = True
@@ -1662,6 +1665,7 @@ class TaskAgent:
         ctx_mgr: "ContextManager | None" = None,
         workspace_path: str = "",
         task_origin: str = "chat",
+        task_schedule_id: str = "",
     ) -> AsyncGenerator[dict, None]:
         """Handle one iteration of the function calling loop.
 
@@ -1855,11 +1859,15 @@ class TaskAgent:
         _edits_made = False  # Track if any file edits were made (for self-reflection)
         # PPT 任务命令静默（2.3 §3.3）：工作流命令谱系 = 内置 skill 固定脚本
         # 清单 + 工作区文件操作，来源可信可预期；逐条确认在百轮级任务下不可用。
-        # 固定 auto 语义，覆盖用户三档设置与 task_auto_confirm_shell
-        confirm_mode = settings.get("task_shell_confirm_mode", "smart")
+        # 固定 auto 语义，覆盖用户三档设置与 task_auto_confirm_shell。
+        # 定时订阅影子任务（schedule_id 非空，2.11 §5.3）同语义直行：
+        # 无人值守无应答方，确认只会空等 120s 后按拒绝跳过。
+        # 与 defaults/schemas 同源的三层默认（2026-10-22 smart→auto）；
+        # get_settings 白名单恒含此键，此处仅防漂移兑底
+        confirm_mode = settings.get("task_shell_confirm_mode", "auto")
         if settings.get("task_auto_confirm_shell", False):
             confirm_mode = "auto"
-        if task_origin == "ppt":
+        if task_origin == "ppt" or task_schedule_id:
             confirm_mode = "auto"
 
         for tc in tool_calls:
@@ -1916,11 +1924,12 @@ class TaskAgent:
                     yield {"type": "confirm_shell", "data": {
                         "command": command,
                         "task_id": task_id,
+                        "timeout": SHELL_CONFIRM_TIMEOUT,
                     }}
                     timed_out = False
                     try:
                         await asyncio.wait_for(confirm_event.wait(), timeout=SHELL_CONFIRM_TIMEOUT)
-                    except asyncio.TimeoutExpired:
+                    except asyncio.TimeoutError:
                         timed_out = True
                     pending = self._pending_confirms.pop(task_id, {})
                     if not pending.get("confirmed"):
@@ -1963,11 +1972,12 @@ class TaskAgent:
                     yield {"type": "confirm_shell", "data": {
                         "command": confirm_topic,
                         "task_id": task_id,
+                        "timeout": SHELL_CONFIRM_TIMEOUT,
                     }}
                     timed_out = False
                     try:
                         await asyncio.wait_for(confirm_event.wait(), timeout=SHELL_CONFIRM_TIMEOUT)
-                    except asyncio.TimeoutExpired:
+                    except asyncio.TimeoutError:
                         timed_out = True
                     pending = self._pending_confirms.pop(task_id, {})
                     if not pending.get("confirmed"):
@@ -1980,15 +1990,17 @@ class TaskAgent:
                         }, ensure_ascii=False)
 
             # ── Skill confirmation check ──
-            # origin=ppt 直行（与 shell 静默同语义，2.3 §7.3 PPT 任务零确认打断；
-            # 内置 skill 已由 seed 置信，此处是第三方 skill 未置信时的兑底）
+            # origin=ppt / 影子任务（schedule_id）直行（与 shell 静默同语义，
+            # 2.3 §7.3 / 2.11 §5.3；内置 skill 已由 seed 置信，此处是第三方
+            # skill 未置信时的兜底）
             if tool_name == "skill_runner" and result_str is None:
                 _skill_name = tool_params.get("skill", "")
                 _skill_runner_inst = tools.get("skill_runner")
                 if _skill_runner_inst:
                     _skill_runner_inst._refresh_cache()
                     _sinfo = _skill_runner_inst._find_skill(_skill_name)
-                    if _sinfo and _sinfo.get("needs_confirm") and task_origin != "ppt":
+                    if (_sinfo and _sinfo.get("needs_confirm")
+                            and task_origin != "ppt" and not task_schedule_id):
                         _confirm_event = asyncio.Event()
                         self._pending_skill_confirms[task_id] = {
                             "skill_name": _skill_name,
@@ -1999,11 +2011,12 @@ class TaskAgent:
                         yield {"type": "confirm_skill", "data": {
                             "skill_name": _skill_name,
                             "task_id": task_id,
+                            "timeout": SKILL_CONFIRM_TIMEOUT,
                         }}
                         _timed_out = False
                         try:
                             await asyncio.wait_for(_confirm_event.wait(), timeout=SKILL_CONFIRM_TIMEOUT)
-                        except asyncio.TimeoutExpired:
+                        except asyncio.TimeoutError:
                             _timed_out = True
                         _pending = self._pending_skill_confirms.pop(task_id, {})
                         if not _pending.get("confirmed"):
@@ -2016,9 +2029,11 @@ class TaskAgent:
                             }, ensure_ascii=False)
 
             # ── git_ops commit confirmation ──
-            # （origin=ppt 直行：临时工作区无 commit 价值，零打断优先）
+            # （origin=ppt / 影子任务直行：ppt 临时工作区无 commit 价值、
+            # 影子任务无人值守，零打断优先）
             if tool_name == "git_ops" and result_str is None:
-                if tool_params.get("action") == "commit" and task_origin != "ppt":
+                if (tool_params.get("action") == "commit"
+                        and task_origin != "ppt" and not task_schedule_id):
                     _commit_msg = tool_params.get("args", "")
                     _confirm_event = asyncio.Event()
                     self._pending_confirms[task_id] = {
@@ -2030,11 +2045,12 @@ class TaskAgent:
                     yield {"type": "confirm_shell", "data": {
                         "command": f"git commit {_commit_msg}",
                         "task_id": task_id,
+                        "timeout": SHELL_CONFIRM_TIMEOUT,
                     }}
                     _commit_timed_out = False
                     try:
                         await asyncio.wait_for(_confirm_event.wait(), timeout=SHELL_CONFIRM_TIMEOUT)
-                    except asyncio.TimeoutExpired:
+                    except asyncio.TimeoutError:
                         _commit_timed_out = True
                     _pending = self._pending_confirms.pop(task_id, {})
                     if not _pending.get("confirmed"):
@@ -2135,8 +2151,9 @@ class TaskAgent:
                                 _sr_chk._refresh_cache()
                                 _si_chk = _sr_chk._find_skill(tool_name)
                                 _needs_confirm = bool(_si_chk and _si_chk.get("needs_confirm"))
-                            if _needs_confirm and task_origin != "ppt":
-                                # origin=ppt 直行（与 shell 静默同语义，2.3 §7.3）
+                            if (_needs_confirm and task_origin != "ppt"
+                                    and not task_schedule_id):
+                                # origin=ppt / 影子任务直行（与 shell 静默同语义）
                                 _skill_event = asyncio.Event()
                                 self._pending_skill_confirms[task_id] = {
                                     "skill_name": tool_name,
@@ -2147,11 +2164,12 @@ class TaskAgent:
                                 yield {"type": "confirm_skill", "data": {
                                     "skill_name": tool_name,
                                     "task_id": task_id,
+                                    "timeout": SKILL_CONFIRM_TIMEOUT,
                                 }}
                                 _skill_timed_out = False
                                 try:
                                     await asyncio.wait_for(_skill_event.wait(), timeout=SKILL_CONFIRM_TIMEOUT)
-                                except asyncio.TimeoutExpired:
+                                except asyncio.TimeoutError:
                                     _skill_timed_out = True
                                 _pending = self._pending_skill_confirms.pop(task_id, {})
                                 if not _pending.get("confirmed"):

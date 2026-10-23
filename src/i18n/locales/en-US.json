@@ -632,7 +632,7 @@
       "companyBasic": {
         "title": "Company Basic Profile",
         "desc": "Get the registration and shareholder picture of a target company in one go",
-        "prompt": "Build a foundational profile of \"{company}\" and produce a basic information report.\n\n[Information Requirements]\n- Registration and shareholder data change over time: rely on live retrieval; start from the National Enterprise Credit Information System, Tianyancha, Qichacha, and the official website, but you are not limited to these entries;\n- Mark any dimension you cannot find as \"Not publicly available\" — never fill gaps with guesses.\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{company}\" Company Basic Report\n## 1. Registration Information\nFounding date, registered capital, legal representative, registered address, business scope, unified social credit code, etc. — list field by field and cite the source.\n## 2. Shareholder Structure\nShareholders with stakes (sorted by share); flag any nominee/multi-layer holding clues found.\n## 3. External Investments\nList of invested companies (name, stake, subscription date).\n## 4. Operational Risks\nAdministrative penalties, abnormal operations, dishonest/execution records; if none, state clearly \"No public risk records found\".\n\n[Discipline]\n- Cite the source for each dimension; hard figures (capital, dates, percentages) must match official/authoritative sources;\n- When sources conflict, present both with attribution;\n- Never fabricate figures or name lists."
+        "prompt": "Go to Tianyancha, search for and open the company page of \"{company}\" — the bottom of the company page contains all data dimensions of the company; collect every dimension.\n\n[Execution Requirements]\n- Collect dimension by dimension: every dimension shown at the bottom of the page must be captured;\n- If not logged in, prompt the user to log in (tell the user in the conversation to complete login in the fetch browser panel), then continue after login — never skip or substitute with other sources.\n\n[Output] After collecting all dimensions, organize the data into a Markdown report saved to the task workspace and output it in full in the conversation, sectioned by page dimension."
       },
       "companyDeep": {
         "title": "Company Deep Dive",
@@ -870,6 +870,8 @@
     "statePaused": "Paused",
     "failures": "{{n}} consecutive failures",
     "unread": "Unread",
+    "back": "Back",
+    "backToInbox": "Back to Inbox",
     "inboxTitle": "Inbox",
     "inboxEmpty": "No new outputs",
     "runsTitle": "Run history",
@@ -937,11 +939,12 @@
       "noSummary": "No summary was produced for this run — read the full report below",
       "archivedTo": "Archived to ",
       "archivedUnit": " · Archive",
-      "openTask": "Open Original Task",
+      "openReplay": "View Replay",
       "settings": "Subscription Settings"
     },
     "replay": {
-      "title": "Run Replay (read-only)"
+      "title": "Run Replay (read-only)",
+      "viewReport": "View Report"
     },
     "digest": {
       "viewAll": "View all",

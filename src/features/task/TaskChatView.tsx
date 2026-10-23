@@ -35,6 +35,8 @@ interface TaskChatViewProps {
   onPauseTask?: () => void
   onShellConfirm?: (confirmed: boolean, allowSession?: boolean) => void
   onSkillConfirm?: (confirmed: boolean) => void
+  /** 确认卡倒计时到 0 的本地清理（不发拒绝 POST）：后端超时分支负责留痕 */
+  onConfirmExpire?: (kind: 'shell' | 'skill') => void
   onResumeTask?: () => void
   canResume?: boolean
   onFilesUploaded?: (taskId: string) => void
@@ -61,6 +63,7 @@ export function TaskChatView({
   onPauseTask,
   onShellConfirm,
   onSkillConfirm,
+  onConfirmExpire,
   onResumeTask,
   canResume,
   onFilesUploaded,
@@ -88,6 +91,9 @@ export function TaskChatView({
   // 重选模板/发送成功后重置,保证每个新预填的模板都得到一次提醒
   const placeholderWarnedRef = useRef(false)
   const isEmpty = messages.length === 0 && !isGenerating
+  // 确认卡到期回调（稳定引用：Card 内 effect 依赖它，逐渲染新建会重启计时器）
+  const handleShellExpire = useCallback(() => onConfirmExpire?.('shell'), [onConfirmExpire])
+  const handleSkillExpire = useCallback(() => onConfirmExpire?.('skill'), [onConfirmExpire])
 
   // Fetch installed skills for slash command autocomplete
   useEffect(() => {
@@ -401,7 +407,9 @@ export function TaskChatView({
       {pendingShellConfirm && (
         <ShellConfirmCard
           command={pendingShellConfirm.command}
+          expiresAt={pendingShellConfirm.expiresAt}
           onConfirm={onShellConfirm || (() => {})}
+          onExpire={handleShellExpire}
           t={t}
         />
       )}
@@ -410,7 +418,9 @@ export function TaskChatView({
       {pendingSkillConfirm && (
         <SkillConfirmCard
           skillName={pendingSkillConfirm.skillName}
+          expiresAt={pendingSkillConfirm.expiresAt}
           onConfirm={onSkillConfirm || (() => {})}
+          onExpire={handleSkillExpire}
           t={t}
         />
       )}
@@ -540,30 +550,42 @@ export function TaskChatView({
 /** Inline shell command confirmation card */
 function ShellConfirmCard({
   command,
+  expiresAt,
   onConfirm,
+  onExpire,
   t,
 }: {
   command: string
+  expiresAt: number
   onConfirm: (confirmed: boolean, allowSession?: boolean) => void
+  onExpire: () => void
   t: (key: string) => string
 }) {
-  const [timeout, setTimeout_] = useState(30)
+  // 倒计时源自后端 confirm_shell 载荷的 timeout（1.1 §7.1：shell/code_executor/git
+  // commit 共 120s），绝对截止时刻推算剩余——bg 往返后不重置；每 tick 重算而非
+  // 递减，无 interval 漂移累计误差。到 0 仅本地清理（onExpire）：真实等待终止
+  // 由后端超时分支留痕「确认超时，已跳过」，不发拒绝 POST（避免超时被记成拒绝）
+  const [remainSec, setRemainSec] = useState(() =>
+    expiresAt > 0 ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0)
 
   useEffect(() => {
-    if (timeout <= 0) {
-      onConfirm(false)
-      return
+    if (expiresAt <= 0) return  // timeout 缺失（异常载荷）：无倒计时，与历史行为一致
+    const tick = () => {
+      const r = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
+      setRemainSec(r)
+      if (r === 0) onExpire()
     }
-    const timer = setInterval(() => setTimeout_((s) => s - 1), 1000)
+    tick()
+    const timer = setInterval(tick, 1000)
     return () => clearInterval(timer)
-  }, [timeout, onConfirm])
+  }, [expiresAt, onExpire])
 
   return (
     <div className={styles.shellConfirm}>
       <div className={styles.shellConfirmHeader}>
         <span className={styles.shellConfirmIcon}><AlertTriangle size={16} /></span>
         <span>{t('task.shellConfirmTitle')}</span>
-        <span className={styles.shellConfirmTimer}>{timeout}s</span>
+        {expiresAt > 0 && <span className={styles.shellConfirmTimer}>{remainSec}s</span>}
       </div>
       <pre className={styles.shellConfirmCmd}>{command}</pre>
       <div className={styles.shellConfirmActions}>
@@ -584,30 +606,40 @@ function ShellConfirmCard({
 /** Inline skill execution confirmation card */
 function SkillConfirmCard({
   skillName,
+  expiresAt,
   onConfirm,
+  onExpire,
   t,
 }: {
   skillName: string
+  expiresAt: number
   onConfirm: (confirmed: boolean) => void
+  onExpire: () => void
   t: (key: string) => string
 }) {
-  const [timeout, setTimeout_] = useState(60)
+  // 倒计时语义同 ShellConfirmCard（skill 窗口 180s，1.1 §7.2）；到 0 仅本地清理，
+  // 后端超时分支留痕「确认超时，已跳过 Skill」
+  const [remainSec, setRemainSec] = useState(() =>
+    expiresAt > 0 ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0)
 
   useEffect(() => {
-    if (timeout <= 0) {
-      onConfirm(false)
-      return
+    if (expiresAt <= 0) return
+    const tick = () => {
+      const r = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
+      setRemainSec(r)
+      if (r === 0) onExpire()
     }
-    const timer = setInterval(() => setTimeout_((s) => s - 1), 1000)
+    tick()
+    const timer = setInterval(tick, 1000)
     return () => clearInterval(timer)
-  }, [timeout, onConfirm])
+  }, [expiresAt, onExpire])
 
   return (
     <div className={styles.shellConfirm}>
       <div className={styles.shellConfirmHeader}>
         <span className={styles.shellConfirmIcon}><Puzzle size={16} /></span>
         <span>{t('task.skillConfirmTitle')}</span>
-        <span className={styles.shellConfirmTimer}>{timeout}s</span>
+        {expiresAt > 0 && <span className={styles.shellConfirmTimer}>{remainSec}s</span>}
       </div>
       <pre className={styles.shellConfirmCmd}>{t('task.skillConfirmDesc')} {skillName}</pre>
       <div className={styles.shellConfirmActions}>

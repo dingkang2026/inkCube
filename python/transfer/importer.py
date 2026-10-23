@@ -258,7 +258,7 @@ def run_import(db, data_dir: str, source_path: str, new_project_id: str,
             "wiki_overview": p.get("wiki_overview") or "",
             "playbook_seeded": 1 if p.get("playbook_seeded") else 0,
             "archived_at": p.get("archived_at"),
-            "pending_compile_count": 0, "pulse_ai_status": "",
+            "pulse_ai_status": "",
             "pulse_ai_status_at": None,
             "created_at": p.get("created_at") or now, "updated_at": now,
         }

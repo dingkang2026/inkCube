@@ -114,3 +114,43 @@ describe('browserPanelStore — type 输入可见性自动放大（V2.1-R10）',
     expect(browserPanelStore.getState()).toMatchObject({ visible: true, expanded: true, autoExpanded: true })
   })
 })
+
+describe('browserPanelStore — 手动放大优先不被 action 流缩回（2026-10-22）', () => {
+  it('用户手动 expand 后，后续 action 的 showCompact 不再缩回小卡', () => {
+    // 原缺陷：每个 browser-fetch action 无条件 expanded=false——手动放大
+    // 几秒内被下一个 click/open 打断（用户实测：采集面板放不住）
+    browserPanelStore.showCompact()
+    browserPanelStore.expand() // 用户手动放大
+    browserPanelStore.showCompact() // 后续 action 到达（click/open/scroll…）
+    expect(browserPanelStore.getState()).toMatchObject({ visible: true, expanded: true })
+  })
+
+  it('手动放大中 type 自动放大后 observation 不缩：collapseIfAuto 只清 auto 标记', () => {
+    browserPanelStore.showCompact()
+    browserPanelStore.expand() // 用户手动放大
+    browserPanelStore.expandForInput() // type 到达（已放大，置 auto 标记）
+    expect(browserPanelStore.getState().autoExpanded).toBe(true)
+    browserPanelStore.collapseIfAuto() // observation 到达
+    expect(browserPanelStore.getState()).toMatchObject({ visible: true, expanded: true, autoExpanded: false })
+  })
+
+  it('navigate 登录大面板不被后续 action 缩回（输验证码途中被缩走同为打断）', () => {
+    browserPanelStore.navigate('https://example.com/login')
+    browserPanelStore.showCompact() // 任务重试抓取的 action 到达
+    expect(browserPanelStore.getState()).toMatchObject({ visible: true, expanded: true })
+  })
+
+  it('用户手动 collapse 后恢复跟看态：后续 action showCompact 照常回小卡', () => {
+    browserPanelStore.expand()
+    browserPanelStore.collapse() // 用户主动缩回
+    browserPanelStore.showCompact() // action 到达
+    expect(browserPanelStore.getState()).toMatchObject({ visible: true, expanded: false })
+  })
+
+  it('hide 解除放大意愿：关闭后下一动作以小卡重现（不再恢复大面板打扰）', () => {
+    browserPanelStore.expand()
+    browserPanelStore.hide() // 用户关闭
+    browserPanelStore.showCompact() // 下一 action 重现
+    expect(browserPanelStore.getState()).toMatchObject({ visible: true, expanded: false })
+  })
+})

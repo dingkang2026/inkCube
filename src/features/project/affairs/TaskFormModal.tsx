@@ -2,7 +2,9 @@
  *  新建:归当前时期(服务端 POST 按项目 stage 推导,表单不出现时期字段);
  *  编辑:时期可改(PATCH 白名单 phase),类型禁改(白名单无 task_type)。
  *  recurring 类型切换为节奏字段(频率 + due_day:1-31|end|MM-DD),隐藏截止日;
- *  完成匹配词(§6.1.7):新建 recurring/编辑 file_parsed 实例可设,清空=移除自动完成;
+ *  完成匹配词(§6.1.7):资料/周期事务均可自动完成(file_parsed),新建与编辑均可设,
+ *  清空=移除自动完成(2026-10-22 放开手动新建资料任务入口,消除「模板任务能自动
+ *  完成、手动任务不能」的不对称);
  *  模板带入的 auto_complete 不可改场景原样保留回传(实例与模板解耦,§6.4-1)。
  */
 import { useState } from 'react'
@@ -38,9 +40,10 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
   const [freq, setFreq] = useState<RecurrenceRule['freq']>(initial?.recurrence_rule?.freq ?? 'monthly')
   const [dueDay, setDueDay] = useState<string>(
     initial?.recurrence_rule ? String(initial.recurrence_rule.due_day) : '15')
-  // 完成匹配词(§6.1.7):新建 recurring 或编辑 file_parsed 实例可设;清空保存 =
-  // 移除自动完成规则(null,退回手动完成);report_completed 实例不显示原样透传
-  const showMatch = isRecurring || initial?.auto_complete?.on === 'file_parsed'
+  // 完成匹配词(§6.1.7,2026-10-22 放开 material):资料/周期事务均走 file_parsed
+  // 闭环,新建与编辑均可设;清空保存 = 移除自动完成规则(null,退回手动完成);
+  // report_completed 规则(报告类)不在表单展示、原样透传(§6.4-1)
+  const showMatch = isRecurring || taskType === 'material'
   const [matchInput, setMatchInput] = useState(initial?.auto_complete?.match ?? '')
   const [dueDayError, setDueDayError] = useState(false)
   const [saveError, setSaveError] = useState(false)
@@ -69,12 +72,12 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
     if (!title.trim() || saving) return
     let recurrenceRule: RecurrenceRule | null = null
     let due: string | null = dueDate || null
-    // 自动完成规则(§6.1.7):可改场景按输入落 file_parsed(清空=移除);
-    // 新建仅 recurring 生效(切类型残留输入不生效,与字段隐藏一致)
+    // 自动完成规则(§6.1.7):showMatch 场景按输入落 file_parsed(清空=移除);
+    // 切类型即清空残留输入(type onChange),隐藏场景不产生新规则
     const match = matchInput.trim()
     const autoComplete: PhaseTask['auto_complete'] = initial
       ? (showMatch ? (match ? { on: 'file_parsed', match } : null) : initial.auto_complete)
-      : (isRecurring && match ? { on: 'file_parsed', match } : null)
+      : (showMatch && match ? { on: 'file_parsed', match } : null)
     if (isRecurring) {
       const day = parseDueDay(freq, dueDay)
       if (day == null) { setDueDayError(true); return }

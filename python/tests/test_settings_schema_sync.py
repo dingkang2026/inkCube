@@ -104,3 +104,48 @@ class TestSettingsSchemaSync:
         model = SettingsModel(wiki_ledger_parse_model="glm-4-flash")
         assert model.wiki_ledger_parse_model == "glm-4-flash"
         assert "wiki_ledger_parse_model" in model.model_dump()
+
+
+class TestShellConfirmDefaultAuto:
+    """出厂默认 smart→auto（2026-10-22）：三层默认一致 + 存量 smart 跟随迁移。
+
+    显式 strict/auto 保留；显式 smart 无法与被动落库区分，被一并升级
+    （用户裁决接受，自用为主）；改回 smart 后不再被迁移（幂等按值匹配）。
+    """
+
+    def test_new_db_defaults_to_auto(self, db):
+        assert db.get_settings()["task_shell_confirm_mode"] == "auto"
+
+    def test_model_default_matches(self):
+        assert SettingsModel().task_shell_confirm_mode == "auto"
+
+    def test_stored_smart_upgraded_to_auto(self, tmp_path):
+        """设置页全量保存被动落库的 smart 存量 → 启动迁移跟随新默认。"""
+        database = Database(str(tmp_path / "mig_smart.db"))
+        database.initialize()
+        database.save_settings({"task_shell_confirm_mode": "smart"})
+        database._migrate_shell_confirm_default_auto()
+        assert database.get_settings()["task_shell_confirm_mode"] == "auto"
+        database.conn.close()
+
+    def test_explicit_strict_and_auto_preserved(self, tmp_path):
+        """显式 strict / auto 不被迁移触碰。"""
+        database = Database(str(tmp_path / "mig_preserve.db"))
+        database.initialize()
+        database.save_settings({"task_shell_confirm_mode": "strict"})
+        database._migrate_shell_confirm_default_auto()
+        assert database.get_settings()["task_shell_confirm_mode"] == "strict"
+        database.save_settings({"task_shell_confirm_mode": "auto"})
+        database._migrate_shell_confirm_default_auto()
+        assert database.get_settings()["task_shell_confirm_mode"] == "auto"
+        database.conn.close()
+
+    def test_migration_idempotent(self, tmp_path):
+        """幂等：二次迁移无行可改不报错，终态仍 auto。"""
+        database = Database(str(tmp_path / "mig_idem.db"))
+        database.initialize()
+        database.save_settings({"task_shell_confirm_mode": "smart"})
+        database._migrate_shell_confirm_default_auto()
+        database._migrate_shell_confirm_default_auto()
+        assert database.get_settings()["task_shell_confirm_mode"] == "auto"
+        database.conn.close()

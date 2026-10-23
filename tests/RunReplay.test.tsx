@@ -3,10 +3,11 @@
  *
  * 覆盖：标题「{订阅名} · M/D」；消息流经 tasks:getMessages 拉取（只读复用
  * TaskMessageList，isGenerating=false）；无输入区（无 textarea——规则 6 只读，
- * 输入区属 TaskPage，不在本组件）。
+ * 输入区属 TaskPage，不在本组件）；头部动作条（2026-10-22）：返回 → onBack /
+ * 查看报告 → onOpenReport（报告↔回放双向切换）。
  */
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { RunReplay } from '../src/features/schedule/RunReplay'
 
 vi.mock('react-i18next', () => ({
@@ -55,6 +56,14 @@ const flush = async () => {
   }
 }
 
+const onBack = vi.fn()
+const onOpenReport = vi.fn()
+
+beforeEach(() => {
+  onBack.mockClear()
+  onOpenReport.mockClear()
+})
+
 afterEach(() => {
   delete (window as { electronAPI?: unknown }).electronAPI
   replayListState.props = null
@@ -64,7 +73,7 @@ describe('RunReplay（2.11 §8.3 只读回放）', () => {
   it('标题含订阅名与只读标记，消息流经 tasks:getMessages 拉取', async () => {
     const invoke = wireInvoke()
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    const { container } = render(<RunReplay runId="run_1" taskId="t1" />)
+    const { container } = render(<RunReplay runId="run_1" taskId="t1" onBack={onBack} onOpenReport={onOpenReport} />)
     await flush()
     expect(screen.getByText(/华润舆情/)).toBeTruthy()   // 标题含订阅名
     expect(screen.getByText(/schedule\.replay\.title/)).toBeTruthy()  // 标题含只读标记
@@ -72,5 +81,15 @@ describe('RunReplay（2.11 §8.3 只读回放）', () => {
     expect(screen.getByText('第一期订阅指令')).toBeTruthy()
     expect(replayListState.props?.isGenerating).toBe(false) // 档案语义：恒非生成态
     expect(container.querySelector('textarea')).toBeNull() // 只读：无输入区
+  })
+
+  it('头部动作条：「返回」回宿主页、「查看报告」切阅读页（2026-10-22）', async () => {
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
+    render(<RunReplay runId="run_1" taskId="t1" onBack={onBack} onOpenReport={onOpenReport} />)
+    await flush()
+    fireEvent.click(screen.getByTestId('replay-back-btn'))
+    expect(onBack).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('replay-open-report'))
+    expect(onOpenReport).toHaveBeenCalledTimes(1)
   })
 })

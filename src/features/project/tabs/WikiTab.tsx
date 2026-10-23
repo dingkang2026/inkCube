@@ -19,6 +19,7 @@ import { WikiLintView } from './WikiLintView'
 import { CompilePanel } from './CompilePanel'
 import { WikiSchemaManager } from './WikiSchemaManager'
 import { usePagedList } from '../../../hooks/usePagedList'
+import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
 import { useActivity } from '../../activity/ActivityContext'
 import { useFeatureGuard } from '../../readiness/useReadiness'
 import { useToast } from '../../knowledge/Toast'
@@ -106,6 +107,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const showToast = useToast()
   const [pages, setPages] = useState<WikiPage[]>([])
   const [pendingCount, setPendingCount] = useState(0)
+  /** 结构页缺失清单（listPages.missing_pages，后端基于全量 page_key 集计算，
+   *  不受分页影响）：知识首页完成度数据源（2026-10-22 起替代前端分页复算） */
+  const [missingPages, setMissingPages] = useState<Array<{ page_key: string; title: string }>>([])
   const [purpose, setPurpose] = useState('')
   const [overview, setOverview] = useState('')
   const [sourcePages, setSourcePages] = useState<any[]>([])
@@ -210,6 +214,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       setPagesHasMore(!!result.has_more)
       setPagesTotal(typeof result.total === 'number' ? result.total : null)
       setPendingCount(result.pending_compile_count || 0)
+      setMissingPages(result.missing_pages || [])
       setPurpose(result.wiki_purpose || '')
       setOverview(result.wiki_overview || '')
       setSourcePages(result.source_pages || [])
@@ -283,6 +288,12 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
 
   // 台账解析心跳（3.0 四期）：本项目 ledger_parse 活跃 → 时间轴卡头「解析中」提示（旧条目照常可读）
   const ledgerParsing = useActivity('ledger_parse').items.some((a) => a.project_id === projectId)
+
+  // 文件解析终态边沿（2026-10-22）：新文件解析 done → 后端待编译集合变化 →
+  // 刷 pages/pendingCount（「开始编译(N)」/待编译 CTA 即时反映；原先只在挂载/
+  // 编译终态拉取，中途上传文件数字滞留旧值）
+  const filesParsing = useActivity('file').items.some((a) => a.project_id === projectId)
+  useEdgeRefetch(filesParsing, () => { void loadPages() })
 
   // Initial load（编译状态不再自行拉取，改由父组件 #4 轮询下发，v1.7 迁移自原 #3 独立轮询，0.4 §8.1）；
   // 台账时间轴由 usePagedList 自管首拉；projectId 切换时 pages 游标重置回单页量
@@ -816,6 +827,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               }}
               onOpenLint={() => setViewMode('lint')}
               schemas={schemas}
+              missingPages={missingPages}
               pagesTotal={pagesTotal}
               hasMorePages={pagesHasMore}
               pagesLoadingMore={pagesLoadingMore}

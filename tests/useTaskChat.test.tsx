@@ -466,3 +466,65 @@ describe('useTaskChat — resume 早退与消息加载竞态回归（review 2026
     expect(result.current.canResume).toBe(false)
   })
 })
+
+describe('useTaskChat — 确认弹窗倒计时（timeout 载荷同步，1.1 §7.1/§7.2）', () => {
+  it('confirm_shell/skill 携带 timeout：expiresAt = now + timeout*1000；缺失时为 0（防御旧事件）', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    const t0 = Date.now()
+    await emit('confirm_shell', { command: 'rm -rf /', task_id: 't1', timeout: 120 })
+    const shell = result.current.pendingShellConfirm
+    expect(shell?.command).toBe('rm -rf /')
+    expect(shell!.expiresAt).toBeGreaterThanOrEqual(t0 + 120_000)
+    expect(shell!.expiresAt).toBeLessThanOrEqual(Date.now() + 120_000)
+
+    await emit('confirm_skill', { skill_name: 'web-scraper', task_id: 't1', timeout: 180 })
+    const skill = result.current.pendingSkillConfirm
+    expect(skill?.skillName).toBe('web-scraper')
+    expect(skill!.expiresAt).toBeGreaterThanOrEqual(t0 + 180_000)
+    expect(skill!.expiresAt).toBeLessThanOrEqual(Date.now() + 180_000)
+
+    // timeout 缺失（异常载荷）：0 = 卡片无倒计时，与历史行为一致
+    await emit('confirm_shell', { command: 'ls', task_id: 't1' })
+    expect(result.current.pendingShellConfirm?.expiresAt).toBe(0)
+  })
+
+  it('后台任务确认存入 bgStates 携带 expiresAt，切回保持同一绝对时间戳（剩余不重置）', async () => {
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string | null }) => useTaskChat(id),
+      { initialProps: { id: 't2' as string | null } },
+    )
+    await settle()
+
+    // t2 前台建立缓存 → 切 t1 转后台 → 后台收到 skill 确认请求
+    await emit('iteration', { iteration: 0 }, 't2')
+    await act(async () => { rerender({ id: 't1' }) })
+    await emit('confirm_skill', { skill_name: 'web-scraper', task_id: 't2', timeout: 180 }, 't2')
+
+    // 切回 t2：bg 恢复的 expiresAt 必须是同一绝对时间戳（倒计时跨切换继续走）
+    await act(async () => { rerender({ id: 't2' }) })
+    expect(result.current.pendingSkillConfirm?.skillName).toBe('web-scraper')
+    const remainSec = Math.ceil(((result.current.pendingSkillConfirm?.expiresAt ?? 0) - Date.now()) / 1000)
+    expect(remainSec).toBeGreaterThan(0)
+    expect(remainSec).toBeLessThanOrEqual(180)
+  })
+
+  it('dismissPendingConfirm 仅本地清理，不发拒绝 POST（超时语义归后端留痕）', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+
+    await emit('confirm_shell', { command: 'rm -rf /', task_id: 't1', timeout: 120 })
+    expect(result.current.pendingShellConfirm).not.toBeNull()
+    await act(async () => { result.current.dismissPendingConfirm('shell') })
+    expect(result.current.pendingShellConfirm).toBeNull()
+
+    await emit('confirm_skill', { skill_name: 'x', task_id: 't1', timeout: 180 })
+    await act(async () => { result.current.dismissPendingConfirm('skill') })
+    expect(result.current.pendingSkillConfirm).toBeNull()
+
+    // 到期清理路径不得发 confirm 拒绝（后端 timed_out 分支才发 confirm_expired）
+    expect(invoke).not.toHaveBeenCalledWith('tasks:confirmShell', expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith('tasks:confirmSkill', expect.anything())
+  })
+})

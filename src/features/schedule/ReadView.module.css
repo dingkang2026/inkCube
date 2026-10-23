@@ -11,8 +11,27 @@
 
 .head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+}
+
+/* 返回宿主页（头部图标钮，风格同 RunReplay backBtn） */
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 4px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.backBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
 }
 
 .title {

@@ -192,6 +192,13 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     void loadPulseData()
   })
 
+  // 文件解析终态边沿（2026-10-22）：新文件解析 done → 后端待编译集合变化 →
+  // 脉搏带待编译 chip 即时刷新（与上方编译终态边沿同款零轮询机制；
+  // 原先数字只在挂载/编译终态拉取，中途上传文件 chip 滞留旧值）
+  useEdgeRefetch(filesActive, () => {
+    void loadPulseData()
+  })
+
   // 挂载 / 项目切换时拉一次快照（0.4 §5.6 切回「一次性拉取」：项目切换后旧快照
   // 防陈旧；停轮期间终态已发生后切入本页也能立即拿到终态）
   useEffect(() => {

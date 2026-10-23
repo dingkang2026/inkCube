@@ -28,6 +28,12 @@ def client_and_db(monkeypatch):
         db = Database(os.path.join(td, "t.db"))
         db.initialize()
         db.ensure_preset_base_libs()
+        # get_data_dir 双点位 patch（paths 模块绑定 + routers.system 模块级
+        # from-import 绑定）：漏 patch 时 _clean_knowledge / reset_all_data
+        # 的 rmtree 会落在真实 python/data——2026-10-22 复盘根因，每次全量
+        # 回归清一次用户磁盘产物（DB 因 deps.db 已隔离而幸存）。
+        monkeypatch.setattr("paths.get_data_dir", lambda: td)
+        monkeypatch.setattr("routers.system.get_data_dir", lambda: td)
         monkeypatch.setattr(deps, "db", db)
         # 清理门禁依赖（_reset_gates）：无在飞任务/下载 = 放行
         monkeypatch.setattr(deps, "task_agent",

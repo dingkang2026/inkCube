@@ -153,6 +153,25 @@ class TestListWikiPagesPagination:
                     "source_pages"):
             assert key in result
 
+    def test_pending_compile_count_matches_pending_files(self, routed):
+        """listPages 的待编译数与编译消费的待编译集合同口径实时计算
+        （2026-10-22 修复：不再消费 projects 列上的事件累加计数器）。"""
+        pid = routed.create_project("P")["id"]
+        routed.create_file(
+            project_id=pid, filename="new.pdf", file_type=".pdf",
+            file_size=1, file_hash="h1", file_id="f_new")
+        routed.update_file_status("f_new", "done")
+        routed.create_file(
+            project_id=pid, filename="old.pdf", file_type=".pdf",
+            file_size=1, file_hash="h2", file_id="f_old")
+        routed.update_file_status("f_old", "done")
+        routed.create_or_update_source_page(
+            project_id=pid, file_id="f_old", status="ingested", pages_touched=[])
+
+        result = asyncio.run(wiki.list_wiki_pages(pid, limit=50, offset=0))
+
+        assert result["pending_compile_count"] == 1
+
 
 class TestListReviewsPagination:
     def test_limit_zero_returns_all_backward_compatible(self, routed):

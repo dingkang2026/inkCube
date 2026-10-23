@@ -539,8 +539,15 @@ class Database:
         """)
         self.conn.commit()
 
-        # Migrate: projects table - pending_compile_count for Wiki notification
-        self._migrate_add_column("projects", "pending_compile_count", "INTEGER DEFAULT 0")
+        # 2.11 迁移反转（2026-10-22）：pending_compile_count 事件累加计数器
+        # 随删除/重解析/schema 变更漂移，与编译真实消费的待编译集合脱节——
+        # get_pending_compile_count 改为实时计算，存量库删列（SQLite ≥3.35），
+        # 新库本就无此列。
+        try:
+            self.conn.execute("ALTER TABLE projects DROP COLUMN pending_compile_count")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 列不存在（新库/已迁移）
 
         # Migrate: wiki_pages — add page_type, refs, sources, tags (§3.2)
         self._migrate_add_column("wiki_pages", "page_type", "TEXT DEFAULT 'structure'")
@@ -837,6 +844,27 @@ class Database:
         # Migrate: 清理独立 VLM 配置三键（2026-10-21 图片理解统一走 LLM 链路）
         self._migrate_drop_vlm_settings()
 
+        # Migrate: shell 确认模式存量 smart 值跟随新默认 auto（2026-10-22）
+        self._migrate_shell_confirm_default_auto()
+
+    def _migrate_shell_confirm_default_auto(self):
+        """shell 确认模式存量 smart 值跟随新默认 auto（2026-10-22 用户裁决）。
+
+        设置页全量保存会把未修改的出厂值被动落库，仅按值升级 smart→auto；
+        显式 strict / auto 保留不动。边缘取舍：显式选 smart 的存量值无法
+        与被动落库区分，被一并升级（自用为主，可接受）；此后用户改回
+        smart 不会被二次迁移（幂等按值匹配，改回即视为显式选择）。
+        """
+        cur = self.conn.execute(
+            "UPDATE settings SET value = ? "
+            "WHERE key = 'task_shell_confirm_mode' AND value = ?",
+            ('"auto"', '"smart"'))
+        self.conn.commit()
+        if cur.rowcount:
+            logger.info(
+                "Migrated settings: task_shell_confirm_mode smart->auto x%d",
+                cur.rowcount)
+
     def _migrate_drop_vlm_settings(self):
         """清理独立 VLM 配置三键（vlm_api_url/vlm_api_key/vlm_model）。
 
@@ -1005,7 +1033,7 @@ class Database:
             # 「get 为 None」判定未设置只对专用键成立——ORIGIN_PRESETS 必须用专用键
             "task_ppt_max_iterations": None,  # model-exempt: 无设置页 UI（全量 PUT 会覆盖用户值），覆盖走后端 API
             "task_ppt_timeout": None,  # model-exempt: 同上
-            "task_shell_confirm_mode": "smart",  # strict | smart | auto
+            "task_shell_confirm_mode": "auto",  # strict | smart | auto（2026-10-22 默认自 smart 改为 auto；存量 smart 值启动迁移跟随，显式 strict/auto 不动）
             "task_auto_confirm_shell": False,  # legacy, kept for backward compat
             "task_shell_domain_whitelist": "",  # newline-separated domains auto-approved in smart mode
             "task_show_execution_log": True,
@@ -3286,8 +3314,6 @@ class Database:
             (schema_id, project_type, page_key, title, compile_hint, hints_json, position, 1 if is_ledger else 0),
         )
         self.conn.commit()
-        # Notify affected projects
-        self._notify_schema_change(project_type, page_key, "added")
         return {"id": schema_id, "project_type": project_type, "page_key": page_key, "title": title}
 
     def update_wiki_schema(
@@ -3326,19 +3352,12 @@ class Database:
             params,
         )
         self.conn.commit()
-        # Notify affected projects
-        schema = self._get_schema_by_id(schema_id)
-        if schema:
-            self._notify_schema_change(schema["project_type"], schema["page_key"], "modified")
-        return schema
+        return self._get_schema_by_id(schema_id)
 
     def delete_wiki_schema(self, schema_id: str) -> bool:
         """Delete a wiki schema entry."""
-        schema = self._get_schema_by_id(schema_id)
         cursor = self.conn.execute("DELETE FROM wiki_schemas WHERE id = ?", (schema_id,))
         self.conn.commit()
-        if schema:
-            self._notify_schema_change(schema["project_type"], schema["page_key"], "removed")
         return cursor.rowcount > 0
 
     def get_wiki_schema(self, project_type: str, page_key: str) -> dict | None:
@@ -3357,25 +3376,6 @@ class Database:
                     d["base_lib_search_hints"] = []
             return d
         return None
-
-    def _notify_schema_change(self, project_type: str, page_key: str, action: str):
-        """Increment pending_compile_count for all projects of the affected type."""
-        try:
-            cursor = self.conn.execute(
-                "SELECT id FROM projects WHERE type = ? AND kind = 'project'",
-                (project_type,),
-            )
-            project_ids = [row["id"] for row in cursor.fetchall()]
-            for pid in project_ids:
-                self.conn.execute(
-                    "UPDATE projects SET pending_compile_count = pending_compile_count + 1 WHERE id = ?",
-                    (pid,),
-                )
-            if project_ids:
-                self.conn.commit()
-                logger.info("Schema %s %s: notified %d projects", action, page_key, len(project_ids))
-        except Exception as e:
-            logger.warning("Failed to notify schema change: %s", e)
 
     # ── Forms: Templates & Fills (2.4 §3) ──
 
@@ -4853,11 +4853,7 @@ class Database:
         """
         query = (
             "SELECT id, filename FROM files "
-            "WHERE project_id = ? AND status = 'done' "
-            "AND id NOT IN ("
-            "  SELECT file_id FROM wiki_source_pages "
-            "  WHERE project_id = ? AND status IN ('ingested', 'skipped')"
-            ")"
+            f"WHERE {self._PENDING_WIKI_FILES_WHERE}"
         )
         params: list = [project_id, project_id]
         if exclude_file_ids:
@@ -4885,27 +4881,30 @@ class Database:
 
     # ── Wiki: Pending Compile Count ──
 
-    def increment_pending_compile_count(self, project_id: str, delta: int = 1):
-        self.conn.execute(
-            "UPDATE projects SET pending_compile_count = COALESCE(pending_compile_count, 0) + ?, updated_at = ? WHERE id = ?",
-            (delta, self._now(), project_id),
-        )
-        self.conn.commit()
-
-    def reset_pending_compile_count(self, project_id: str):
-        self.conn.execute(
-            "UPDATE projects SET pending_compile_count = 0, updated_at = ? WHERE id = ?",
-            (self._now(), project_id),
-        )
-        self.conn.commit()
+    # 待编译集合口径（get_pending_wiki_files 与 get_pending_compile_count 共用，
+    # 两处永不漂移的唯一事实源）
+    _PENDING_WIKI_FILES_WHERE = (
+        "project_id = ? AND status = 'done' "
+        "AND id NOT IN ("
+        "  SELECT file_id FROM wiki_source_pages "
+        "  WHERE project_id = ? AND status IN ('ingested', 'skipped')"
+        ")"
+    )
 
     def get_pending_compile_count(self, project_id: str) -> int:
-        cursor = self.conn.execute(
-            "SELECT pending_compile_count FROM projects WHERE id = ?",
-            (project_id,),
-        )
-        row = cursor.fetchone()
-        return (row["pending_compile_count"] or 0) if row else 0
+        """待编译文件数 = 解析 done 且未入库（wiki_source_pages 无 ingested/skipped
+        记录）的文件集合大小——与编译消费的 get_pending_wiki_files 同口径实时计算。
+
+        2026-10-22 修复：原实现是事件累加计数器（解析+1/删除+1/schema 变更同类
+        全+1/编译启动清零），与真实集合脱节——删除未编译文件双计、重解析虚增、
+        schema 变更向零文件项目广播，数字随操作序列漂移。实时计算后：删除文件
+        集合自然收缩、reprocess 已入库文件不重复计数、force 编译清 source_pages
+        后如实反映全量重编。"""
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM files WHERE {self._PENDING_WIKI_FILES_WHERE}",
+            (project_id, project_id),
+        ).fetchone()
+        return row["cnt"]
 
     # ── Wiki: Source Pages (ingestion tracking, §3.7) ──
 

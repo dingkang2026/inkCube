@@ -377,12 +377,8 @@ class KnowledgeWorker:
                 if images:
                     self.db.update_file_image_status(file_id)
 
-                # Wiki notification: file parsed → increment pending compile count
-                try:
-                    self.db.increment_pending_compile_count(project_id)
-                    logger.debug("Wiki: incremented pending_compile_count for project %s", project_id)
-                except Exception as e:
-                    logger.warning("Wiki notification failed: %s", e)
+                # Wiki 待编译数不再事件累加：get_pending_compile_count 实时计算
+                # （解析 done 文件入集合由 SQL 口径自然覆盖，2026-10-22）
             else:
                 logger.error("File %s parse failed: %s", file_id, result.get("error"))
                 self.db.update_file_status(

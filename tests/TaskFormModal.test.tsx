@@ -1,5 +1,6 @@
 /** tests/TaskFormModal.test.tsx — 3.0 二期 Task 10:新建/节奏字段/编辑预填/预填截止日
- *  拉齐补丁增:完成匹配词字段(§6.1.7 新建 recurring 可设/file_parsed 可改/清空=移除规则)。
+ *  拉齐补丁增:完成匹配词字段(§6.1.7 清空=移除规则/报告类原样透传)。
+ *  2026-10-22 放开 material:资料/周期新建与编辑均可设 file_parsed 匹配词。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -171,7 +172,7 @@ describe('TaskFormModal', () => {
   it('creates recurring with match word as file_parsed auto-complete', async () => {
     const { getByPlaceholderText, getByText, queryByPlaceholderText } = render(
       <TaskFormModal {...base} initial={null} />)
-    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).toBeNull()  // 默认 material 不显示
+    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).not.toBeNull()  // material 已同步放开(2026-10-22)
     fireEvent.change(getByPlaceholderText('affairs.form.titleLabel'),
       { target: { value: '企业月报' } })
     fireEvent.change(getByText('affairs.type.material').closest('select')!,
@@ -199,9 +200,9 @@ describe('TaskFormModal', () => {
     }))
   })
 
-  it('does not send stale match typed before switching type away from recurring', async () => {
-    // 切类型即清空输入:先 recurring 填词再切回 material,字段隐藏且提交不带规则
-    const { getByPlaceholderText, getByText, queryByPlaceholderText } = render(
+  it('clears stale match input when switching type (field stays for material)', async () => {
+    // 切类型即清空输入(防残留误配):recurring 填词切回 material,字段保留但值已空
+    const { getByPlaceholderText, getByText } = render(
       <TaskFormModal {...base} initial={null} />)
     fireEvent.change(getByPlaceholderText('affairs.form.titleLabel'),
       { target: { value: '拜访客户' } })
@@ -210,7 +211,7 @@ describe('TaskFormModal', () => {
     fireEvent.change(getByPlaceholderText('affairs.form.matchPlaceholder'),
       { target: { value: '月报' } })
     fireEvent.change(typeSelect, { target: { value: 'material' } })
-    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).toBeNull()
+    expect((getByPlaceholderText('affairs.form.matchPlaceholder') as HTMLInputElement).value).toBe('')
     fireEvent.click(getByText('affairs.form.save'))
     await flush()
     expect(invokeMock).toHaveBeenCalledWith('affairs:createTask', expect.objectContaining({
@@ -258,5 +259,42 @@ describe('TaskFormModal', () => {
     expect(invokeMock).toHaveBeenCalledWith('affairs:updateTask', expect.objectContaining({
       taskId: 't1', autoComplete: { on: 'report_completed' },   // 原样透传不被抹(§6.4-1)
     }))
+  })
+
+  it('creates material with match word as file_parsed auto-complete (2026-10-22 放开)', async () => {
+    // 手动新建资料任务也可配自动完成:与模板种子同链(后端 createTask 原样接收)
+    const { getByPlaceholderText, getByText } = render(
+      <TaskFormModal {...base} initial={null} />)
+    fireEvent.change(getByPlaceholderText('affairs.form.titleLabel'),
+      { target: { value: '收集尽调材料' } })
+    fireEvent.change(getByPlaceholderText('affairs.form.matchPlaceholder'),
+      { target: { value: ' 尽调 ' } })
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:createTask', expect.objectContaining({
+      taskType: 'material', autoComplete: { on: 'file_parsed', match: '尽调' },   // trim
+    }))
+  })
+
+  it('adds match rule when editing a manual material task without one', async () => {
+    // 编辑态同步放开:无规则手动资料任务可补配自动完成(showMatch 覆盖全部 material)
+    const { getByPlaceholderText, getByText } = render(
+      <TaskFormModal {...base} initial={task({ task_type: 'material', auto_complete: null })} />)
+    fireEvent.change(getByPlaceholderText('affairs.form.matchPlaceholder'),
+      { target: { value: 'BP' } })
+    fireEvent.click(getByText('affairs.form.save'))
+    await flush()
+    expect(invokeMock).toHaveBeenCalledWith('affairs:updateTask', expect.objectContaining({
+      taskId: 't1', autoComplete: { on: 'file_parsed', match: 'BP' },
+    }))
+  })
+
+  it('hides match field for milestone (no file_parsed loop)', () => {
+    // 节点类无自动完成闭环:切到 milestone 匹配字段隐藏
+    const { getByText, queryByPlaceholderText } = render(
+      <TaskFormModal {...base} initial={null} />)
+    fireEvent.change(getByText('affairs.type.material').closest('select')!,
+      { target: { value: 'milestone' } })
+    expect(queryByPlaceholderText('affairs.form.matchPlaceholder')).toBeNull()
   })
 })

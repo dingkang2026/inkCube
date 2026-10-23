@@ -47,7 +47,7 @@ const DEFAULT_SETTINGS: LLMSettings = {
   task_timeout: 30,
   task_max_iterations: 60,
   task_auto_confirm_shell: false,
-  task_shell_confirm_mode: 'smart',
+  task_shell_confirm_mode: 'auto',
   task_shell_domain_whitelist: '',
   task_show_execution_log: true,
   task_workspace_max_mb: 1024,

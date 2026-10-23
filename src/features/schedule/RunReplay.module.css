@@ -1,4 +1,7 @@
-/* 2.11 E3 T8:执行回放（§8.3 档案语义：只读消息流，无输入区） */
+/* 2.11 E3 T8:执行回放（§8.3 档案语义：只读消息流，无输入区）
+   滚动容器 = TaskMessageList 的 .list：.messages 只做弹性占位不得自带
+   overflow（双滚动容器会让 .list 上的 onScroll/atBottomRef 判定失效，
+   消息加载后每次重渲染都被 scrollIntoView 强拉底部，2026-10-22 修复） */
 .page {
   display: flex;
   flex-direction: column;
@@ -12,6 +15,29 @@
   border-bottom: 1px solid var(--border);
 }
 
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.backBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
 .title {
   margin: 0;
   font-size: var(--text-base);
@@ -19,8 +45,30 @@
   color: var(--text-primary);
 }
 
+.spacer {
+  flex: 1;
+}
+
+.actionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.actionBtn:hover {
+  border-color: var(--accent);
+}
+
 .messages {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }

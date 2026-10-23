@@ -1,217 +1,128 @@
-/** tests/SubscriptionAdminView.test.tsx — 定时订阅管理台（2.11 E3 T7）
- *  计划 Step 1 要点：分类页签服务端过滤计数；搜索防抖触发 schedules:list 带 q；
- *  勾选 2 行批量条出现且删除确认文案含数量；右列默认渲染收件箱（未读在前）。
+/**
+ * tests/SubscriptionAdminView.test.tsx — 定时订阅管理台单测（2.11 §8.1）。
+ *
+ * 覆盖（2026-10-22 返回交互改造回归）：
+ * - 收件箱期次行点击 → onOpenRead(run 完整对象，携带 schedule_id 供返回恢复选中)；
+ * - 期次历史行点击统一进报告页（历史版本按 task_id 分流进回放，已废弃——
+ *   回放唯一入口为报告页头部「执行过程」切换）；
+ * - restoreScheduleId 挂载恢复选中订阅（read/replay 返回宿主页不落回收件箱）；
+ * - 「返回收件箱」按钮 → 右列复位收件箱默认视图。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { SubscriptionAdminView } from '../src/features/schedule/SubscriptionAdminView'
-import { ConfirmProvider } from '../src/components/ConfirmDialog'
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (k: string, p?: Record<string, unknown>) =>
-      p && 'n' in p ? `${k}(${p['n']})` : k,
-  }),
+  useTranslation: () => ({ t: (k: string) => k }),
 }))
 
-vi.mock('../src/features/activity/ActivityContext', () => ({
-  useActivity: () => ({ isActive: false }),
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => () => {},
 }))
 
-vi.mock('../src/features/knowledge/Toast', () => ({ useToast: () => vi.fn() }))
-
-const invokeMock = vi.fn()
-
-const mkSchedule = (i: number, category: string) => ({
-  id: `sch_${i}`,
-  name: `订阅${i}`,
-  prompt: `任务提示词${i}`,
-  category,
-  interval_type: 'daily',
-  interval_value: '09:00',
-  target_type: null,
-  target_id: null,
-  auto_import: 1,
-  enabled: 1,
-  next_run_at: '2026-10-20T09:00:00',
-  last_run_at: null,
-  consecutive_failures: 0,
-  latest_done: null,
-  created_at: '2026-10-19T08:00:00',
+vi.mock('../src/components/ConfirmDialog', async (orig) => {
+  const mod = await orig<typeof import('../src/components/ConfirmDialog')>()
+  return {
+    ...mod,
+    useConfirm: () => async () => true,
+  }
 })
 
-const INDUSTRY = Array.from({ length: 10 }, (_, i) => mkSchedule(i, 'industry'))
-const CORPORATE = Array.from({ length: 20 }, (_, i) => mkSchedule(100 + i, 'corporate'))
+// ScheduleFormModal 打桩：管理台另引用 parseInterval/WEEKDAYS 渲染周期文案
+vi.mock('../src/features/schedule/ScheduleFormModal', () => ({
+  ScheduleFormModal: (props: { open?: boolean }) => (props.open ? <div data-testid="schedule-form-modal" /> : null),
+  parseInterval: () => ({ days: [1], time: '09:00' }),
+  WEEKDAYS: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+}))
+
+const SCHEDULE = {
+  id: 'sch_1', name: '华润舆情', prompt: '扫描并输出报告', category: 'corporate',
+  interval_type: 'daily', interval_value: '09:00',
+  target_type: null, target_id: null, auto_import: 1, enabled: 1,
+  next_run_at: null, last_run_at: null, consecutive_failures: 0,
+  archive_last_run_id: null, archive_file_id: null, is_running: false,
+  latest_done: null, created_at: '', updated_at: '',
+}
+
+const INBOX_RUN = {
+  id: 'run_1', schedule_id: 'sch_1', task_id: 't1', status: 'done',
+  report_path: 'x.md', summary: ['要点A'], read_at: null,
+  started_at: '2026-10-22T09:00:00', finished_at: '2026-10-22T09:02:00',
+  schedule_name: '华润舆情', archive_last_run_id: null, error: null,
+}
+
+const HISTORY_RUN = {
+  ...INBOX_RUN, id: 'run_2', read_at: '2026-10-21T10:00:00',
+  started_at: '2026-10-21T09:00:00', finished_at: '2026-10-21T09:01:00',
+}
+
+const wireInvoke = () =>
+  vi.fn((channel: string) => {
+    if (channel === 'schedules:list') return Promise.resolve({ schedules: [SCHEDULE], has_more: false })
+    if (channel === 'schedules:inbox') return Promise.resolve({ runs: [INBOX_RUN], has_more: false })
+    if (channel === 'schedules:runs') return Promise.resolve({ runs: [HISTORY_RUN], has_more: false })
+    return Promise.resolve({ ok: true })
+  })
+
+/** 排空 microtask（usePagedList 三列表拉取链） */
+const flush = async () => {
+  for (let i = 0; i < 8; i++) {
+    await act(async () => {
+      await Promise.resolve()
+    })
+  }
+}
 
 beforeEach(() => {
-  invokeMock.mockReset()
-  invokeMock.mockImplementation(async (channel: string, args?: Record<string, unknown>) => {
-    if (channel === 'schedules:list') {
-      let rows = [...INDUSTRY, ...CORPORATE]
-      if (args?.category) rows = rows.filter((r) => r.category === args.category)
-      if (args?.q) rows = rows.filter((r) => r.name.includes(args.q as string))
-      return { schedules: rows }
-    }
-    if (channel === 'schedules:inbox') {
-      return {
-        runs: [
-          { id: 'run_unread', schedule_id: 'sch_0', task_id: null, status: 'done',
-            report_path: null, summary: ['要点一'], read_at: null,
-            started_at: '2026-10-19T09:00:00', finished_at: '2026-10-19T09:01:00',
-            schedule_name: '订阅0' },
-          { id: 'run_read', schedule_id: 'sch_100', task_id: null, status: 'done',
-            report_path: null, summary: ['要点二'], read_at: '2026-10-19T10:00:00',
-            started_at: '2026-10-18T09:00:00', finished_at: '2026-10-18T09:01:00',
-            schedule_name: '订阅100' },
-        ],
-      }
-    }
-    if (channel === 'schedules:runs') return { runs: [] }
-    if (channel === 'knowledge:listProjects') return { projects: [] }
-    if (channel === 'baseLib:list') return { base_libs: [] }
-    return {}
-  })
-  ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke: invokeMock }
+  ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
 })
 
 afterEach(() => {
-  delete (window as unknown as { electronAPI?: unknown }).electronAPI
+  delete (window as { electronAPI?: unknown }).electronAPI
 })
 
-const lastListArgs = () => {
-  const calls = invokeMock.mock.calls.filter((c) => c[0] === 'schedules:list')
-  return calls[calls.length - 1]?.[1] ?? {}
-}
-
-describe('SubscriptionAdminView', () => {
-  it('category tab filters via server param (corporate → 20 rows)', async () => {
-    render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    // 用行内 checkbox 计数断言列表规模（收件箱 RunRow 亦含订阅名文本，不可用）
-    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(30))
-    fireEvent.click(screen.getByRole('tab', { name: 'schedule.tab.corporate' }))
-    await waitFor(() => expect(lastListArgs()).toMatchObject({ category: 'corporate' }))
-    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(20))
+describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
+  it('收件箱期次行点击 → onOpenRead(run)：携带 schedule_id 供返回恢复选中', async () => {
+    const onOpenRead = vi.fn()
+    render(<SubscriptionAdminView onOpenRead={onOpenRead} />)
+    await flush()
+    expect(screen.getByText('schedule.inboxTitle')).toBeTruthy() // 默认右列 = 收件箱
+    fireEvent.click(screen.getByTestId('run-row'))
+    expect(onOpenRead).toHaveBeenCalledTimes(1)
+    const run = onOpenRead.mock.calls[0][0] as { id: string; schedule_id: string }
+    expect(run.id).toBe('run_1')
+    expect(run.schedule_id).toBe('sch_1')
   })
 
-  it('search input debounces and passes q to schedules:list', async () => {
-    render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    await waitFor(() => expect(screen.getByPlaceholderText('schedule.searchPlaceholder')).toBeTruthy())
-    fireEvent.change(screen.getByPlaceholderText('schedule.searchPlaceholder'), {
-      target: { value: '订阅10' },
-    })
-    await waitFor(() => expect(lastListArgs()).toMatchObject({ q: '订阅10' }))
-    await waitFor(() => expect(screen.getAllByText(/订阅10\d?$/).length).toBeGreaterThan(0))
+  it('期次历史行点击（run 带 task_id）统一进报告页：onOpenRead，不再分流回放', async () => {
+    const onOpenRead = vi.fn()
+    const { container } = render(<SubscriptionAdminView onOpenRead={onOpenRead} />)
+    await flush()
+    // 选中订阅 → 右列切详情 + 期次历史（左列订阅名与收件箱行订阅名同名，
+    // 按类名子串定位左列 schedMain 按钮，不受 CSS modules hash 影响）
+    const schedMain = container.querySelector('button[class*="schedMain"]') as HTMLElement
+    fireEvent.click(schedMain)
+    await flush()
+    expect(screen.getByText('schedule.runsTitle')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('run-row'))
+    expect(onOpenRead).toHaveBeenCalledTimes(1)
+    expect((onOpenRead.mock.calls[0][0] as { task_id?: string }).task_id).toBe('t1')
   })
 
-  it('checking 2 rows shows batch bar; delete confirm mentions the count', async () => {
-    render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBeGreaterThanOrEqual(2))
-    const boxes = screen.getAllByRole('checkbox')
-    fireEvent.click(boxes[0])
-    fireEvent.click(boxes[1])
-    expect(screen.getByTestId('batch-bar')).toBeTruthy()
-    fireEvent.click(screen.getByText('schedule.batchDelete'))
-    await waitFor(() =>
-      expect(screen.getByText(/schedule\.batchDeleteConfirm\(2\)/)).toBeTruthy())
+  it('restoreScheduleId 挂载恢复选中订阅（返回宿主页不落回收件箱）', async () => {
+    render(<SubscriptionAdminView onOpenRead={() => {}} restoreScheduleId="sch_1" />)
+    await flush()
+    // 右列直接是详情视图（期次历史），而非收件箱
+    expect(screen.queryByText('schedule.inboxTitle')).toBeNull()
+    expect(screen.getByText('schedule.runsTitle')).toBeTruthy()
+    expect(screen.getByTestId('back-to-inbox')).toBeTruthy()
   })
 
-  it('right pane defaults to inbox with unread first', async () => {
-    const { container } = render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    await waitFor(() => expect(screen.getByText('schedule.inboxTitle')).toBeTruthy())
-    const first = screen.getAllByTestId('run-row')[0]
-    expect(first.textContent).toContain('订阅0')
-    expect(first.querySelector('[data-testid="run-unread-dot"]')).toBeTruthy()
-    expect(container).toBeTruthy()
-  })
-
-  it('bound schedule shows rebuild-archive button; click invokes channel (§6 T10)', async () => {
-    invokeMock.mockImplementation(async (channel: string, args?: Record<string, unknown>) => {
-      if (channel === 'schedules:list') {
-        return { schedules: [{ ...INDUSTRY[0], target_id: 'p1', target_type: 'project' }] }
-      }
-      if (channel === 'schedules:inbox') return { runs: [] }
-      if (channel === 'schedules:runs') return { runs: [] }
-      if (channel === 'knowledge:listProjects') return { projects: [] }
-      if (channel === 'baseLib:list') return { base_libs: [] }
-      return {}
-    })
-    render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(1))
-    fireEvent.click(screen.getByText('订阅0'))                    // 选中 → 详情面板
-    fireEvent.click(await waitFor(() => screen.getByText('schedule.rebuildArchive')))
-    await waitFor(() => expect(
-      invokeMock.mock.calls.some((c) => c[0] === 'schedules:rebuildArchive'
-        && c[1] === 'sch_0')).toBe(true))
-  })
-
-  it('unbound schedule has no rebuild-archive button (no dead entry)', async () => {
-    // 单行 mock：默认 mock 的收件箱 run-row 也含「订阅0」文本，getByText 会撞重复
-    invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'schedules:list') return { schedules: [INDUSTRY[0]] }
-      if (channel === 'schedules:inbox') return { runs: [] }
-      if (channel === 'schedules:runs') return { runs: [] }
-      if (channel === 'knowledge:listProjects') return { projects: [] }
-      if (channel === 'baseLib:list') return { base_libs: [] }
-      return {}
-    })
-    render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(1))
-    fireEvent.click(screen.getByText('订阅0'))                    // target_id=null
-    await waitFor(() => expect(screen.getByText('schedule.runNow')).toBeTruthy())  // 详情面板已打开
-    expect(screen.queryByText('schedule.rebuildArchive')).toBeNull()
-  })
-
-  it('rebuild button disabled while in flight (double-click safe, review P1-1)', async () => {
-    let resolveRebuild!: (v: unknown) => void
-    invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'schedules:list') {
-        return { schedules: [{ ...INDUSTRY[0], target_id: 'p1', target_type: 'project' }] }
-      }
-      if (channel === 'schedules:rebuildArchive') {
-        return new Promise((resolve) => { resolveRebuild = resolve })
-      }
-      if (channel === 'schedules:inbox') return { runs: [] }
-      if (channel === 'schedules:runs') return { runs: [] }
-      if (channel === 'knowledge:listProjects') return { projects: [] }
-      if (channel === 'baseLib:list') return { base_libs: [] }
-      return {}
-    })
-    render(
-      <ConfirmProvider>
-        <SubscriptionAdminView onOpenRead={() => {}} onOpenReplay={() => {}} />
-      </ConfirmProvider>,
-    )
-    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(1))
-    fireEvent.click(screen.getByText('订阅0'))
-    const btn = await waitFor(() =>
-      screen.getByText('schedule.rebuildArchive') as HTMLButtonElement)
-    fireEvent.click(btn)
-    await waitFor(() => expect(btn.disabled).toBe(true))   // in-flight 禁用
-    resolveRebuild({ ok: true })
-    await waitFor(() => expect(btn.disabled).toBe(false))  // 完成恢复
+  it('「返回收件箱」按钮 → 右列复位收件箱默认视图', async () => {
+    render(<SubscriptionAdminView onOpenRead={() => {}} restoreScheduleId="sch_1" />)
+    await flush()
+    fireEvent.click(screen.getByTestId('back-to-inbox'))
+    expect(screen.getByText('schedule.inboxTitle')).toBeTruthy()
+    expect(screen.queryByTestId('back-to-inbox')).toBeNull()
   })
 })

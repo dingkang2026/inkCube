@@ -45,6 +45,9 @@ interface WikiHomePageProps {
   onOpenLint?: () => void
   /** 结构页定义清单（父级 wiki:getSchemas 拉取），用于完成度区块；空/缺省隐藏（3.0 一期 Task 6） */
   schemas?: Array<{ page_key: string; title: string }>
+  /** 结构页缺失清单（wiki:listPages.missing_pages，后端基于全量 page_key 集：
+   *  完成度消费它而非分页后的 pages 复算，大项目不再低估，2026-10-22） */
+  missingPages?: Array<{ page_key: string; title: string }>
   /** 台账条目时间轴（3.0 四期：父级 wiki:listLedgerEntries 拉取）；空/undefined 整卡不渲染 */
   ledgerEntries?: LedgerEntry[]
   /** 台账解析进行中（心跳 ledger_parse 含本项目）：卡头灰字提示，旧条目照常可读 */
@@ -85,7 +88,7 @@ function extractSummary(content: string | null, maxLen = 80): string {
 
 export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
-  onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, schemas,
+  onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, schemas, missingPages,
   ledgerEntries, ledgerParsing, pagesTotal,
   hasMorePages, pagesLoadingMore, onLoadMorePages,
   hasMoreLedger, ledgerLoadingMore, onLoadMoreLedger,
@@ -156,13 +159,15 @@ export function WikiHomePage({
     return sortedEntries
   }, [pages])
 
-  // 结构页完成度：schemas 中 page_key 已存在于已编译 pages 的比例（3.0 一期 Task 6）；total=0 整块隐藏
+  // 结构页完成度：消费后端 listPages.missing_pages（基于全量 page_key 集计算，
+  // 不受 pages 分页影响——2026-10-22 修复：原用已加载分页 pages 复算 pageKeys，
+  // 页面超单页量时完成度被低估）；total=0 整块隐藏
   const completion = useMemo(() => {
     if (!schemas || schemas.length === 0) return null
-    const pageKeys = new Set(pages.map((p) => p.page_key))
-    const generated = schemas.filter((sc) => pageKeys.has(sc.page_key)).length
-    return { total: schemas.length, generated, pageKeys }
-  }, [schemas, pages])
+    const missingKeys = new Set((missingPages ?? []).map((m) => m.page_key))
+    const generated = schemas.filter((sc) => !missingKeys.has(sc.page_key)).length
+    return { total: schemas.length, generated, missingKeys }
+  }, [schemas, missingPages])
 
   // 台账时间轴分组（3.0 四期 T7）：按 entry_date 归并（后端已倒序,NULL 组自然置尾）;组内保持倒序
   const ledgerGroups = useMemo(() => {
@@ -313,7 +318,7 @@ export function WikiHomePage({
             </div>
             <div className={s.completionChips}>
               {schemas?.map((sc) =>
-                completion.pageKeys.has(sc.page_key) ? (
+                !completion.missingKeys.has(sc.page_key) ? (
                   <span key={sc.page_key} className={s.completionChipDone}>
                     <Check size={11} /> {sc.title}
                   </span>

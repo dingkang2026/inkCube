@@ -79,6 +79,7 @@ export default function App() {
     handlePauseTask: handleTaskPause,
     handleShellConfirm: handleTaskShellConfirm,
     handleSkillConfirm: handleTaskSkillConfirm,
+    dismissPendingConfirm: dismissTaskConfirm,
     handleResumeTask: handleTaskResume,
     canResume: taskCanResume,
     resetGeneratingState: resetTaskGeneratingState,
@@ -135,8 +136,13 @@ export default function App() {
 
   // ── 2.11 E3 T7：定时订阅 peer 态（管理台 / 期次阅读 / 回放）；
   // read/replay 的内容区渲染分支随 T8 ReadView + RunReplay 落地 ──
+  // from = 宿主页来路（头部「返回」分发，2026-10-22）；scheduleId = 期次所属
+  // 订阅（返回管理台时恢复选中，不落回收件箱）；restoreScheduleId 仅管理台挂载消费
   const [scheduleView, setScheduleView] = useState<
-    { type: 'admin' } | { type: 'read'; runId: string } | { type: 'replay'; runId: string; taskId: string } | null
+    | { type: 'admin'; restoreScheduleId?: string }
+    | { type: 'read'; runId: string; from: 'admin' | 'home'; scheduleId?: string }
+    | { type: 'replay'; runId: string; taskId: string; from: 'admin' | 'home'; scheduleId?: string }
+    | null
   >(null)
 
   // ── First-run onboarding (0.4 §7.3): 一次性判定所需状态 ──
@@ -542,6 +548,16 @@ export default function App() {
     setScheduleView(null)
   }, [closeSettings, deselect.reset])
 
+  // 订阅 read/replay 头部「返回」宿主页分发（2.11 §8.2/§8.3）：管理台来路恢复
+  // 选中订阅；首页今日情报来路切回首页导航并退出 peer 态
+  const handleScheduleBack = useCallback((from: 'admin' | 'home', scheduleId?: string) => {
+    if (from === 'admin') setScheduleView({ type: 'admin', restoreScheduleId: scheduleId })
+    else {
+      setActiveNav('home')
+      setScheduleView(null)
+    }
+  }, [])
+
   // Settings is a peer page too: opening it exits template management / base lib detail
   // section 可选：设置页锚点直达（0.4 §7.4，首页红卡 / 引导弹层 / 向导）
   // projectId 可选：统计页项目筛选（2.10 §6.5 线框 5，项目徽章点击）
@@ -682,7 +698,7 @@ export default function App() {
       closeSettings()
       setSelectedBaseLibId(null)
       setShowTemplateManagement(false)
-      setScheduleView({ type: 'read', runId })
+      setScheduleView({ type: 'read', runId, from: 'home' })
     }
     window.addEventListener('app:navigate-schedule-read', handleNavScheduleRead)
     // Listen for Python process exit
@@ -838,20 +854,26 @@ export default function App() {
           /* Base library is parallel to projects — accessible from any nav */
           <BaseLibDetailPage baseLibId={selectedBaseLibId} />
         ) : scheduleView?.type === 'admin' ? (
-          /* 定时订阅管理台（2.11 §8.1） */
+          /* 定时订阅管理台（2.11 §8.1）：restoreScheduleId 供 read/replay 返回时恢复选中 */
           <SubscriptionAdminView
-            onOpenRead={(runId) => setScheduleView({ type: 'read', runId })}
-            onOpenReplay={(runId, taskId) => setScheduleView({ type: 'replay', runId, taskId })}
+            restoreScheduleId={scheduleView.restoreScheduleId}
+            onOpenRead={(run) => setScheduleView({ type: 'read', runId: run.id, from: 'admin', scheduleId: run.schedule_id })}
           />
         ) : scheduleView?.type === 'read' ? (
-          /* 期次阅读页（2.11 §8.2）：peer 态，无返回按钮，侧栏 NavTabs 切换退出 */
+          /* 期次阅读页（2.11 §8.2）：头部「返回」回宿主页，「执行过程」切回放 */
           <ReadView
             runId={scheduleView.runId}
-            onReplay={(taskId) => setScheduleView({ type: 'replay', runId: scheduleView.runId, taskId })}
+            onBack={() => handleScheduleBack(scheduleView.from, scheduleView.scheduleId)}
+            onReplay={(taskId) => setScheduleView({ type: 'replay', runId: scheduleView.runId, taskId, from: scheduleView.from, scheduleId: scheduleView.scheduleId })}
           />
         ) : scheduleView?.type === 'replay' ? (
-          /* 执行回放（2.11 §8.3）：只读消息流，无输入区 */
-          <RunReplay runId={scheduleView.runId} taskId={scheduleView.taskId} />
+          /* 执行回放（2.11 §8.3）：只读消息流，头部「返回」回宿主页，「查看报告」切阅读页 */
+          <RunReplay
+            runId={scheduleView.runId}
+            taskId={scheduleView.taskId}
+            onBack={() => handleScheduleBack(scheduleView.from, scheduleView.scheduleId)}
+            onOpenReport={() => setScheduleView({ type: 'read', runId: scheduleView.runId, from: scheduleView.from, scheduleId: scheduleView.scheduleId })}
+          />
         ) : activeNav === 'home' ? (
           <HomePage
             projects={projects}
@@ -908,6 +930,7 @@ export default function App() {
             onPauseTask={handleTaskPause}
             onShellConfirm={handleTaskShellConfirm}
             onSkillConfirm={handleTaskSkillConfirm}
+            onConfirmExpire={dismissTaskConfirm}
             onResumeTask={handleTaskResume}
             canResume={taskCanResume}
             onFilesUploaded={(uploadedTaskId) => {

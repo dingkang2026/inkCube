@@ -39,6 +39,8 @@ interface TaskPageProps {
   onPauseTask?: () => void
   onShellConfirm?: (confirmed: boolean) => void
   onSkillConfirm?: (confirmed: boolean) => void
+  /** 确认卡倒计时到 0 的本地清理，透传 TaskChatView */
+  onConfirmExpire?: (kind: 'shell' | 'skill') => void
   onResumeTask?: () => void
   canResume?: boolean
   onFilesUploaded?: (taskId: string) => void
@@ -68,6 +70,7 @@ export function TaskPage({
   onPauseTask,
   onShellConfirm,
   onSkillConfirm,
+  onConfirmExpire,
   onResumeTask,
   canResume,
   onFilesUploaded,
@@ -187,6 +190,7 @@ export function TaskPage({
           onPauseTask={onPauseTask}
           onShellConfirm={onShellConfirm}
           onSkillConfirm={onSkillConfirm}
+          onConfirmExpire={onConfirmExpire}
           onResumeTask={onResumeTask}
           canResume={canResume}
           onFilesUploaded={onFilesUploaded}

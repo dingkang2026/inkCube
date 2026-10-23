@@ -3,7 +3,8 @@
  *
  * 覆盖：挂载即 readReport + markRead（打开即已读，规则 10）；摘要卡（run.summary
  * 直读）+ Markdown 全文；失败态（error 文案 + 重跑 → schedules:runNow）；
- * 底部动作条（打开原任务 → onReplay / 订阅设置 → 编辑弹层）；已沉淀态
+ * 头部动作条（返回 → onBack / 执行过程 → onReplay，2026-10-22 上移自底部）；
+ * 底部动作条（订阅设置 → 编辑弹层）；已沉淀态
  * （target 绑定 → 「已沉淀至 {目标名}·档案」，目标名经列表通道解析）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -73,9 +74,12 @@ const flush = async () => {
   }
 }
 
+const onBack = vi.fn()
+
 beforeEach(() => {
   formModalState.props = null
   toastState.calls = []
+  onBack.mockClear()
 })
 
 afterEach(() => {
@@ -86,7 +90,7 @@ describe('ReadView（2.11 §8.2）', () => {
   it('渲染摘要卡与 Markdown 全文，挂载即 readReport + markRead 一次', async () => {
     const invoke = wireInvoke()
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     // 摘要卡与 Markdown 正文同文本（mock content 与 summary 重叠）→ 计数断言
     expect(screen.getAllByText('要点A').length).toBeGreaterThanOrEqual(1)
@@ -100,7 +104,7 @@ describe('ReadView（2.11 §8.2）', () => {
   it('摘要缺失（未按模板产出）→ 显示占位文案不阻塞阅读（§8.3）', async () => {
     const invoke = wireInvoke({ run: { ...RUN_DONE, summary: null } })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByText('schedule.read.noSummary')).toBeTruthy()
     expect(screen.getByText('报告全文段落')).toBeTruthy()
@@ -111,7 +115,7 @@ describe('ReadView（2.11 §8.2）', () => {
       schedule: { ...SCHEDULE, target_type: 'project', target_id: 'p1' },
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByTestId('read-archived')).toBeTruthy()
     expect(screen.getByText('项目甲')).toBeTruthy()
@@ -133,7 +137,7 @@ describe('ReadView（2.11 §8.2）', () => {
       return Promise.resolve({ ok: true })
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByText('自定义库')).toBeTruthy()
   })
@@ -143,7 +147,7 @@ describe('ReadView（2.11 §8.2）', () => {
       run: { ...RUN_DONE, status: 'failed', error: '模型超时', report_path: null, summary: null },
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByText('模型超时')).toBeTruthy()
     fireEvent.click(screen.getByText('schedule.read.rerun'))
@@ -164,7 +168,7 @@ describe('ReadView（2.11 §8.2）', () => {
       return Promise.resolve({ ok: true })
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     fireEvent.click(screen.getByText('schedule.read.rerun'))
     await flush()
@@ -178,23 +182,31 @@ describe('ReadView（2.11 §8.2）', () => {
       run: { ...RUN_DONE, status: 'failed', error: null, report_path: null, summary: null },
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.getByText('schedule.read.failedNoReason')).toBeTruthy()
   })
 
-  it('底部动作条：打开原任务回调 onReplay(taskId)', async () => {
+  it('头部动作条：「执行过程」回调 onReplay(taskId)（期次行点击统一进报告页后，回放唯一入口）', async () => {
     const onReplay = vi.fn()
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={onReplay} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={onReplay} />)
     await flush()
-    fireEvent.click(screen.getByText('schedule.read.openTask'))
+    fireEvent.click(screen.getByTestId('read-open-replay'))
     expect(onReplay).toHaveBeenCalledWith('t1')
+  })
+
+  it('头部动作条：「返回」回调 onBack（宿主页分发在 App）', async () => {
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByTestId('read-back-btn'))
+    expect(onBack).toHaveBeenCalledTimes(1)
   })
 
   it('「订阅设置」打开编辑弹层（editing = 订阅行）', async () => {
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
-    render(<ReadView runId="run_1" onReplay={() => {}} />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
     expect(screen.queryByTestId('schedule-form-modal')).toBeNull()
     fireEvent.click(screen.getByText('schedule.read.settings'))

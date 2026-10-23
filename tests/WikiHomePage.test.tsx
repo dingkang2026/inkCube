@@ -84,6 +84,8 @@ describe('WikiHomePage schema completion (3.0 一期 Task 6)', () => {
           { page_key: 'policy_ledger', title: '政策台账' },
           { page_key: 'risk_ledger', title: '风险台账' },
         ]}
+        // 完成度消费后端 missing_pages（全量口径，2026-10-22 起不再用分页 pages 复算）
+        missingPages={[{ page_key: 'risk_ledger', title: '风险台账' }]}
         pages={[{ page_key: 'enterprise_profile' }, { page_key: 'policy_ledger' }] as never}
       />
     )

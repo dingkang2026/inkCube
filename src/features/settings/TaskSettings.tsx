@@ -45,7 +45,7 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
       <label className={styles.label}>{t('settings.task.shellConfirmMode')}</label>
       <select
         className={styles.input}
-        value={settings?.task_shell_confirm_mode ?? 'smart'}
+        value={settings?.task_shell_confirm_mode ?? 'auto'}
         onChange={(e) => onUpdate?.('task_shell_confirm_mode', e.target.value)}
       >
         <option value="strict">{t('settings.task.shellConfirmStrict')}</option>

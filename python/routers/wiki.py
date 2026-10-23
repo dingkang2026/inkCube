@@ -331,9 +331,6 @@ async def trigger_compile(project_id: str, req: CompileRequest):
             trigger_type=req.trigger_type,
         )
 
-        # Reset pending count
-        db.reset_pending_compile_count(project_id)
-
         # Enqueue to compile worker
         try:
             import deps

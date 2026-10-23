@@ -32,7 +32,7 @@ const baseForm = {
   form_analyze_model: 'standard', form_fill_model: 'standard', rag_model: 'standard',
   ppt_model: 'high',
   task_timeout: 300, task_max_iterations: 60, task_auto_confirm_shell: false,
-  task_shell_confirm_mode: 'smart', task_shell_domain_whitelist: '',
+  task_shell_confirm_mode: 'auto', task_shell_domain_whitelist: '',
   task_show_execution_log: true, task_workspace_max_mb: 1024,
   task_max_count: 50, task_auto_archive_days: 30,
 } as LLMSettings

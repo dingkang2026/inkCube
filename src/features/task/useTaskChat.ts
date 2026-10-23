@@ -7,11 +7,17 @@ import { browserPanelStore } from '../browser/browserPanelStore'
 export interface ShellConfirmData {
   command: string
   taskId: string
+  /** 倒计时截止时刻（ms，收到事件时由后端 timeout 字段推算；0 = 无倒计时，
+   *  仅防御 timeout 缺失的异常载荷）。绝对时间戳：bgStates 保存/恢复后剩余时间
+   *  自动正确，不因切换任务重置 */
+  expiresAt: number
 }
 
 export interface SkillConfirmData {
   skillName: string
   taskId: string
+  /** 同 ShellConfirmData.expiresAt */
+  expiresAt: number
 }
 
 export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
@@ -263,9 +269,17 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         streamContentRef.current += parsed.content || ''
         setStreamContent(streamContentRef.current)
       } else if (type === 'confirm_shell') {
-        setPendingShellConfirm({ command: parsed.command, taskId: parsed.task_id || activeTaskIdRef.current || '' })
+        setPendingShellConfirm({
+          command: parsed.command,
+          taskId: parsed.task_id || activeTaskIdRef.current || '',
+          expiresAt: parsed.timeout ? Date.now() + parsed.timeout * 1000 : 0,
+        })
       } else if (type === 'confirm_skill') {
-        setPendingSkillConfirm({ skillName: parsed.skill_name, taskId: parsed.task_id || activeTaskIdRef.current || '' })
+        setPendingSkillConfirm({
+          skillName: parsed.skill_name,
+          taskId: parsed.task_id || activeTaskIdRef.current || '',
+          expiresAt: parsed.timeout ? Date.now() + parsed.timeout * 1000 : 0,
+        })
       } else if (type === 'confirm_expired') {
         // Backend confirm wait timed out: dismiss the stale dialog; the skip
         // reason is traced via the action's observation (1.1 §7.2)
@@ -430,6 +444,7 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         bg.pendingShellConfirm = {
           command: parsed.command,
           taskId: parsed.task_id || taskId,
+          expiresAt: parsed.timeout ? Date.now() + parsed.timeout * 1000 : 0,
         }
       } else if (type === 'confirm_skill') {
         // Background task needs skill confirmation — store in bgState
@@ -437,6 +452,7 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
         bg.pendingSkillConfirm = {
           skillName: parsed.skill_name,
           taskId: parsed.task_id || taskId,
+          expiresAt: parsed.timeout ? Date.now() + parsed.timeout * 1000 : 0,
         }
       } else if (type === 'confirm_expired') {
         // Timeout dismissal must also clear the bgState copy (restored on
@@ -572,6 +588,14 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     }
   }, [activeTaskId])
 
+  /** 倒计时到 0 的本地清理（不发拒绝 POST）：真实等待终止由后端超时分支
+   *  发 confirm_expired 留痕「确认超时，已跳过」——若此处发 confirmed=false，
+   *  后端会把超时记成「用户拒绝」，observation 语义失真 */
+  const dismissPendingConfirm = useCallback((kind: 'shell' | 'skill') => {
+    if (kind === 'shell') setPendingShellConfirm(null)
+    else setPendingSkillConfirm(null)
+  }, [])
+
   const handleSkillConfirm = useCallback(async (confirmed: boolean) => {
     if (!activeTaskId) return
     setPendingSkillConfirm(null)
@@ -648,6 +672,7 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     handlePauseTask,
     handleShellConfirm,
     handleSkillConfirm,
+    dismissPendingConfirm,
     handleResumeTask,
     canResume,
     resetGeneratingState,
