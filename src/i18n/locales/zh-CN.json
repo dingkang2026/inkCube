@@ -2154,6 +2154,11 @@
     "advanceStage": "进入下一阶段",
     "stageUpdateFailed": "阶段更新失败",
     "typeUpdateFailed": "类型更新失败",
+    "editProject": "编辑项目",
+    "save": "保存",
+    "editSaving": "保存中…",
+    "editSaved": "项目已更新",
+    "editProjectFailed": "项目更新失败",
     "chat": {
       "title": "知识问答",
       "placeholder": "输入问题，基于项目知识库回答...",

@@ -246,3 +246,122 @@
 .page.expanded .tabBar {
   display: none;
 }
+
+/* ── 编辑项目弹层（todo「项目创建后不能修改」，2026-10-23）：表单模态面板，
+   数值对齐 ProjectList 表单模态惯例（z-index 2000 / radius-md / 点蒙板防丢输入） ── */
+.editBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.editBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.editOverlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-overlay);
+  z-index: 2000;
+}
+
+.editModal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 380px;
+  max-width: 90vw;
+  padding: 24px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.editTitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.editInput {
+  padding: 8px 12px;
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.editInput:focus {
+  border-color: var(--accent);
+}
+
+.editInput::placeholder {
+  color: var(--text-muted);
+}
+
+.editActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.editCancel {
+  padding: 7px 14px;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.editCancel:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+}
+
+.editCancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.editSave {
+  padding: 7px 14px;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-inverse);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.editSave:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.editSave:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

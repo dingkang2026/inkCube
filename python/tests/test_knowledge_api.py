@@ -43,3 +43,29 @@ def test_create_project_returns_seeded_tasks_count(client_and_db):
     body = r.json()
     assert body["seeded_tasks_count"] > 0
     assert body["seeded_tasks_count"] == len(db.list_phase_tasks(body["id"]))
+
+
+def test_update_project_company_fields(client_and_db):
+    """todo「项目创建后不能修改」回归:PATCH 企业字段全链(不传不改语义)。
+
+    企业字段创建后原无任何修改通道(ProjectUpdate 不含 → 前端无入口);
+    现补全后:只传企业字段时名称/描述/类型/阶段不得被牵连,空体 400。
+    """
+    client, db = client_and_db
+    r = client.post("/knowledge/projects", json={
+        "name": "企业项目", "type": "company",
+        "company_name": "旧公司", "credit_code": "91110000OLDCODE"})
+    assert r.status_code == 200
+    pid = r.json()["id"]
+    # 只传企业字段:其余字段不动
+    r2 = client.patch(f"/knowledge/projects/{pid}", json={
+        "company_name": "新公司名", "credit_code": "91110000NEWCODE"})
+    assert r2.status_code == 200
+    proj = db.get_project(pid)
+    assert proj["company_name"] == "新公司名"
+    assert proj["credit_code"] == "91110000NEWCODE"
+    assert proj["name"] == "企业项目"
+    assert proj["type"] == "company"
+    # 空体 PATCH → 400(No fields to update)
+    r3 = client.patch(f"/knowledge/projects/{pid}", json={})
+    assert r3.status_code == 400

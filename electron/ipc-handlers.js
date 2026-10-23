@@ -811,12 +811,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('knowledge:updateProject', async (_event, { projectId, name, description, type, stage }) => {
+  // 2026-10-23 编辑补全（todo：项目创建后不能修改）：透传企业字段（PATCH 语义
+  // 不传不改，与后端 ProjectUpdate 对齐）。消费方：详情页头部「编辑」弹层 +
+  // type/stage 下拉/脉搏带；侧栏重命名走 knowledge:renameProject（仅名称，独立通道）
+  ipcMain.handle('knowledge:updateProject', async (_event, { projectId, name, description, type, stage, company_name, credit_code }) => {
     const body = {}
     if (name !== undefined) body.name = name
     if (description !== undefined) body.description = description
     if (type !== undefined) body.type = type
     if (stage !== undefined) body.stage = stage
+    if (company_name !== undefined) body.company_name = company_name
+    if (credit_code !== undefined) body.credit_code = credit_code
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

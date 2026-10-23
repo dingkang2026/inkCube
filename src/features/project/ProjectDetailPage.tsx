@@ -1,7 +1,7 @@
 /** src/features/project/ProjectDetailPage.tsx — 项目详情页：knowledge-first tabs + 事务 Tab + PulseBar（3.0 一期+二期） */
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderOpen, Library, FileText, ClipboardList, CalendarDays } from 'lucide-react'
+import { FolderOpen, Library, FileText, ClipboardList, CalendarDays, Pencil } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import { useToast } from '../knowledge/Toast'
 import { useActivity } from '../activity/ActivityContext'
@@ -288,6 +288,48 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     }
   }, [project.id, projectType, currentStage, onProjectDataChanged, showToast, t])
 
+  // ── 头部「编辑」弹层（todo「项目创建后不能修改」，2026-10-23）：名称/描述/
+  // 企业字段全量回填、保存即所见即所得（后端 PATCH 语义不传不改，此处恒传
+  // 4 字段——清空 = 显式置空；类型侧栏改名走 knowledge:renameProject 独立通道）。
+  // type/stage 仍走头部下拉/脉搏带，不入弹层 ──
+  const [editOpen, setEditOpen] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [editDesc, setEditDesc] = useState('')
+  const [editCompanyName, setEditCompanyName] = useState('')
+  const [editCreditCode, setEditCreditCode] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+
+  const openEdit = useCallback(() => {
+    setEditName(project.name)
+    setEditDesc(project.description ?? '')
+    setEditCompanyName(project.company_name ?? '')
+    setEditCreditCode(project.credit_code ?? '')
+    setEditOpen(true)
+  }, [project])
+
+  const handleSaveEdit = useCallback(async () => {
+    const name = editName.trim()
+    if (!name || editSaving) return
+    setEditSaving(true)
+    try {
+      await window.electronAPI.invoke('knowledge:updateProject', {
+        projectId: project.id,
+        name,
+        description: editDesc,
+        company_name: editCompanyName.trim(),
+        credit_code: editCreditCode.trim(),
+      })
+      setEditOpen(false)
+      onProjectDataChanged?.()   // App 层 loadProjects → project prop 刷新 → 头部新值
+      showToast(t('project.editSaved'), 'success')
+    } catch (err) {
+      console.error('Failed to update project:', err)
+      showToast(t('project.editProjectFailed'), 'error')
+    } finally {
+      setEditSaving(false)
+    }
+  }, [project.id, editName, editDesc, editCompanyName, editCreditCode, editSaving, onProjectDataChanged, showToast, t])
+
   const typeConfig = PROJECT_TYPE_CONFIG[projectType]
   // 阶段显示名（脉搏带状态句前缀）；general 无时期 → 空串，组件自行省略前缀
   const stageLabel = t(STAGE_MAP[projectType].find((x) => x.key === currentStage)?.labelKey ?? '')
@@ -330,6 +372,15 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
             </div>
           </div>
           <div className={s.headerActions}>
+            {/* 编辑基础信息（名称/描述/企业字段）——type 走右侧下拉，stage 走脉搏带 */}
+            <button
+              className={s.editBtn}
+              title={t('project.editProject')}
+              aria-label={t('project.editProject')}
+              onClick={openEdit}
+            >
+              <Pencil size={15} />
+            </button>
             {/* 用量徽章（2.10 §6.1/线框 5）：hover 出 by_source 分拆，点击跳统计页筛本项目 */}
             <ProjectUsageBadge projectId={project.id} />
             {/* Type selector */}
@@ -489,6 +540,57 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
           onClose={() => setChatOpen(false)}
         />
       </div>
+
+      {/* 编辑项目弹层：4 字段与创建表单同构（企业字段全类型显示，2.1 决策 7）；
+        * 蒙板关闭禁用在保存中（防丢确认）——同 ProjectList 表单模态口径 */}
+      {editOpen && (
+        <div className={s.editOverlay} onClick={() => { if (!editSaving) setEditOpen(false) }}>
+          <div className={s.editModal} onClick={(e) => e.stopPropagation()}>
+            <h3 className={s.editTitle}>{t('project.editProject')}</h3>
+            <input
+              type="text"
+              className={s.editInput}
+              placeholder={t('knowledge.projectName')}
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              autoFocus
+            />
+            <input
+              type="text"
+              className={s.editInput}
+              placeholder={t('knowledge.projectDescription')}
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+            />
+            <input
+              type="text"
+              className={s.editInput}
+              placeholder={t('knowledge.companyName')}
+              value={editCompanyName}
+              onChange={(e) => setEditCompanyName(e.target.value)}
+            />
+            <input
+              type="text"
+              className={s.editInput}
+              placeholder={t('knowledge.creditCode')}
+              value={editCreditCode}
+              onChange={(e) => setEditCreditCode(e.target.value)}
+            />
+            <div className={s.editActions}>
+              <button className={s.editCancel} onClick={() => setEditOpen(false)} disabled={editSaving}>
+                {t('knowledge.cancel')}
+              </button>
+              <button
+                className={s.editSave}
+                onClick={handleSaveEdit}
+                disabled={!editName.trim() || editSaving}
+              >
+                {editSaving ? t('project.editSaving') : t('project.save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

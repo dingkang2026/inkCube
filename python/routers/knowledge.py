@@ -640,14 +640,20 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     type: Optional[str] = None
     stage: Optional[str] = None
+    # 2026-10-23 编辑补全（todo：项目创建后不能修改）：企业字段创建后原无任何
+    # 修改通道（schema 不含 → 前端无入口）。PATCH 语义不传不改，存量零迁移
+    company_name: Optional[str] = None
+    credit_code: Optional[str] = None
 
 
 @router.patch("/projects/{project_id}")
 async def update_project(project_id: str, body: ProjectUpdate):
-    """Update project name, description, type, and/or stage."""
+    """Update project name, description, type, stage, and/or company fields."""
     try:
         db = get_db()
-        if body.name is None and body.description is None and body.type is None and body.stage is None:
+        if (body.name is None and body.description is None and body.type is None
+                and body.stage is None and body.company_name is None
+                and body.credit_code is None):
             raise HTTPException(status_code=400, detail="No fields to update")
         # 3.0 §5.3: 阶段切换 → 激活该时期 pending_activation 实例。先激活后写 stage
         # （review M-2）：激活失败异常上抛→500，stage 保持旧值——避免「阶段已换、
@@ -663,6 +669,8 @@ async def update_project(project_id: str, body: ProjectUpdate):
             description=body.description,
             type=body.type,
             stage=body.stage,
+            company_name=body.company_name,
+            credit_code=body.credit_code,
         )
         return {"success": True}
     except HTTPException:

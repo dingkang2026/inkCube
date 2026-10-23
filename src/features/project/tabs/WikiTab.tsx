@@ -126,6 +126,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [pagesTotal, setPagesTotal] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [compiling, setCompiling] = useState(false)
+  // 编译重入防御 ref：state 闭包在 StrictMode 挂载双跑（dev）下不新鲜，
+  // focusSignal consume-once effect 双跑会两次到达 doCompile → 第二次 409 弹
+  // 误导性错误 Toast（review 轻微② 2026-10-23）；ref 始终新鲜，置位/复位与
+  // setCompiling 同步维护（置位：doCompile/doForceRecompile；复位：终态 effect + 两 catch）
+  const compilingRef = useRef(false)
   const [viewMode, setViewMode] = useState<ViewMode>('home')
   const [ingestSummaries, setIngestSummaries] = useState<any[]>([])
   const [isResumed, setIsResumed] = useState(false)
@@ -342,6 +347,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     if (status === prevCompileStatusRef.current) return
     prevCompileStatusRef.current = status
     if (status && ['completed', 'failed', 'stopped'].includes(status)) {
+      compilingRef.current = false
       setCompiling(false)
       void loadPages()
       void loadReviewCounts()
@@ -503,7 +509,10 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   }
 
   const doCompile = async () => {
-    if (compiling) return   // 纵深防御:乐观窗口内任何路径重入直接忽略(M2 同源,防未来新入口绕过)
+    // 纵深防御:乐观窗口内任何路径重入直接忽略(M2 同源,防未来新入口绕过);
+    // ref 拦闭包陈旧场景(StrictMode 挂载双跑),state 拦同批渲染内正常重入
+    if (compilingRef.current || compiling) return
+    compilingRef.current = true
     setCompiling(true)
     setCompileTask(null) // clear stale task so UI shows transitional state
     setIsResumed(false)
@@ -513,6 +522,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', force: false })
     } catch (err) {
       console.error('Failed to trigger compile:', err)
+      compilingRef.current = false
       setCompiling(false)
       setShowDetailPanel(false)
       // 409 防重入 / 就绪度结构化报错必须可感知，不能只写 console
@@ -526,6 +536,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   // Execute force recompile after confirmation
   const doForceRecompile = async () => {
     setShowRecompileConfirm(false)
+    compilingRef.current = true
     setCompiling(true)
     setCompileTask(null)
     setIsResumed(false)
@@ -544,6 +555,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       await loadPages()
     } catch (err) {
       console.error('Failed to trigger recompile:', err)
+      compilingRef.current = false
       setCompiling(false)
       setShowDetailPanel(false)
       showToast(t('project.wiki.compileTriggerFailed', {

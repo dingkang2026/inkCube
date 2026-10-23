@@ -10,7 +10,9 @@
  * - 收件箱未读优先 + 未读点（run-unread-dot）；
  * - 绑定订阅 → 重建档案按钮调 schedules:rebuildArchive；
  * - 未绑定 → 无重建档案死入口；
- * - 重建 in-flight 禁用（防双击）。
+ * - 重建 in-flight 禁用（防双击）；
+ * - 「查看档案」→ onOpenArchive(row) 切档案阅读页（2026-10-23 应用内查看，
+ *   不再 file:openOriginal 系统打开）。
  * 返回交互改造回归（2026-10-22）：
  * - 收件箱期次行点击 → onOpenRead(run 完整对象，携带 schedule_id 供返回恢复选中)；
  * - 期次历史行点击统一进报告页（历史版本按 task_id 分流进回放，已废弃——
@@ -103,13 +105,16 @@ afterEach(() => {
   delete (window as { electronAPI?: unknown }).electronAPI
 })
 
-/** 统一经真 ConfirmProvider 挂载（删除确认文案断言依赖真弹层渲染） */
-const renderView = (props: React.ComponentProps<typeof SubscriptionAdminView>) =>
-  render(
+/** 统一经真 ConfirmProvider 挂载（删除确认文案断言依赖真弹层渲染）；
+ *  onOpenArchive 默认空实现——仅「查看档案」用例显式传 mock 断言 */
+const renderView = (props: Partial<React.ComponentProps<typeof SubscriptionAdminView>>) => {
+  const { onOpenArchive = () => {}, ...rest } = props
+  return render(
     <ConfirmProvider>
-      <SubscriptionAdminView {...props} />
+      <SubscriptionAdminView onOpenArchive={onOpenArchive} {...rest} />
     </ConfirmProvider>,
   )
+}
 
 const lastListArgs = () => {
   const calls = invokeMock.mock.calls.filter((c) => c[0] === 'schedules:list')
@@ -227,6 +232,38 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     fireEvent.click(screen.getByText('订阅0'))                    // target_id=null
     await waitFor(() => expect(screen.getByText('schedule.runNow')).toBeTruthy())  // 详情面板已打开
     expect(screen.queryByText('schedule.rebuildArchive')).toBeNull()
+  })
+
+  it('「查看档案」→ onOpenArchive(row)：切档案阅读页（2026-10-23 应用内查看，不再 file:openOriginal 系统打开）', async () => {
+    const onOpenArchive = vi.fn()
+    // 绑定订阅带 archive_file_id → 去向行渲染「查看档案」按钮
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'schedules:list') {
+        return {
+          schedules: [{
+            ...mkSchedule(0, 'industry'),
+            target_id: 'p1', target_type: 'project', archive_file_id: 'file_a1',
+          }],
+          has_more: false,
+        }
+      }
+      if (channel === 'schedules:inbox') return { runs: [], has_more: false }
+      if (channel === 'schedules:runs') return { runs: [], has_more: false }
+      if (channel === 'knowledge:listProjects') return { projects: [{ id: 'p1', name: '项目一' }] }
+      if (channel === 'baseLib:list') return { base_libs: [] }
+      return { ok: true }
+    })
+    renderView({ onOpenRead: () => {}, onOpenArchive })
+    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(1))
+    fireEvent.click(screen.getByText('订阅0'))                    // 选中 → 详情面板
+    fireEvent.click(await waitFor(() => screen.getByText('schedule.viewArchive')))
+    expect(onOpenArchive).toHaveBeenCalledTimes(1)
+    const row = onOpenArchive.mock.calls[0][0] as { id: string; target_id: string; archive_file_id: string }
+    expect(row.id).toBe('sch_0')
+    expect(row.target_id).toBe('p1')
+    expect(row.archive_file_id).toBe('file_a1')
+    // 不再走系统打开通道（产品主张：系统打开仅限用户上传文件）
+    expect(invokeMock.mock.calls.some((c) => c[0] === 'file:openOriginal')).toBe(false)
   })
 
   it('重建按钮 in-flight 禁用（防双击，review P1-1）', async () => {

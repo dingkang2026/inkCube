@@ -2154,6 +2154,11 @@
     "advanceStage": "Advance to next stage",
     "stageUpdateFailed": "Failed to update stage",
     "typeUpdateFailed": "Failed to update type",
+    "editProject": "Edit Project",
+    "save": "Save",
+    "editSaving": "Saving…",
+    "editSaved": "Project updated",
+    "editProjectFailed": "Failed to update project",
     "chat": {
       "title": "Knowledge Q&A",
       "placeholder": "Ask a question based on project knowledge...",

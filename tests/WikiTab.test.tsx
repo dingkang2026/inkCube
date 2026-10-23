@@ -67,6 +67,7 @@ vi.mock('../src/features/project/tabs/CompilePanel', () => ({
 }))
 
 import { render, fireEvent, cleanup, act } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { WikiTab } from '../src/features/project/tabs/WikiTab'
 
 const invokeMock = vi.fn()
@@ -167,6 +168,21 @@ describe('WikiTab focusSignal compile (3.0 二期 Task 13,裁决 6)', () => {
     await flush()
     // 编译中信号到达仅停留,不得重复触发(409 + 状态条闪断,原顶栏按钮 disabled 同语义)
     expect(invokeMock).not.toHaveBeenCalledWith('wiki:compile', expect.anything())
+  })
+
+  it('StrictMode mount double-invocation triggers compile exactly once (review 轻微②)', async () => {
+    // dev 下 StrictMode 挂载双跑（Toast action 从其他页跳入 → WikiTab 新挂载）：
+    // consume-once effect 跑两次，闭包 state 守卫两次都读到 false，
+    // compilingRef 拦第二次，不得发出两次 wiki:compile
+    // （第二次 409 → 误导性「编译触发失败」Toast + 状态条闪断）
+    render(
+      <StrictMode>
+        <WikiTab projectId="p1" projectType="general" focusSignal={{ view: 'compile', ts: 1 }} />
+      </StrictMode>,
+    )
+    await flush()
+    const compileCalls = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:compile')
+    expect(compileCalls).toHaveLength(1)
   })
 })
 

@@ -1208,6 +1208,8 @@ class Database:
         description: str | None = None,
         type: str | None = None,
         stage: str | None = None,
+        company_name: str | None = None,
+        credit_code: str | None = None,
     ):
         updates = []
         params = []
@@ -1223,6 +1225,12 @@ class Database:
         if stage is not None:
             updates.append("stage = ?")
             params.append(stage)
+        if company_name is not None:
+            updates.append("company_name = ?")
+            params.append(company_name)
+        if credit_code is not None:
+            updates.append("credit_code = ?")
+            params.append(credit_code)
         updates.append("updated_at = ?")
         params.append(self._now())
         params.append(proj_id)

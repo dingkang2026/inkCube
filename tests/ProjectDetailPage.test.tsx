@@ -245,3 +245,57 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     expect(onDataChanged).toHaveBeenCalledTimes(1)                    // 终态恰一次
   })
 })
+
+describe('ProjectDetailPage edit project modal (todo: fields editable after create)', () => {
+  const companyProject: Project = {
+    ...project,
+    description: '老描述',
+    company_name: '旧公司',
+    credit_code: '91110000OLDCODE',
+  }
+
+  it('opens with prefilled fields and saves all four via knowledge:updateProject', async () => {
+    const onDataChanged = vi.fn()
+    const { getByText, container } = render(
+      <ProjectDetailPage project={companyProject} onProjectDataChanged={onDataChanged} />,
+    )
+    await flush()
+    // 头部铅笔按钮（title/aria 为 i18n key，icon 内容不参与文本匹配）
+    fireEvent.click(container.querySelector('.editBtn')!)
+    // 弹层 4 字段全量回填
+    const inputs = container.querySelectorAll('.editModal input')
+    expect(inputs.length).toBe(4)
+    expect((inputs[0] as HTMLInputElement).value).toBe('P')
+    expect((inputs[1] as HTMLInputElement).value).toBe('老描述')
+    expect((inputs[2] as HTMLInputElement).value).toBe('旧公司')
+    expect((inputs[3] as HTMLInputElement).value).toBe('91110000OLDCODE')
+    // 改名称 + 公司名保存：恒传 4 字段（所见即所得，清空 = 置空）
+    fireEvent.change(inputs[0], { target: { value: '新项目名' } })
+    fireEvent.change(inputs[2], { target: { value: '新公司' } })
+    fireEvent.click(getByText('project.save'))
+    await flush()
+    const call = invokeMock.mock.calls.find((c) => c[0] === 'knowledge:updateProject')
+    expect(call?.[1]).toEqual({
+      projectId: 'p1',
+      name: '新项目名',
+      description: '老描述',
+      company_name: '新公司',
+      credit_code: '91110000OLDCODE',
+    })
+    expect(onDataChanged).toHaveBeenCalledTimes(1)   // App 层 loadProjects 刷新 project prop
+    expect(container.querySelector('.editModal')).toBeNull()   // 保存成功后弹层关闭
+  })
+
+  it('disables save and refuses to invoke when name is blank', async () => {
+    const { getByText, container } = render(<ProjectDetailPage project={companyProject} />)
+    await flush()
+    fireEvent.click(container.querySelector('.editBtn')!)
+    const nameInput = container.querySelector('.editModal input') as HTMLInputElement
+    fireEvent.change(nameInput, { target: { value: '   ' } })
+    const saveBtn = getByText('project.save').closest('button') as HTMLButtonElement
+    expect(saveBtn.disabled).toBe(true)
+    fireEvent.click(saveBtn)
+    await flush()
+    expect(invokeMock.mock.calls.some((c) => c[0] === 'knowledge:updateProject')).toBe(false)
+  })
+})

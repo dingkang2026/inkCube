@@ -66,7 +66,7 @@ Built-in **primary-market methodology skills** (due-diligence checklists, busine
 ### Report engine
 
 - Template-driven multi-step pipeline: variable DAG → multi-channel retrieval → knowledge cards → section-by-section generation (checkpoint resume) → consistency pass
-- Report template management; export to Word / PDF
+- Report template management; export to Word
 
 ### Form filling
 
@@ -113,6 +113,7 @@ Built-in **primary-market methodology skills** (due-diligence checklists, busine
 | Item | Phase | Notes |
 |------|-------|-------|
 | PPT templates | Near-term | Keep polishing & expanding on top of the shipped template management / parsing |
+| Report PDF export | Long-term | Word→PDF downstream conversion (LibreOffice / MS Office), in-app format picker |
 | Multi-platform validation & tuning | Near-term | macOS / Linux installer testing (the Windows install / upgrade / uninstall chain is fully validated; mac / Linux packaging targets are configured) |
 | Long-term memory | Long-term | Cross-task, cross-session memory |
 | Server edition | Long-term | Server-based deployment |
