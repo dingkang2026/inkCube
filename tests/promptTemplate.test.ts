@@ -3,6 +3,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   TASK_TEMPLATES,
+  INTEL_TEMPLATES,
+  INTEL_CATEGORY_MAP,
   TEMPLATE_CATEGORIES,
   hasUnfilledPlaceholders,
   uniquePlaceholderNames,
@@ -55,13 +57,30 @@ describe('applyValues', () => {
   });
 });
 
-describe('TASK_TEMPLATES', () => {
-  it('恰好 10 条且 id 唯一、分类齐全', () => {
-    expect(TASK_TEMPLATES).toHaveLength(10);
-    expect(new Set(TASK_TEMPLATES.map((t) => t.id)).size).toBe(10);
+describe('TASK_TEMPLATES / INTEL_TEMPLATES', () => {
+  it('任务模板 6 条且 id 唯一、分类齐全（V2-E1a T12 收窄）', () => {
+    expect(TASK_TEMPLATES).toHaveLength(6);
+    expect(new Set(TASK_TEMPLATES.map((t) => t.id)).size).toBe(6);
     expect(new Set(TASK_TEMPLATES.map((t) => t.category))).toEqual(
-      new Set(['info', 'mon', 'ind', 'rep', 'off']),
+      new Set(['info', 'rep', 'off']),
     );
+  });
+  it('订阅白名单 6 条且 id 唯一、分类齐全，含两新政策模板', () => {
+    expect(INTEL_TEMPLATES).toHaveLength(6);
+    expect(new Set(INTEL_TEMPLATES.map((t) => t.id)).size).toBe(6);
+    expect(new Set(INTEL_TEMPLATES.map((t) => t.category))).toEqual(
+      new Set(['mon', 'ind', 'reg']),
+    );
+    const ids = INTEL_TEMPLATES.map((t) => t.id);
+    expect(ids).toContain('industryPolicy');
+    expect(ids).toContain('regionPolicy');
+  });
+  it('INTEL_CATEGORY_MAP 覆盖全部分类且值落在订阅产出四分类', () => {
+    const cats = TEMPLATE_CATEGORIES.slice(1) as unknown as string[];
+    expect(Object.keys(INTEL_CATEGORY_MAP).sort()).toEqual([...cats].sort());
+    for (const v of Object.values(INTEL_CATEGORY_MAP)) {
+      expect(['corporate', 'industry', 'region', 'general']).toContain(v);
+    }
   });
 });
 
@@ -69,7 +88,7 @@ describe('TEMPLATE_CATEGORIES', () => {
   it('以 all 开头且覆盖全部分类', () => {
     expect(TEMPLATE_CATEGORIES[0]).toBe('all');
     expect(new Set(TEMPLATE_CATEGORIES.slice(1))).toEqual(
-      new Set(['info', 'mon', 'ind', 'rep', 'off']),
+      new Set(['info', 'mon', 'ind', 'reg', 'rep', 'off']),
     );
   });
 });

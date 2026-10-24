@@ -168,3 +168,30 @@
 .actionBtn:hover {
   border-color: var(--accent);
 }
+
+/* 产业类提取主位突出（0.6 §6.3-12）：主视觉强调，同 LeadPool 主钮口径 */
+.actionBtnPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--bg-primary);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.actionBtnPrimary:hover {
+  opacity: 0.9;
+  border-color: var(--accent);
+}
+
+/* 组合周报徽标（2.11 §12.4，标题行随行） */
+.rollupTag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  white-space: nowrap;
+}

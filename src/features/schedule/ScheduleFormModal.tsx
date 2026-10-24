@@ -1,18 +1,23 @@
 /** src/features/schedule/ScheduleFormModal.tsx — 新建/编辑订阅弹层向导
- *  （2.11 §9.2 规则 9，E3 T7）。三渠道入口归一：
+ *  （2.11 §9.2 规则 9，E3 T7；V2.1-T2 订阅定位三型 2.11 §12）。两步流程：
  *  ①来源（从模板占位符表单化 / 自由输入）；②周期（daily 时刻 / weekly 星期多选
  *  +时刻 / monthly 日期多选+时刻，intervalValue 与后端 _WEEKDAYS 约定一致）；
- *  ③去向+保存（不沉淀/项目/基础库，列表源复用 E2 ImportTargetDialog 通道）。
- *  initial.taskId（人工任务「设为定时」）→ refinePrompt 预填并跳过①；
- *  editing（编辑态）→ 跳过①，统一 prompt+占位符回填。 */
-import { useState, useEffect, useCallback, useRef } from 'react'
+ *  ③定位+去向+保存：scope 三选（盯梢/撒网/组合周报）——选组合周报时本步切
+ *  汇总骨架编辑（预填默认模板含 {sections}）+ 汇总范围多选（默认全量），
+ *  隐藏去向区（rollup 不沉淀）；其余 scope 保持去向配置。editing（编辑态）
+ *  → 跳过①，统一 prompt+配置回填。 */
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { X } from 'lucide-react'
 import { useToast } from '../knowledge/Toast'
 import { apiErrorText } from '../../i18n/errorCodes'
 import { useTaskTemplates } from '../task/useTaskTemplates'
-import { hasUnfilledPlaceholders, uniquePlaceholderNames, applyValues } from '../task/promptTemplate'
+import {
+  hasUnfilledPlaceholders, uniquePlaceholderNames, applyValues,
+  INTEL_TEMPLATES, INTEL_CATEGORY_MAP, sortTemplatesByPersona,
+} from '../task/promptTemplate'
 import type { ScheduleRow } from './useSchedules'
+import { useSettings } from '../settings/useSettings'
 import s from './ScheduleFormModal.module.css'
 
 /** ISO 周一~周日（1-7）→ intervalValue 星期缩写（与后端 scheduler._WEEKDAYS 一致） */
@@ -41,10 +46,12 @@ export function parseInterval(
 
 interface ScheduleFormModalProps {
   open: boolean
-  /** 渠道③：人工任务「设为定时」→ refinePrompt 提炼预填（跳过第①步） */
-  initial?: { taskId?: string }
   /** 编辑态：跳过第①步，prompt+配置回填 */
   editing?: ScheduleRow | null
+  /** 新建态预填（0.6 §6.1 V2-E2 线索升级订阅）：名称进订阅名、
+   *  prompt 进自由输入（并切到自由输入 tab）；编辑态忽略（editing 走 update，
+   *  两者不可混用） */
+  prefill?: { name?: string; prompt?: string }
   onClose: () => void
   onSaved: () => void
 }
@@ -52,18 +59,21 @@ interface ScheduleFormModalProps {
 type Step = 'source' | 'period' | 'target'
 type SourceTab = 'template' | 'free'
 type IntervalType = 'daily' | 'weekly' | 'monthly'
+type Scope = 'focus' | 'sweep' | 'rollup'
+const SCOPES: Scope[] = ['focus', 'sweep', 'rollup']
 
-export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: ScheduleFormModalProps) {
+export function ScheduleFormModal({ open, editing, prefill, onClose, onSaved }: ScheduleFormModalProps) {
   const { t } = useTranslation()
   const showToast = useToast()
-  const { templates } = useTaskTemplates('global')
+  const { settings } = useSettings()
+  // T12 模板分家：第①步模板列表 = 订阅白名单 INTEL_TEMPLATES + 自定义模板
+  const { templates } = useTaskTemplates('global', undefined, INTEL_TEMPLATES)
 
   const [step, setStep] = useState<Step>('source')
   const [sourceTab, setSourceTab] = useState<SourceTab>('template')
   const [tplId, setTplId] = useState<string | null>(null)
   const [phValues, setPhValues] = useState<Record<string, string>>({})
   const [freePrompt, setFreePrompt] = useState('')
-  const [refining, setRefining] = useState(false)
 
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -78,12 +88,16 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
   const [targets, setTargets] = useState<{ id: string; name: string }[]>([])
   const [autoImport, setAutoImport] = useState(true)
   const [saving, setSaving] = useState(false)
-  const refineStarted = useRef(false)
 
-  // 打开初始化：编辑态回填 / refine 流程 / 新建清空
+  // 订阅定位（2.11 §12）：rollup 时第③步切骨架+汇总范围，去向区隐藏
+  const [scope, setScope] = useState<Scope>('focus')
+  const [rollupPrompt, setRollupPrompt] = useState('')
+  const [digestIds, setDigestIds] = useState<string[]>([])
+  const [digestSources, setDigestSources] = useState<{ id: string; name: string }[]>([])
+
+  // 打开初始化：编辑态回填 / 新建清空
   useEffect(() => {
     if (!open) return
-    refineStarted.current = false
     if (editing) {
       const parsed = parseInterval(editing.interval_type, editing.interval_value)
       setName(editing.name)
@@ -96,15 +110,18 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
       setTargetType(editing.target_type ?? 'none')
       setTargetId(editing.target_id)
       setAutoImport(!!editing.auto_import)
+      setScope(editing.scope)
+      setRollupPrompt(editing.scope === 'rollup' ? editing.prompt : '')
+      setDigestIds(editing.digest_schedule_ids ?? [])
       setStep('period')
       return
     }
-    setStep(initial?.taskId ? 'period' : 'source')
-    setSourceTab('template')
+    setStep('source')
+    setSourceTab(prefill?.prompt ? 'free' : 'template')
     setTplId(null)
     setPhValues({})
-    setFreePrompt('')
-    setName('')
+    setFreePrompt(prefill?.prompt ?? '')
+    setName(prefill?.name ?? '')
     setPrompt('')
     setCategory('corporate')
     setIntervalType('daily')
@@ -114,30 +131,18 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
     setTargetType('none')
     setTargetId(null)
     setAutoImport(true)
-  }, [open, editing, initial?.taskId])
+    setScope('focus')
+    setRollupPrompt('')
+    setDigestIds([])
+  }, [open, editing, prefill])
 
-  // 渠道③：refinePrompt 提炼 → 预填跳过第①步；失败 toast 停在自由输入
-  useEffect(() => {
-    if (!open || !initial?.taskId || editing || refineStarted.current) return
-    refineStarted.current = true
-    setRefining(true)
-    window.electronAPI.invoke('schedules:refinePrompt', { taskId: initial.taskId })
-      .then((res) => {
-        const r = res as { name?: string; prompt?: string }
-        setName(r?.name ?? '')
-        setPrompt(r?.prompt ?? '')
-        setStep('period')
-      })
-      .catch((err) => {
-        console.error('Refine prompt failed:', err)
-        showToast(apiErrorText(
-          (err as { errorCode?: string })?.errorCode,
-          t('schedule.form.refineFailed'), t), 'error')
-        setStep('source')
-        setSourceTab('free')
-      })
-      .finally(() => setRefining(false))
-  }, [open, initial?.taskId, editing, showToast, t])
+  // scope 切到 rollup 且骨架为空 → 预填默认模板（含 {sections}，用户可改）
+  const switchScope = (next: Scope) => {
+    setScope(next)
+    if (next === 'rollup' && !rollupPrompt.trim()) {
+      setRollupPrompt(t('schedule.form.rollupPromptTemplate'))
+    }
+  }
 
   const loadTargets = useCallback((kind: 'project' | 'baselib') => {
     const channel = kind === 'project' ? 'knowledge:listProjects' : 'baseLib:list'
@@ -158,6 +163,19 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
     }
   }, [step, targetType, targets.length, loadTargets])
 
+  // rollup 汇总范围候选：非 rollup 订阅全量（排除自身防自聚合，2.11 §12 不变量①）
+  useEffect(() => {
+    if (!open || step !== 'target' || scope !== 'rollup' || digestSources.length > 0) return
+    window.electronAPI.invoke('schedules:list', { limit: 0 })
+      .then((res) => {
+        const rows = (res as { schedules?: ScheduleRow[] })?.schedules ?? []
+        setDigestSources(rows
+          .filter((r) => r.scope !== 'rollup' && r.id !== editing?.id)
+          .map((r) => ({ id: r.id, name: r.name })))
+      })
+      .catch((err) => console.error('ScheduleFormModal: load digest sources failed:', err))
+  }, [open, step, scope, digestSources.length, editing?.id])
+
   if (!open) return null
 
   const selectedTpl = templates.find((m) => m.id === tplId) ?? null
@@ -166,26 +184,36 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
   const phNames = selectedTpl ? uniquePlaceholderNames(selectedTpl.prompt) : []
   const templatePrompt = selectedTpl ? applyValues(selectedTpl.prompt, phValues) : ''
   const sourcePrompt = sourceTab === 'template' ? templatePrompt : freePrompt
+  // persona 排序（非置顶区置顶，0.6 §3.2 T12）
+  const sortedTemplates = sortTemplatesByPersona(templates, settings?.persona ?? '', 'intel')
+  // 自由输入四分类直落 category（corporate/industry/region/general，0.6 §3.2 T12）
+  const INTEL_CATEGORIES = ['corporate', 'industry', 'region', 'general'] as const
 
   const step1Ready = sourceTab === 'template'
     ? !!selectedTpl && !hasUnfilledPlaceholders(templatePrompt)
     : !!freePrompt.trim()
   const days = intervalType === 'weekly' ? weekDays : monthDays
   const step2Ready = time !== '' && (intervalType === 'daily' || days.length > 0)
-  const step3Ready = targetType === 'none' || !!targetId
+  // rollup：骨架须含 {sections}（后端同校验 400 ROLLUP_PROMPT_NEEDS_SECTION）
+  const step3Ready = scope === 'rollup'
+    ? rollupPrompt.includes('{sections}')
+    : targetType === 'none' || !!targetId
 
   const handleSave = async () => {
     if (!step3Ready || saving) return
     const intervalValue = serializeInterval(intervalType, days, time)
     const payload = {
       name: name.trim() || null,
-      prompt: prompt || sourcePrompt,
+      prompt: scope === 'rollup' ? rollupPrompt : (prompt || sourcePrompt),
       category,
       intervalType,
       intervalValue,
-      targetType: targetType === 'none' ? null : targetType,
-      targetId: targetType === 'none' ? null : targetId,
-      autoImport: targetType === 'none' ? false : autoImport,
+      scope,
+      // 不勾选 = 全量（后端 NULL 语义）；空数组永不发出（后端视作无源）
+      digestScheduleIds: scope === 'rollup' && digestIds.length > 0 ? digestIds : null,
+      targetType: scope === 'rollup' ? null : (targetType === 'none' ? null : targetType),
+      targetId: scope === 'rollup' ? null : (targetType === 'none' ? null : targetId),
+      autoImport: scope === 'rollup' ? false : (targetType === 'none' ? false : autoImport),
     }
     setSaving(true)
     try {
@@ -219,8 +247,6 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
           </button>
         </div>
 
-        {refining && <div className={s.refining}>{t('schedule.form.refining')}</div>}
-
         {step === 'source' && (
           <div className={s.body}>
             <div className={s.tabs} role="tablist">
@@ -237,10 +263,15 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
             </div>
             {sourceTab === 'template' && (
               <div className={s.tplList}>
-                {templates.map((m) => (
+                {sortedTemplates.map((m) => (
                   <button key={m.id}
                     className={`${s.tplItem} ${tplId === m.id ? s.tplActive : ''}`}
-                    onClick={() => { setTplId(m.id); setPhValues({}) }}>
+                    onClick={() => {
+                      setTplId(m.id)
+                      setPhValues({})
+                      // 模板分类自动映射订阅产出分类（0.6 §3.2 T12）
+                      setCategory(INTEL_CATEGORY_MAP[m.category])
+                    }}>
                     {m.title}
                   </button>
                 ))}
@@ -261,13 +292,29 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
               </div>
             )}
             {sourceTab === 'free' && (
-              <textarea
-                className={s.promptArea}
-                aria-label={t('schedule.form.promptLabel')}
-                placeholder={t('schedule.form.promptPlaceholder')}
-                value={freePrompt}
-                onChange={(e) => setFreePrompt(e.target.value)}
-              />
+              <>
+                <textarea
+                  className={s.promptArea}
+                  aria-label={t('schedule.form.promptLabel')}
+                  placeholder={t('schedule.form.promptPlaceholder')}
+                  value={freePrompt}
+                  onChange={(e) => setFreePrompt(e.target.value)}
+                />
+                <div className={s.catRow} role="radiogroup" aria-label={t('schedule.form.categoryLabel')}>
+                  {INTEL_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      role="radio"
+                      aria-checked={category === cat}
+                      className={`${s.catChip} ${category === cat ? s.catChipActive : ''}`}
+                      onClick={() => setCategory(cat)}
+                    >
+                      {t(`schedule.tab.${cat}`)}
+                    </button>
+                  ))}
+                </div>
+              </>
             )}
             <div className={s.actions}>
               <span />
@@ -363,44 +410,93 @@ export function ScheduleFormModal({ open, initial, editing, onClose, onSaved }: 
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
               >
-                <option value="industry">{t('schedule.tab.industry')}</option>
                 <option value="corporate">{t('schedule.tab.corporate')}</option>
+                <option value="industry">{t('schedule.tab.industry')}</option>
+                <option value="region">{t('schedule.tab.region')}</option>
                 <option value="general">{t('schedule.tab.general')}</option>
               </select>
             </label>
-            <div className={s.radioCol} role="radiogroup" aria-label={t('schedule.form.stepTarget')}>
-              {(['none', 'project', 'baselib'] as const).map((tp) => (
-                <label key={tp} className={s.radioRow}>
+            <div className={s.radioCol} role="radiogroup" aria-label={t('schedule.form.scopeLabel')}>
+              {SCOPES.map((sc) => (
+                <label key={sc} className={s.radioRow}>
                   <input
                     type="radio"
-                    name="targetType"
-                    checked={targetType === tp}
-                    onChange={() => { setTargetType(tp); setTargetId(null); setTargets([]) }}
+                    name="scope"
+                    checked={scope === sc}
+                    onChange={() => switchScope(sc)}
                   />
-                  {t(`schedule.form.target.${tp}`)}
+                  {t(`schedule.scope.${sc}`)}
                 </label>
               ))}
             </div>
-            {targetType !== 'none' && (
-              <div className={s.targetList}>
-                {targets.length === 0 ? (
-                  <div className={s.empty}>{t('schedule.form.loadingTargets')}</div>
-                ) : targets.map((item) => (
-                  <button key={item.id}
-                    className={`${s.tplItem} ${targetId === item.id ? s.tplActive : ''}`}
-                    onClick={() => setTargetId(item.id)}>
-                    {item.name}
-                  </button>
-                ))}
-                <label className={s.autoImportRow}>
-                  <input
-                    type="checkbox"
-                    checked={autoImport}
-                    onChange={(e) => setAutoImport(e.target.checked)}
+            {scope === 'rollup' ? (
+              <>
+                <label className={s.phRow}>
+                  <span>{t('schedule.form.rollupSkeletonLabel')}</span>
+                  <textarea
+                    className={s.promptArea}
+                    aria-label={t('schedule.form.rollupSkeletonLabel')}
+                    value={rollupPrompt}
+                    onChange={(e) => setRollupPrompt(e.target.value)}
                   />
-                  {t('schedule.form.autoImport')}
                 </label>
-              </div>
+                <p className={s.rollupHint}>{t('schedule.form.rollupSkeletonHint')}</p>
+                <div className={s.fieldLabel}>{t('schedule.form.rollupScopeLabel')}</div>
+                <div className={s.targetList}>
+                  {digestSources.length === 0 ? (
+                    <div className={s.empty}>{t('schedule.form.loadingTargets')}</div>
+                  ) : digestSources.map((src) => (
+                    <label key={src.id} className={s.dayChip}>
+                      <input
+                        type="checkbox"
+                        aria-label={src.name}
+                        checked={digestIds.includes(src.id)}
+                        onChange={(e) => setDigestIds((prev) =>
+                          e.target.checked ? [...prev, src.id] : prev.filter((x) => x !== src.id))}
+                      />
+                      {src.name}
+                    </label>
+                  ))}
+                </div>
+                <p className={s.rollupHint}>{t('schedule.form.rollupScopeHint')}</p>
+              </>
+            ) : (
+              <>
+                <div className={s.radioCol} role="radiogroup" aria-label={t('schedule.form.stepTarget')}>
+                  {(['none', 'project', 'baselib'] as const).map((tp) => (
+                    <label key={tp} className={s.radioRow}>
+                      <input
+                        type="radio"
+                        name="targetType"
+                        checked={targetType === tp}
+                        onChange={() => { setTargetType(tp); setTargetId(null); setTargets([]) }}
+                      />
+                      {t(`schedule.form.target.${tp}`)}
+                    </label>
+                  ))}
+                </div>
+                {targetType !== 'none' && (
+                  <div className={s.targetList}>
+                    {targets.length === 0 ? (
+                      <div className={s.empty}>{t('schedule.form.loadingTargets')}</div>
+                    ) : targets.map((item) => (
+                      <button key={item.id}
+                        className={`${s.tplItem} ${targetId === item.id ? s.tplActive : ''}`}
+                        onClick={() => setTargetId(item.id)}>
+                        {item.name}
+                      </button>
+                    ))}
+                    <label className={s.autoImportRow}>
+                      <input
+                        type="checkbox"
+                        checked={autoImport}
+                        onChange={(e) => setAutoImport(e.target.checked)}
+                      />
+                      {t('schedule.form.autoImport')}
+                    </label>
+                  </div>
+                )}
+              </>
             )}
             <div className={s.actions}>
               <button className={s.secondaryBtn} onClick={() => setStep('period')}>

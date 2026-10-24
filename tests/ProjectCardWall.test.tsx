@@ -24,7 +24,7 @@ describe('ProjectCardWall (3.0 三期 Task 5)', () => {
   it('renders card per project with stage label fallback and next due date', () => {
     const { container, getByText } = render(
       <ProjectCardWall projects={[proj]}
-        healthData={{ p1: { overdue: 0, weekDue: 2, reviewsPending: 0 } }}
+        healthData={{ p1: { overdue: 0, weekDue: 2, reviewsPending: 0, contradiction: 0, gap: 0 } }}
         nextDueByProject={{ p1: { date: '2099-01-01', title: '上传BP' } }}
         onSelect={vi.fn()} />)
     expect(getByText('招聘项目')).toBeTruthy()
@@ -110,5 +110,45 @@ describe('ProjectCardWall 新产出角标 (0.5 E2 T7)', () => {
     const { container: c2 } = render(
       <ProjectCardWall projects={[proj]} newOutputsByProject={{ p1: 0 }} onSelect={vi.fn()} />)
     expect(c2.querySelector('span[title*="home.newOutputs"]')).toBeNull()
+  })
+})
+
+describe('ProjectCardWall V2-E4 升级 (阶段序数/脉搏句/矛盾缺口行)', () => {
+  it('阶段 pill 附 n/m 序数（STAGE_MAP 序位）', () => {
+    const { container } = render(
+      <ProjectCardWall projects={[{ ...proj, type: 'investment', stage: 'during' }]} onSelect={vi.fn()} />)
+    expect(container.textContent!).toContain('2/3')   // investment during = 第 2/3 阶段
+  })
+
+  it('general 类型无阶段集不显示序数', () => {
+    const { container } = render(
+      <ProjectCardWall projects={[proj]} onSelect={vi.fn()} />)   // general + before
+    expect(container.textContent!).toContain('project.stage.before')
+    expect(container.textContent!).not.toMatch(/\d\/\d/)
+  })
+
+  it('AI 脉搏句非空渲染、空不渲染', () => {
+    const { container } = render(
+      <ProjectCardWall projects={[{ ...proj, pulse_ai_status: '企业月报已解析，发现 3 条新风险' }]} onSelect={vi.fn()} />)
+    expect(container.textContent!).toContain('企业月报已解析，发现 3 条新风险')
+    const { container: c2 } = render(
+      <ProjectCardWall projects={[proj]} onSelect={vi.fn()} />)
+    expect(c2.textContent!).not.toContain('企业月报已解析')
+  })
+
+  it('矛盾/缺口计数行 >0 渲染对应项、全 0 不渲染', () => {
+    const { container } = render(
+      <ProjectCardWall projects={[proj]}
+        healthData={{ p1: { overdue: 0, weekDue: 0, reviewsPending: 3, contradiction: 2, gap: 1 } }}
+        onSelect={vi.fn()} />)
+    const text = container.textContent!
+    expect(text).toContain('home.wall.contradiction')
+    expect(text).toContain('home.wall.gap')
+    const { container: c2 } = render(
+      <ProjectCardWall projects={[proj]}
+        healthData={{ p1: { overdue: 0, weekDue: 0, reviewsPending: 0, contradiction: 0, gap: 0 } }}
+        onSelect={vi.fn()} />)
+    expect(c2.textContent!).not.toContain('home.wall.contradiction')
+    expect(c2.textContent!).not.toContain('home.wall.gap')
   })
 })

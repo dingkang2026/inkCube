@@ -39,12 +39,16 @@ interface WikiHomePageProps {
   onCompile: () => void
   /** purpose/overview 保存成功后回调父级刷新（避免保存后界面回显旧值） */
   onMetaSaved?: () => void
-  /** 三型审查计数（矛盾/缺口/死链），父级 WikiTab 从 reviews 派生；全 0 时健康卡不渲染（3.0 §6.1.2） */
-  reviewCounts?: { contradiction: number; gap: number; deadLink: number }
+  /** 三型审查计数（矛盾/缺口/死链），父级 WikiTab 从 reviews 派生；信任信号行消费前两型
+   *  +pendingCount（V2 E3 死链撤离封面，体检面板分型保留） */
+  reviewCounts?: { contradiction: number; gap: number }
   /** 「去处理」直达治理视图（lint） */
   onOpenLint?: () => void
-  /** 结构页定义清单（父级 wiki:getSchemas 拉取），用于完成度区块；空/缺省隐藏（3.0 一期 Task 6） */
-  schemas?: Array<{ page_key: string; title: string }>
+  /** 「待汇编」chip 直达汇编视图（V2 E3 信任信号行） */
+  onOpenCompile?: () => void
+  /** 结构页定义清单（父级 wiki:getSchemas 拉取，含 is_ledger 台账标记），用于完成度区块
+   *  与目录台账组置顶判定；空/缺省隐藏（3.0 一期 Task 6；is_ledger 为 V2 E3 新增消费） */
+  schemas?: Array<{ page_key: string; title: string; is_ledger?: boolean }>
   /** 结构页缺失清单（wiki:listPages.missing_pages，后端基于全量 page_key 集：
    *  完成度消费它而非分页后的 pages 复算，大项目不再低估，2026-10-22） */
   missingPages?: Array<{ page_key: string; title: string }>
@@ -86,9 +90,13 @@ function extractSummary(content: string | null, maxLen = 80): string {
   return ''
 }
 
+/** 成册进度环周长（r=20,viewBox 48,V2 E3 §3.5） */
+const RING_RADIUS = 20
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+
 export function WikiHomePage({
   projectId, purpose, overview, pages, sourcePageCount, pendingCount,
-  onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, schemas, missingPages,
+  onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, onOpenCompile, schemas, missingPages,
   ledgerEntries, ledgerParsing, pagesTotal,
   hasMorePages, pagesLoadingMore, onLoadMorePages,
   hasMoreLedger, ledgerLoadingMore, onLoadMoreLedger,
@@ -139,10 +147,18 @@ export function WikiHomePage({
     }
   }
 
-  // Group pages by page_type
+  // V2 E3 目录语义分组：台账页单列置顶组（is_ledger 为唯一判定，0.6 §6.3-5——
+  // 分组只改呈现不改 page_type 语义），其余仍按 page_type 分组
+  const ledgerKeys = useMemo(
+    () => new Set((schemas ?? []).filter((sc) => sc.is_ledger).map((sc) => sc.page_key)),
+    [schemas],
+  )
+
+  // Group pages by page_type（台账页除外，单列置顶）
   const groupedPages = useMemo(() => {
     const groups: Record<string, WikiPage[]> = {}
     for (const page of pages) {
+      if (ledgerKeys.has(page.page_key)) continue
       const type = page.page_type || 'structure'
       if (!groups[type]) groups[type] = []
       groups[type].push(page)
@@ -157,7 +173,21 @@ export function WikiHomePage({
       pagesInGroup.sort((a, b) => (a.title || a.page_key).localeCompare(b.title || b.page_key))
     }
     return sortedEntries
-  }, [pages])
+  }, [pages, ledgerKeys])
+
+  const ledgerPages = useMemo(
+    () => pages.filter((p) => ledgerKeys.has(p.page_key)),
+    [pages, ledgerKeys],
+  )
+  // 未汇编框架页（missing_pages 全量口径）拆分：命中台账键归台账组，其余归知识框架组
+  const ledgerMissing = useMemo(
+    () => (missingPages ?? []).filter((m) => ledgerKeys.has(m.page_key)),
+    [missingPages, ledgerKeys],
+  )
+  const structureMissing = useMemo(
+    () => (missingPages ?? []).filter((m) => !ledgerKeys.has(m.page_key)),
+    [missingPages, ledgerKeys],
+  )
 
   // 结构页完成度：消费后端 listPages.missing_pages（基于全量 page_key 集计算，
   // 不受 pages 分页影响——2026-10-22 修复：原用已加载分页 pages 复算 pageKeys，
@@ -183,6 +213,48 @@ export function WikiHomePage({
   const ledgerPageTitle = (key: string) => pages.find((p) => p.page_key === key)?.title || key
 
   const isFirstTime = pages.length === 0 && sourcePageCount === 0
+
+  /** 目录组渲染（V2 E3）：已生成页可点 + 缺失页置灰行（「待汇编」小标不可点）；
+   *  台账组经 header 参数覆盖组名/图标，其余用 PAGE_TYPE_CONFIG */
+  const renderIndexGroup = (
+    type: string,
+    typePages: WikiPage[],
+    missing: Array<{ page_key: string; title: string }>,
+    header?: { Icon: typeof FileText; labelKey: string; descKey: string },
+  ) => {
+    const cfg = header ?? PAGE_TYPE_CONFIG[type] ?? PAGE_TYPE_CONFIG.structure
+    const { Icon } = cfg
+    return (
+      <div key={type} className={s.homeIndexGroup}>
+        <div className={s.homeIndexGroupHeader}>
+          <Icon size={13} className={s.homeIndexGroupIcon} />
+          <span className={s.homeIndexGroupLabel}>{t(cfg.labelKey)}</span>
+          <span className={s.homeIndexGroupDesc}>{t(cfg.descKey)}</span>
+          <span className={s.homeIndexGroupCount}>{typePages.length}</span>
+        </div>
+        <div className={s.homeIndexList}>
+          {typePages.map((page) => (
+            <button
+              key={page.page_key}
+              className={s.homeIndexItem}
+              onClick={() => onNavigateToPage(page.page_key)}
+            >
+              <span className={s.homeIndexItemTitle}>{page.title || page.page_key}</span>
+              <span className={s.homeIndexItemSummary}>
+                {extractSummary(page.content)}
+              </span>
+            </button>
+          ))}
+          {missing.map((m) => (
+            <div key={m.page_key} className={s.homeIndexItemPending}>
+              <span className={s.homeIndexItemTitle}>{m.title}</span>
+              <span className={s.homeIndexItemPendingTag}>{t('project.wiki.homePage.pendingTag')}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={s.homePage}>
@@ -231,25 +303,35 @@ export function WikiHomePage({
         </section>
       )}
 
-      {/* ── Health card (3.0 §6.1.2)：矛盾/缺口/死链三型计数，全 0 整卡不渲染 ── */}
-      {reviewCounts && (reviewCounts.contradiction > 0 || reviewCounts.gap > 0 || reviewCounts.deadLink > 0) && (
+      {/* ── 信任信号行（V2 E3 §3.5）：矛盾/缺口/待汇编三项，全 0 不渲染。
+          死链撤离封面（裁决：低危工程信号，体检面板分型与脉搏带合并口径保留）；
+          chip 可点直达整理层；仅待汇编时头部「去处理」不渲染（chip 即入口）── */}
+      {reviewCounts && (reviewCounts.contradiction > 0 || reviewCounts.gap > 0 || pendingCount > 0) && (
         <section className={s.healthCard}>
           <div className={s.healthHeader}>
             <AlertTriangle size={15} className={s.healthIcon} />
             <h3 className={s.healthTitle}>{t('project.wiki.homePage.healthTitle')}</h3>
-            <button className={s.healthGo} onClick={onOpenLint}>
-              {t('project.wiki.homePage.healthGo')}
-            </button>
+            {(reviewCounts.contradiction > 0 || reviewCounts.gap > 0) && (
+              <button className={s.healthGo} onClick={onOpenLint}>
+                {t('project.wiki.homePage.healthGo')}
+              </button>
+            )}
           </div>
           <div className={s.healthChips}>
             {reviewCounts.contradiction > 0 && (
-              <span className={s.healthChipErr}>{t('project.wiki.homePage.healthContradiction')} {reviewCounts.contradiction}</span>
+              <button className={s.healthChipErr} onClick={onOpenLint}>
+                {t('project.wiki.homePage.healthContradiction')} {reviewCounts.contradiction}
+              </button>
             )}
             {reviewCounts.gap > 0 && (
-              <span className={s.healthChipWarn}>{t('project.wiki.homePage.healthGap')} {reviewCounts.gap}</span>
+              <button className={s.healthChipWarn} onClick={onOpenLint}>
+                {t('project.wiki.homePage.healthGap')} {reviewCounts.gap}
+              </button>
             )}
-            {reviewCounts.deadLink > 0 && (
-              <span className={s.healthChipErr}>{t('project.wiki.homePage.healthDeadLink')} {reviewCounts.deadLink}</span>
+            {pendingCount > 0 && (
+              <button className={s.healthChipWarn} onClick={onOpenCompile}>
+                {t('project.wiki.homePage.healthPending')} {pendingCount}
+              </button>
             )}
           </div>
         </section>
@@ -297,7 +379,7 @@ export function WikiHomePage({
         </section>
       )}
 
-      {/* ── Schema completion (3.0 一期 Task 6)：结构页完成度进度条 + 已生成/骨架 chips ── */}
+      {/* ── 成册进度环（V2 E3 §3.5）：进度条升级为环形，generated/total + 已生成/骨架 chips ── */}
       {completion && (
         <section className={s.homeSection}>
           <div className={s.homeSectionHeader}>
@@ -310,12 +392,21 @@ export function WikiHomePage({
             </div>
           </div>
           <div className={s.completionBody}>
-            <div className={s.completionBar}>
-              <div
-                className={s.completionBarFill}
-                style={{ width: `${Math.round((completion.generated / completion.total) * 100)}%` }}
+            <svg
+              className={s.completionRing}
+              viewBox="0 0 48 48"
+              role="img"
+              aria-label={`${t('project.wiki.homePage.completionTitle')} ${completion.generated}/${completion.total}`}
+            >
+              <circle className={s.completionRingTrack} cx="24" cy="24" r="20" />
+              <circle
+                className={s.completionRingFill}
+                cx="24" cy="24" r="20"
+                strokeDasharray={`${RING_CIRCUMFERENCE}`}
+                strokeDashoffset={RING_CIRCUMFERENCE * (1 - completion.generated / completion.total)}
+                transform="rotate(-90 24 24)"
               />
-            </div>
+            </svg>
             <div className={s.completionChips}>
               {schemas?.map((sc) =>
                 !completion.missingKeys.has(sc.page_key) ? (
@@ -470,34 +561,16 @@ export function WikiHomePage({
           </div>
         ) : pages.length > 0 ? (
           <div className={s.homeIndex}>
-            {groupedPages.map(([type, typePages]) => {
-              const config = PAGE_TYPE_CONFIG[type] || PAGE_TYPE_CONFIG.structure
-              const { Icon } = config
-              return (
-                <div key={type} className={s.homeIndexGroup}>
-                  <div className={s.homeIndexGroupHeader}>
-                    <Icon size={13} className={s.homeIndexGroupIcon} />
-                    <span className={s.homeIndexGroupLabel}>{t(config.labelKey)}</span>
-                    <span className={s.homeIndexGroupDesc}>{t(config.descKey)}</span>
-                    <span className={s.homeIndexGroupCount}>{typePages.length}</span>
-                  </div>
-                  <div className={s.homeIndexList}>
-                    {typePages.map((page) => (
-                      <button
-                        key={page.page_key}
-                        className={s.homeIndexItem}
-                        onClick={() => onNavigateToPage(page.page_key)}
-                      >
-                        <span className={s.homeIndexItemTitle}>{page.title || page.page_key}</span>
-                        <span className={s.homeIndexItemSummary}>
-                          {extractSummary(page.content)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )
-            })}
+            {/* 跟踪台账组置顶（V2 E3）：is_ledger 命中页 + 缺失台账页置灰 */}
+            {(ledgerPages.length > 0 || ledgerMissing.length > 0) && renderIndexGroup(
+              'ledger', ledgerPages, ledgerMissing,
+              { Icon: Clock, labelKey: 'project.wiki.homePage.indexGroupLedger', descKey: 'project.wiki.homePage.indexGroupLedgerDesc' },
+            )}
+            {groupedPages.map(([type, typePages]) =>
+              renderIndexGroup(type, typePages, type === 'structure' ? structureMissing : []))}
+            {/* 知识框架组全缺（无已生成结构页）但仍有缺失定义：仅置灰行的组 */}
+            {!groupedPages.some(([type]) => type === 'structure') && structureMissing.length > 0 &&
+              renderIndexGroup('structure', [], structureMissing)}
             {hasMorePages && (
               <button
                 className={s.loadMoreBtn}

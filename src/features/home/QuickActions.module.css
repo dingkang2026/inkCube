@@ -5,22 +5,25 @@
   gap: 10px;
 }
 
+/* 无框悬浮面（V2-E1b §3.0-2）：去边框改极浅底色差 + 柔和投影 */
 .card {
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 16px 18px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base);
 }
 
 .card:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow-accent);
+  transform: translateY(-2px);
 }
 
 .icon {

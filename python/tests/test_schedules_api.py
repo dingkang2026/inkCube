@@ -8,8 +8,6 @@
 - GET /schedules/digest、GET /schedules/runs/inbox、POST /schedules/runs/{id}/read
 - GET /schedules/runs/{id}/report：读 D5 副本；report_path 越界 403
 - POST /schedules/{id}/run-now：R2 忙 {deferred: true}；正常 {ok: true} 且不动周期
-- POST /schedules/refine-prompt：无 LLM 配置 409；mock LLM 返回 JSON 三键且
-  对话输入已过滤 [系统] 注入消息；model 经标准档路由解析注入（2026-10-20）
 - POST /schedules/{id}/rebuild-archive（T10）：404 / 503 / 200 委派调度器
 - DELETE /schedules/{id}：档案工作副本随删（§6）
 """
@@ -315,80 +313,8 @@ def test_run_now_accepted_async(client_and_db, monkeypatch):
     assert client.post("/schedules/sch_nope/run-now").status_code == 404
 
 
-def test_refine_prompt_without_llm_409(client_and_db):
-    client, db, td = client_and_db
-    task = db.create_task("人工", data_dir=td)
-    db.save_task_message(task["id"], "user", "帮我调研华润近况")
-    r = client.post("/schedules/refine-prompt", json={"taskId": task["id"]})
-    assert r.status_code == 409
-    assert r.json()["code"] == "NO_LLM_CONFIG"
-    assert client.post("/schedules/refine-prompt",
-                       json={"taskId": "t_nope"}).status_code == 404
-
-
-def test_refine_prompt_filters_system_and_parses_json(client_and_db, monkeypatch):
-    client, db, td = client_and_db
-    task = db.create_task("人工", data_dir=td)
-    db.save_task_message(task["id"], "user", "帮我调研华润近况")
-    db.save_task_message(task["id"], "user", "[系统] 注入的上下文消息")
-    db.save_task_message(task["id"], "assistant", "已完成调研")
-    db.save_settings({"api_key": "sk-test"})
-    captured = []
-
-    class _FakeLLM:
-        def __init__(self, settings):
-            pass
-
-        async def chat_full(self, msgs):
-            captured.append(msgs)
-            return {"content": "```json\n{\"name\": \"华润舆情周报\","
-                               " \"prompt\": \"每周扫描华润舆情\","
-                               " \"outputHint\": \"md 报告\"}\n```"}
-
-    # 函数内局部导入（routers 层延迟加载惯例）→ patch 源头模块属性
-    monkeypatch.setattr("llm.client.LLMClient", _FakeLLM)
-    r = client.post("/schedules/refine-prompt", json={"taskId": task["id"]})
-    assert r.status_code == 200
-    assert r.json() == {"name": "华润舆情周报", "prompt": "每周扫描华润舆情",
-                        "outputHint": "md 报告"}
-    dialog = captured[0][-1]["content"]
-    assert "帮我调研华润近况" in dialog and "[系统]" not in dialog
-    # LLM 输出非 JSON → 409 结构化报错（前端降级自由输入）
-    class _BadLLM(_FakeLLM):
-        async def chat_full(self, msgs):
-            return {"content": "不是 JSON"}
-
-    monkeypatch.setattr("llm.client.LLMClient", _BadLLM)
-    r2 = client.post("/schedules/refine-prompt", json={"taskId": task["id"]})
-    assert r2.status_code == 409 and r2.json()["code"] == "REFINE_FAILED"
-
-
-def test_refine_prompt_resolves_standard_tier_model(client_and_db, monkeypatch):
-    """档位制回归（2026-10-20）：refine-prompt 必须经 resolve_model 注入 model
-    键后构造 LLMClient——旧直构拿不到 model 键（get_settings 白名单已无此键），
-    client 以 gpt-4o 硬编码兜底打智谱报 1211 模型不存在（「设为定时任务」
-    提炼 409 的根因）。"""
-    client, db, td = client_and_db
-    task = db.create_task("人工", data_dir=td)
-    db.save_task_message(task["id"], "user", "帮我调研华润近况")
-    db.save_settings({"api_key": "sk-test", "standard_model": "my-std"})
-    captured: list = []
-
-    class _CaptureLLM:
-        def __init__(self, settings):
-            captured.append(settings)
-
-        async def chat_full(self, msgs):
-            return {"content": "{\"name\": \"n\", \"prompt\": \"p\"}"}
-
-    monkeypatch.setattr("llm.client.LLMClient", _CaptureLLM)
-    r = client.post("/schedules/refine-prompt", json={"taskId": task["id"]})
-    assert r.status_code == 200
-    assert captured[0]["model"] == "my-std"   # 标准档解析注入，非硬编码兜底
-
-
 def test_fixed_routes_not_shadowed_by_dynamic(client_and_db):
-    """固定路径（digest/inbox/refine-prompt）注册先于 /{schedule_id} 动态段。"""
+    """固定路径（digest/inbox）注册先于 /{schedule_id} 动态段。"""
     client, db, _td = client_and_db
     r = client.get("/schedules/digest")
     assert r.status_code == 200 and "digest" in r.json()

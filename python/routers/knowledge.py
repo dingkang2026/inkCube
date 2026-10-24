@@ -840,6 +840,11 @@ async def delete_project(project_id: str):
         # NULL」同构（target_id 无外键，手动等价 ON DELETE SET NULL）。
         affected = db.clear_schedules_target("project", project_id)
 
+        # 线索立项引用联动（V2-E2 CodeReview Major 2026-10-24）：指向本项目的
+        # 已立项线索 project_id 置 NULL（线索保留）——不联动则「查看项目」永久
+        # 死链跳空态页；与上方 clear_schedules_target 同构
+        db.detach_leads_for_project(project_id)
+
         # 报告产物目录补清（2026-10-20 存储审计）：reports 行随项目级联删，
         # 但磁盘目录仅在单报告删除端点清理——级联删行后目录变孤儿。
         # 级联删行前按 project_id 收集 content_path 逐个删除。

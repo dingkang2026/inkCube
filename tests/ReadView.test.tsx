@@ -14,12 +14,22 @@ import { ReadView } from '../src/features/schedule/ReadView'
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string) => k }),
 }))
-// Toast 捕获（R3-P2-4：重跑 deferred 分级断言用）
-const toastState = vi.hoisted(() => ({ calls: [] as Array<[string, string]> }))
+// Toast 捕获（R3-P2-4：重跑 deferred 分级断言用；options 留存供 action.onClick 触发）
+const toastState = vi.hoisted(() => ({
+  calls: [] as Array<[string, string]>,
+  options: [] as Array<{ action?: { label: string; onClick: () => void } }>,
+}))
 vi.mock('../src/features/knowledge/Toast', () => ({
-  useToast: () => (msg: string, kind?: string) => {
+  useToast: () => (msg: string, kind?: string, options?: { action?: { label: string; onClick: () => void } }) => {
     toastState.calls.push([msg, kind ?? ''])
+    toastState.options.push(options ?? {})
   },
+}))
+
+// PromptDialog 捕获（存为线索预填断言；可控 resolve）
+const promptState = vi.hoisted(() => ({ fn: vi.fn(() => Promise.resolve(null)) }))
+vi.mock('../src/components/PromptDialog', () => ({
+  usePrompt: () => promptState.fn,
 }))
 
 // ScheduleFormModal 打桩：「订阅设置」按钮 → open + editing（订阅行）props 断言
@@ -79,6 +89,9 @@ const onBack = vi.fn()
 beforeEach(() => {
   formModalState.props = null
   toastState.calls = []
+  toastState.options = []
+  promptState.fn.mockReset()
+  promptState.fn.mockImplementation(() => Promise.resolve(null))
   onBack.mockClear()
 })
 
@@ -218,6 +231,21 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.getByTestId('read-open-replay')).toBeTruthy()
   })
 
+  it('组合周报期次 → 标题行「组合周报」徽标（2.11 §12.4）；盯梢订阅无', async () => {
+    const invoke = wireInvoke({ schedule: { ...SCHEDULE, scope: 'rollup' } })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    const { unmount } = render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.getByTestId('read-rollup-tag').textContent).toBe('schedule.scope.rollup')
+    unmount()
+
+    const invoke2 = wireInvoke({ schedule: { ...SCHEDULE, scope: 'focus' } })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: invoke2, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.queryByTestId('read-rollup-tag')).toBeNull()
+  })
+
   it('头部动作条：「执行过程」回调 onReplay(taskId)（期次行点击统一进报告页后，回放唯一入口）', async () => {
     const onReplay = vi.fn()
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
@@ -270,5 +298,93 @@ describe('ReadView（2.11 §8.2）', () => {
     await flush()
     fireEvent.keyDown(window, { ctrlKey: true, key: 'f' })
     expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
+  })
+
+  // ── 线索动线（0.6 §3.3/§6.1 V2-E2）：存为线索 / 提取线索 ──
+
+  it('done 期次头部有「存为线索」「提取线索」；running 无（无报告不可提取）', async () => {
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
+    const { unmount } = render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.getByTestId('read-save-lead')).toBeTruthy()
+    expect(screen.getByTestId('read-extract-lead')).toBeTruthy()
+    unmount()
+
+    const invokeRunning = wireInvoke({
+      run: { ...RUN_DONE, status: 'running', report_path: null, summary: null, finished_at: null },
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: invokeRunning, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.queryByTestId('read-save-lead')).toBeNull()
+    expect(screen.queryByTestId('read-extract-lead')).toBeNull()
+  })
+
+  it('存为线索：PromptDialog 预填要点首段 → 确认 leads:create（run 来源+订阅名快照）+ toast action 跳线索池', async () => {
+    promptState.fn.mockResolvedValueOnce('华润置地')
+    const invoke = wireInvoke()
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    const events: CustomEvent[] = []
+    const listener = (e: Event) => events.push(e as CustomEvent)
+    window.addEventListener('app:navigate-intel', listener)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByTestId('read-save-lead'))
+    await flush()
+    expect(promptState.fn).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: '要点A' }))
+    expect(invoke).toHaveBeenCalledWith('leads:create', {
+      name: '华润置地', sourceType: 'run', sourceRunId: 'run_1',
+      sourceScheduleName: '华润舆情', note: '',
+    })
+    expect(toastState.calls.map(([m]) => m)).toContain('intel.lead.added')
+    // toast action 触发 → 跳线索池（app:navigate-intel detail.tab='leads'）
+    const last = toastState.options[toastState.options.length - 1]
+    last?.action?.onClick()
+    window.removeEventListener('app:navigate-intel', listener)
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ tab: 'leads' })
+  })
+
+  it('存为线索：PromptDialog 取消（resolve null）→ 不建线索', async () => {
+    const invoke = wireInvoke()
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    fireEvent.click(screen.getByTestId('read-save-lead'))
+    await flush()
+    expect(invoke.mock.calls.some((c) => c[0] === 'leads:create')).toBe(false)
+  })
+
+  it('提取线索：点击打开 LeadExtractModal（extract runId 契约）', async () => {
+    const invoke = wireInvoke()
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    expect(screen.queryByTestId('lead-extract-modal')).toBeNull()
+    fireEvent.click(screen.getByTestId('read-extract-lead'))
+    await flush()
+    expect(screen.getByTestId('lead-extract-modal')).toBeTruthy()
+  })
+
+  it('initialAction=extract：挂载即打开提取模态（产业卡直达动线）', async () => {
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} initialAction="extract" />)
+    await flush()
+    expect(screen.getByTestId('lead-extract-modal')).toBeTruthy()
+  })
+
+  it('skipped run（rollup 空窗口）→ 留痕原因可读 + 重跑可用（CodeReview m-3）', async () => {
+    const invoke = wireInvoke({
+      run: { ...RUN_DONE, status: 'skipped', error: '窗口内无期次',
+             report_path: null, summary: null, task_id: null },
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    // 只显示「已跳过」无解释不可接受（G4 留痕不静默）：error 原因必须可见
+    expect(screen.getByText('窗口内无期次')).toBeTruthy()
+    fireEvent.click(screen.getByText('schedule.read.rerun'))
+    await flush()
+    expect(invoke).toHaveBeenCalledWith('schedules:runNow', 'sch_1')
   })
 })

@@ -1,0 +1,57 @@
+/* OutputTab（0.6 §3.2 V2-E1a T11）：产出合并二级分区条；token 对齐现状（E1b 重排） */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.segs {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.seg {
+  padding: 5px 14px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.seg:hover {
+  color: var(--text-primary);
+}
+
+.segActive {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+}
+
+.tplBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.tplBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}

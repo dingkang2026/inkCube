@@ -48,12 +48,6 @@
   color: var(--text-primary);
 }
 
-.refining {
-  padding: 10px 16px;
-  color: var(--accent);
-  font-size: var(--text-sm);
-}
-
 .body {
   display: flex;
   flex-direction: column;
@@ -150,6 +144,33 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   resize: vertical;
+}
+
+/* 自由输入四分类 chips（0.6 §3.2 V2-E1a T12）：选中态直落订阅产出分类 */
+.catRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.catChip {
+  padding: 4px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.catChip:hover {
+  color: var(--text-primary);
+}
+
+.catChipActive {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .fieldLabel {
@@ -253,4 +274,11 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+
+/* rollup 骨架/汇总范围说明行（2.11 §12，V2.1-T2） */
+.rollupHint {
+  margin: -4px 0 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }

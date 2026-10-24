@@ -1,19 +1,21 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { BookOpen, FileText, Wrench, Download, Table, FolderOutput, FolderInput, Presentation, Radio } from 'lucide-react'
+import { BookOpen, FileText, Wrench, Download, Table, FolderOutput, FolderInput, Presentation, Radio, LayoutGrid, Kanban } from 'lucide-react'
 import type { Project } from '../knowledge/types'
 import { useActivity } from '../activity/ActivityContext'
 import { navigateToNotification } from '../activity/ActivityMonitor'
 import type { ActiveItem } from '../activity/types'
+import { useSchedules } from '../schedule/useSchedules'
 import { TodayTodo, type HomeTab } from './TodayTodo'
 import { UpcomingCalendar } from './UpcomingCalendar'
-import { HomeOverviewBar, type OverviewAnchor } from './HomeOverviewBar'
+import { MorningHero, type OverviewAnchor } from './MorningHero'
 import { QuickActions } from './QuickActions'
 import { ProjectCardWall, type LatestEntry } from './ProjectCardWall'
+import { StageLaneView } from './StageLaneView'
 import { useRecentOutputs } from './useRecentOutputs'
-import { IntelDigest } from '../schedule/IntelDigest'
+import { IntelCardZone } from '../schedule/IntelCardZone'
 import { NotificationRow } from '../activity/NotificationRow'
-import { isOverdue, localISODate, type DueTask, type ProjectHealthSummary } from '../project/affairs/types'
+import { isOverdue, localISODate, type DueTask, type ProjectHealthSummary, type ReviewTypedCounts } from '../project/affairs/types'
 import s from './HomePage.module.css'
 
 /** 进行中条目图标 */
@@ -45,8 +47,10 @@ interface HomePageProps {
   onCreateTask: () => void
   /** 0.5 E1 T4:新建项目(切项目导航 + 打开创建模态) */
   onCreateProject: () => void
+  /** 0.6 §3.2 V2-E1a:新建订阅(情报中心管理台 tab + 直开弹层，App.openIntelAdmin 同链) */
+  onCreateSchedule: () => void
   /** 3.0 三期:今日工作台单一数据快照(App 下发;null/undefined = 未就绪或降级,区块隐藏) */
-  dueData?: { tasks: DueTask[]; reviews_counts: Record<string, number> } | null
+  dueData?: { tasks: DueTask[]; reviews_counts: ReviewTypedCounts } | null
   healthByProject?: Record<string, ProjectHealthSummary>
 }
 
@@ -59,6 +63,7 @@ export function HomePage({
   onSelectProject,
   onCreateTask,
   onCreateProject,
+  onCreateSchedule,
   dueData,
   healthByProject,
 }: HomePageProps) {
@@ -82,6 +87,9 @@ export function HomePage({
     () => todoTasks.filter((task) => !isOverdue(task) && task.due_date?.slice(0, 10) === localISODate()).length,
     [todoTasks],
   )
+  // 晨报句跟踪/新情报计数（0.6 §3.1① V2-E1b）：schedules:summary 既有通道直读
+  // （与 NavTabs 徽章同源，挂载拉一次 + 终态边沿，零新增轮询）
+  const { totals } = useSchedules()
 
   /** 卡片墙「下一事务」:该项目 due 最早的任务(日期+事务名;listDue 已限逾期+7 日内) */
   const nextDueByProject = useMemo(() => {
@@ -130,6 +138,16 @@ export function HomePage({
   const handleJump = (anchor: OverviewAnchor) => {
     const targets = { wall: wallRef, todo: todoRef, activity: activityRef } as const
     targets[anchor].current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  // 组合视图切换(V2-E4 §3.7):卡片墙⇄泳道同一数据快照两种视图,选择记忆于本地
+  const [portfolioView, setPortfolioView] = useState<'wall' | 'lane'>(() => {
+    try { return localStorage.getItem('inkcube.home.portfolioView') === 'lane' ? 'lane' : 'wall' }
+    catch { return 'wall' }   // 存储禁用/异常回落默认卡片墙(与 setItem 防护对称,CodeReview Minor #4)
+  })
+  const switchPortfolioView = (v: 'wall' | 'lane') => {
+    setPortfolioView(v)
+    try { localStorage.setItem('inkcube.home.portfolioView', v) } catch { /* ignore */ }
   }
 
   /** 进行中条目点击导航（0.4 §5.4）：项目类 → 项目 Tab / 基础库详情页（container 分流，0.4 §3.6），
@@ -215,8 +233,11 @@ export function HomePage({
 
   return (
     <div className={s.page}>
-      {/* ── Overview stat cards (0.5 §4.2 打样修订:大数字+标签,点击滚动锚点) ── */}
-      <HomeOverviewBar
+      {/* ── 晨会英雄区（0.6 §3.1① V2-E1b：概览统计卡阵列退役升格；
+          KPI 行内链保留滚动锚点） ── */}
+      <MorningHero
+        trackingCount={totals.n}
+        unreadIntel={totals.total}
         projectCount={projectsTotal ?? projects.length}
         overdue={overdueCount}
         dueToday={dueTodayCount}
@@ -227,6 +248,12 @@ export function HomePage({
       {/* ── Dashboard grid:主列(进行中/今日待办+日历/卡片墙) + 侧列(动态流/快捷动作) ── */}
       <div className={s.grid}>
         <div className={s.main}>
+          {/* 情报卡区（0.6 §3.2 V2-E1a T10：主列顶部第一区块，原侧列速览上移；
+              零订阅空态引导建订阅，行点击 → App 切 scheduleView read） */}
+          <IntelCardZone
+            onOpen={(runId) => window.dispatchEvent(new CustomEvent('app:navigate-schedule-read', { detail: { runId } }))}
+          />
+
           {/* Ongoing (0.4 §5.4 导航;空态保留——Ruling 4;概览「进行中」锚点) */}
           <section ref={activityRef} className={s.block}>
             <div className={s.sectionTitle}>{t('home.ongoingTitle')}</div>
@@ -254,20 +281,52 @@ export function HomePage({
             <UpcomingCalendar tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
           </section>
 
-          {/* Project card wall (概览「项目」锚点) */}
+          {/* Project card wall / stage lanes (概览「项目」锚点;V2-E4 §3.7 同一数据快照两种视图) */}
           <section className={s.block}>
-            <div ref={wallRef} className={s.sectionTitle}>{t('homeTodo.cardWallTitle')}</div>
-            <ProjectCardWall
-              projects={recentProjects}
-              healthData={healthByProject}
-              nextDueByProject={nextDueByProject}
-              latestEntryByProject={latestEntryByProject}
-              newOutputsByProject={newOutputsByProject}
-              onSelect={(id) => {
-                onSelectProject(id)
-                window.dispatchEvent(new CustomEvent('app:navigate-project-tab', { detail: { projectId: id, container: 'project' } }))
-              }}
-            />
+            <div ref={wallRef} className={`${s.sectionTitle} ${s.titleRow}`}>
+              <span>{t('homeTodo.cardWallTitle')}</span>
+              <div className={s.viewToggle}>
+                <button
+                  className={`${s.viewBtn} ${portfolioView === 'wall' ? s.viewBtnActive : ''}`}
+                  onClick={() => switchPortfolioView('wall')}
+                  title={t('home.portfolioView.wall')}
+                  aria-pressed={portfolioView === 'wall'}
+                >
+                  <LayoutGrid size={13} />
+                </button>
+                <button
+                  className={`${s.viewBtn} ${portfolioView === 'lane' ? s.viewBtnActive : ''}`}
+                  onClick={() => switchPortfolioView('lane')}
+                  title={t('home.portfolioView.lane')}
+                  aria-pressed={portfolioView === 'lane'}
+                >
+                  <Kanban size={13} />
+                </button>
+              </div>
+            </div>
+            {portfolioView === 'wall' ? (
+              <ProjectCardWall
+                projects={recentProjects}
+                healthData={healthByProject}
+                nextDueByProject={nextDueByProject}
+                latestEntryByProject={latestEntryByProject}
+                newOutputsByProject={newOutputsByProject}
+                onSelect={(id) => {
+                  onSelectProject(id)
+                  window.dispatchEvent(new CustomEvent('app:navigate-project-tab', { detail: { projectId: id, container: 'project' } }))
+                }}
+              />
+            ) : (
+              <StageLaneView
+                projects={recentProjects}
+                nextDueByProject={nextDueByProject}
+                onCreateProject={onCreateProject}
+                onSelect={(id) => {
+                  onSelectProject(id)
+                  window.dispatchEvent(new CustomEvent('app:navigate-project-tab', { detail: { projectId: id, container: 'project' } }))
+                }}
+              />
+            )}
             {hasMoreProjects && (
               <button
                 className={s.loadMoreBtn}
@@ -281,11 +340,6 @@ export function HomePage({
         </div>
 
         <aside className={s.side}>
-          {/* 今日情报速览（0.5 §4.2 区块⑥：侧列顶部，E3 T9；行点击 → App 切 scheduleView read） */}
-          <IntelDigest
-            onOpen={(runId) => window.dispatchEvent(new CustomEvent('app:navigate-schedule-read', { detail: { runId } }))}
-            onOpenAdmin={() => window.dispatchEvent(new CustomEvent('app:navigate-schedules'))}
-          />
           {/* Recent activity feed (Activity Hub, 0.4 §5.4);行渲染抽 NotificationRow 共享（2.11 §6.1） */}
           <section className={s.block}>
             <div className={`${s.sectionTitle} ${s.titleRow}`}>
@@ -315,10 +369,10 @@ export function HomePage({
             </div>
           </section>
 
-          {/* Quick actions (0.5 §4.2:动作化——新建任务/新建项目) */}
+          {/* Quick actions (0.5 §4.2:动作化——新建任务/新建项目/新建订阅 0.6 §3.2) */}
           <section className={s.block}>
             <div className={s.sectionTitle}>{t('home.quickTitle')}</div>
-            <QuickActions onCreateTask={onCreateTask} onCreateProject={onCreateProject} />
+            <QuickActions onCreateTask={onCreateTask} onCreateProject={onCreateProject} onCreateSchedule={onCreateSchedule} />
           </section>
         </aside>
       </div>

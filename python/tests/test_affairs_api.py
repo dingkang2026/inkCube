@@ -232,10 +232,16 @@ def test_list_due_orders_horizon_and_review_counts(client_and_db):
                          status="done")                                          # 终态,不返回
     db.create_phase_task(pa, "before", "milestone", "无截止A")                   # due NULL,不返回
     now = db._now()
-    for rid, pid, resolved in (("rv1", pa, 0), ("rv2", pa, 0), ("rv3", pa, 1)):
+    for rid, pid, rtype, resolved in (
+        ("rv1", pa, "contradiction", 0), ("rv2", pa, "data-gap", 0),
+        ("rv3", pa, "missing-page", 0), ("rv4", pa, "gap", 0),
+        ("rv5", pa, "contradiction", 1),                # resolved=1 不计
+        ("rv6", pb, "suggestion", 0),                   # 其他型只进 total 不进分型
+    ):
         db.conn.execute(
             "INSERT INTO wiki_reviews (id, project_id, type, title, resolved, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)", (rid, pid, "gap", rid, resolved, now))
+            "VALUES (?, ?, ?, ?, ?, ?)", (rid, pid, rtype, rid, resolved, now))
+    db.create_project(name="C", project_type="general", stage="before")   # 无发现项不出现
     db.conn.commit()
 
     r = client.get("/projects/due")
@@ -244,7 +250,11 @@ def test_list_due_orders_horizon_and_review_counts(client_and_db):
     assert [t["title"] for t in body["tasks"]] == ["逾期A", "今日A", "明日B"]     # due ASC,逾期天然在前
     assert all(t["project_name"] for t in body["tasks"])                          # JOIN 出项目名
     assert all(t["status"] == "open" for t in body["tasks"])
-    assert body["reviews_counts"] == {pa: 2}                                      # resolved=1 不计;pb 无发现项不出现
+    # V2-E4 分型桶:gap = data-gap + missing-page;未知型只进 total;resolved=1 不计
+    assert body["reviews_counts"] == {
+        pa: {"total": 4, "contradiction": 1, "gap": 2},
+        pb: {"total": 1, "contradiction": 0, "gap": 0},
+    }
 
 
 def test_list_due_horizon_validation(client_and_db):

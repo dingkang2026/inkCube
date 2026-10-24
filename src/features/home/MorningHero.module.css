@@ -1,0 +1,72 @@
+/* 晨会英雄区（0.6 §3.1① V2-E1b）：无卡片容器直接排于页底色（§3.0-2 去框化），
+   display 级问候 + 晨报句 + KPI 行内文本链；区块下缘 hairline 分隔，fade-up 入场 */
+.hero {
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--hairline);
+  animation: fade-up var(--motion-enter) ease-out;
+}
+
+.greeting {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0 0 6px;
+  font-size: var(--text-display);
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-primary);
+}
+
+.date {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: var(--tracking-label);
+}
+
+.briefing {
+  margin: 0 0 14px;
+  font-size: var(--text-base);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.kpis {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+.kpi {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.kpiLabel {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  transition: color var(--motion-base);
+}
+
+.kpi:hover .kpiLabel {
+  color: var(--text-primary);
+}
+
+.kpiNum {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 逾期 >0 语义红（§3.0-5 色彩纪律：语义色只给状态） */
+.kpiNumWarn {
+  color: var(--error);
+}

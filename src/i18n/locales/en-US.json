@@ -50,6 +50,7 @@
     "home": "Home",
     "tasks": "Tasks",
     "projects": "Projects",
+    "intel": "Intel",
     "toggleSidebar": "Toggle Sidebar",
     "notifications": "Notifications"
   },
@@ -120,8 +121,8 @@
     "wikiRoutingSection": "Wiki Model Routing",
     "wikiIngestModel": "Ingest Model",
     "wikiIngestModelHint": "Wiki compile (deep understanding & page generation). A high-quality model is recommended",
-    "wikiLintModel": "Lint Model",
-    "wikiLintModelHint": "Semantic lint (lightweight analysis, fast response)",
+    "wikiLintModel": "Health Check Model",
+    "wikiLintModelHint": "Semantic health check (lightweight analysis, fast response)",
     "wikiDedupModel": "Dedup Model",
     "wikiDedupModelHint": "Duplicate page detection (JSON output; mid-tier capability suffices)",
     "wikiLedgerParseModel": "Ledger Parsing Model",
@@ -511,6 +512,12 @@
       "siteNotFound": "Site not found",
       "runNotFound": "Run not found",
       "runRunning": "Run is in progress; delete after it finishes or fails",
+      "invalidScope": "Invalid subscription scope",
+      "rollupTargetForbidden": "Portfolio digests do not archive — clear the destination first",
+      "rollupPromptNeedsSection": "Portfolio digest prompt must contain the {sections} placeholder",
+      "rollupDigestIdsForbidden": "Only portfolio digests can configure the aggregation scope",
+      "digestTargetNotFound": "Aggregation scope references a missing subscription",
+      "rollupDigestRecursive": "Aggregation scope cannot include portfolio digests (recursion guard)",
       "fileDuplicate": "File already exists",
       "manuallyArchived": "Manually archived",
       "projectHasActiveWork": "The project still has active work (parsing/report/form-fill/Wiki compile/image description); archive or delete after it settles",
@@ -625,6 +632,7 @@
       "info": "Info Gathering",
       "mon": "News Monitoring",
       "ind": "Industry Intel",
+      "reg": "Regional",
       "rep": "Reports & Research",
       "off": "Office"
     },
@@ -658,6 +666,16 @@
         "title": "Investment Lead Scan",
         "desc": "Mine public info for actionable investment-promotion leads",
         "prompt": "Mine public information for investment-promotion leads around the \"{industry}\" sector from the past month: capacity expansion, relocation, new subsidiaries, site selection. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Leads must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from local government and industrial-park announcements, trade media, corporate investment announcements, and environmental-impact filings, but you are not limited to these.\n\n[Output Format] Save a Markdown list to the task workspace and output it in full in the conversation:\n# \"{industry}\" Investment-Promotion Leads (YYYY-MM-DD ~ YYYY-MM-DD)\nList by lead value, one subsection each:\n### Company | Type (Expansion/Relocation/New entity/Other)\n- Lead details: what happened, scale/investment amount if disclosed, timeline;\n- Follow-up angle: one line connecting the lead to what a host city could offer (optional; omit if information is thin);\n- Source: an accessible link;\n- Status tag: confirmed (filed/announced) vs intent/rumor.\n\n## Lead Summary\nThe 1-2 leads to prioritize and why.\n\n[Discipline]\n- Every lead must carry an accessible source link; drop entries without one;\n- Quality over quantity: aim for 5-15 leads; if nothing is found, state it honestly — never fabricate;\n- Strictly enforce the 30-day window: letting older news slip in is the worst failure of this task."
+      },
+      "industryPolicy": {
+        "title": "Industry Policy Scan",
+        "desc": "Policy moves in {industry} over the past 30 days, with takeaways and impact per item",
+        "prompt": "Scan public policy developments around the \"{industry}\" sector from the last 30 days: industrial policies, planning documents, draft regulations, and enforcement moves issued by national ministries, local governments, and regulators. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Policy information must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from ministry websites, official gazettes, policy databases, and trade-media reposts, but you are not limited to these;\n- For reposted policies, always trace to the issuing agency's original text, noting the issuer and document number (if any).\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{industry}\" Policy Scan (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first by publication date, one subsection per policy:\n### MM-DD | Policy Name (Issuing Agency)\n- Policy essentials: 2-3 sentences — core content, scope, effective date / comment deadline;\n- Impact on \"{industry}\": one line — favorable / adverse / neutral, with a reason;\n- Source: an accessible link to the original text.\n\n## Policy Summary\nUp to 3 lines: the single most important policy move, and any compliance / application window to prepare for early.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Distinguish \"issued\" from \"open for comment\" — never present a draft as enacted policy;\n- If nothing is found this period, state \"No public policy moves found\" honestly — never pad with old policies."
+      },
+      "regionPolicy": {
+        "title": "Regional Investment-Policy Scan",
+        "desc": "Investment-promotion and industry-support policies of {region} over the past 30 days",
+        "prompt": "Scan public investment-promotion and industry-support policies of \"{region}\" from the last 30 days: investment-promotion measures, industry support funds, land/facility incentives, talent programs, and new business-environment policies. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Policy information must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from the local government website, government social-media accounts, the investment-promotion agency's official account, and authoritative media reposts, but you are not limited to these;\n- For reposted policies, always trace to the issuing agency's original text, noting the issuer and document number (if any).\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{region}\" Investment-Policy Scan (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first by publication date, one subsection per policy:\n### MM-DD | Policy Name (Issuing Agency)\n- Policy essentials: 2-3 sentences — who qualifies, the strength of support (funding/tax/land/talent), application conditions and deadlines;\n- How to use it: one line on how a host city could leverage this policy (benchmarking / pitch material / enterprise services);\n- Source: an accessible link to the original text.\n\n## Policy Summary\nUp to 3 lines: the policy most worth pitching externally, and one with an application window to race for.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Distinguish \"issued\" from \"open for comment\" — never present a draft as enacted policy;\n- If nothing is found this period, state \"No public policy moves found\" honestly — never pad with old policies."
       },
       "ddChecklist": {
         "title": "Due Diligence Checklist",
@@ -736,7 +754,6 @@
     "switchMode": "Switch Mode",
     "files": "Files",
     "workspace": "Workspace",
-    "scheduleFromTask": "Schedule from task",
     "refresh": "Refresh",
     "noFiles": "No files yet",
     "preview": "Preview",
@@ -827,18 +844,29 @@
     "hintCreate": "Create a subscription — intelligence delivered on schedule",
     "summaryLine": "{{n}} subscriptions · {{unread}} new · {{abnormal}} abnormal",
     "newSubscription": "New Subscription",
+    "badge": {
+      "unread": "Unread intel"
+    },
     "empty": "No subscriptions yet — click \"New Subscription\" to create one",
     "checkRow": "Select {{name}}",
     "tab": {
       "all": "All",
       "industry": "Industry",
       "corporate": "Corporate",
+      "region": "Region",
       "general": "General"
     },
     "statusFilter": "Status filter",
     "statusAll": "All statuses",
     "statusAbnormal": "Abnormal only",
     "statusPaused": "Paused only",
+    "scopeFilter": "Scope",
+    "scopeAll": "All types",
+    "scope": {
+      "focus": "Focus",
+      "sweep": "Sweep",
+      "rollup": "Portfolio Digest"
+    },
     "searchPlaceholder": "Search subscriptions…",
     "checkedCount": "{{n}} selected",
     "batchPause": "Pause",
@@ -927,12 +955,17 @@
       "saving": "Saving…",
       "saved": "Subscription saved",
       "saveFailed": "Failed to save",
-      "refining": "Distilling subscription content from the task conversation…",
-      "refineFailed": "Distillation failed — please enter the prompt manually"
+      "scopeLabel": "Scope",
+      "rollupSkeletonLabel": "Digest skeleton ({sections} marks where per-subscription material is inserted)",
+      "rollupSkeletonHint": "Portfolio digests neither fetch nor archive: each issue aggregates recent issues of the selected subscriptions into one summary report",
+      "rollupScopeLabel": "Aggregation scope",
+      "rollupScopeHint": "Leave unchecked to aggregate all enabled subscriptions (excluding portfolio digests themselves)",
+      "rollupPromptTemplate": "Below are recent intel issues from the selected subscriptions:\n{sections}\n\nSummarize them into one portfolio digest:\n1. Merge duplicated signals by topic, noting the source subscription;\n2. Point out contradictory information explicitly;\n3. End with a list of things worth watching next week."
     },
     "read": {
       "loading": "Loading…",
       "loadFailed": "Failed to load this run",
+      "rollupTagHint": "Aggregates outputs from subscribed watches since the last issue",
       "state": {
         "running": "Running",
         "done": "Completed",
@@ -952,6 +985,8 @@
       "archivedUnit": " · Archive",
       "archivedJumpHint": "View \"{{name}} · Archive\" in the target container's Materials tab",
       "openReplay": "View Replay",
+      "trackFollow": "Track as Task",
+      "trackFollowPrompt": "Please draft a follow-up plan based on the intel above",
       "settings": "Subscription Settings"
     },
     "replay": {
@@ -962,6 +997,82 @@
       "viewAll": "View all",
       "empty": "No outputs yet"
     }
+  },
+  "intel": {
+    "title": "Intel Center",
+    "tab": {
+      "feed": "Feed",
+      "leads": "Leads",
+      "admin": "Subscriptions"
+    },
+    "lead": {
+      "empty": "No leads yet — save one from an intel issue",
+      "emptyGoFeed": "Browse Intel Feed",
+      "addManual": "Add manually",
+      "manualTitle": "New Lead",
+      "nameLabel": "Lead name",
+      "namePlaceholder": "e.g. China Resources Land",
+      "noteLabel": "Note",
+      "notePlaceholder": "Add a note…",
+      "sourceManual": "Manual",
+      "statusLabel": "Move status",
+      "status": {
+        "new": "New",
+        "contacting": "Contacting",
+        "evaluating": "Evaluating",
+        "hold": "On hold",
+        "converted": "Converted"
+      },
+      "groupConverted": "Converted",
+      "convert": {
+        "action": "To project",
+        "title": "Convert to project",
+        "nameLabel": "Project name",
+        "typeLabel": "Project type",
+        "typeRecruit": "Recruiting project",
+        "typeInvest": "Investment project",
+        "typeGeneral": "General project",
+        "confirm": "Create project",
+        "converting": "Creating…",
+        "success": "Converted — see it on the Projects page",
+        "patchFailed": "Project created, but the lead status update failed. Check it on the Projects page."
+      },
+      "viewProject": "View project",
+      "upgrade": "Upgrade to subscription",
+      "upgradePrompt": "Track the lead \"{{name}}\" continuously: latest public updates, bids & tenders, and policy signals. Each issue: 1) new updates 2) actionable signals 3) recommended follow-ups. Report new information only; mark historical items with dates.",
+      "manualAdded": "Lead saved",
+      "opFailed": "Operation failed. Please retry.",
+      "deleteLabel": "Delete lead",
+      "saveLead": "Save as lead",
+      "saveLeadHint": "Save to lead pool (source: {{name}}); rename if needed",
+      "added": "Saved to lead pool",
+      "goLeads": "View lead pool",
+      "extractLead": "Extract leads",
+      "extractTitle": "Extract leads",
+      "extracting": "Extracting candidates…",
+      "extractFailed": "Extraction failed",
+      "retry": "Retry",
+      "inPool": "In pool",
+      "dupSoft": "A lead with the same name exists",
+      "confirmAddN": "Add ({{count}})",
+      "noCandidates": "No candidates extracted from this run",
+      "extracted": "{{count}} leads added",
+      "confirmDeleteLead": "Delete lead \"{{name}}\"? This cannot be undone.",
+      "projectGone": "The project linked to this lead no longer exists"
+    },
+    "cat": {
+      "all": "All",
+      "corporate": "Corporate",
+      "industry": "Industry",
+      "region": "Region",
+      "general": "General"
+    },
+    "sort": {
+      "unread": "Unread first",
+      "latest": "Latest"
+    },
+    "emptyNoSubs": "No subscriptions yet — create one to get intel delivered automatically",
+    "emptyNoOutputs": "No intel yet — outputs from your subscriptions will appear here"
   },
   "chat": {
     "copy": "Copy",
@@ -993,11 +1104,19 @@
       "dueToday": "Due today",
       "active": "Active"
     },
+    "hero": {
+      "greetingMorning": "Good morning",
+      "greetingAfternoon": "Good afternoon",
+      "greetingEvening": "Good evening",
+      "briefing": "{{tracking}} tracked, {{intel}} new intel, {{todo}} to-dos today"
+    },
     "quick": {
       "newTask": "New Task",
       "newTaskDesc": "Pick a template or describe it freely — start now",
       "newProject": "New Project",
-      "newProjectDesc": "Create a knowledge project for materials and outputs"
+      "newProjectDesc": "Create a knowledge project for materials and outputs",
+      "newSchedule": "New Subscription",
+      "newScheduleDesc": "Subscribe to intel sources — outputs land on Home"
     },
     "quickTitle": "Quick Start",
     "noProjects": "No knowledge projects yet",
@@ -1006,6 +1125,14 @@
     "ongoingTitle": "Ongoing",
     "noOngoing": "Nothing in progress right now",
     "newOutputs": "{{count}} new outputs in 24h",
+    "wall": {
+      "contradiction": "{{count}} contradictions",
+      "gap": "{{count}} gaps"
+    },
+    "portfolioView": {
+      "wall": "Card wall view",
+      "lane": "Stage lanes view"
+    },
     "recentFeedTitle": "Activity Feed",
     "noFeed": "No activity yet",
     "entry": {
@@ -1188,7 +1315,29 @@
     "modelAction": "Download",
     "doneTitle": "All Set",
     "doneDesc": "Incomplete setup can be continued anytime in Settings.",
-    "doneAction": "Start Using"
+    "doneAction": "Start Using",
+    "persona": {
+      "title": "What kind of work do you do?",
+      "subtitle": "We'll prioritize task templates and subscription suggestions accordingly",
+      "skip": "Skip",
+      "saveFailed": "Failed to save your role — please retry",
+      "business_attraction": {
+        "label": "Business Attraction",
+        "desc": "Lead discovery and end-to-end project landing"
+      },
+      "investment": {
+        "label": "Investment",
+        "desc": "From pre-investment DD to post-investment tracking"
+      },
+      "both": {
+        "label": "Both",
+        "desc": "Recruitment and investment work in parallel"
+      },
+      "other": {
+        "label": "Other",
+        "desc": "General knowledge work"
+      }
+    }
   },
   "health": {
     "title": "Service Status",
@@ -1460,6 +1609,7 @@
       "materials": "Files",
       "wiki": "Knowledge",
       "affairs": "Affairs",
+      "output": "Output",
       "reports": "Reports",
       "forms": "Forms"
     },
@@ -1768,12 +1918,13 @@
       "compileFailed": "Compile failed: {{error}}",
       "search": "Search",
       "graph": "Graph",
-      "lint": "Quality Check",
+      "lint": "Health Check",
       "navTipHome": "Back to Wiki home with page index",
       "navTipChangeLog": "View operation log of each compile",
       "navTipSearch": "Search keywords in Wiki pages",
       "navTipGraph": "Visualize page relations as a knowledge graph",
-      "navTipLint": "Check Wiki page quality (dead links, orphans, contradictions, etc.)",
+      "navTipLint": "Health check for the knowledge book (dead links, orphans, contradictions, etc.)",
+      "navTipCompile": "Assemble source files into the knowledge book; track progress and per-file details",
       "resetTip": "Clear all Wiki data (pages, versions, reviews) and restart from scratch",
       "resetTipShort": "Clear all Wiki data and restart from scratch",
       "exitImmersive": "Exit immersive mode, restore sidebar",
@@ -1809,15 +1960,18 @@
         "typeConceptDesc": "Methods, theories, terms",
         "typeSource": "Source",
         "typeSourceDesc": "Summary of each file",
-        "typeStructure": "Structure",
+        "typeStructure": "Framework",
         "typeStructureDesc": "Framework-defined pages",
         "healthTitle": "Knowledge Health",
         "healthGo": "Review",
         "healthContradiction": "Contradictions",
         "healthGap": "Gaps",
-        "healthDeadLink": "Dead links",
-        "completionTitle": "Structure Page Completion",
-        "completionGenerated": "Generated"
+        "healthPending": "Pending",
+        "completionTitle": "Book Progress",
+        "completionGenerated": "Generated",
+        "pendingTag": "Pending",
+        "indexGroupLedger": "Tracked Ledger",
+        "indexGroupLedgerDesc": "Continuously updated log pages"
       },
       "graphView": {
         "noData": "No graph data",
@@ -1856,15 +2010,34 @@
       "compileStopped": "Compile stopped: {{completed}}/{{total}} files",
       "compileStoppedSimple": "Compile stopped",
       "recompile": "Recompile",
+      "exportDocx": "Export docx",
+      "exporting": "Exporting…",
+      "exportDocxDone": "Exported: {{path}}",
+      "exportDocxEmpty": "No compiled pages yet — compile the wiki first",
+      "exportDocxFailed": "Export failed: {{reason}}",
       "recompileConfirm": "Recompile will delete all Wiki pages, version history, reviews, and change logs, starting from scratch. This cannot be undone. Continue?",
       "compile": "Compile",
       "home": "Home",
-      "changeLog": "Change Log",
+      "changeLog": "Timeline",
+      "navGroupRead": "Reading",
+      "navGroupOrganize": "Organize",
+      "compileNav": "Compile",
+      "compileViewPendingHint": "{{count}} file(s) ready to compile",
+      "compileViewStart": "Start compile ({{count}})",
+      "compileViewEmpty": "No files waiting to be compiled. Upload materials and they will show up here.",
       "purpose": "Wiki Purpose",
       "overview": "Overview",
       "timeline": {
         "title": "Ledger Timeline",
-        "parsing": "Parsing…"
+        "parsing": "Parsing…",
+        "loadFailed": "Failed to load. Please retry",
+        "entryType": {
+          "milestone": "Milestone",
+          "risk": "Risk",
+          "policy": "Policy",
+          "finance": "Finance",
+          "service": "Service"
+        }
       },
       "editOverviewPlaceholder": "Wiki global overview...",
       "noPurpose": "No Wiki purpose defined. Click edit to define the scope and goals.",
@@ -1893,12 +2066,12 @@
       "compileIngestStopped": "Ingest stopped",
       "selectAll": "Select all",
       "batchDismiss": "Dismiss all ({{count}})",
-      "lintFailed": "Check failed",
+      "lintFailed": "Health check failed",
       "searchPlaceholder": "Search Wiki pages...",
       "searchHint": "Enter keywords to search Wiki pages",
       "noResults": "No matching pages found",
       "graphRelated": "Graph related",
-      "lintView": "Lint Check",
+      "lintView": "Health Check",
       "lintFull": "Full check",
       "lintStructural": "Structural",
       "lintSemantic": "Semantic",
@@ -1923,12 +2096,12 @@
       "compileSkippedCount": "skipped",
       "retryFailed": "Retry failed ({{count}})",
       "retryFailedTip": "Incremental compile: only re-processes files that failed last time plus new files; successful files are not re-run",
-      "schemaNav": "Schema",
-      "navTipSchema": "Manage this project's Wiki structure-page definitions (compile hints & base-library search terms)",
-      "schemaTitle": "Structure Pages",
-      "schemaHint": "Structure pages are injected into the AI as guidance on every compile; changes take effect on the next compile. Base-library search terms retrieve reference knowledge from associated base libraries during compile. Separate multiple terms with commas.",
-      "schemaAdd": "Add Structure Page",
-      "schemaEdit": "Edit Structure Page",
+      "schemaNav": "Framework",
+      "navTipSchema": "Manage this project's framework-page definitions (compile hints & base-library search terms)",
+      "schemaTitle": "Framework Pages",
+      "schemaHint": "Framework pages are injected into the AI as guidance on every compile; changes take effect on the next compile. Base-library search terms retrieve reference knowledge from associated base libraries during compile. Separate multiple terms with commas.",
+      "schemaAdd": "Add Framework Page",
+      "schemaEdit": "Edit Framework Page",
       "schemaPageKey": "Page Key",
       "schemaPageKeyHint": "Unique identifier, immutable after creation; referenced as [[page_key]] in page content",
       "schemaTitleLabel": "Title",
@@ -1941,17 +2114,17 @@
       "schemaLedgerBadge": "Ledger",
       "schemaPosition": "Order",
       "schemaPositionAuto": "Leave empty to append at the end",
-      "schemaDeleteConfirm": "Delete structure page \"{{title}}\"? Existing Wiki pages with the same key are kept but no longer updated by compiles.",
+      "schemaDeleteConfirm": "Delete framework page \"{{title}}\"? Existing Wiki pages with the same key are kept but no longer updated by compiles.",
       "schemaSaved": "Saved. Takes effect on next compile",
-      "schemaLoadFailed": "Failed to load schema configuration",
-      "schemaEmpty": "No structure pages defined yet",
+      "schemaLoadFailed": "Failed to load framework configuration",
+      "schemaEmpty": "No framework pages defined yet",
       "schemaPageKeyInvalid": "Only letters, digits and underscores allowed",
       "schemaTitleRequired": "Title is required",
       "schemaDelete": "Delete",
       "compileTriggerFailed": "Failed to start compile: {{reason}}",
       "stopFailed": "Failed to stop: {{reason}}",
       "searchFailed": "Search failed. Please try again later",
-      "schemaExists": "A structure page with the same key already exists",
+      "schemaExists": "A framework page with the same key already exists",
       "saveMetaFailed": "Save failed: {{reason}}",
       "changelogSource": "Source",
       "changelogAffected": "Affected pages",
@@ -1964,7 +2137,7 @@
       "actionEnriched": "Enriched",
       "actionDedupMerge": "Duplicates merged",
       "actionOverviewUpdated": "Overview updated",
-      "pageTypeStructure": "Structure",
+      "pageTypeStructure": "Framework",
       "pageTypeEntity": "Entity",
       "pageTypeConcept": "Concept",
       "pageTypeProcess": "Process",
@@ -2001,10 +2174,10 @@
       "lintDismissFailed": "Dismiss failed: {{reason}}",
       "lintContradictionLegacy": "This finding predates structured evidence. Please open the related pages and verify manually",
       "lintBlSubtypeSource": "Missing source page",
-      "lintBlSubtypeSchema": "Missing schema page",
+      "lintBlSubtypeSchema": "Missing framework page",
       "lintBlSubtypeUnknown": "Possible alias",
       "lintBlSourceHint": "The target is a source summary page (src_). The file may not be ingested or has been deleted — trigger incremental compile or dismiss",
-      "lintBlSchemaHint": "The target is a schema-defined page not yet compiled — it will be created automatically on the next incremental compile",
+      "lintBlSchemaHint": "The target is a framework page not yet compiled — it will be created automatically on the next incremental compile",
       "lintBlUnknownHint": "Possible alias or invalid link — no reliable suggestion; open the source page to fix manually or dismiss",
       "lintGapUpload": "Upload material",
       "lintGapUploaded": "Uploaded and parsing; trigger incremental compile later — the gap will auto-resolve if the new file fills it",

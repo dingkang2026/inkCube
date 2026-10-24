@@ -294,7 +294,11 @@ def test_execute_injects_previous_report(tmp_db, tmp_path, frozen_now):
     task = tmp_db.get_task(tmp_db.list_schedule_runs(s["id"])[0]["task_id"])
     assert (Path(task["workspace_path"]) / "上一期报告.md").is_file()
     prompt = fake.prompts[0]
-    assert prompt.startswith("工作区有《上一期报告.md》")   # 增量指引在首部
+    # 时间基准在首部（2.11 §5.3）：执行时刻 + 期数 + 上期时刻 + 仅报新增约束
+    assert prompt.startswith("【本期执行：")
+    assert " · 第 2 期 · 上期：" in prompt
+    assert "不得作为本期新情况报告" in prompt
+    assert "工作区有《上一期报告.md》" in prompt        # 增量指引紧随其后
     assert prompt.endswith(s["prompt"])                      # 订阅 prompt 完整保留
 
 
@@ -303,7 +307,13 @@ def test_execute_no_previous_no_injection(tmp_db, tmp_path, frozen_now):
     sched = _make_sched(tmp_db, tmp_path, fake)
     s = _make_schedule(tmp_db)
     _run_dispatch(sched, tmp_db, s)
-    assert fake.prompts[0] == s["prompt"]            # 无上期 → 零注入
+    prompt = fake.prompts[0]
+    # 首期：时间基准行无「上期：」段；订阅 prompt 本体不变（时间基准不落库，
+    # §6.3-13：执行侧每期拼接，存库 prompt 字段仍为创建时原文）
+    assert prompt.startswith("【本期执行：")
+    assert "上期：" not in prompt
+    assert prompt.endswith(s["prompt"])
+    assert "【本期执行" not in tmp_db.get_schedule(s["id"])["prompt"]
 
 
 # ── _recover_missed（§5.4）──────────────────────────────────

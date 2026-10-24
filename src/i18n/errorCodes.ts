@@ -56,6 +56,12 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   // ── schedules ──
   RUN_NOT_FOUND: { msg: 'runNotFound' },
   RUN_RUNNING: { msg: 'runRunning' },
+  INVALID_SCOPE: { msg: 'invalidScope' },
+  ROLLUP_TARGET_FORBIDDEN: { msg: 'rollupTargetForbidden' },
+  ROLLUP_PROMPT_NEEDS_SECTION: { msg: 'rollupPromptNeedsSection' },
+  ROLLUP_DIGEST_IDS_FORBIDDEN: { msg: 'rollupDigestIdsForbidden' },
+  DIGEST_TARGET_NOT_FOUND: { msg: 'digestTargetNotFound' },
+  ROLLUP_DIGEST_RECURSIVE: { msg: 'rollupDigestRecursive' },
   // ── knowledge ──
   FILE_DUPLICATE: { msg: 'fileDuplicate' },
   MANUALLY_ARCHIVED: { msg: 'manuallyArchived' },

@@ -430,3 +430,15 @@
 .detailActBtn:hover:not(:disabled) {
   border-color: var(--accent);
 }
+
+/* rollup 行/详情卡徽标（2.11 §12，V2.1-T2） */
+.rollupTag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  white-space: nowrap;
+}

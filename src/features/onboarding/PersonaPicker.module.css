@@ -1,0 +1,130 @@
+/* PersonaPicker（0.6 §3.8 V2-E1b 2026-10-24 品牌时刻）：全屏沉浸身份层——
+   墨色品牌渐变底（--text-primary 基 + accent 径向光晕，色值全经 token/color-mix）
+   + serif display 大标题 + 四张大身份卡（hover 抬升 + 按压选中态）+
+   --motion-enter 淡入微动效（§3.0-6）。暗底上的浅色叠加面 rgba(255,255,255,α)
+   已登记 0.3 §5.3 豁免表。与向导同 z 层 2000，DOM 后序在上盖住向导。 */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  overflow-y: auto;
+  background:
+    radial-gradient(900px 600px at 78% -10%, rgba(var(--accent-rgb), 0.28), transparent 62%),
+    linear-gradient(160deg, var(--text-primary) 0%, color-mix(in srgb, var(--text-primary) 86%, black) 100%);
+  animation: pp-fade var(--motion-enter) ease-out;
+}
+
+.panel {
+  width: 100%;
+  max-width: 860px;
+  animation: fade-up var(--motion-enter) ease-out;
+}
+
+/* display 级品牌标题：衬线「墨」语言（Splash / AboutDialog / 向导 logo 同源） */
+.title {
+  margin: 0 0 10px;
+  font-family: var(--font-serif);
+  font-size: var(--text-display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-inverse);
+  text-align: center;
+}
+
+.subtitle {
+  margin: 0 0 32px;
+  font-size: var(--text-base);
+  line-height: 1.7;
+  color: color-mix(in srgb, var(--text-inverse) 68%, transparent);
+  text-align: center;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+/* 大身份卡：暗底浅色叠加面 + hover 抬升 + :active 按压选中态 */
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 22px 24px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base), background var(--motion-base);
+}
+
+.card:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-accent);
+  transform: translateY(-2px);
+}
+
+.card:active {
+  background: rgba(var(--accent-rgb), 0.18);
+  border-color: var(--accent);
+  transform: translateY(0) scale(0.98);
+}
+
+.card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.icon {
+  color: var(--accent);
+  line-height: 0;
+}
+
+.label {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-inverse);
+}
+
+.desc {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--text-inverse) 62%, transparent);
+}
+
+.skip {
+  display: block;
+  margin: 0 auto;
+  padding: 4px 12px;
+  font-size: var(--text-sm);
+  color: color-mix(in srgb, var(--text-inverse) 55%, transparent);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--motion-base);
+}
+
+.skip:hover {
+  color: var(--text-inverse);
+}
+
+@keyframes pp-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (max-width: 700px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

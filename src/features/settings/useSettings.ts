@@ -62,6 +62,9 @@ const DEFAULT_SETTINGS: LLMSettings = {
   os_notify_sound: true,
   affair_reminder_enabled: true,
   schedule_notify: false,   // R4 订阅完成通知：默认静默（review P2-7 提前落地）
+  // 身份层（0.6 §3.8 V2-E1a）：'' 未设置 + 未呈现过 → 首启 PersonaPicker
+  persona: '',
+  persona_prompted: false,
 }
 
 export function useSettings() {

@@ -64,6 +64,10 @@ export interface LLMSettings {
   // R4 订阅完成通知开关（review P2-7 提前落地）：默认 false = 静默；
   // ActivityMonitor dispatchToasts 消费（completed 弹出与否）
   schedule_notify: boolean
+  // 用户身份层（0.6 §3.8 V2-E1a）：'' = 未设置，驱动模板排序；
+  // persona_prompted = PersonaPicker 已呈现过（True 后不再弹）
+  persona: '' | 'business_attraction' | 'investment' | 'both' | 'other'
+  persona_prompted: boolean
 }
 
 /** models:* IPC 通道名集中定义（electron/ipc-handlers.js 注册），消灭调用点魔法串（0.4 §8.1 #8） */

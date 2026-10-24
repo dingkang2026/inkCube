@@ -15,9 +15,13 @@ import { usePagedList } from '../../hooks/usePagedList'
 import type { ScheduleRow, ScheduleRunRow } from './useSchedules'
 import s from './SubscriptionAdminView.module.css'
 
-const CATEGORIES = ['all', 'industry', 'corporate', 'general'] as const
+// 筛选页签含 region（0.6 §3.2 V2-E1a T12：区域订阅分类）
+const CATEGORIES = ['all', 'industry', 'corporate', 'region', 'general'] as const
 type Category = (typeof CATEGORIES)[number]
 type StatusFilter = 'all' | 'abnormal' | 'paused'
+// 订阅定位筛选（2.11 §12）：all 不过滤，三型下沉服务端 scope 参数
+const SCOPES = ['all', 'focus', 'sweep', 'rollup'] as const
+type ScopeFilter = (typeof SCOPES)[number]
 
 /** 周期人话文案：intervalValue → 「每天 09:00 / 每周一、四 09:00 / 每月 1,15 09:00」 */
 function periodText(row: ScheduleRow, t: (k: string, p?: Record<string, unknown>) => string): string {
@@ -43,9 +47,15 @@ interface SubscriptionAdminViewProps {
   /** read/replay/archive 返回宿主页时回传的选中订阅 id：重挂载时恢复右列详情视图
    *  （未传或空 = 收件箱默认视图；仅挂载时消费） */
   restoreScheduleId?: string
+  /** 外部「新建订阅」信号（0.6 §3.2 V2-E1a：IntelPage 页头主钮直达）：
+   *  >0 打开新建弹层；消费后回调归零（ProjectList createSignal 同款） */
+  createSignal?: number
+  onCreateSignalConsumed?: () => void
 }
 
-export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreScheduleId }: SubscriptionAdminViewProps) {
+export function SubscriptionAdminView({
+  onOpenRead, onOpenArchive, restoreScheduleId, createSignal, onCreateSignalConsumed,
+}: SubscriptionAdminViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
@@ -54,6 +64,7 @@ export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreSchedu
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [category, setCategory] = useState<Category>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all')
   const [search, setSearch] = useState('')
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<ScheduleRow | null>(null)
@@ -61,17 +72,25 @@ export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreSchedu
   const debounceRef = useRef<number | null>(null)
   // 筛选防抖 300ms（保留原语义）：防抖后的值作为 usePagedList params，输入过程不触发请求
   const [debouncedFilters, setDebouncedFilters] = useState<{
-    category: Category; statusFilter: StatusFilter; q: string
-  }>({ category: 'all', statusFilter: 'all', q: '' })
+    category: Category; statusFilter: StatusFilter; scopeFilter: ScopeFilter; q: string
+  }>({ category: 'all', statusFilter: 'all', scopeFilter: 'all', q: '' })
 
   const errCode = (err: unknown) => (err as { errorCode?: string })?.errorCode
+
+  // 外部新建信号（IntelPage 页头主钮直达，0.6 §3.2）：打开弹层并归零
+  useEffect(() => {
+    if (createSignal && createSignal > 0) {
+      setFormOpen(true)
+      onCreateSignalConsumed?.()
+    }
+  }, [createSignal, onCreateSignalConsumed])
 
   // 列表：筛选变化防抖 300ms 后下沉服务端（0.1dev-guide 统一约定：50/页 + 加载更多）
   useEffect(() => {
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current)
     debounceRef.current = window.setTimeout(() => {
       debounceRef.current = null
-      setDebouncedFilters({ category, statusFilter, q: search })
+      setDebouncedFilters({ category, statusFilter, scopeFilter, q: search })
     }, 300)
     return () => {
       if (debounceRef.current !== null) {
@@ -79,12 +98,13 @@ export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreSchedu
         debounceRef.current = null
       }
     }
-  }, [category, statusFilter, search])
+  }, [category, statusFilter, scopeFilter, search])
 
   const listParams = useMemo(() => {
     const p: Record<string, unknown> = {}
     if (debouncedFilters.category !== 'all') p.category = debouncedFilters.category
     if (debouncedFilters.statusFilter !== 'all') p.enabled = 0
+    if (debouncedFilters.scopeFilter !== 'all') p.scope = debouncedFilters.scopeFilter
     if (debouncedFilters.q.trim()) p.q = debouncedFilters.q.trim()
     return p
   }, [debouncedFilters])
@@ -347,6 +367,17 @@ export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreSchedu
             <option value="abnormal">{t('schedule.statusAbnormal')}</option>
             <option value="paused">{t('schedule.statusPaused')}</option>
           </select>
+          <select
+            aria-label={t('schedule.scopeFilter')}
+            className={s.select}
+            value={scopeFilter}
+            onChange={(e) => setScopeFilter(e.target.value as ScopeFilter)}
+          >
+            <option value="all">{t('schedule.scopeAll')}</option>
+            {SCOPES.filter((sc) => sc !== 'all').map((sc) => (
+              <option key={sc} value={sc}>{t(`schedule.scope.${sc}`)}</option>
+            ))}
+          </select>
           <div className={s.searchBox}>
             <Search size={13} />
             <input
@@ -391,6 +422,9 @@ export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreSchedu
                   : !row.enabled ? s.dotPaused : ''
                 }`} />
                 <span className={s.schedName}>{row.name}</span>
+                {row.scope === 'rollup' && (
+                  <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                )}
                 <span className={s.schedPeriod}>{periodText(row, t)}</span>
                 {unreadScheduleIds.has(row.id) && <span className={s.unreadDot} />}
               </button>
@@ -463,6 +497,9 @@ export function SubscriptionAdminView({ onOpenRead, onOpenArchive, restoreSchedu
                 <span className={s.detailPeriod}>{periodText(selected, t)}</span>
               </div>
               <div className={s.detailMeta}>
+                {selected.scope === 'rollup' && (
+                  <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                )}
                 <span>{t(`schedule.tab.${selected.category}`, { defaultValue: selected.category })}</span>
                 <span>·</span>
                 <span className={selected.is_running ? s.stateRunning : ''}>

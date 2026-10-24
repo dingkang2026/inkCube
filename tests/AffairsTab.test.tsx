@@ -244,10 +244,10 @@ describe('healthLevel / summarizeDueByProject (3.0 三期 Task 2)', () => {
   } as DueTask)
 
   it('healthLevel: red > orange(weekDue/reviews) > green', () => {
-    expect(healthLevel({ overdue: 1, weekDue: 0, reviewsPending: 5 })).toBe('red')
-    expect(healthLevel({ overdue: 0, weekDue: 2, reviewsPending: 0 })).toBe('orange')
-    expect(healthLevel({ overdue: 0, weekDue: 0, reviewsPending: 3 })).toBe('orange')
-    expect(healthLevel({ overdue: 0, weekDue: 0, reviewsPending: 0 })).toBe('green')
+    expect(healthLevel({ overdue: 1, weekDue: 0, reviewsPending: 5, contradiction: 0, gap: 0 })).toBe('red')
+    expect(healthLevel({ overdue: 0, weekDue: 2, reviewsPending: 0, contradiction: 0, gap: 0 })).toBe('orange')
+    expect(healthLevel({ overdue: 0, weekDue: 0, reviewsPending: 3, contradiction: 0, gap: 0 })).toBe('orange')
+    expect(healthLevel({ overdue: 0, weekDue: 0, reviewsPending: 0, contradiction: 0, gap: 0 })).toBe('green')
   })
 
   it('summarizeDueByProject: groups with same overdue/weekDue semantics as summarizeDueTasks', () => {
@@ -257,9 +257,10 @@ describe('healthLevel / summarizeDueByProject (3.0 三期 Task 2)', () => {
       mk('t3', 'pb', '2026-10-12'),   // 周内
       mk('t4', 'pb', '2026-10-20'),   // 界外不计数
     ]
-    const sum = summarizeDueByProject(tasks, { pc: 4 }, now)
-    expect(sum.pa).toEqual({ overdue: 1, weekDue: 1, reviewsPending: 0 })
-    expect(sum.pb).toEqual({ overdue: 0, weekDue: 1, reviewsPending: 0 })
-    expect(sum.pc).toEqual({ overdue: 0, weekDue: 0, reviewsPending: 4 })   // 纯发现项项目也出现
+    const sum = summarizeDueByProject(tasks, { pc: { total: 4, contradiction: 1, gap: 2 } }, now)
+    expect(sum.pa).toEqual({ overdue: 1, weekDue: 1, reviewsPending: 0, contradiction: 0, gap: 0 })
+    expect(sum.pb).toEqual({ overdue: 0, weekDue: 1, reviewsPending: 0, contradiction: 0, gap: 0 })
+    // 纯发现项项目也出现;V2-E4 分型桶透传(total→reviewsPending,contradiction/gap 原样)
+    expect(sum.pc).toEqual({ overdue: 0, weekDue: 0, reviewsPending: 4, contradiction: 1, gap: 2 })
   })
 })

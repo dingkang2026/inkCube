@@ -325,7 +325,7 @@ describe('WikiLintView governance workbench (E2-2026-10 §5.5)', () => {
     await flush()
 
     // schema key 「Org Structure」经 slug 归一与 [[org_structure]] 匹配
-    expect(container.querySelector('.lintSubtypeBadge')?.textContent).toBe('结构页缺失')
+    expect(container.querySelector('.lintSubtypeBadge')?.textContent).toBe('框架页缺失')
   })
 
   it('classifies unknown dead links without suggestion', async () => {

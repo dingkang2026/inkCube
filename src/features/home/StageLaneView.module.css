@@ -1,0 +1,139 @@
+/* src/features/home/StageLaneView.module.css — 组合泳道(V2-E4 §3.7):
+   STAGE_COLUMNS 四列盘子总览;视觉对齐 ProjectCardWall 无框悬浮面语言(V2 §3.0-2) */
+
+.lanes {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.lane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 空列折叠为窄列(阶段语义仍可见,§3.7) */
+.laneEmpty {
+  flex: 0 0 48px;
+}
+
+.laneHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+
+.laneEmpty .laneHead {
+  padding: 5px 6px;
+}
+
+.laneTitle {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.laneCount {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.laneBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  padding: 10px 12px;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base);
+}
+
+.card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 类型 chip(§6.3-9:混型同列,chip 区分招商/投资) */
+.typeChip {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.cardName {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pulseLine {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dueLine {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 逾期红字=风险点信号 */
+.dueOverdue {
+  color: var(--text-danger);
+}
+
+/* 盘子全空引导钮（§3.7：全空 → 空态引导「新建项目」） */
+.emptyCta {
+  margin-top: 10px;
+  padding: 6px 14px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--motion-base);
+}
+
+.emptyCta:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}

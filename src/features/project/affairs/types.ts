@@ -100,11 +100,14 @@ export interface DueTask extends PhaseTask {
 /** 待办聚合窗口天数（§7.2：逾期 + 未来 N 天；后端 horizon 默认值、色点 weekDue、近期日历三处共源） */
 export const DUE_HORIZON_DAYS = 7
 
-/** per 项目健康概要(色点与卡片墙派生的纯数据) */
+/** per 项目健康概要(色点与卡片墙派生的纯数据);矛盾/缺口为 V2-E4 首页卡片行数据源
+ *  (后端 reviews_counts 分型桶,gap = data-gap + missing-page,与知识册封面信任信号行同口径) */
 export interface ProjectHealthSummary {
   overdue: number
   weekDue: number
   reviewsPending: number
+  contradiction: number
+  gap: number
 }
 
 export type HealthLevel = 'green' | 'orange' | 'red'
@@ -116,20 +119,33 @@ export function healthLevel(s: ProjectHealthSummary): HealthLevel {
   return 'green'
 }
 
+/** reviews_counts 分型桶（affairs:listDue 响应，V2-E4）：total=全部待处理；
+ *  gap = data-gap + missing-page（与知识册封面信任信号行同口径） */
+export type ReviewTypedCounts = Record<string, { total: number; contradiction: number; gap: number }>
+
 /** 跨项目按项目分组计数(weekDue 口径与 summarizeDueTasks 一致:dueWithin 且非逾期);
- *  reviewsCounts 中的项目即使无任务也出现(纯发现项项目=橙,侧栏色点可见)。 */
+ *  reviewsCounts 中的项目即使无任务也出现(纯发现项项目=橙,侧栏色点可见)。
+ *  V2-E4 起值为分型桶 {total,contradiction,gap}。 */
 export function summarizeDueByProject(
   tasks: DueTask[],
-  reviewsCounts?: Record<string, number>,
+  reviewsCounts?: ReviewTypedCounts,
   now: Date = new Date(),
 ): Record<string, ProjectHealthSummary> {
   const acc: Record<string, ProjectHealthSummary> = {}
   for (const pid of Object.keys(reviewsCounts ?? {})) {
-    acc[pid] = { overdue: 0, weekDue: 0, reviewsPending: reviewsCounts![pid] ?? 0 }
+    const b = reviewsCounts![pid]
+    acc[pid] = {
+      overdue: 0, weekDue: 0, reviewsPending: b?.total ?? 0,
+      contradiction: b?.contradiction ?? 0, gap: b?.gap ?? 0,
+    }
   }
   for (const task of tasks) {
+    const b = reviewsCounts?.[task.project_id]
     const entry = acc[task.project_id]
-      ?? (acc[task.project_id] = { overdue: 0, weekDue: 0, reviewsPending: reviewsCounts?.[task.project_id] ?? 0 })
+      ?? (acc[task.project_id] = {
+        overdue: 0, weekDue: 0, reviewsPending: b?.total ?? 0,
+        contradiction: b?.contradiction ?? 0, gap: b?.gap ?? 0,
+      })
     if (isOverdue(task, now)) entry.overdue += 1
     else if (dueWithin(task, DUE_HORIZON_DAYS, now)) entry.weekDue += 1
   }

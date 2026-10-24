@@ -1,0 +1,233 @@
+/* 首页情报卡区（0.6 §3.2 V2-E1a T10：主列顶部区块；V2-E1b 2026-10-24
+   1 大 N 小编辑排版 + 去框化区块分隔） */
+.block {
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.block:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.sectionTitle {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.viewAll {
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.viewAll:hover {
+  background: var(--bg-hover);
+}
+
+/* 零订阅空态引导（0.6 §3.2：建订阅入口） */
+.emptyGuide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.emptyText {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.emptyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 6px 14px;
+  font-size: var(--text-sm);
+  color: var(--bg-primary);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+/* 1 大 N 小（§3.0-3 / §3.1②）：大卡 = 最新一条，无框悬浮面（去边框改
+   极浅底色差 + 柔和投影）；hover 抬升 2px + accent 边框（§3.1 落点表） */
+.bigCard {
+  margin-bottom: 10px;
+  padding: 14px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: transform var(--motion-base), box-shadow var(--motion-base), border-color var(--motion-base);
+}
+
+.bigCard:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.bigHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bigTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 摘要两行预览（§3.1② 大卡带正文预览） */
+.bigPreview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 6px 0 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.bigMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* 类别 chip：订阅分类直读，与情报流 chips 同词汇（intel.cat.*） */
+.catChip {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-muted);
+  border-radius: 999px;
+}
+
+.bigName {
+  overflow: hidden;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bigTime {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.rowList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+}
+
+/* 暂停订阅行灰显（§8.4 连续失败暂停；历史可读） */
+.rowPaused {
+  opacity: 0.45;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotRunning {
+  background: var(--accent);
+  animation: zone-breathe 1.6s ease-in-out infinite;
+}
+
+.dotAbnormal {
+  background: var(--error);
+}
+
+@keyframes zone-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowTime {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.unreadDot {
+  width: 6px;
+  height: 6px;
+  background: var(--error);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 组合周报徽标（2.11 §12.4，大卡 meta 与紧凑行随行） */
+.rollupTag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  white-space: nowrap;
+}

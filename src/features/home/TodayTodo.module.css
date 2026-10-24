@@ -3,12 +3,11 @@
   margin-bottom: 24px;
 }
 
-/* 区块标题:与 HomePage.sectionTitle 统一(13px/600/secondary) */
+/* 区块标题:与 HomePage.sectionTitle 统一（V2-E1b §3.0-4 层级拉开:14px/700/主色） */
 .title {
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--text-secondary);
-  letter-spacing: 0.2px;
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--text-primary);
   margin-bottom: 10px;
 }
 
@@ -25,16 +24,18 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--bg-primary);
   cursor: pointer;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base);
 }
 
+/* 行卡 hover：accent 边框 + 抬升（§3.1 落点表） */
 .row:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow-xs);
+  transform: translateY(-2px);
 }
 
 /* due chip:逾期红 / 今日蓝 / 未来灰 */

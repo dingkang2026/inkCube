@@ -11,6 +11,7 @@ import { Markdown } from '../../../components/Markdown'
 import { FindBar } from '../../../components/FindBar'
 import { useMarkdownBlockFind } from '../../../hooks/useInFileFind'
 import { parseFrontmatter, PAGE_TYPE_LABEL_KEYS, formatChangelogTime, ACTION_LABEL_KEYS } from './wikiUtils'
+import { WikiLedgerTimeline } from './WikiLedgerTimeline'
 import { useToast } from '../../knowledge/Toast'
 import s from './WikiTab.module.css'
 
@@ -47,10 +48,12 @@ interface WikiPageReaderProps {
   onDeleted: (pageKey: string) => void
   /** 页面内容变化后回调（§7.1 富化）：父级重拉 pageDetail */
   onRefresh?: () => void
+  /** 台账页（is_ledger schema 命中，父级零新增请求判定）：阅读形态切时间轴（V2 E3 §3.5） */
+  isLedger?: boolean
 }
 
 export function WikiPageReader({
-  projectId, pageDetail, sourcePages, onEdit, onNavigateToPage, onDeleted, onRefresh,
+  projectId, pageDetail, sourcePages, onEdit, onNavigateToPage, onDeleted, onRefresh, isLedger,
 }: WikiPageReaderProps) {
   const { t, i18n } = useTranslation()
   const toast = useToast()
@@ -82,13 +85,17 @@ export function WikiPageReader({
 
   // ── 文档内查找（公共基座 useMarkdownBlockFind + FindBar）：范围限正文 markdownBody
   // （扫描根与滚动容器合一，正文长时 overflow 滚动在其自身），版本快照弹层不接
-  // （2026-10-23 裁决：只读对比场景）
+  // （2026-10-23 裁决：只读对比场景）。台账页时间轴形态（V2 E3）无 Markdown 块
+  // 可扫且正文区非本组件渲染，Ctrl+F 不接管（回落原文后恢复）
+  const [ledgerFallback, setLedgerFallback] = useState(false)
+  const findEnabled = !isLedger || ledgerFallback
   const bodyRef = useRef<HTMLDivElement | null>(null)
-  const find = useMarkdownBlockFind(bodyRef, body, true)
+  const find = useMarkdownBlockFind(bodyRef, body, findEnabled)
 
   // Ctrl/Cmd+F 接管：readerPage 为预览面板主内容（与编辑器互斥挂载），window 级监听
-  // （同 ReadView/ArchiveView 先例）
+  // （同 ReadView/ArchiveView 先例）；时间轴形态不接管（浏览器默认行为留给外部）
   useEffect(() => {
+    if (!findEnabled) return
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
@@ -98,7 +105,7 @@ export function WikiPageReader({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [find.openFind])
+  }, [findEnabled, find.openFind])
 
   // Load backlinks
   const loadBacklinks = useCallback(async () => {
@@ -335,10 +342,21 @@ export function WikiPageReader({
         </div>
       )}
 
-      {/* Markdown content（正文查找扫描根，ref 供 useMarkdownBlockFind 使用） */}
-      <div className={s.markdownBody} ref={bodyRef}>
-        <Markdown content={body} />
-      </div>
+      {/* 正文区（V2 E3）：台账页时间轴形态（条目流替代 Markdown，首拉空/失败回落
+          原文）；其余页 Markdown（正文查找扫描根，ref 供 useMarkdownBlockFind 使用） */}
+      {isLedger && !ledgerFallback ? (
+        <div className={s.markdownBody}>
+          <WikiLedgerTimeline
+            projectId={projectId}
+            pageKey={page.page_key}
+            onFallback={() => setLedgerFallback(true)}
+          />
+        </div>
+      ) : (
+        <div className={s.markdownBody} ref={bodyRef}>
+          <Markdown content={body} />
+        </div>
+      )}
 
       {/* Backlinks panel */}
       {backlinks.length > 0 && (

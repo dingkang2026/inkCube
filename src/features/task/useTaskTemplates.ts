@@ -1,16 +1,17 @@
 /** src/features/task/useTaskTemplates.ts — 0.5 E2 T4:任务模板数据 hook（0.5 §5/§6）。
- *  消费 taskTemplates:list/save/delete/togglePin 四通道；内置模板以 i18n 常量
- *  TASK_TEMPLATES 为事实源（不落库），与后端自定义行经 mergeTemplates 合并排序。
+ *  消费 taskTemplates:list/save/delete/togglePin 四通道；内置模板以 i18n 常量为事实源
+ *  （不落库），与后端自定义行经 mergeTemplates 合并排序；builtins 可换数据源
+ *  （V2-E1a T12 模板分家：ScheduleFormModal 传 INTEL_TEMPLATES，默认 TASK_TEMPLATES）。
  *  动作只做 invoke（错误沿 D1 契约抛出，errorCode 由调用方 toast），写操作后由
  *  调用方 refresh 重拉——面板持单实例 hook，弹层动作刷新即面板刷新。 */
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { TASK_TEMPLATES, BACKEND_CATEGORY, mergeTemplates } from './promptTemplate'
-import type { CustomRow, MergedTemplate, TemplateDraft } from './promptTemplate'
+import type { CustomRow, MergedTemplate, TaskTemplateDef, TemplateDraft } from './promptTemplate'
 
 export type TemplateScope = 'global' | 'project'
 
-export function useTaskTemplates(scope: TemplateScope, projectId?: string) {
+export function useTaskTemplates(scope: TemplateScope, projectId?: string, builtins: TaskTemplateDef[] = TASK_TEMPLATES) {
   const { t } = useTranslation()
   const [custom, setCustom] = useState<CustomRow[]>([])
   const [builtinPinned, setBuiltinPinned] = useState<string[]>([])
@@ -37,8 +38,8 @@ export function useTaskTemplates(scope: TemplateScope, projectId?: string) {
   }, [refresh])
 
   const templates = useMemo(
-    () => mergeTemplates(TASK_TEMPLATES, t, custom, builtinPinned),
-    [t, custom, builtinPinned],
+    () => mergeTemplates(builtins, t, custom, builtinPinned),
+    [builtins, t, custom, builtinPinned],
   )
 
   const save = useCallback(async (draft: TemplateDraft) => {

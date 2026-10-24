@@ -32,11 +32,11 @@ describe('mergeTemplates', () => {
     row({ id: 'c3', pinned: 0, updated_at: '2026-01-04T00:00:00' }),
     row({ id: 'c4', pinned: 0, updated_at: '2026-01-03T00:00:00' }),
   ]
-  // industryEvents 置顶（内置置顶记录行的 id 形态）
-  const merged = mergeTemplates(TASK_TEMPLATES, t, custom, ['tpl_builtin_industryEvents'])
+  // companyDeep 置顶（内置置顶记录行的 id 形态；V2-E1a T12 收窄后任务内置 6 条）
+  const merged = mergeTemplates(TASK_TEMPLATES, t, custom, ['tpl_builtin_companyDeep'])
 
   it('置顶优先：内置置顶在前，自定义 pinned 按 updated_at 倒序次之', () => {
-    expect(merged[0].id).toBe(`${BUILTIN_PREFIX}industryEvents`)
+    expect(merged[0].id).toBe(`${BUILTIN_PREFIX}companyDeep`)
     expect(merged[0].pinned).toBe(true)
     expect(merged[1].id).toBe('c2')
     expect(merged[2].id).toBe('c1')
@@ -45,22 +45,22 @@ describe('mergeTemplates', () => {
   it('非置顶：内置保持自然序在前，自定义按 updated_at 倒序收尾', () => {
     expect(merged[3].id).toBe(`${BUILTIN_PREFIX}companyBasic`)
     expect(merged[3].pinned).toBe(false)
-    // 内置共 10 条，1 条置顶 → 非置顶内置占下标 3..11
-    expect(merged[11].id).toBe(`${BUILTIN_PREFIX}dataSummary`)
-    expect(merged[12].id).toBe('c3')
-    expect(merged[13].id).toBe('c4')
+    // 内置共 6 条，1 条置顶 → 非置顶内置占下标 3..7
+    expect(merged[7].id).toBe(`${BUILTIN_PREFIX}dataSummary`)
+    expect(merged[8].id).toBe('c3')
+    expect(merged[9].id).toBe('c4')
   })
 
-  it('合并总数 = 内置 10 + 自定义 N', () => {
+  it('合并总数 = 内置 6 + 自定义 N', () => {
     expect(merged).toHaveLength(TASK_TEMPLATES.length + custom.length)
   })
 
   it('内置 title/prompt 经 t 解析（恒等 t 下即 i18n 键名）', () => {
-    const sentiment = merged.find((m) => m.id === `${BUILTIN_PREFIX}sentiment`)
-    expect(sentiment).toBeTruthy()
-    expect(sentiment!.builtin).toBe(true)
-    expect(sentiment!.title).toBe('task.tpl.sentiment.title')
-    expect(sentiment!.prompt).toBe('task.tpl.sentiment.prompt')
+    const basic = merged.find((m) => m.id === `${BUILTIN_PREFIX}companyBasic`)
+    expect(basic).toBeTruthy()
+    expect(basic!.builtin).toBe(true)
+    expect(basic!.title).toBe('task.tpl.companyBasic.title')
+    expect(basic!.prompt).toBe('task.tpl.companyBasic.prompt')
   })
 
   it('自定义 category 按别名映射到面板 tab 分类，未知分类兜底 info', () => {

@@ -6,7 +6,7 @@
 rebuild_archive 分批重建（窗口=2 → 3 期两次调用）、_cleanup_workspaces 保留期
 （12 期清最早 2 个 workspace）、_on_finish done 分支接线（合并 + 清理）。
 
-LLM client 全程 mock（monkeypatch scheduler 命名空间，与 refine-prompt 同法）；
+LLM client 全程 mock（monkeypatch scheduler 命名空间）；
 asyncio.run 驱动（项目惯例，不引入 pytest-asyncio）；run 时间戳显式回填
 （连续 insert 的 now 微秒序不稳定，pending_archive_runs 排序需确定性）。
 """

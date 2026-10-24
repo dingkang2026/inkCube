@@ -160,6 +160,41 @@ class TestScheduleInboxPagination:
         assert ids1.isdisjoint(ids2)
         assert len(ids1 | ids2) == 6
 
+    def test_sort_latest_pure_recency_over_unread_first(self, deps_db):
+        """V2-E1a：sort=latest 纯 finished_at 倒序（排序独立于未读态，
+        0.6 §6.3-3）；默认 unread 未读前置。"""
+        sid = _seed_schedule(deps_db, "订阅", seq=0)
+        _seed_run(deps_db, "r-old-unread", sid, status="done", seq=1)
+        _seed_run(deps_db, "r-new-read", sid, status="done", seq=2, read=True)
+        latest = asyncio.run(
+            schedules.schedule_inbox(sort="latest", limit=50, offset=0))
+        assert [r["id"] for r in latest["runs"]] == ["r-new-read", "r-old-unread"]
+        default = asyncio.run(schedules.schedule_inbox(limit=50, offset=0))
+        assert [r["id"] for r in default["runs"]] == ["r-old-unread", "r-new-read"]
+
+    def test_category_filter_scopes_runs_and_total(self, deps_db):
+        """V2-E1a：category=订阅分类直读过滤（情报流 chips），runs 与 total
+        同口径。"""
+        corp = _seed_schedule(deps_db, "企业订阅", category="corporate", seq=0)
+        ind = _seed_schedule(deps_db, "产业订阅", category="industry", seq=1)
+        _seed_run(deps_db, "r-corp-1", corp, status="done", seq=2)
+        _seed_run(deps_db, "r-corp-2", corp, status="done", seq=3)
+        _seed_run(deps_db, "r-ind-1", ind, status="done", seq=4)
+        result = asyncio.run(
+            schedules.schedule_inbox(category="corporate", limit=50, offset=0))
+        assert {r["id"] for r in result["runs"]} == {"r-corp-1", "r-corp-2"}
+        assert result["total"] == 2
+
+    def test_rows_carry_schedule_category(self, deps_db):
+        """V2-E1a：行附 schedule_category（情报卡片类别 chip 数据源）；
+        digest 同口径（IntelCardZone 卡片同需）。"""
+        sid = _seed_schedule(deps_db, "区域订阅", category="region", seq=0)
+        _seed_run(deps_db, "r-region", sid, status="done", seq=1)
+        inbox = asyncio.run(schedules.schedule_inbox(limit=50, offset=0))
+        assert inbox["runs"][0]["schedule_category"] == "region"
+        digest = asyncio.run(schedules.schedule_digest())
+        assert digest["digest"][0]["schedule_category"] == "region"
+
 
 class TestListScheduleRunsPagination:
     def test_default_limit_20_slice(self, deps_db):

@@ -193,7 +193,10 @@ def update_pulse_status(db, project_id: str, settings: dict) -> None:
     """
     try:
         entries = db.list_ledger_entries(project_id, limit=_PULSE_ENTRY_COUNT)
-        reviews_count = db.count_pending_reviews_by_project().get(project_id, 0)
+        # count_pending_reviews_by_project V2-E4 升级分型桶 {pid: {total, contradiction, gap}}——
+        # 脉搏句只消费总数,解包 total 防 dict repr 拼进 prompt 污染 LLM 输入(CodeReview Blocker #1)
+        reviews_bucket = db.count_pending_reviews_by_project().get(project_id) or {}
+        reviews_count = int(reviews_bucket.get("total", 0))
         if not entries and not reviews_count:
             db.set_pulse_ai_status(project_id, "")   # 无素材:回落规则句,不浪费调用
             return

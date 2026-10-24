@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FilePreview } from './FilePreview'
 import { ImportTargetDialog } from './ImportTargetDialog'
-import { ScheduleFormModal } from '../schedule/ScheduleFormModal'
-import { CalendarClock, Folder, Loader2, RefreshCw, Upload } from 'lucide-react'
+import { Folder, Loader2, RefreshCw, Upload } from 'lucide-react'
 import { fileIcon, formatSize } from './utils'
 import styles from './FileTree.module.css'
 
@@ -107,8 +106,6 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
   const [loading, setLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null)
   const [importing, setImporting] = useState(false)
-  // 渠道③「设为定时」（2.11 §9.1）：任务级入口，refinePrompt 从对话提炼订阅内容
-  const [scheduling, setScheduling] = useState(false)
 
   const handleFileClick = useCallback((file: SelectedFile) => {
     setSelectedFile(file)
@@ -193,14 +190,6 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
           <span className={styles.headerTitle}>{t('task.workspace')}</span>
           <button
             className={styles.iconBtn}
-            disabled={!taskId}
-            onClick={() => setScheduling(true)}
-            title={t('task.scheduleFromTask')}
-          >
-            <CalendarClock size={14} />
-          </button>
-          <button
-            className={styles.iconBtn}
             disabled={!selectedFile}
             onClick={() => setImporting(true)}
             title={t('task.import.title')}
@@ -251,15 +240,6 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
           filename={selectedFile.name}
           onDone={() => setImporting(false)}
           onClose={() => setImporting(false)}
-        />
-      )}
-
-      {scheduling && taskId && (
-        <ScheduleFormModal
-          open
-          initial={{ taskId }}
-          onClose={() => setScheduling(false)}
-          onSaved={() => setScheduling(false)}
         />
       )}
     </div>

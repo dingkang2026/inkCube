@@ -4,16 +4,23 @@
  *  解析失败显示占位不阻塞阅读 §8.3）；running 态正文占位（2026-10-23）；
  *  Markdown 全文（D5 副本，含来源节）。
  *  头部动作条（2026-10-22）：返回（回宿主页：管理台恢复选中 / 首页）+
- *  执行过程（有 task_id 时切 RunReplay；期次行点击已统一进本页，此为回放唯一入口）；
+ *  执行过程（有 task_id 时切 RunReplay；期次行点击已统一进本页，此为回放唯一入口）+
+ *  转跟进任务（done 期次，0.6 §3.2 V2-E1a：App 新建任务+预填要点，只回调不建任务）+
+ *  存为线索 / 提取线索（done 期次，0.6 §3.3/§6.1 V2-E2：全期次开放，产业类
+ *  提取主位突出——不变量 §6.3-12 分类只驱动突出度；存为线索 = PromptDialog
+ *  预填要点首段可改 → leads:create run 来源；提取 = LeadExtractModal 候选
+ *  勾选入池；initialAction='extract' 产业卡直达自动展开提取动线，消费即定）；
  *  底部动作条：订阅设置（编辑弹层，去向绑定/更换在③步）；已绑定去向 →
  *  「已沉淀至 {目标名}·档案」可点跳容器（2026-10-23）；失败 run → 原因 + 重跑（runNow）；
  *  running run → 执行中占位 + 头部「执行过程」实时回放可达（2026-10-23）；
  *  Ctrl/Cmd+F 文档内查找（块级定位，公共基座 useMarkdownBlockFind + FindBar，2026-10-23）。 */
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Sparkles } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
+import { usePrompt } from '../../components/PromptDialog'
 import { useToast } from '../knowledge/Toast'
+import { LeadExtractModal } from '../intel/LeadExtractModal'
 import { ScheduleFormModal } from './ScheduleFormModal'
 import type { ScheduleRow, ScheduleRunRow } from './useSchedules'
 import { FindBar } from '../../components/FindBar'
@@ -26,11 +33,16 @@ interface ReadViewProps {
   onBack: () => void
   /** 「执行过程」：App 切 scheduleView replay 态（RunReplay） */
   onReplay: (taskId: string) => void
+  /** 「转跟进任务」（done 期次）：App 新建任务+预填+切任务页；失败 toast 在 App 侧 */
+  onTrackFollow: (run: ScheduleRunRow) => void
+  /** 挂载即展开提取动线（0.6 §3.2 产业卡「提取线索」快捷钮直达），消费即定 */
+  initialAction?: 'extract'
 }
 
-export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
+export function ReadView({ runId, onBack, onReplay, onTrackFollow, initialAction }: ReadViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
+  const prompt = usePrompt()
   const [run, setRun] = useState<ScheduleRunRow | null>(null)
   const [schedule, setSchedule] = useState<ScheduleRow | null>(null)
   const [content, setContent] = useState('')
@@ -38,6 +50,9 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
   const [targetName, setTargetName] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [rerunning, setRerunning] = useState(false)
+  // 提取动线开合（产业卡直达 initialAction 消费一次即定；用户关闭后不复活）
+  const [extractOpen, setExtractOpen] = useState(initialAction === 'extract')
+  const [savingLead, setSavingLead] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -138,6 +153,37 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
     }
   }
 
+  // 线索池跳转（toast action 共用）：全局导航分流事件，App handleNavIntel 消费 detail.tab
+  const goLeads = () => {
+    window.dispatchEvent(new CustomEvent('app:navigate-intel', { detail: { tab: 'leads' } }))
+  }
+
+  // 存为线索（0.6 §3.3）：PromptDialog 预填要点首段可改 → leads:create（run 来源
+  // + 订阅名快照）→ toast 可跳线索池；取消/空名不建
+  const saveLead = async () => {
+    if (!run || !schedule || savingLead) return
+    const raw = await prompt({
+      title: t('intel.lead.saveLead'),
+      message: t('intel.lead.saveLeadHint', { name: schedule.name }),
+      defaultValue: run.summary?.[0] ?? '',
+      placeholder: t('intel.lead.namePlaceholder'),
+    })
+    const name = raw?.trim()
+    if (!name) return
+    setSavingLead(true)
+    try {
+      await window.electronAPI.invoke('leads:create', {
+        name, sourceType: 'run', sourceRunId: run.id,
+        sourceScheduleName: schedule.name, note: '',
+      })
+      showToast(t('intel.lead.added'), 'success', { action: { label: t('intel.lead.goLeads'), onClick: goLeads } })
+    } catch {
+      showToast(t('intel.lead.opFailed'), 'error')
+    } finally {
+      setSavingLead(false)
+    }
+  }
+
   // ── 文档内查找（块级定位，公共基座 useMarkdownBlockFind + FindBar）──
   // canFind 与 Markdown 渲染分支同条件：running 无正文不可查（2026-10-23）
   const canFind = !!run && run.status !== 'running'
@@ -174,6 +220,9 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
     duration = secs >= 60 ? `${Math.floor(secs / 60)}m${secs % 60}s` : `${secs}s`
   }
   const failed = run.status === 'failed'
+  // CodeReview m-3：rollup 空窗口 skipped 的留痕原因（「窗口内无期次」）必须
+  // 可读——只渲染 failed 时用户只看到「已跳过」无解释（G4 留痕不静默半实现）
+  const showReason = failed || run.status === 'skipped'
 
   return (
     <div className={s.page}>
@@ -188,11 +237,53 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
           <ArrowLeft size={15} />
         </button>
         <h2 className={s.title}>{schedule.name} · {dateLabel}</h2>
+        {/* 组合周报徽标（2.11 §12.4）：title 提示聚合口径（窗口期随报告正文呈现） */}
+        {schedule.scope === 'rollup' && (
+          <span
+            className={s.rollupTag}
+            data-testid="read-rollup-tag"
+            title={t('schedule.read.rollupTagHint')}
+          >
+            {t('schedule.scope.rollup')}
+          </span>
+        )}
         <span className={`${s.state} ${failed ? s.stateFailed : ''}`}>
           {t(`schedule.read.state.${run.status}`)}
         </span>
         {duration && <span className={s.duration}>{duration}</span>}
         <span className={s.spacer} />
+        {run.status === 'done' && (
+          <>
+            {/* 产业类提取主位突出（§6.3-12 分类只驱动突出度，全期次开放） */}
+            {schedule.category === 'industry' && (
+              <button
+                className={`${s.actionBtn} ${s.actionBtnPrimary}`}
+                data-testid="read-extract-lead"
+                onClick={() => setExtractOpen(true)}
+              >
+                <Sparkles size={13} />{t('intel.lead.extractLead')}
+              </button>
+            )}
+            <button
+              className={s.actionBtn}
+              data-testid="read-save-lead"
+              disabled={savingLead}
+              onClick={() => void saveLead()}
+            >
+              {t('intel.lead.saveLead')}
+            </button>
+          </>
+        )}
+        {run.status === 'done' && (
+          <button className={s.actionBtn} data-testid="read-track-follow" onClick={() => onTrackFollow(run)}>
+            {t('schedule.read.trackFollow')}
+          </button>
+        )}
+        {run.status === 'done' && schedule.category !== 'industry' && (
+          <button className={s.actionBtn} data-testid="read-extract-lead" onClick={() => setExtractOpen(true)}>
+            {t('intel.lead.extractLead')}
+          </button>
+        )}
         {run.task_id && (
           <button className={s.actionBtn} data-testid="read-open-replay" onClick={() => onReplay(run.task_id!)}>
             {t('schedule.read.openReplay')}
@@ -211,7 +302,7 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
           onClose={find.closeFind}
         />
       )}
-      {failed && (
+      {showReason && (
         <div className={s.failedCard}>
           <p className={s.failedText}>{run.error || t('schedule.read.failedNoReason')}</p>
           <button className={s.rerunBtn} onClick={() => void rerun()} disabled={rerunning}>
@@ -258,6 +349,13 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
           editing={schedule}
           onClose={() => setFormOpen(false)}
           onSaved={() => setFormOpen(false)}
+        />
+      )}
+      {extractOpen && run && schedule && (
+        <LeadExtractModal
+          runId={run.id}
+          scheduleName={schedule.name}
+          onClose={() => setExtractOpen(false)}
         />
       )}
     </div>

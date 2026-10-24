@@ -1,15 +1,16 @@
-/* ── Home page — full-width dashboard grid（0.5 §4.2 打样修订 2026-10-18）── */
+/* ── Home page — full-width dashboard grid（V2-E1b 2026-10-24 六原则去框化：
+   页面内边距 24/28px、主/侧列间距 20px、侧列 312px，§3.1 落点表）── */
 .page {
   flex: 1;
   overflow-y: auto;
-  padding: 28px 40px 40px;
+  padding: 24px 28px 40px;
 }
 
-/* 主列(进行中/今日待办+日历/卡片墙) + 侧列(动态流/快捷动作);窄屏退化单列 */
+/* 主列(英雄区/情报区/进行中/今日待办+日历/卡片墙) + 侧列(动态流/快捷动作);窄屏退化单列 */
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 28px;
+  grid-template-columns: minmax(0, 1fr) 312px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -21,20 +22,24 @@
   min-width: 0;
 }
 
+/* 区块间 24px 留白 + 8% 分隔线（§3.0-2 去框化；末块豁免） */
 .block {
-  margin-bottom: 28px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--hairline);
 }
 
 .block:last-child {
   margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
-/* ── 区块标题(统一语言:13px/600/secondary) ── */
+/* ── 区块标题（V2 §3.0-4 层级拉开：14px/700/主色，与右侧 accent 操作链接拉开）── */
 .sectionTitle {
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--text-secondary);
-  letter-spacing: 0.2px;
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--text-primary);
   margin-bottom: 10px;
 }
 
@@ -59,16 +64,18 @@
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--bg-primary);
   cursor: pointer;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base);
 }
 
+/* 行卡 hover：accent 边框 + 抬升（§3.1 落点表 卡片微交互） */
 .ongoingItem:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow-xs);
+  transform: translateY(-2px);
 }
 
 .ongoingIcon {
@@ -127,6 +134,39 @@
 
 .viewAll:hover {
   background: var(--bg-hover);
+}
+
+/* 组合视图切换(V2-E4 §3.7):卡片墙⇄泳道分段钮 */
+.viewToggle {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+
+.viewBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.viewBtn:hover {
+  color: var(--text-primary);
+}
+
+.viewBtnActive {
+  background: var(--bg-primary);
+  color: var(--accent);
+  box-shadow: var(--shadow-xs);
 }
 
 /* ── Load more（0.1dev-guide 列表分页统一约定：项目卡墙追加）── */

@@ -183,7 +183,7 @@ export function CompilePanel({
               <AlertCircle size={16} className={s.compilePanelStoppedIcon} />
               <span>
                 {t('project.wiki.compileDoneWithErrors', {
-                  defaultValue: `编译完成: ${successCount} 成功, ${errorCount} 失败`,
+                  defaultValue: `汇编完成: ${successCount} 成功, ${errorCount} 失败`,
                   success: successCount,
                   errors: errorCount,
                 })}

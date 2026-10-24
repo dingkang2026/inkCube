@@ -1,5 +1,6 @@
-// 任务欢迎页内置模板注册表与占位符解析（0.5 E1，文案存 i18n task.tpl.<id>.*）
-export type TemplateCategory = 'info' | 'mon' | 'ind' | 'rep' | 'off';
+// 任务欢迎页内置模板注册表与占位符解析（0.5 E1，文案存 i18n task.tpl.<id>.*）。
+// V2-E1a T12 模板分家：TASK_TEMPLATES 仅任务模板；订阅白名单独立 INTEL_TEMPLATES。
+export type TemplateCategory = 'info' | 'mon' | 'ind' | 'reg' | 'rep' | 'off';
 
 export interface TaskTemplateDef {
   id: string; // 与 i18n task.tpl.<id>.* 对应
@@ -7,21 +8,38 @@ export interface TaskTemplateDef {
   icon: string; // lucide 图标名
 }
 
-/** 内置模板 10 条，顺序即展示顺序（0.5 §4.4 清单表） */
+/** 任务模板 6 条（0.6 §3.2 V2-E1a T12 收窄：舆情/产业 4 条移入订阅白名单） */
 export const TASK_TEMPLATES: TaskTemplateDef[] = [
   { id: 'companyBasic', category: 'info', icon: 'Building2' },
   { id: 'companyDeep', category: 'info', icon: 'SearchCheck' },
-  { id: 'sentiment', category: 'mon', icon: 'Newspaper' },
-  { id: 'competitor', category: 'mon', icon: 'Activity' },
-  { id: 'industryEvents', category: 'ind', icon: 'TrendingUp' },
-  { id: 'industryLeads', category: 'ind', icon: 'Target' },
   { id: 'ddChecklist', category: 'rep', icon: 'ClipboardList' },
   { id: 'businessModel', category: 'rep', icon: 'Puzzle' },
   { id: 'fileOrganize', category: 'off', icon: 'FolderTree' },
   { id: 'dataSummary', category: 'off', icon: 'Table' },
 ];
 
-export const TEMPLATE_CATEGORIES = ['all', 'info', 'mon', 'ind', 'rep', 'off'] as const;
+/** 订阅白名单 6 条（0.6 §3.2 V2-E1a T12：仅 ScheduleFormModal 消费）；
+ *  industryPolicy/regionPolicy 为 T12 新增（产业政策/区域招商政策扫描） */
+export const INTEL_TEMPLATES: TaskTemplateDef[] = [
+  { id: 'sentiment', category: 'mon', icon: 'Newspaper' },
+  { id: 'competitor', category: 'mon', icon: 'Activity' },
+  { id: 'industryEvents', category: 'ind', icon: 'TrendingUp' },
+  { id: 'industryLeads', category: 'ind', icon: 'Target' },
+  { id: 'industryPolicy', category: 'ind', icon: 'Landmark' },
+  { id: 'regionPolicy', category: 'reg', icon: 'MapPin' },
+];
+
+/** 订阅产出分类（corporate/industry/region/general）← 模板短分类（0.6 §3.2 T12） */
+export const INTEL_CATEGORY_MAP: Record<TemplateCategory, string> = {
+  mon: 'corporate',
+  ind: 'industry',
+  reg: 'region',
+  info: 'corporate',
+  rep: 'general',
+  off: 'general',
+};
+
+export const TEMPLATE_CATEGORIES = ['all', 'info', 'mon', 'ind', 'reg', 'rep', 'off'] as const;
 
 /** 是否仍有未填写的 {占位符} */
 export function hasUnfilledPlaceholders(text: string): boolean {
@@ -52,6 +70,7 @@ export const CATEGORY_ALIASES: Record<string, TemplateCategory> = {
   info_gather: 'info',
   monitor: 'mon',
   industry: 'ind',
+  region: 'reg',
   report_invest: 'rep',
   office: 'off',
 };
@@ -61,6 +80,7 @@ export const BACKEND_CATEGORY: Record<TemplateCategory, string> = {
   info: 'info_gather',
   mon: 'monitor',
   ind: 'industry',
+  reg: 'region',
   rep: 'report_invest',
   off: 'office',
 };
@@ -133,4 +153,28 @@ export function mergeTemplates(
     ...builtinMerged.filter((m) => !m.pinned),
     ...customMerged.filter((m) => !m.pinned),
   ];
+}
+
+/** persona → 非置顶区置顶的内置模板 id（0.6 §3.2 V2-E1a T12）；
+ *  both/other/'' 不重排。kind 区分任务/订阅两套白名单 */
+const PERSONA_TOP: Record<string, { task: string[]; intel: string[] }> = {
+  business_attraction: { task: ['companyBasic', 'companyDeep'], intel: ['regionPolicy'] },
+  investment: { task: ['ddChecklist', 'businessModel'], intel: ['industryEvents'] },
+};
+
+/** persona 排序：仅重排非置顶区（mergeTemplates 已把 pinned 提前，不碰），
+ *  区内 persona 置顶模板提前、其余保序。纯前端重排，不落库 */
+export function sortTemplatesByPersona(
+  list: MergedTemplate[], persona: string, kind: 'task' | 'intel',
+): MergedTemplate[] {
+  const top = PERSONA_TOP[persona]?.[kind] ?? [];
+  if (top.length === 0) return list;
+  const pinIdx = list.findIndex((m) => !m.pinned);
+  const head = pinIdx === -1 ? list : list.slice(0, pinIdx);
+  const rest = pinIdx === -1 ? [] : list.slice(pinIdx);
+  const restSorted = [
+    ...rest.filter((m) => top.includes(m.id.slice(BUILTIN_PREFIX.length))),
+    ...rest.filter((m) => !top.includes(m.id.slice(BUILTIN_PREFIX.length))),
+  ];
+  return [...head, ...restSorted];
 }

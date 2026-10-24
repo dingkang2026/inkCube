@@ -48,13 +48,22 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.24);   /* 模态/浮层 */
   --shadow-accent: 0 2px 8px rgba(37, 99, 235, 0.12);
-  /* Typography scale：正文 13px 为基准，大数字/统计用 xl */
+  /* Typography scale：正文 13px 为基准，大数字/统计用 xl；
+     V2 六原则层级拉开（0.6 §3.0-4）：display 用于晨会英雄区/身份层大标题，title 用于区块/卡片头 */
   --text-xs: 11px;
   --text-sm: 12px;
   --text-base: 13px;
   --text-md: 14px;
   --text-lg: 16px;
   --text-xl: 20px;
+  --text-display: 28px;
+  --text-title: 18px;
+  --tracking-label: 0.08em;  /* 大字距标签（§3.0-4） */
+
+  /* V2 六原则（0.6 §3.0，E1b 2026-10-24）：8% 分隔线 + 克制微动效时长 */
+  --hairline: rgba(0, 0, 0, 0.08);
+  --motion-enter: 120ms;   /* 入场淡入上移 */
+  --motion-base: 150ms;    /* 交互反馈（border/shadow/transform） */
 }
 
 html, body, #root {
@@ -166,6 +175,13 @@ html, body, #root {
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+/* 入场淡入上移（0.6 §3.0-6 克制微动效；全局 keyframes，各模块
+   animation: fade-up var(--motion-enter) ease-out 直接引用） */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
 
 /* Scrollbar */

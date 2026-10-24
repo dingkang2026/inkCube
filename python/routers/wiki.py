@@ -2,13 +2,19 @@
 
 Implements all Wiki REST APIs per §4/§5/§7 of 2.6wiki-design.md.
 """
+import asyncio
 import logging
+import re
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from paths import get_data_dir
 from readiness import ensure_ready
 from llm.usage import UsageContext, push_context  # 2.10 §4.3 用量环境
 from wiki.review_id import compute_review_id  # review_id 唯一实现(H-1:必须项目作用域)
@@ -117,8 +123,16 @@ async def list_latest_ledger_entries():
 
 
 @router.get("/projects/{project_id}/ledger/entries")
-async def list_ledger_entries(project_id: str, limit: int = 20, offset: int = Query(0, ge=0)):
-    """单项目台账条目时间轴(知识首页时间轴卡,3.1 §5.3);limit 1-100,offset 翻页。"""
+async def list_ledger_entries(
+    project_id: str,
+    limit: int = 20,
+    offset: int = Query(0, ge=0),
+    # 普通默认值而非 Query(""):本端点会被测试直呼(绕过 FastAPI DI),Query 默认
+    # 对象会原样流入 db 层致 sqlite 绑定失败;同端点 limit=20 同款先例
+    page_key: str = "",
+):
+    """单项目台账条目时间轴(知识首页时间轴卡,3.1 §5.3);limit 1-100,offset 翻页。
+    page_key 可选过滤(V2 E3 台账页时间轴);空 = 全项目,向后兼容。"""
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit must be 1-100")
     try:
@@ -126,7 +140,8 @@ async def list_ledger_entries(project_id: str, limit: int = 20, offset: int = Qu
         if not db.get_project(project_id):
             raise HTTPException(status_code=404, detail="Project not found")
         # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
-        entries = db.list_ledger_entries(project_id, limit + 1, offset)
+        entries = db.list_ledger_entries(
+            project_id, limit + 1, offset, page_key=page_key or None)
         has_more = len(entries) > limit
         if has_more:
             entries = entries[:limit]
@@ -398,6 +413,70 @@ async def get_compile_status(project_id: str):
     except Exception as e:
         logger.error("Failed to get compile status: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 知识册导出（2.6 §14，V2.1-T4）─────────────────────────────
+
+# 文件名主干 sanitize（reports._sanitize_filename 同规则本地副本：非法字符
+# 含控制字符集统一替换 + 去首尾空白与点；跨 router 不 import 私有函数）
+_WIKI_FILENAME_INVALID_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+# 渲染超时放宽（CodeReview M-3：链路对齐——renderer 默认 60s，整册拼接后
+# 页数多 pandoc 单进程可达分钟级；Electron 转发层 90s 与此对齐）
+_WIKI_RENDER_TIMEOUT = 90
+
+
+def _wiki_slug(name: str) -> str:
+    slug = _WIKI_FILENAME_INVALID_RE.sub("_", str(name or "")).strip(" .")
+    return slug[:40].strip(" .") or "知识册"
+
+
+@router.post("/projects/{project_id}/export-docx")
+async def export_wiki_docx(project_id: str):
+    """知识册导出 docx（2.6 §14，V2.1-T4）：目录序拼接已编译页 → pandoc 渲染
+    → 落 {data_dir}/files/{project_id}/exports/（随项目删除级联清理，生命周期
+    闭环同报告产物挂 content_path）。零新表：文件即产物，重复导出新时间戳
+    文件不覆盖旧导出。同步短任务（本地确定性渲染）to_thread 下放，防事件
+    循环阻塞（reports export 同款；含 pandoc 子进程，册大可达数十秒）。"""
+    db = get_db()
+    project = db.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    pages = db.list_wiki_pages(project_id)   # 全量，目录序（schema position COALESCE）
+    compiled = [p for p in pages if (p.get("content") or "").strip()]
+    if not compiled:
+        # D1 错误契约：带 code 供前端识别（handlePythonResponse 抛 err.errorCode）
+        return JSONResponse(status_code=409, content={
+            "error": "知识册暂无已编译页面，请先完成汇编",
+            "code": "WIKI_EMPTY"})
+    # 拼接：每页一级标题 + 正文（页间水平分隔线；章节序 = list 序 = 目录序）
+    parts = [f"# {p['title'] or p['page_key']}\n\n{p['content']}" for p in compiled]
+    markdown_text = "\n\n---\n\n".join(parts)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    out_dir = Path(get_data_dir()) / "files" / project_id / "exports"
+    # 分钟级时间戳 + 短随机后缀（CodeReview m-1）：同分钟重复导出/并发导出
+    # 不同名——确定性递增序号存在 check-then-act 竞态（renderer 的 .tmp 产物
+    # 名由最终路径派生，同名并发互踩），随机后缀天然互斥，同保「不覆盖旧
+    # 导出」不变量（2.6 §14.2 零新表裁决）
+    output = (out_dir /
+              f"wiki_{_wiki_slug(project['name'])}_{stamp}"
+              f"_{uuid.uuid4().hex[:8]}.docx")
+    # 渲染含 pandoc 子进程：图片缺失 pandoc 仅 warning 不失败（护栏「缺失图占位
+    # 不阻断」由 pandoc 语义天然保障）；无 mermaid 图不需要 Electron 桥
+    from report_generator.renderer import render_markdown_to_docx
+    try:
+        await asyncio.to_thread(
+            render_markdown_to_docx, markdown_text, str(output),
+            title=f"{project['name']}·知识册", timeout=_WIKI_RENDER_TIMEOUT)
+    except Exception as e:
+        # CodeReview M-2：pandoc stderr/超时细节必须透传前端（无包装时 FastAPI
+        # 兜底 500 纯文本 body → electron res.json() 得 null → 前端只见
+        # "Python backend error (500)"，诊断链全断）
+        logger.error("Wiki export failed (project=%s): %s", project_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+    logger.info("Wiki exported (project=%s pages=%s): %s",
+                project_id, len(compiled), output)
+    return {"path": str(output), "pages": len(compiled)}
 
 
 # ── Reviews ──

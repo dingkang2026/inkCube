@@ -3,7 +3,7 @@
 
 覆盖：订阅 CRUD（含 update 白名单 / q·category·enabled 过滤 / latest_done 附加）、
 到期扫描、run 生命周期（running→done/failed/missed）、收件箱未读优先、digest
-每订阅最新一条、防重入查询、增量注入锚点（last_done_run_report / pending_archive_runs）、
+每订阅最新一条、防重入查询、增量注入锚点（last_done_run / pending_archive_runs）、
 保留期 workspace 清点、未读计数（摘要行数据源）、删除级联（runs CASCADE +
 tasks.schedule_id SET NULL，外键 PRAGMA foreign_keys=ON）。
 """
@@ -256,12 +256,16 @@ def test_count_running_runs_and_last_run_running(tmp_db):
     assert not tmp_db.schedule_last_run_running(s['id'])
 
 
-def test_last_done_run_report(tmp_db):
+def test_last_done_run_and_count(tmp_db):
     s = tmp_db.create_schedule('a', 'p', 'general', 'general', 'daily', '09:00')
-    assert tmp_db.last_done_run_report(s['id']) is None
+    assert tmp_db.last_done_run(s['id']) is None
+    assert tmp_db.count_schedule_runs(s['id']) == 0
     tmp_db.insert_schedule_run('run_1', s['id'], None)
     tmp_db.update_schedule_run('run_1', 'done', report_path='data/schedules/run_1.md')
-    assert tmp_db.last_done_run_report(s['id']) == 'data/schedules/run_1.md'
+    prev = tmp_db.last_done_run(s['id'])
+    assert prev['report_path'] == 'data/schedules/run_1.md'
+    assert prev['finished_at']                                    # 时间基准「上期：」取此值
+    assert tmp_db.count_schedule_runs(s['id']) == 1               # 含本期（第 N 期语义）
 
 
 def test_pending_archive_runs_anchor(tmp_db):

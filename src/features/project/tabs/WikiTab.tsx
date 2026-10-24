@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   BookOpen, RefreshCw, AlertCircle, CheckCircle, Clock,
   AlertTriangle, Loader2, Home, Shield, Search, Share2,
-  Maximize2, Minimize2, Square, ListOrdered,
+  Maximize2, Minimize2, Square, ListOrdered, BookMarked, FileDown,
 } from 'lucide-react'
 import type { ProjectType } from '../types'
 import type { UsageSummary } from '../../../types'
@@ -17,6 +17,7 @@ import { WikiSearchView } from './WikiSearchView'
 import { WikiGraphView } from './WikiGraphView'
 import { WikiLintView } from './WikiLintView'
 import { CompilePanel } from './CompilePanel'
+import { WikiCompileView } from './WikiCompileView'
 import { WikiSchemaManager } from './WikiSchemaManager'
 import { usePagedList } from '../../../hooks/usePagedList'
 import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
@@ -95,7 +96,7 @@ interface ReviewCountBucket {
   total: number
 }
 type ReviewCounts = Record<string, ReviewCountBucket>
-type ViewMode = 'home' | 'read' | 'edit' | 'changelog' | 'search' | 'graph' | 'lint' | 'schema'
+type ViewMode = 'home' | 'read' | 'edit' | 'changelog' | 'search' | 'graph' | 'lint' | 'schema' | 'compile'
 
 const PREVIEW_DEFAULT_WIDTH = 720
 const PREVIEW_MIN_WIDTH = 260
@@ -117,7 +118,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [pageDetail, setPageDetail] = useState<any>(null)
   const [compileTask, setCompileTask] = useState<CompileTask | null>(null)
   const [reviewCounts, setReviewCounts] = useState<ReviewCounts>({})
-  const [schemas, setSchemas] = useState<Array<{ page_key: string; title: string }>>([])
+  const [schemas, setSchemas] = useState<Array<{ page_key: string; title: string; is_ledger?: boolean }>>([])
   // pages 分页（0.1dev-guide 统一约定）：复合响应（同包 purpose/overview/source_pages 等
   // 全量元数据），不适配 usePagedList，按 useTasks limitsRef 模式手写 limit 递增全量重拉
   const pagesLimitRef = useRef(50)
@@ -126,6 +127,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [pagesTotal, setPagesTotal] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [compiling, setCompiling] = useState(false)
+  // 知识册导出 docx（2.6 §14，V2.1-T4）：导出中防重复点击（同步短任务秒级）
+  const [exportingDocx, setExportingDocx] = useState(false)
   // 编译重入防御 ref：state 闭包在 StrictMode 挂载双跑（dev）下不新鲜，
   // focusSignal consume-once effect 双跑会两次到达 doCompile → 第二次 409 弹
   // 误导性错误 Toast（review 轻微② 2026-10-23）；ref 始终新鲜，置位/复位与
@@ -317,10 +320,12 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   useEffect(() => {
     if (!focusSignal?.view) return
     if (focusSignal.view === 'compile') {
+      // V2 E3:直达落汇编视图——空闲则原地触发,进行中则看进度(触发/防重入语义不变)。
       // 与点「编译」按钮等价(裁决 6);但编译进行中再触发会 409 并闪断状态条——
       // 与原顶栏按钮 disabled={compiling} 同语义,仅停留不重触发(Task 13 review M2)。
       // 用父级 props 快照判断(而非本地 compileTask state):consume effect 先于
       // compileData 同步 effect 执行,重挂载首轮本地态尚为空,props 已就绪
+      setViewMode('compile')
       const active = compiling
         || (compileData?.task != null && ['queued', 'ingesting', 'storing'].includes(compileData.task.status))
       if (!active) handleCompile()
@@ -490,6 +495,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setViewMode('lint')
   }, [])
 
+  // Go to compile view (V2 E3 整理层主入口)
+  const handleGoCompile = useCallback(() => {
+    setViewMode('compile')
+  }, [])
+
   // 治理动作后：重拉发现项计数 + 上报父级刷新脉搏带（0.4 §3.1「操作后刷新」，3.0 一期最终 review）
   const handleFindingsChanged = useCallback(() => {
     void loadReviewCounts()
@@ -528,7 +538,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       // 409 防重入 / 就绪度结构化报错必须可感知，不能只写 console
       showToast(t('project.wiki.compileTriggerFailed', {
         reason: err instanceof Error ? err.message : String(err),
-        defaultValue: `编译触发失败: ${err instanceof Error ? err.message : String(err)}`,
+        defaultValue: `汇编触发失败: ${err instanceof Error ? err.message : String(err)}`,
       }), 'error')
     }
   }
@@ -544,14 +554,14 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     // 状态刷新依赖父组件 #4 轮询（明细面板展开时 2s，0.4 §8.1）
     try {
       await window.electronAPI.invoke('wiki:compile', { projectId, mode: 'incremental', force: true })
-      // 触发成功后才清空本地列表（后端此时才 wipe）；失败时保留原数据仅提示
+      // 触发成功后才清空本地列表（后端此时才 wipe）；失败时保留原数据仅提示。
+      // V2 E3:不再强制跳回首页——汇编视图触发时留在原地看进度,其他视图同理
       setPages([])
       setReviewCounts({})
       pagesLimitRef.current = 50
       setPagesHasMore(false)
       setSelectedPage(null)
       setPreviewPageKey(null)
-      setViewMode('home')
       await loadPages()
     } catch (err) {
       console.error('Failed to trigger recompile:', err)
@@ -560,8 +570,33 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       setShowDetailPanel(false)
       showToast(t('project.wiki.compileTriggerFailed', {
         reason: err instanceof Error ? err.message : String(err),
-        defaultValue: `编译触发失败: ${err instanceof Error ? err.message : String(err)}`,
+        defaultValue: `汇编触发失败: ${err instanceof Error ? err.message : String(err)}`,
       }), 'error')
+    }
+  }
+
+  // 知识册导出 docx（2.6 §14，V2.1-T4）：成功 toast + 定位文件（shell:showItemInFolder，
+  // ArchiveView/FilePreview 同款动线）；空册 409（WIKI_EMPTY）前端文案，其余错误透出后端消息
+  const handleExportDocx = async () => {
+    setExportingDocx(true)
+    try {
+      const result = await window.electronAPI.invoke('wiki:exportDocx', { projectId }) as { path: string; pages: number }
+      showToast(t('project.wiki.exportDocxDone', {
+        path: result.path,
+        defaultValue: `已导出：${result.path}`,
+      }), 'success')
+      void window.electronAPI.invoke('shell:showItemInFolder', result.path)
+    } catch (err) {
+      console.error('Failed to export wiki docx:', err)
+      const code = (err as { errorCode?: string }).errorCode
+      showToast(code === 'WIKI_EMPTY'
+        ? t('project.wiki.exportDocxEmpty', { defaultValue: '知识册暂无已编译页面，请先完成汇编' })
+        : t('project.wiki.exportDocxFailed', {
+            reason: err instanceof Error ? err.message : String(err),
+            defaultValue: `导出失败: ${err instanceof Error ? err.message : String(err)}`,
+          }), 'error')
+    } finally {
+      setExportingDocx(false)
     }
   }
 
@@ -574,7 +609,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       console.error('Failed to stop compile:', err)
       showToast(t('project.wiki.stopFailed', {
         reason: err instanceof Error ? err.message : String(err),
-        defaultValue: `停止编译失败: ${err instanceof Error ? err.message : String(err)}`,
+        defaultValue: `停止汇编失败: ${err instanceof Error ? err.message : String(err)}`,
       }), 'error')
     }
   }
@@ -607,7 +642,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             <AlertTriangle size={14} />
             <span>
               {t('project.wiki.compileResumed', {
-                defaultValue: `上次编译被中断，已从第 ${ingestSummaries.length + 1} 个文件恢复继续`,
+                defaultValue: `上次汇编被中断，已从第 ${ingestSummaries.length + 1} 个文件恢复继续`,
                 fileNum: ingestSummaries.length + 1,
               })}
             </span>
@@ -620,7 +655,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           <div className={s.compileStatus}>
             <Loader2 size={14} className={s.spin} />
             <span>
-              {compileTask?.status === 'queued' && t('project.wiki.statusQueued', { defaultValue: '编译排队中...' })}
+              {compileTask?.status === 'queued' && t('project.wiki.statusQueued', { defaultValue: '汇编排队中...' })}
               {compileTask?.status === 'ingesting' && t('project.wiki.statusIngesting', { defaultValue: '摄入文件内容...' })}
               {compileTask?.status === 'storing' && t('project.wiki.statusStoring', { defaultValue: '保存知识库...' })}
             </span>
@@ -656,7 +691,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               <span>
                 {t('project.wiki.compileDoneOk', {
                   success: ingestSummaries.filter(s => !s.error).length,
-                  defaultValue: `编译完成: ${ingestSummaries.filter(s => !s.error).length} 成功`,
+                  defaultValue: `汇编完成: ${ingestSummaries.filter(s => !s.error).length} 成功`,
                 })}
                 {/* 失败计数即快速定位入口：点击直达逐文件明细（2.6 §13.3） */}
                 <button
@@ -672,7 +707,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               </span>
             ) : (
               <span>
-                {t('project.wiki.compileDone', { count: compileTask.pages_completed ?? 0, defaultValue: `编译完成 (${compileTask.pages_completed ?? 0} 个文件)` })}
+                {t('project.wiki.compileDone', { count: compileTask.pages_completed ?? 0, defaultValue: `汇编完成 (${compileTask.pages_completed ?? 0} 个文件)` })}
               </span>
             )}
             {/* 该次编译总消耗（2.10 §6.1/线框 6）：entity=compile_task 端到端全部调用 */}
@@ -696,7 +731,14 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             </button>
             <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTip')}>
               <RefreshCw size={13} />
-              {t('project.wiki.recompile', { defaultValue: '重新编译' })}
+              {t('project.wiki.recompile', { defaultValue: '重新汇编' })}
+            </button>
+            {/* 知识册导出 docx（2.6 §14，V2.1-T4）：与重新汇编同区，completed 态可达 */}
+            <button className={s.retryBtn} onClick={() => void handleExportDocx()} disabled={exportingDocx}>
+              <FileDown size={13} />
+              {exportingDocx
+                ? t('project.wiki.exporting', { defaultValue: '导出中…' })
+                : t('project.wiki.exportDocx', { defaultValue: '导出 docx' })}
             </button>
           </div>
         )}
@@ -709,7 +751,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
             </button>
             <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.retry', { defaultValue: '重试' })}</button>
-            <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新编译' })}</button>
+            <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新汇编' })}</button>
           </div>
         )}
 
@@ -721,16 +763,16 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 ? t('project.wiki.compileStopped', {
                     completed: compileTask.pages_completed ?? 0,
                     total: compileTask.pages_total,
-                    defaultValue: `编译已停止: ${compileTask.pages_completed ?? 0}/${compileTask.pages_total} 文件`,
+                    defaultValue: `汇编已停止: ${compileTask.pages_completed ?? 0}/${compileTask.pages_total} 文件`,
                   })
-                : t('project.wiki.compileStoppedSimple', { defaultValue: '编译已停止' })
+                : t('project.wiki.compileStoppedSimple', { defaultValue: '汇编已停止' })
               }
             </span>
             <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
               {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
             </button>
-            <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.resumeCompile', { defaultValue: '继续编译' })}</button>
-            <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新编译' })}</button>
+            <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.resumeCompile', { defaultValue: '继续汇编' })}</button>
+            <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新汇编' })}</button>
           </div>
         )}
 
@@ -748,8 +790,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
         )}
       </div>
 
-      {/* Compile detail panel（内嵌可折叠，2.6 §10）：逐文件摘要审阅，不遮内容 */}
-      {showDetailPanel && compileTask && (
+      {/* Compile detail panel（内嵌可折叠，2.6 §10）：逐文件摘要审阅，不遮内容；
+          compile 视图内已内嵌同一面板（复用 showDetailPanel），此处让位防双渲染 */}
+      {showDetailPanel && compileTask && viewMode !== 'compile' && (
         <CompilePanel
           task={compileTask}
           ingestSummaries={ingestSummaries}
@@ -761,7 +804,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
         {/* Left sidebar: navigation + page list */}
         <div className={s.sidebar}>
           {/* Navigation section */}
+          {/* V2 E3 导航分组：阅读（消费知识）+ 整理（维护知识册），0.6 §3.5 */}
           <div className={s.sidebarNav}>
+            <div className={s.navGroupTitle}>{t('project.wiki.navGroupRead', { defaultValue: '阅读' })}</div>
             <div
               className={`${s.navItem} ${viewMode === 'home' ? s.navItemActive : ''}`}
               onClick={handleGoHome}
@@ -769,14 +814,6 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             >
               <Home size={13} />
               <span>{t('project.wiki.home')}</span>
-            </div>
-            <div
-              className={`${s.navItem} ${viewMode === 'changelog' ? s.navItemActive : ''}`}
-              onClick={handleGoChangelog}
-              title={t('project.wiki.navTipChangeLog')}
-            >
-              <Clock size={13} />
-              <span>{t('project.wiki.changeLog')}</span>
             </div>
             <div
               className={`${s.navItem} ${viewMode === 'search' ? s.navItemActive : ''}`}
@@ -793,6 +830,18 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             >
               <Share2 size={13} />
               <span>{t('project.wiki.graph')}</span>
+            </div>
+            <div className={s.navGroupTitle}>{t('project.wiki.navGroupOrganize', { defaultValue: '整理' })}</div>
+            <div
+              className={`${s.navItem} ${viewMode === 'compile' ? s.navItemActive : ''}`}
+              onClick={handleGoCompile}
+              title={t('project.wiki.navTipCompile')}
+            >
+              <BookMarked size={13} />
+              <span>{t('project.wiki.compileNav')}</span>
+              {pendingCount > 0 && (
+                <span className={s.navBadge}>{pendingCount}</span>
+              )}
             </div>
             <div
               className={`${s.navItem} ${viewMode === 'lint' ? s.navItemActive : ''}`}
@@ -812,6 +861,14 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             >
               <ListOrdered size={13} />
               <span>{t('project.wiki.schemaNav')}</span>
+            </div>
+            <div
+              className={`${s.navItem} ${viewMode === 'changelog' ? s.navItemActive : ''}`}
+              onClick={handleGoChangelog}
+              title={t('project.wiki.navTipChangeLog')}
+            >
+              <Clock size={13} />
+              <span>{t('project.wiki.changeLog')}</span>
             </div>
           </div>
 
@@ -835,9 +892,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               reviewCounts={{
                 contradiction: reviewCounts.contradiction?.pending ?? 0,
                 gap: (reviewCounts['data-gap']?.pending ?? 0) + (reviewCounts['missing-page']?.pending ?? 0),
-                deadLink: reviewCounts['broken-link']?.pending ?? 0,
               }}
               onOpenLint={() => setViewMode('lint')}
+              onOpenCompile={() => setViewMode('compile')}
               schemas={schemas}
               missingPages={missingPages}
               pagesTotal={pagesTotal}
@@ -873,6 +930,19 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           ) : viewMode === 'schema' ? (
             /* Schema management (structure pages, 2.6 §3.1) */
             <WikiSchemaManager projectId={projectId} />
+          ) : viewMode === 'compile' ? (
+            /* 汇编成册视图（V2 E3 整理层）：CTA + CompilePanel 复用 */
+            <WikiCompileView
+              pendingCount={pendingCount}
+              compileTask={compileTask}
+              ingestSummaries={ingestSummaries}
+              compiling={compiling}
+              detailOpen={showDetailPanel}
+              onOpenDetail={() => setShowDetailPanel(true)}
+              onCollapseDetail={() => setShowDetailPanel(false)}
+              onCompile={() => handleCompile()}
+              onForceRecompile={() => handleCompile(true)}
+            />
           ) : viewMode === 'changelog' ? (
             /* Changelog timeline */
             <WikiChangeLog
@@ -924,6 +994,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               onNavigateToPage={handleNavigateToPage}
               onDeleted={handlePageDeleted}
               onRefresh={handleRefreshPageDetail}
+              isLedger={schemas.some((sc) => sc.is_ledger && sc.page_key === pageDetail.page.page_key)}
             />
           )}
         </div>
@@ -935,11 +1006,11 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           <div className={s.confirmDialog} onClick={(e) => e.stopPropagation()}>
             <div className={s.confirmHeader}>
               <AlertTriangle size={16} />
-              <span>{t('project.wiki.recompile', { defaultValue: '重新编译' })}</span>
+              <span>{t('project.wiki.recompile', { defaultValue: '重新汇编' })}</span>
             </div>
             <div className={s.confirmBody}>
               {t('project.wiki.recompileConfirm', {
-                defaultValue: '重新编译将清除所有 Wiki 页面、版本历史、审查项和变更日志，从零开始。此操作不可撤销，确定继续？',
+                defaultValue: '重新汇编将清除所有 Wiki 页面、版本历史、审查项和变更日志，从零开始。此操作不可撤销，确定继续？',
               })}
             </div>
             <div className={s.confirmActions}>
@@ -947,7 +1018,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 {t('common.cancel', { defaultValue: '取消' })}
               </button>
               <button className={s.confirmDangerBtn} onClick={doForceRecompile}>
-                {t('project.wiki.recompile', { defaultValue: '重新编译' })}
+                {t('project.wiki.recompile', { defaultValue: '重新汇编' })}
               </button>
             </div>
           </div>

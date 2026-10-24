@@ -8,18 +8,19 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: ob-fade 0.15s ease-out;
+  animation: ob-fade var(--motion-enter) ease-out;
 }
 
+/* V2-E1b 2026-10-24 视觉顺带打磨（功能形态不动）：大浮层圆角 + 层级拉开标题 */
 .wizard {
   width: 90%;
-  max-width: 460px;
+  max-width: 500px;
   background: var(--bg-primary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  padding: 28px 24px 20px;
-  animation: ob-pop 0.16s ease-out;
+  padding: 32px 28px 24px;
+  animation: fade-up var(--motion-enter) ease-out;
 }
 
 .stepIndicator {
@@ -61,7 +62,7 @@
 
 .title {
   margin: 0 0 8px;
-  font-size: var(--text-lg);
+  font-size: var(--text-title);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -102,16 +103,5 @@
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes ob-pop {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
   }
 }

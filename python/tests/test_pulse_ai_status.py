@@ -78,6 +78,26 @@ def test_no_material_clears_to_rule_sentence(db, monkeypatch):
     assert row["pulse_ai_status"] == "" and row["pulse_ai_status_at"]
 
 
+def test_pending_reviews_typed_bucket_unwrapped(db, monkeypatch):
+    """V2-E4 CodeReview Blocker 回归:count_pending_reviews_by_project 升级分型桶
+    {pid: {total, contradiction, gap}} 后,update_pulse_status 必须解包 total——
+    否则 dict repr 拼进 LLM prompt 污染脉搏句。"""
+    pid = db.create_project(name="p-a4", project_type="recruitment")["id"]
+    _seed_entry(db, pid, "milestones", "2026-09", "项目正式投产", "milestone")
+    db.conn.execute(
+        "INSERT INTO wiki_reviews (id, project_id, type, title, resolved, created_at) "
+        "VALUES ('rv-b1', ?, 'contradiction', '台账与档案矛盾', 0, datetime('now'))", (pid,))
+    db.conn.commit()
+    seen = {}
+
+    def fake_sentence(entries, reviews_count, settings):
+        seen["reviews"] = reviews_count
+        return "投产平稳,建议跟进发现项整改。"
+    monkeypatch.setattr(ledger_service, "_pulse_sentence", fake_sentence)
+    ledger_service.update_pulse_status(db, pid, settings={})
+    assert isinstance(seen["reviews"], int) and seen["reviews"] == 1
+
+
 def test_pulse_sentence_blank_output_returns_empty(monkeypatch):
     """S2 回归:LLM 返回全空白 → 返回空句(保旧值),不 IndexError。"""
     class _BlankLLM:

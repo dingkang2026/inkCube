@@ -336,7 +336,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
       } else {
         showToast(
           t('project.wiki.lintGapUploaded', {
-            defaultValue: '已上传并开始解析；请稍后触发增量编译，若新文件补上该缺口将自动消除',
+            defaultValue: '已上传并开始解析；请稍后触发增量汇编，若新文件补上该缺口将自动消除',
           }),
           'success',
         )
@@ -593,7 +593,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
       <div className={s.lintHeader}>
         <Shield size={18} className={s.lintTitleIcon} />
         <span className={s.lintTitle}>
-          {t('project.wiki.lintView', { defaultValue: 'Lint 检查' })}
+          {t('project.wiki.lintView', { defaultValue: '知识体检' })}
         </span>
         <span className={s.lintCount}>({filtered.length})</span>
 
@@ -623,7 +623,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
           className={s.lintScanBtn}
           onClick={() => void handleSweep()}
           disabled={sweeping}
-          title={t('project.wiki.sweepHint', { defaultValue: '自动核销对应内容已由增量编译更新的审查项' })}
+          title={t('project.wiki.sweepHint', { defaultValue: '自动核销对应内容已由增量汇编更新的审查项' })}
         >
           {sweeping ? <Loader2 size={13} className={s.spin} /> : <Eraser size={13} />}
           {t('project.wiki.sweepBtn', { defaultValue: '清扫审查' })}
@@ -838,7 +838,7 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
                       {blSubtype === 'missing-source'
                         ? t('project.wiki.lintBlSubtypeSource', { defaultValue: '来源页缺失' })
                         : blSubtype === 'missing-schema'
-                          ? t('project.wiki.lintBlSubtypeSchema', { defaultValue: '结构页缺失' })
+                          ? t('project.wiki.lintBlSubtypeSchema', { defaultValue: '框架页缺失' })
                           : t('project.wiki.lintBlSubtypeUnknown', { defaultValue: '疑似异名' })}
                     </span>
                   )}
@@ -891,12 +891,12 @@ export function WikiLintView({ projectId, onNavigateToPage, onFindingsChanged }:
                 {/* 死链分型提示（§5.5） */}
                 {blSubtype === 'missing-source' && (
                   <p className={s.lintHintLine}>
-                    {t('project.wiki.lintBlSourceHint', { defaultValue: '链接目标是一个来源摘要页（src_），来源文件可能未摄入或已被删除——可触发增量编译或忽略' })}
+                    {t('project.wiki.lintBlSourceHint', { defaultValue: '链接目标是一个来源摘要页（src_），来源文件可能未摄入或已被删除——可触发增量汇编或忽略' })}
                   </p>
                 )}
                 {blSubtype === 'missing-schema' && (
                   <p className={s.lintHintLine}>
-                    {t('project.wiki.lintBlSchemaHint', { defaultValue: '链接目标是结构页，尚未编译生成——触发增量编译后会自动创建' })}
+                    {t('project.wiki.lintBlSchemaHint', { defaultValue: '链接目标是框架页，尚未汇编生成——触发增量汇编后会自动创建' })}
                   </p>
                 )}
                 {blSubtype === 'unknown' && !suggestion && (

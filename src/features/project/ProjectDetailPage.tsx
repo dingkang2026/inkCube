@@ -1,16 +1,15 @@
 /** src/features/project/ProjectDetailPage.tsx — 项目详情页：knowledge-first tabs + 事务 Tab + PulseBar（3.0 一期+二期） */
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderOpen, Library, FileText, ClipboardList, CalendarDays, Pencil } from 'lucide-react'
+import { FolderOpen, Library, FileText, CalendarDays, Pencil } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import { useToast } from '../knowledge/Toast'
 import { useActivity } from '../activity/ActivityContext'
-import { ReportsTab } from './tabs/ReportsTab'
 import { WikiTab } from './tabs/WikiTab'
 import type { WikiCompileData } from './tabs/WikiTab'
 import { usePolling } from '../../hooks/usePolling'
 import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
-import { FormsTab } from './tabs/FormsTab'
+import { OutputTab } from './tabs/OutputTab'
 import { AffairsTab } from './affairs/AffairsTab'
 import { summarizeDueTasks } from './affairs/types'
 import type { PulseDueSummary } from './affairs/types'
@@ -33,15 +32,14 @@ interface ProjectDetailPageProps {
   onProjectDataChanged?: () => void
 }
 
-type TabKey = 'materials' | 'wiki' | 'affairs' | 'reports' | 'forms'
+type TabKey = 'materials' | 'wiki' | 'affairs' | 'output'
 
-// 事务第二位(3.0 §2.1:知识置首、事务次之)
+// 事务第二位(3.0 §2.1:知识置首、事务次之)；产出合并 reports/forms（0.6 §3.2 V2-E1a T11）
 const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
   { key: 'wiki', labelKey: 'project.tab.wiki', Icon: Library },
   { key: 'affairs', labelKey: 'project.tab.affairs', Icon: CalendarDays },
+  { key: 'output', labelKey: 'project.tab.output', Icon: FileText },
   { key: 'materials', labelKey: 'project.tab.materials', Icon: FolderOpen },
-  { key: 'reports', labelKey: 'project.tab.reports', Icon: FileText },
-  { key: 'forms', labelKey: 'project.tab.forms', Icon: ClipboardList },
 ]
 
 export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjectDataChanged }: ProjectDetailPageProps) {
@@ -56,6 +54,9 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const [wikiExpanded, setWikiExpanded] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [closePreviewSignal, setClosePreviewSignal] = useState(0)
+  // 产出 Tab 分区锚点（0.6 §3.2 V2-E1a T11）：旧 tab 值 reports/forms 并入 output
+  // 的跨 Tab 直达（HomePage 进行中区/通知等发送方零改动，E3 清理）
+  const [outputSectionSignal, setOutputSectionSignal] = useState<{ section: 'reports' | 'forms'; ts: number } | null>(null)
 
   // Notify App-level to hide sidebar when entering immersive mode
   useEffect(() => {
@@ -150,10 +151,15 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   // 下发焦点信号，AffairsTab 在任务列表就绪后打开执行抽屉
   const [affairsFocus, setAffairsFocus] = useState<{ taskId: string; ts: number } | null>(null)
 
-  // Activity Hub 通知导航信号：切到目标 Tab（wiki/affairs/materials/reports/forms）
+  // Activity Hub 通知导航信号：切到目标 Tab（wiki/affairs/materials/output；
+  // 旧 reports/forms 值 → 产出 Tab 分区锚点兼容映射，0.6 §3.2 V2-E1a T11，E3 清理）
   useEffect(() => {
-    if (tabSignal?.tab && ['materials', 'wiki', 'affairs', 'reports', 'forms'].includes(tabSignal.tab)) {
+    if (tabSignal?.tab && ['materials', 'wiki', 'affairs', 'output'].includes(tabSignal.tab)) {
       setActiveTab(tabSignal.tab as TabKey)
+    }
+    if (tabSignal?.tab === 'reports' || tabSignal?.tab === 'forms') {
+      setActiveTab('output')
+      setOutputSectionSignal({ section: tabSignal.tab, ts: tabSignal.ts })
     }
     if (tabSignal?.taskId && tabSignal.tab === 'affairs') {
       setAffairsFocus({ taskId: tabSignal.taskId, ts: tabSignal.ts })
@@ -465,21 +471,20 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
                 title={t('activity.tipFiles', { count: byProject.get(project.id)?.files })}
               />
             )}
-            {key === 'reports' && ((byProject.get(project.id)?.reports ?? 0) + (byProject.get(project.id)?.ppts ?? 0)) > 0 && (
-              <span
-                className={s.tabPulse}
-                title={[
-                  (byProject.get(project.id)?.reports ?? 0) > 0 && t('activity.tipReports', { count: byProject.get(project.id)?.reports }),
-                  (byProject.get(project.id)?.ppts ?? 0) > 0 && t('activity.tipPpts', { count: byProject.get(project.id)?.ppts }),
-                ].filter(Boolean).join(' / ')}
-              />
-            )}
-            {key === 'forms' && (byProject.get(project.id)?.forms ?? 0) > 0 && (
-              <span
-                className={s.tabPulse}
-                title={t('activity.tipForms', { count: byProject.get(project.id)?.forms })}
-              />
-            )}
+            {key === 'output' && ((byProject.get(project.id)?.reports ?? 0)
+              + (byProject.get(project.id)?.ppts ?? 0) + (byProject.get(project.id)?.forms ?? 0)) > 0 && (() => {
+              const act = byProject.get(project.id)
+              return (
+                <span
+                  className={s.tabPulse}
+                  title={[
+                    (act?.reports ?? 0) > 0 && t('activity.tipReports', { count: act?.reports }),
+                    (act?.ppts ?? 0) > 0 && t('activity.tipPpts', { count: act?.ppts }),
+                    (act?.forms ?? 0) > 0 && t('activity.tipForms', { count: act?.forms }),
+                  ].filter(Boolean).join(' / ')}
+                />
+              )
+            })()}
           </button>
         ))}
       </div>
@@ -522,14 +527,20 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
               focusTask={affairsFocus}
               onFocusHandled={() => setAffairsFocus(null)}
               onPanelOpenChange={(open) => { if (open) setChatOpen(false) }}
-              onOpenReports={() => setActiveTab('reports')}
+              onOpenReports={() => {
+                setActiveTab('output')
+                setOutputSectionSignal({ section: 'reports', ts: Date.now() })
+              }}
             />
           )}
-          {activeTab === 'reports' && (
-            <ReportsTab key={projectType} projectId={project.id} projectType={projectType} />
-          )}
-          {activeTab === 'forms' && (
-            <FormsTab key={project.id} projectId={project.id} />
+          {activeTab === 'output' && (
+            <OutputTab
+              key={project.id}
+              projectId={project.id}
+              projectType={projectType}
+              sectionSignal={outputSectionSignal}
+              onSectionConsumed={() => setOutputSectionSignal(null)}
+            />
           )}
         </div>
 

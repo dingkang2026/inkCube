@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 import deps
 from paths import get_data_dir
-from scheduler import OUTPUT_CONTRACT, compute_next_run
+from scheduler import OUTPUT_CONTRACT, ROLLUP_SECTION_MARK, compute_next_run
 
 logger = logging.getLogger(__name__)
 
@@ -23,22 +23,19 @@ router = APIRouter()
 
 _INTERVAL_TYPES = ("daily", "weekly", "monthly")
 
+# 订阅定位三型（2.11 §12，V2.1-T2）：focus 盯梢 / sweep 撒网 / rollup 组合周报
+_SCOPES = ("focus", "sweep", "rollup")
+# ROLLUP_SECTION_MARK（汇总骨架素材插入点）自 scheduler import——创建校验与
+# 执行期替换（_build_rollup_prompt）两处共享，与 OUTPUT_CONTRACT 同款惯例
+
 # camelCase（IPC/前端形态）→ snake_case（db 白名单键）
 _FIELD_MAP = {
     "name": "name", "prompt": "prompt", "category": "category",
     "intervalType": "interval_type", "intervalValue": "interval_value",
     "targetType": "target_type", "targetId": "target_id",
     "autoImport": "auto_import", "enabled": "enabled",
+    "scope": "scope", "digestScheduleIds": "digest_schedule_ids",
 }
-
-_REFINE_SYSTEM_PROMPT = (
-    "你是订阅任务提炼助手。根据用户给定的人工任务对话，提炼一个可周期执行的"
-    "情报订阅。只输出严格 JSON（无其他文字）："
-    '{"name": "订阅名（12字内）", "prompt": "每期独立执行的完整指令，'
-    '自包含、含输出要求", "outputHint": "期望产出物一句话描述"}'
-)
-_REFINE_MAX_MESSAGES = 50        # 截断保护：只取最近 50 条对话
-_REFINE_MSG_CLIP = 2000          # 单条消息截断（超长对话保护）
 
 
 class ScheduleCreateBody(BaseModel):
@@ -50,6 +47,8 @@ class ScheduleCreateBody(BaseModel):
     targetType: str | None = None
     targetId: str | None = None
     autoImport: bool = True
+    scope: str = "focus"
+    digestScheduleIds: list[str] | None = None
 
 
 class ScheduleUpdateBody(BaseModel):
@@ -62,10 +61,8 @@ class ScheduleUpdateBody(BaseModel):
     targetId: str | None = None
     autoImport: bool | None = None
     enabled: bool | None = None
-
-
-class RefinePromptBody(BaseModel):
-    taskId: str
+    scope: str | None = None
+    digestScheduleIds: list[str] | None = None
 
 
 def _err(status: int, message: str, code: str) -> JSONResponse:
@@ -79,6 +76,21 @@ def _default_name(prompt: str) -> str:
     return first_line[:20]
 
 
+def _validate_digest_ids(db, ids: list[str]):
+    """V2.1-T3 汇总范围引用校验（2.11 §12.3 不变量①纵深防御）：id 须存在且
+    非 rollup——聚合查询侧恒排除 rollup 保证正确性（不变量），此处 fail-fast 防静默
+    截断（勾选 3 个实际只聚 2 个用户不可感知）。校验通过返回 None。"""
+    for sid in ids:
+        row = db.get_schedule(sid)
+        if row is None:
+            return _err(400, f"汇总范围引用的订阅不存在：{sid}",
+                        "DIGEST_TARGET_NOT_FOUND")
+        if row["scope"] == "rollup":
+            return _err(400, "汇总范围不能包含组合周报订阅（防递归聚合）",
+                        "ROLLUP_DIGEST_RECURSIVE")
+    return None
+
+
 # ── 固定路径端点（注册先于 /{schedule_id} 动态段，防遮蔽）────────
 
 
@@ -86,18 +98,20 @@ def _default_name(prompt: str) -> str:
 async def list_schedules(category: str | None = None,
                          enabled: int | None = None,
                          q: str | None = None,
+                         scope: str | None = None,   # focus|sweep|rollup（2.11 §12）；普通默认值（非 Query）兼容测试直调端点
                          limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
                          offset: int = Query(0, ge=0, description="Rows to skip")):
     """订阅列表（管理台左列 / 速览同源，服务端过滤 + 分页）。"""
     db = deps.db
     # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
     schedules = db.list_schedules(
-        category=category, enabled=enabled, q=q,
+        category=category, enabled=enabled, q=q, scope=scope,
         limit=limit + 1 if limit > 0 else 0, offset=offset)
     has_more = limit > 0 and len(schedules) > limit
     if has_more:
         schedules = schedules[:limit]
-    total = db.count_schedules(category=category, enabled=enabled, q=q)
+    total = db.count_schedules(category=category, enabled=enabled, q=q,
+                               scope=scope)
     return {"schedules": schedules, "has_more": has_more, "total": total}
 
 
@@ -108,6 +122,25 @@ async def create_schedule(body: ScheduleCreateBody):
     if body.intervalType not in _INTERVAL_TYPES:
         return _err(400, "intervalType 须为 daily/weekly/monthly",
                     "INVALID_INTERVAL_TYPE")
+    # V2.1-T2 订阅定位校验（2.11 §12）：rollup 不沉淀（阅读产物非档案素材）、
+    # prompt 为汇总骨架须含 {sections} 素材插入点；仅 rollup 可圈选汇总范围
+    if body.scope not in _SCOPES:
+        return _err(400, "scope 须为 focus/sweep/rollup", "INVALID_SCOPE")
+    if body.scope == "rollup":
+        if body.targetType or body.targetId:
+            return _err(400, "组合周报不沉淀档案，请清空去向",
+                        "ROLLUP_TARGET_FORBIDDEN")
+        if ROLLUP_SECTION_MARK not in body.prompt:
+            return _err(
+                400,
+                "组合周报 prompt 须含 {sections} 占位符（期次素材插入点）",
+                "ROLLUP_PROMPT_NEEDS_SECTION")
+        bad = _validate_digest_ids(deps.db, body.digestScheduleIds or [])
+        if bad:
+            return bad
+    elif body.digestScheduleIds is not None:
+        return _err(400, "仅组合周报订阅可配置汇总范围",
+                    "ROLLUP_DIGEST_IDS_FORBIDDEN")
     try:
         next_run = compute_next_run(body.intervalType, body.intervalValue)
     except (ValueError, IndexError, KeyError):
@@ -121,7 +154,11 @@ async def create_schedule(body: ScheduleCreateBody):
         body.prompt.rstrip() + "\n\n" + OUTPUT_CONTRACT,
         "general", body.category, body.intervalType, body.intervalValue,
         target_type=body.targetType, target_id=body.targetId,
-        auto_import=int(body.autoImport), next_run_at=next_run)
+        auto_import=int(body.autoImport), next_run_at=next_run,
+        scope=body.scope,
+        digest_schedule_ids=(json.dumps(body.digestScheduleIds,
+                                        ensure_ascii=False)
+                             if body.digestScheduleIds is not None else None))
     return {"schedule": row}
 
 
@@ -142,21 +179,33 @@ async def schedule_digest():
 @router.get("/schedules/runs/inbox")
 async def schedule_inbox(
     unread: int | None = None,
+    sort: str = Query("unread", pattern="^(unread|latest)$"),
+    category: str = "",   # 空=不过滤；普通默认值（非 Query）兼容测试直调端点
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """跨订阅期次流（收件箱：done、未读优先、finished_at 倒序）；offset 翻页。"""
+    """跨订阅期次流（情报流卡片流，0.6 §3.2）：done、sort=unread 未读优先
+    （read_at NULL 前置）/latest 纯 finished_at 倒序（排序独立于类别筛选，
+    §6.3-3）；category=订阅分类直读过滤（corporate/industry/region/general）；
+    offset 翻页。2026-10-23 V2-E1a 扩展（原仅 unread/limit/offset）。"""
     db = deps.db
     # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
-    runs = db.list_run_inbox(unread_only=bool(unread), limit=limit + 1, offset=offset)
+    runs = db.list_run_inbox(unread_only=bool(unread), sort=sort,
+                             category=category, limit=limit + 1, offset=offset)
     has_more = len(runs) > limit
     if has_more:
         runs = runs[:limit]
-    # total 与列表同口径（unread 过滤后），供分页控件
-    total = db.conn.execute(
-        "SELECT COUNT(*) AS cnt FROM task_schedule_runs WHERE status = 'done'"
-        + (" AND read_at IS NULL" if unread else "")
-    ).fetchone()["cnt"]
+    # total 与列表同口径（unread/category 过滤后），供分页控件
+    sql = ("SELECT COUNT(*) AS cnt FROM task_schedule_runs r"
+           " JOIN task_schedules s ON s.id = r.schedule_id"
+           " WHERE r.status = 'done'")
+    params: list = []
+    if unread:
+        sql += " AND r.read_at IS NULL"
+    if category:
+        sql += " AND s.category = ?"
+        params.append(category)
+    total = db.conn.execute(sql, params).fetchone()["cnt"]
     return {"runs": runs, "has_more": has_more, "total": total}
 
 
@@ -189,6 +238,10 @@ async def delete_schedule_run(run_id: str):
         return _err(409, "期次执行中，完成或失败后才能删除", "RUN_RUNNING")
     if not deps.db.delete_schedule_run(run_id):
         return _err(404, "期次不存在", "RUN_NOT_FOUND")
+    # 线索溯源置 NULL（0.6 §4.1：期次删除不删线索，订阅名快照兑底可读）
+    detached = deps.db.detach_leads_for_run(run_id)
+    if detached:
+        logger.info("Detached %d lead(s) from deleted run %s", detached, run_id)
     if run["report_path"]:
         try:
             Path(run["report_path"]).unlink(missing_ok=True)
@@ -233,61 +286,6 @@ async def read_run_report(run_id: str):
             "content": target.read_text(encoding="utf-8")}
 
 
-@router.post("/schedules/refine-prompt")
-async def refine_prompt(body: RefinePromptBody):
-    """人工任务 → 订阅 LLM 提炼（§8.1 渠道三）：取对话（过滤 [系统] 注入，
-    截断保护）→ 单次 LLM 调用（标准档，llm/routing.py 档位制）→
-    {name, prompt, outputHint}；
-    无 LLM 配置/调用失败 → 409 结构化报错（前端降级自由输入）。"""
-    task = deps.db.get_task(body.taskId)
-    if not task:
-        return _err(404, "任务不存在", "TASK_NOT_FOUND")
-    messages = [
-        m for m in deps.db.get_task_messages(body.taskId)
-        if m["role"] in ("user", "assistant")
-        and not (m.get("content") or "").startswith("[系统]")
-    ][-_REFINE_MAX_MESSAGES:]
-    if not messages:
-        return _err(400, "任务无可用对话", "NO_DIALOG")
-    settings = deps.db.get_settings()
-    if not settings.get("api_key"):
-        return _err(409, "未配置模型 API Key，无法自动提炼", "NO_LLM_CONFIG")
-    dialog = "\n".join(
-        f"{'用户' if m['role'] == 'user' else '助手'}："
-        f"{(m.get('content') or '')[:_REFINE_MSG_CLIP]}"
-        for m in messages)
-    # 档位制（llm/routing.py）：get_settings() 不再含 model 键，必须经路由解析
-    # 注入（轻量提炼 → 标准档）；直构会落到 client 兜底空串被网关拒
-    # （2026-10-20 实证：漏路由时以 gpt-4o 兜底打智谱报 1211 模型不存在）
-    from llm.client import LLMClient
-    from llm.routing import resolve_model
-    settings["model"] = resolve_model(settings, "standard")
-    try:
-        resp = await LLMClient(settings).chat_full([
-            {"role": "system", "content": _REFINE_SYSTEM_PROMPT},
-            {"role": "user", "content": dialog},
-        ])
-        data = _extract_json(resp["content"])
-        result = {"name": str(data["name"])[:40],
-                  "prompt": str(data["prompt"]),
-                  "outputHint": str(data.get("outputHint", ""))}
-    except Exception:
-        logger.warning("refine-prompt LLM 提炼失败: task=%s", body.taskId,
-                       exc_info=True)
-        return _err(409, "提炼失败（模型输出异常或超时），请手动填写",
-                    "REFINE_FAILED")
-    return result
-
-
-def _extract_json(text: str) -> dict:
-    """从 LLM 输出提取 JSON 对象（容忍 ```json 围栏与前后杂文）。"""
-    stripped = (text or "").strip()
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("no json object in model output")
-    return json.loads(stripped[start:end + 1])
-
-
 # ── 动态路径端点（/{schedule_id}）────────────────────────────
 
 
@@ -306,8 +304,30 @@ async def update_schedule(schedule_id: str, body: ScheduleUpdateBody):
         _FIELD_MAP[key]: value
         for key, value in body.model_dump(exclude_unset=True).items()
         if key in _FIELD_MAP
-        and (value is not None or key in ("targetType", "targetId"))
+        and (value is not None or key in ("targetType", "targetId",
+                                          "digestScheduleIds"))
     }
+    # V2.1-T2 scope 校验 + rollup 约束（2.11 §12）：三型枚举；rollup 不沉淀
+    # （显式给去向 400；scope 切入 rollup 而存量去向残留 → 强制置空，经
+    # target_changed 联动 retarget 清旧档案）；汇总范围仅 rollup 可圈选
+    if "scope" in fields and fields["scope"] not in _SCOPES:
+        return _err(400, "scope 须为 focus/sweep/rollup", "INVALID_SCOPE")
+    final_scope = fields.get("scope") or current["scope"]
+    if final_scope == "rollup":
+        if fields.get("target_type") or fields.get("target_id"):
+            return _err(400, "组合周报不沉淀档案，请清空去向",
+                        "ROLLUP_TARGET_FORBIDDEN")
+        if current["target_id"] and "target_id" not in fields:
+            fields["target_type"] = None
+            fields["target_id"] = None
+    elif fields.get("digest_schedule_ids") is not None:
+        return _err(400, "仅组合周报订阅可配置汇总范围",
+                    "ROLLUP_DIGEST_IDS_FORBIDDEN")
+    if (final_scope == "rollup"
+            and isinstance(fields.get("digest_schedule_ids"), list)):
+        bad = _validate_digest_ids(deps.db, fields["digest_schedule_ids"])
+        if bad:
+            return bad
     if "prompt" in fields:
         # R2-P2-3：与 create 同口径——存库前拼接 OUTPUT_CONTRACT（D4「存最终
         # prompt」原则，执行侧不重复拼接）；已带 contract 的输入先剥防双拼
@@ -315,7 +335,16 @@ async def update_schedule(schedule_id: str, body: ScheduleUpdateBody):
         p = fields["prompt"].rstrip()
         if p.endswith(OUTPUT_CONTRACT):
             p = p[:-len(OUTPUT_CONTRACT)].rstrip()
+        if final_scope == "rollup" and ROLLUP_SECTION_MARK not in p:
+            return _err(
+                400,
+                "组合周报 prompt 须含 {sections} 占位符（期次素材插入点）",
+                "ROLLUP_PROMPT_NEEDS_SECTION")
         fields["prompt"] = p + "\n\n" + OUTPUT_CONTRACT
+    if isinstance(fields.get("digest_schedule_ids"), list):
+        # list 形态（IPC 透传）→ TEXT(JSON) 落库；显式 null 保持（清圈选回全量）
+        fields["digest_schedule_ids"] = json.dumps(
+            fields["digest_schedule_ids"], ensure_ascii=False)
     target_changed = ("target_id" in fields
                       and fields["target_id"] != current["target_id"])
     # review P2-2：先验证后落库——坏 interval 若先落库，tick 会在
@@ -378,6 +407,16 @@ async def delete_schedule(schedule_id: str):
     if deps.scheduler is not None:
         cancelled = await deps.scheduler.cancel_running(schedule_id)
     runs = deps.db.list_schedule_runs(schedule_id, limit=-1)  # SQLite -1 = 全部
+    # 线索溯源置 NULL（0.6 §4.1）：须在删订阅（runs 级联删）前，否则关联断尽
+    deps.db.detach_leads_for_schedule(schedule_id)
+    # rollup 圈定引用剔除（V2.1 CodeReview Major，同 detach_leads 联动纪律）：
+    # 悬空 id → 编辑回填含悬空 id、勾选框只渲染现存候选无法移除、
+    # _validate_digest_ids fail-fast → 编辑保存 400 死锁。剔空保留 []（NULL=
+    # 全量会突变聚合范围；[] → 空窗口 skipped 留痕，用户主动修正）
+    detached_digest = deps.db.detach_rollup_digest_references(schedule_id)
+    if detached_digest:
+        logger.info("Detached %d rollup digest reference(s) from deleted "
+                    "schedule %s", detached_digest, schedule_id)
     if not deps.db.delete_schedule(schedule_id):
         return _err(404, "订阅不存在", "SCHEDULE_NOT_FOUND")
     # R3-P2-3：无落库后复扫——首次 cancel 返回到 delete_schedule 落库之间

@@ -56,6 +56,16 @@ OUTPUT_CONTRACT = (
     "1. {来源名} · {日期} · {URL}"
 )
 
+# V2.1-T3 组合周报（2.11 §12）：汇总骨架素材插入点，routers/schedules.py
+# 同名常量自本模块 import（与 OUTPUT_CONTRACT 同款两处共享惯例）
+ROLLUP_SECTION_MARK = "{sections}"
+
+ROLLUP_WINDOW_DAYS = 7      # §12.3 无 done 历史时的聚合窗口（近 7 天）
+
+# §12.3 素材期数上限（CodeReview m-2 防无界 prompt：源订阅多/期次密集时
+# token/费用风险）。超出取最近 N 期并在素材尾留标注（禁止静默截断）
+ROLLUP_MAX_SOURCE_RUNS = 50
+
 ARCHIVE_WINDOW = 30         # §6 进入 LLM 的近期节数上限（早期节不进 LLM，单次成本恒定）
 ARCHIVE_MERGE_BATCH = 10    # §6 review P2-5：tick 路径单批合并上限（多期分周期补完，
                             # 防 long-fail 后 pending 无界增长击穿模型上下文自锁）
@@ -277,7 +287,8 @@ class ScheduleScheduler:
     async def _dispatch(self, s: dict, *, advance: bool = True):
         """派发一次执行。判定顺序：R2 忙让路（周期不动）→ 防重入记 skipped
         （推进）→ R1 定时单并发（下个 tick 重试）→ 全局闸门满（延迟不推进，
-        防跳过）→ 建影子任务 + run 行 + 推进 → 后台执行。
+        防跳过）→【rollup】聚合素材，空窗口记 skipped 留痕不静默（G4，推进）
+        → 建影子任务 + run 行 + 推进 → 后台执行。
         返回在途执行 Task（dispatch_now await 用）；未派发返回 None。
         advance=False（run-now）：不动周期，其余判定不变。"""
         if self._r2_busy():
@@ -293,6 +304,20 @@ class ScheduleScheduler:
         if not self.agent.can_start_task():
             return None
         now = _now_dt()
+        # V2.1-T3 组合周报（2.11 §12.3）：空窗口判定放在 R1/闸门之后——
+        # 让路/延迟期间源订阅可能产出新期次，空窗口结论须在「确定本次执行」
+        # 时作出，否则误记 skipped 错过本该有的汇总
+        rollup_prompt: str | None = None
+        if s.get("scope") == "rollup":
+            rollup_prompt = self._build_rollup_prompt(s, now)
+            if rollup_prompt is None:
+                run_id = f"run_{uuid4().hex[:8]}"
+                self.db.insert_schedule_run(run_id, s["id"], None,
+                                            status="skipped",
+                                            error="窗口内无期次")
+                if advance:
+                    self._advance(s, now=now)
+                return None
         title = f"{s['name']} · {now.month}/{now.day}"
         task = self.db.create_task(title, self.data_dir, mode="general",
                                    schedule_id=s["id"])
@@ -300,7 +325,8 @@ class ScheduleScheduler:
         self.db.insert_schedule_run(run_id, s["id"], task["id"])
         if advance:
             self._advance(s, now=now)
-        bg = asyncio.create_task(self._execute(s, task["id"], run_id))
+        bg = asyncio.create_task(
+            self._execute(s, task["id"], run_id, rollup_prompt=rollup_prompt))
         self._bg.add(bg)
         self._exec_bg[run_id] = (s["id"], bg)
 
@@ -365,23 +391,77 @@ class ScheduleScheduler:
 
     # ── 执行链（§5.3，复用 D2）───────────────────────────────
 
-    async def _execute(self, s: dict, task_id: str, run_id: str) -> None:
+    def _build_rollup_prompt(self, s: dict, now: datetime) -> str | None:
+        """组合周报素材聚合 + prompt 组装（2.11 §12.3）：窗口 = 本订阅上次
+        done finished_at → now（无 done 历史 → 近 ROLLUP_WINDOW_DAYS 天）；
+        素材 = 圈定订阅（digest_schedule_ids，NULL=全部 enabled=1 非 rollup）
+        的 done 期次摘要；空窗口返回 None（调用方记 skipped 留痕）。
+        骨架 {sections} 以 str.replace 替换（不经 str.format，骨架中用户
+        自定义花括号安全）。素材期数超 ROLLUP_MAX_SOURCE_RUNS 取最近 N 期
+        并在素材尾留标注（禁止静默截断）。"""
+        prev = self.db.last_done_run(s["id"])
+        if prev and prev["finished_at"]:
+            window_start = prev["finished_at"]
+        else:
+            window_start = (now - timedelta(days=ROLLUP_WINDOW_DAYS)).isoformat()
+        # +1 探测截断（has_more 同款）：超出上限保留最近 N 期（升序尾段）
+        rows = self.db.list_digest_source_runs(
+            s.get("digest_schedule_ids"), window_start,
+            max_runs=ROLLUP_MAX_SOURCE_RUNS + 1)
+        truncated = len(rows) > ROLLUP_MAX_SOURCE_RUNS
+        if truncated:
+            rows = rows[-ROLLUP_MAX_SOURCE_RUNS:]   # 升序尾段 = 最近 N 期
+        if not rows:
+            return None
+        lines: list[str] = []
+        for r in rows:
+            dt = datetime.fromisoformat(r["finished_at"])
+            lines.append(f"### {r['schedule_name']} · {dt.month}/{dt.day}")
+            lines.extend(f"- {item}" for item in r["summary"])
+        if truncated:
+            lines.append(
+                f"-（窗口内期次较多，仅聚合最近 {ROLLUP_MAX_SOURCE_RUNS} 期）")
+        return s["prompt"].replace(ROLLUP_SECTION_MARK, "\n".join(lines))
+
+    async def _execute(self, s: dict, task_id: str, run_id: str,
+                       rollup_prompt: str | None = None) -> None:
         error: str | None = None
         try:
-            incr_note = ""
-            prev = self.db.last_done_run_report(s["id"])
-            if prev and os.path.isfile(prev):
-                try:
-                    shutil.copy(prev, Path(self._workspace_of(task_id))
-                                / "上一期报告.md")
-                    incr_note = ("工作区有《上一期报告.md》：重点报告与其相比的"
-                                 "新增动态，延续内容简要带过。\n")
-                except Exception:
-                    # §6 注入失败仅告警不阻塞本期执行（去重降级为全量重述）
-                    logger.warning("inject previous report failed: run=%s",
-                                   run_id, exc_info=True)
-            # s["prompt"] 存库时已含 OUTPUT_CONTRACT（T4 创建端点拼接），此处仅加前缀
-            prompt_full = incr_note + s["prompt"]
+            now = _now_dt()
+            if rollup_prompt is not None:
+                # V2.1-T3 组合周报（2.11 §12.3）：不走增量注入（上一期 rollup
+                # 报告非聚合素材）；时间基准仅保留执行时刻（「仅报新增」是
+                # 增量语义，汇总型不适用）
+                prompt_full = (f"【本期执行：{now:%Y-%m-%d %H:%M}】\n"
+                               f"{rollup_prompt}")
+            else:
+                # 时间基准（2.11 §5.3，2026-10-23 决议）：LLM 无当前时刻则「仅报新增」
+                # 无从判断，历史动态会被误报为本期新情况（档案日期节随之失真）。
+                # 执行侧每期拼接不存库（OUTPUT_CONTRACT 是静态契约才存库）。
+                prev = self.db.last_done_run(s["id"])
+                n_th = self.db.count_schedule_runs(s["id"])
+                if prev:
+                    time_base = (f"【本期执行：{now:%Y-%m-%d %H:%M} · 第 {n_th} 期"
+                                 f" · 上期：{(prev['finished_at'] or '')[:16]}】"
+                                 "仅报告上期之后的新动态；确需提及的历史背景必须"
+                                 "显式标注原始日期，不得作为本期新情况报告。\n")
+                else:
+                    time_base = (f"【本期执行：{now:%Y-%m-%d %H:%M} · 第 {n_th} 期】"
+                                 "报告本期新动态；确需提及的历史背景必须显式标注"
+                                 "原始日期，不得作为本期新情况报告。\n")
+                incr_note = ""
+                if prev and prev.get("report_path") and os.path.isfile(prev["report_path"]):
+                    try:
+                        shutil.copy(prev["report_path"], Path(self._workspace_of(task_id))
+                                    / "上一期报告.md")
+                        incr_note = ("工作区有《上一期报告.md》：重点报告与其相比的"
+                                     "新增动态，延续内容简要带过。\n")
+                    except Exception:
+                        # §6 注入失败仅告警不阻塞本期执行（去重降级为全量重述）
+                        logger.warning("inject previous report failed: run=%s",
+                                       run_id, exc_info=True)
+                # s["prompt"] 存库时已含 OUTPUT_CONTRACT（T4 创建端点拼接），此处仅加前缀
+                prompt_full = time_base + incr_note + s["prompt"]
             self.db.save_task_message(task_id, "user", prompt_full)
             if not self.agent.try_acquire_task(task_id):
                 # dispatch 检查与执行间的竞态窗口（人工任务抢先占满闸门）：
@@ -448,6 +528,11 @@ class ScheduleScheduler:
         返回 True/False（review P2-3）：tick 路径忽略返回值；rebuild 据此
         分批报告真实态（部分批失败不得虚报成功）。"""
         s = self.db.get_schedule(s["id"]) or s
+        if s.get("scope") == "rollup":
+            # V2.1-T3 沉淀裁决（2.11 §12.3）：rollup 产出不沉淀档案（阅读产物
+            # 非档案素材，target 强制 NULL）——短路防 rebuild/retarget 误触发
+            # LLM 合并 + 孤儿 archive 工作副本落盘
+            return True
         pending = self.db.pending_archive_runs(s["id"])
         if limit is not None:
             pending = pending[:limit]

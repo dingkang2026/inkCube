@@ -46,6 +46,10 @@ interface TaskPageProps {
   onFilesUploaded?: (taskId: string) => void
   /** 零任务态「上传即建任务」句柄（0.5 §4.4），透传 TaskChatView */
   onEnsureTask?: () => Promise<string | null>
+  /** 跨页预填信号（0.6 §3.2 情报转跟进任务），透传 TaskChatView */
+  incomingPrefill?: { text: string; ts: number } | null
+  /** 信号消费完成回调（App 清信号），透传 TaskChatView */
+  onPrefillConsumed?: () => void
   onSwitchMode?: (mode: 'coding' | 'general') => void
 }
 
@@ -75,6 +79,8 @@ export function TaskPage({
   canResume,
   onFilesUploaded,
   onEnsureTask,
+  incomingPrefill,
+  onPrefillConsumed,
   onSwitchMode,
 }: TaskPageProps) {
   const { t } = useTranslation()
@@ -195,6 +201,8 @@ export function TaskPage({
           canResume={canResume}
           onFilesUploaded={onFilesUploaded}
           onEnsureTask={onEnsureTask}
+          incomingPrefill={incomingPrefill}
+          onPrefillConsumed={onPrefillConsumed}
         />
         {hasActiveTask && !filePanelCollapsed && (
           <>

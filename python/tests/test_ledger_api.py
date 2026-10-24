@@ -75,6 +75,34 @@ def test_ledger_entries_empty_limit_and_order(client_and_db):
     assert dates == ["2026-10", "2026-09"]
 
 
+def test_ledger_entries_filter_by_page_key(client_and_db):
+    """V2 E3:page_key 过滤命中指定台账页;缺省/空 = 全量(向后兼容)。"""
+    client, db = client_and_db
+    pid = db.create_project(name="P", project_type="general", stage="before")["id"]
+    _seed_entry(db, pid, "milestones", "2026-10", "设备全部进场", "milestone")
+    _seed_entry(db, pid, "milestones", "2026-09", "项目正式投产", "milestone")
+    _seed_entry(db, pid, "risk_watchlist", "2026-10", "环保处罚风险", "risk")
+    # 过滤命中:只出该页条目,排序/分页结构不变
+    r = client.get(f"/wiki/projects/{pid}/ledger/entries",
+                   params={"page_key": "milestones"})
+    assert r.status_code == 200
+    rows = r.json()["entries"]
+    assert [e["page_key"] for e in rows] == ["milestones", "milestones"]
+    assert [e["entry_date"] for e in rows] == ["2026-10", "2026-09"]
+    # 过滤无命中:空列表非 404(空条目集是合法态,Reader 回落原文)
+    r = client.get(f"/wiki/projects/{pid}/ledger/entries",
+                   params={"page_key": "no_such_page"})
+    assert r.status_code == 200
+    assert r.json() == {"entries": [], "has_more": False}
+    # 缺省 = 全量回归
+    assert len(client.get(
+        f"/wiki/projects/{pid}/ledger/entries").json()["entries"]) == 3
+    # 空串 = 全量(路由层空转 None,向后兼容)
+    assert len(client.get(
+        f"/wiki/projects/{pid}/ledger/entries",
+        params={"page_key": ""}).json()["entries"]) == 3
+
+
 def test_ledger_latest_one_per_project_with_name(client_and_db):
     client, db = client_and_db
     pa = db.create_project(name="项目A", project_type="general", stage="before")["id"]

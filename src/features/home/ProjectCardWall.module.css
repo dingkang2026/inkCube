@@ -5,22 +5,24 @@
   gap: 12px;
 }
 
+/* 无框悬浮面（V2-E1b §3.0-2）：去边框改极浅底色差 + 柔和投影 */
 .card {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--bg-primary);
+  box-shadow: var(--shadow-xs);
   padding: 12px 14px;
   cursor: pointer;
   min-width: 0;
-  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+  transition: border-color var(--motion-base), box-shadow var(--motion-base), transform var(--motion-base);
 }
 
 .card:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .head {
@@ -70,6 +72,38 @@
 .nextDue {
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+
+/* 阶段进度序数(V2-E4 §3.1⑤):pill 内 n/m 弱化后缀 */
+.stageOrdinal {
+  margin-left: 4px;
+  opacity: 0.7;
+}
+
+/* AI 脉搏句行(V2-E4 §3.1⑤):pulse_ai_status 非空渲染,单行省略 */
+.pulseLine {
+  margin-top: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 矛盾/缺口计数行(V2-E4 §3.1⑤):>0 才渲染对应项,配色对齐知识册封面信任信号行 */
+.reviewLine {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: var(--text-xs);
+}
+
+.reviewErr {
+  color: var(--text-danger);
+}
+
+.reviewWarn {
+  color: var(--text-warning);
 }
 
 /* 空态:公共 .empty-block(global.css) */

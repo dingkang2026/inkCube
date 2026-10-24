@@ -125,6 +125,12 @@ function runRenderer() {
   // Prevent any window from flashing on screen
   app.disableHardwareAcceleration()
 
+  // 无头渲染输出尺寸确定性：offscreen capturePage 输出 = 逻辑尺寸 ×
+  // deviceScaleFactor，默认跟随宿主显示器 DPI（高缩放屏上「2× raster」
+  // 实测出 4×，导出尺寸随宿主屏漂移，2026-10-24 根因定位）——PNG 尺寸
+  // 契约（viewBox × zoom）必须与宿主屏无关，强制 scale 1
+  app.commandLine.appendSwitch('force-device-scale-factor', '1')
+
   let win = null
 
   /**

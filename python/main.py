@@ -90,7 +90,7 @@ from knowledge.model_manager import ModelManager
 from scheduler import ScheduleScheduler
 from watchdog import start_watchdog
 from maintenance import run_storage_maintenance
-from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs, forms, usage, ppts, ppt_templates, task_templates, schedules
+from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs, forms, usage, ppts, ppt_templates, task_templates, schedules, leads
 
 
 @asynccontextmanager
@@ -356,6 +356,7 @@ app.include_router(ppts.router)
 app.include_router(ppt_templates.router)
 app.include_router(task_templates.router)
 app.include_router(schedules.router)
+app.include_router(leads.router)
 
 
 # ── Global Exception Handlers ──

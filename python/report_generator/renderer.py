@@ -32,6 +32,7 @@ def render_markdown_to_docx(
     output_path: str,
     title: str = "报告",
     orientation: str = "portrait",
+    timeout: float | None = None,
 ) -> str:
     """将 Markdown 报告渲染为 Word 文档（pandoc）。
 
@@ -42,6 +43,8 @@ def render_markdown_to_docx(
                已含 `# {报告标题}` 一级标题，注入元数据标题会重复）
         orientation: 页面方向 portrait | landscape（导出面板选择，决定
                      reference-doc 样式模板；非法值回退 portrait）
+        timeout: pandoc 子进程超时秒数（None = _PANDOC_TIMEOUT 默认；
+                 知识册导出传更大值——整册拼接页数多，CodeReview M-3）
 
     Returns:
         输出文件路径
@@ -81,7 +84,7 @@ def render_markdown_to_docx(
         result = subprocess.run(
             cmd,
             capture_output=True, encoding="utf-8", errors="replace",
-            timeout=_PANDOC_TIMEOUT,
+            timeout=_PANDOC_TIMEOUT if timeout is None else timeout,
         )
         if result.returncode != 0:
             logger.error("pandoc md→docx failed (title=%s): %s", title, result.stderr.strip())

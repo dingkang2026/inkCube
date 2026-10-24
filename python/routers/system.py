@@ -457,10 +457,11 @@ _RESET_DISK_DIRS = (
 # 逐表显式 DELETE——不依赖 CASCADE 健全性（如 ppts.project_id 无 FK，
 # 只靠级联会留悬挂行），与「真·全清」语义一致。
 _RESET_TABLES = (
-    # 孙子层（被引用者）
+    # 孙子层（被引用者；leads.source_run_id 为业务引用无 FK，
+    # 按依赖序置于 task_schedule_runs 之前，V2-E2）
     "wiki_page_sources", "wiki_page_versions", "task_messages",
     "phase_tasks", "task_suggestions", "form_fills",
-    "report_sections", "report_logs", "task_schedule_runs",
+    "report_sections", "report_logs", "leads", "task_schedule_runs",
     # 子层（ledger_entries 虽有 ON DELETE CASCADE，仍显式列入——清单
     # 原则是不依赖 CASCADE 健全性，与测试的 schema 枚举比对同一口径）
     "wiki_pages", "wiki_change_log", "wiki_reviews", "wiki_compile_tasks",

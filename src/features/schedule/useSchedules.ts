@@ -24,6 +24,11 @@ export interface ScheduleRow {
   interval_value: string
   target_type: 'project' | 'baselib' | null
   target_id: string | null
+  /** 订阅定位三型（2.11 §12）：focus 盯梢 / sweep 撒网 / rollup 组合周报
+   *  （db 出参归一恒非空） */
+  scope: 'focus' | 'sweep' | 'rollup'
+  /** rollup 聚合圈选（订阅 id 数组；null = 全部启用订阅） */
+  digest_schedule_ids: string[] | null
   auto_import: number | boolean
   enabled: number | boolean
   next_run_at: string | null
@@ -53,6 +58,10 @@ export interface ScheduleRunRow {
   schedule_name?: string
   /** digest 行透传订阅 enabled（速览行暂停灰显，§8.4；仅 schedules:digest 返回） */
   schedule_enabled?: number
+  /** inbox/digest 行透传订阅分类（0.6 §3.2 情报流类别 chip；订阅删除后 fallback general） */
+  schedule_category?: string
+  /** inbox/digest 行透传订阅定位（2.11 §12.4：rollup 期次徽标随行） */
+  schedule_scope?: string
   archive_last_run_id?: string | null
 }
 

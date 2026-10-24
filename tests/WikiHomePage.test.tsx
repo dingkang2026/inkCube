@@ -36,7 +36,7 @@ afterEach(() => cleanup())
 describe('WikiHomePage health card (3.0 §6.1.2)', () => {
   it('hides health card when counts are all zero', () => {
     const { container } = render(
-      <WikiHomePage {...minimal} reviewCounts={{ contradiction: 0, gap: 0, deadLink: 0 }} />
+      <WikiHomePage {...minimal} reviewCounts={{ contradiction: 0, gap: 0 }} />
     )
     expect(container.textContent).not.toContain('project.wiki.homePage.healthTitle')
   })
@@ -46,26 +46,48 @@ describe('WikiHomePage health card (3.0 §6.1.2)', () => {
     expect(container.textContent).not.toContain('project.wiki.homePage.healthTitle')
   })
 
-  it('renders three typed counts and opens lint via action', () => {
+  it('renders trust signal chips (contradiction/gap/pending) with drill-down actions', () => {
     const onOpenLint = vi.fn()
+    const onOpenCompile = vi.fn()
     const { container, getByText } = render(
       <WikiHomePage {...minimal}
-        reviewCounts={{ contradiction: 3, gap: 5, deadLink: 2 }} onOpenLint={onOpenLint} />
+        reviewCounts={{ contradiction: 3, gap: 5 }} pendingCount={4}
+        onOpenLint={onOpenLint} onOpenCompile={onOpenCompile} />
     )
     const text = container.textContent!
     expect(text).toContain('project.wiki.homePage.healthTitle')
     // getByText 全串精确匹配:同时防两类污染——onboarding 步骤数字(1/2/3)误命中裸数字、子串前缀逃逸(3 vs 30)
     getByText('project.wiki.homePage.healthContradiction 3')
     getByText('project.wiki.homePage.healthGap 5')
-    getByText('project.wiki.homePage.healthDeadLink 2')
+    // V2 E3:死链撤离封面(低危工程信号,体检面板分型保留);待汇编 chip 替补
+    expect(text).not.toContain('project.wiki.homePage.healthDeadLink')
+    getByText('project.wiki.homePage.healthPending 4')
     fireEvent.click(getByText('project.wiki.homePage.healthGo'))
     expect(onOpenLint).toHaveBeenCalledTimes(1)
+    fireEvent.click(getByText('project.wiki.homePage.healthPending 4'))
+    expect(onOpenCompile).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders card for pending-only signal without healthGo button', () => {
+    const onOpenCompile = vi.fn()
+    const { container, getByText } = render(
+      <WikiHomePage {...minimal}
+        reviewCounts={{ contradiction: 0, gap: 0 }} pendingCount={2}
+        onOpenLint={vi.fn()} onOpenCompile={onOpenCompile} />
+    )
+    const text = container.textContent!
+    expect(text).toContain('project.wiki.homePage.healthTitle')
+    // 仅待汇编时头部「去处理」不渲染(chip 即入口,避免指向无发现的体检面板)
+    expect(text).not.toContain('project.wiki.homePage.healthGo')
+    getByText('project.wiki.homePage.healthPending 2')
+    fireEvent.click(getByText('project.wiki.homePage.healthPending 2'))
+    expect(onOpenCompile).toHaveBeenCalledTimes(1)
   })
 
   it('hides individual zero chips but keeps the card', () => {
     const { container } = render(
       <WikiHomePage {...minimal}
-        reviewCounts={{ contradiction: 1, gap: 0, deadLink: 0 }}
+        reviewCounts={{ contradiction: 1, gap: 0 }}
         onOpenLint={vi.fn()} />
     )
     const text = container.textContent!
@@ -97,6 +119,9 @@ describe('WikiHomePage schema completion (3.0 一期 Task 6)', () => {
     // done/missing 视觉区分锁（CSS Proxy mock 下 class 名即字面量）
     expect(container.querySelector('.completionChipDone')).not.toBeNull()
     expect(container.querySelector('.completionChipMissing')).not.toBeNull()
+    // V2 E3:进度条升级为环形进度环
+    expect(container.querySelector('.completionRing')).not.toBeNull()
+    expect(container.querySelector('.completionRingFill')).not.toBeNull()
   })
 
   it('hides completion block when schemas empty', () => {
@@ -140,5 +165,54 @@ describe('WikiHomePage ledger timeline card (3.0 四期)', () => {
     const text = container.textContent!
     expect(text).toContain('project.wiki.timeline.parsing')
     expect(text).toContain('一期设备全部进场')                       // 旧条目照常可读
+  })
+})
+
+describe('WikiHomePage ledger index group (V2 E3)', () => {
+  const indexPages = [
+    { page_key: 'enterprise_profile', title: '企业画像', content: '画像内容', page_type: 'structure', status: 'generated' },
+    { page_key: 'policy_ledger', title: '政策台账', content: '台账内容', page_type: 'structure', status: 'generated' },
+  ] as never[]
+  const indexSchemas = [
+    { page_key: 'enterprise_profile', title: '企业画像' },
+    { page_key: 'policy_ledger', title: '政策台账', is_ledger: true },
+    { page_key: 'risk_ledger', title: '风险台账', is_ledger: true },
+  ]
+
+  it('pins ledger group on top and greys missing framework pages', () => {
+    const onNavigateToPage = vi.fn()
+    const { container } = render(
+      <WikiHomePage {...minimal} pages={indexPages} schemas={indexSchemas}
+        missingPages={[{ page_key: 'missing_frame', title: '缺失框架页' }, { page_key: 'risk_ledger', title: '风险台账' }]}
+        onNavigateToPage={onNavigateToPage} />
+    )
+    const text = container.textContent!
+    // 台账组置顶:组标题先于知识框架组标题出现
+    const ledgerPos = text.indexOf('project.wiki.homePage.indexGroupLedger')
+    const structurePos = text.indexOf('project.wiki.homePage.typeStructure')
+    expect(ledgerPos).toBeGreaterThan(-1)
+    expect(structurePos).toBeGreaterThan(-1)
+    expect(ledgerPos).toBeLessThan(structurePos)
+    // 缺失页置灰行(待汇编小标):台账组内 risk_ledger + 知识框架组内 missing_frame
+    expect(text).toContain('风险台账')
+    expect(text).toContain('缺失框架页')
+    expect(text).toContain('project.wiki.homePage.pendingTag')
+    expect(container.querySelectorAll('.homeIndexItemPending')).toHaveLength(2)
+    // 已生成台账页仍可点(置顶组内第一行)
+    fireEvent.click(container.querySelector('.homeIndexItem')!)
+    expect(onNavigateToPage).toHaveBeenCalledWith('policy_ledger')
+  })
+
+  it('renders structure group with pending rows only when no structure page generated', () => {
+    const { container } = render(
+      <WikiHomePage {...minimal}
+        pages={[{ page_key: 'topic_a', title: '主题页', content: '', page_type: 'topic', status: 'generated' }] as never}
+        schemas={[{ page_key: 'framework_x', title: '框架页X' }]}
+        missingPages={[{ page_key: 'framework_x', title: '框架页X' }]} />
+    )
+    const text = container.textContent!
+    // 无已生成结构页,但缺失定义仍以纯置灰组呈现
+    expect(text).toContain('框架页X')
+    expect(container.querySelector('.homeIndexItemPending')).not.toBeNull()
   })
 })

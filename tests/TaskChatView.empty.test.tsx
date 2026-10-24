@@ -3,11 +3,12 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { TaskChatView } from '../src/features/task/TaskChatView'
 
 /** prompt 键返回带占位符文本（其余返回键名）；companyBasic 用两处同名占位符覆盖
- *  「填一次全量替换」形态，industryEvents 用多行 mock 覆盖 skill 版模板形态 */
+ *  「填一次全量替换」形态，companyDeep 用多行 mock 覆盖 skill 版模板形态
+ *  （V2-E1a T12：industryEvents 已移入订阅白名单，不再进任务面板） */
 const tMock = (k: string) => {
   if (!k.endsWith('.prompt')) return k
   if (k === 'task.tpl.companyBasic.prompt') return '摸清「{企业名}」底数，报告「{企业名}」'
-  return k === 'task.tpl.industryEvents.prompt' ? '多行模板\n第二行{产业}' : `P[${k}]{企业名}`
+  return k === 'task.tpl.companyDeep.prompt' ? '多行模板\n第二行{产业}' : `P[${k}]{企业名}`
 }
 
 vi.mock('react-i18next', () => ({
@@ -69,9 +70,9 @@ describe('TaskChatView 空态模板化 (0.5 E1 T7)', () => {
     expect(screen.queryByText(/task\.example/)).toBeNull()
   })
 
-  it('空态渲染模板面板（10 卡）；有消息后不渲染（0.5 §7.2）', () => {
+  it('空态渲染模板面板（6 卡，T12 收窄）；有消息后不渲染（0.5 §7.2）', () => {
     const { rerender } = render(<TaskChatView {...baseProps} />)
-    expect(screen.getAllByText(/task\.tpl\..+\.title/)).toHaveLength(10)
+    expect(screen.getAllByText(/task\.tpl\..+\.title/)).toHaveLength(6)
 
     rerender(
       <TaskChatView
@@ -176,7 +177,7 @@ describe('TaskChatView 多行输入发送语义（skill 版模板 0.5 §7.3）',
 
   it('预填多行模板 → toast 提示发送方式；占位符守卫不受影响', () => {
     render(<TaskChatView {...baseProps} />)
-    fireEvent.click(screen.getByText('task.tpl.industryEvents.title'))
+    fireEvent.click(screen.getByText('task.tpl.companyDeep.title'))
     expect(toastMock).toHaveBeenCalledWith('task.templateMultilineHint')
     const textarea = screen.getByPlaceholderText('task.inputPlaceholder') as HTMLTextAreaElement
     expect(textarea.value).toContain('\n')

@@ -73,6 +73,11 @@ class SettingsModel(BaseModel):
     # 订阅完成 Toast（2.11 §5.6 R4）：默认 False 静默（仅通知中心），开启后
     # completed 也弹 Toast——ActivityMonitor 消费，同白名单键
     schedule_notify: bool = False
+    # 用户身份层（0.6 §3.8 V2-E1a）：persona 空 = 未设置（business_attraction/
+    # investment/both/other），驱动任务/订阅模板排序；persona_prompted =
+    # 首启 PersonaPicker 已呈现过（新老用户统一判定，True 后不再弹）
+    persona: str = ""
+    persona_prompted: bool = False
 
 
 class TaskCreateRequest(BaseModel):

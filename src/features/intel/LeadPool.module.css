@@ -1,0 +1,367 @@
+/* LeadPool（0.6 §6.1 V2-E2）：token 对齐现状（IntelFeed.module.css 同口径）。 */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.poolActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.col,
+.convertedZone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.colTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.colCount {
+  padding: 0 7px;
+  font-size: var(--text-xs, 12px);
+  font-weight: 400;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.colCards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.cardConverted {
+  background: var(--bg-secondary);
+  opacity: 0.75;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cardName {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.delBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.cardMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs, 12px);
+  color: var(--text-secondary);
+}
+
+.srcChip {
+  padding: 1px 8px;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardTime {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pill {
+  padding: 2px 8px;
+  font-size: var(--text-xs, 12px);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.pill:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.pillActive {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg-primary);
+  cursor: default;
+}
+
+.noteBtn {
+  padding: 0;
+  font-size: var(--text-xs, 12px);
+  color: var(--text-secondary);
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.noteBtn:hover {
+  color: var(--text-primary);
+}
+
+.noteEmpty {
+  opacity: 0.6;
+}
+
+.noteArea {
+  min-height: 44px;
+  padding: 6px 8px;
+  font-size: var(--text-xs, 12px);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  resize: vertical;
+}
+
+.cardActions {
+  display: flex;
+  gap: 6px;
+}
+
+.primaryAction,
+.minorAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: var(--text-xs, 12px);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.primaryAction {
+  color: var(--bg-primary);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.primaryAction:hover {
+  opacity: 0.9;
+}
+
+.minorAction {
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.minorAction:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.convertedZone {
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 0;
+}
+
+.emptyIcon {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.emptyText {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+}
+
+.emptyActions {
+  display: flex;
+  gap: 8px;
+}
+
+.emptyBtn,
+.ghostBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.emptyBtn {
+  color: var(--bg-primary);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.ghostBtn {
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.ghostBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, calc(100vw - 48px));
+  padding: 16px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.dialogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dialogTitle {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.field input,
+.field textarea {
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.field textarea {
+  min-height: 56px;
+  resize: vertical;
+}
+
+.fieldLabel {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.typeRow {
+  display: flex;
+  gap: 6px;
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.primaryBtn {
+  padding: 6px 16px;
+  font-size: var(--text-sm);
+  color: var(--bg-primary);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.primaryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

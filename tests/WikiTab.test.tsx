@@ -257,8 +257,8 @@ describe('WikiTab force recompile failure (P2-1)', () => {
     expect(homePageProps.pages).toHaveLength(1)
 
     // 状态条「重新编译」→ 确认弹窗 → 危险按钮（两处同名，弹窗打开后取末个）
-    fireEvent.click(getAllByText('重新编译')[0])
-    const btns = getAllByText('重新编译')
+    fireEvent.click(getAllByText('重新汇编')[0])
+    const btns = getAllByText('重新汇编')
     fireEvent.click(btns[btns.length - 1])
     await flush()
 
@@ -267,7 +267,7 @@ describe('WikiTab force recompile failure (P2-1)', () => {
     })
     // 失败时本地页面列表不得清空（清空已移至触发成功之后）
     expect(homePageProps.pages).toHaveLength(1)
-    expect(toastMock).toHaveBeenLastCalledWith('编译触发失败: 409 busy', 'error')
+    expect(toastMock).toHaveBeenLastCalledWith('汇编触发失败: 409 busy', 'error')
   })
 })
 
@@ -430,5 +430,95 @@ describe('WikiTab same-type project switch (review H-2)', () => {
     await flush()
     expect(getByTestId('page-reader')).toBeTruthy()
     expect(readerState.props?.pageDetail?.page?.title).toBe('B 的页')
+  })
+})
+
+describe('WikiTab export docx (2.6 §14, V2.1-T4)', () => {
+  it('renders the export button in completed state only (hidden while compiling)', async () => {
+    const { getByText, queryByText, rerender } = renderTab('completed')
+    await flush()
+    expect(getByText('导出 docx')).toBeTruthy()
+
+    rerender(
+      <WikiTab
+        projectId="p1"
+        projectType="general"
+        compileData={{ task: makeTask('ingesting'), ingest_summaries: [], is_resumed: false }}
+      />,
+    )
+    await flush()
+    expect(queryByText('导出 docx')).toBeNull()
+  })
+
+  it('invokes wiki:exportDocx, toasts success with path, and locates the file', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:exportDocx') return { path: 'D:/data/files/p1/exports/wiki_x.docx', pages: 3 }
+      return {}
+    })
+    const { getByText } = renderTab('completed')
+    await flush()
+
+    fireEvent.click(getByText('导出 docx'))
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('wiki:exportDocx', { projectId: 'p1' })
+    expect(toastMock).toHaveBeenCalledWith(
+      '已导出：D:/data/files/p1/exports/wiki_x.docx', 'success')
+    // 完成后定位文件（shell:showItemInFolder，ArchiveView 同款动线）
+    expect(invokeMock).toHaveBeenCalledWith(
+      'shell:showItemInFolder', 'D:/data/files/p1/exports/wiki_x.docx')
+  })
+
+  it('shows the empty-wiki message on 409 WIKI_EMPTY without locating', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:exportDocx') {
+        const err = new Error('知识册暂无已编译页面，请先完成汇编')
+        ;(err as { errorCode?: string }).errorCode = 'WIKI_EMPTY'
+        throw err
+      }
+      return {}
+    })
+    const { getByText } = renderTab('completed')
+    await flush()
+
+    fireEvent.click(getByText('导出 docx'))
+    await flush()
+
+    // WIKI_EMPTY 走前端 i18n 文案（不透出后端原文）；不定位文件
+    expect(toastMock).toHaveBeenCalledWith(
+      '知识册暂无已编译页面，请先完成汇编', 'error')
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'shell:showItemInFolder', expect.anything())
+  })
+
+  it('disables the button while exporting (re-entry guard) and recovers after failure', async () => {
+    let resolveExport: (v: unknown) => void = () => {}
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listPages') return { pages: [], pending_compile_count: 0 }
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:exportDocx') {
+        return new Promise((resolve) => { resolveExport = resolve })
+      }
+      return {}
+    })
+    const { getByText } = renderTab('completed')
+    await flush()
+
+    fireEvent.click(getByText('导出 docx').closest('button')!)
+    await flush()
+    // 导出中：文案切换 + disabled 防重复点击
+    const btn = getByText('导出中…').closest('button') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+
+    await act(async () => {
+      resolveExport({ path: 'D:/x.docx', pages: 1 })
+    })
+    await flush()
+    // 终态后恢复可用
+    expect((getByText('导出 docx').closest('button') as HTMLButtonElement).disabled).toBe(false)
   })
 })

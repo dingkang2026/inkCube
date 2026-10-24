@@ -808,6 +808,8 @@ class Database:
                 next_run_at TEXT,                        -- ISO；enabled=0 时为 NULL
                 last_run_at TEXT,
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,  -- ≥3 自动暂停（2.11 §5.5）
+                scope       TEXT,                        -- 'focus'|'sweep'|'rollup'，NULL 读取归一 'focus'（2.11 §12）
+                digest_schedule_ids TEXT,                -- JSON 数组文本，仅 rollup 用；NULL=全部启用订阅（2.11 §12）
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
             );
@@ -836,6 +838,29 @@ class Database:
             "TEXT REFERENCES task_schedules(id) ON DELETE SET NULL")
         # Migrate: task_schedule_runs.error（§8.4 失败原因，旧库由迁移补列）
         self._migrate_add_column("task_schedule_runs", "error", "TEXT")
+        # Migrate: 订阅 scope 三型 + rollup 聚合圈选列（2.11 §12，V2.1-T2）
+        self._migrate_add_column("task_schedules", "scope", "TEXT")
+        self._migrate_add_column("task_schedules", "digest_schedule_ids", "TEXT")
+        self._migrate_schedule_scope_backfill()
+        self.conn.commit()
+
+        # Leads（线索池，0.6 §4.1 V2-E2 唯一新表）：情报→项目蓄水池，薄卡反 CRM。
+        # 新表启动幂等建表（存量库升级零迁移）；建表失败向上抛阻断启动。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS leads (
+                id          TEXT PRIMARY KEY,               -- 'lead_<hex8>'
+                name        TEXT NOT NULL,                  -- 企业/项目名称
+                source_type TEXT NOT NULL DEFAULT 'manual', -- 'run' | 'manual'
+                source_run_id  TEXT,                        -- 来源期次（溯源；期次删除置 NULL）
+                source_schedule_name TEXT DEFAULT '',       -- 来源订阅名快照（期次删除后仍可读）
+                status      TEXT NOT NULL DEFAULT 'new',    -- new/contacting/evaluating/hold/converted
+                note        TEXT DEFAULT '',                -- 备注/下一步
+                project_id  TEXT,                           -- 立项后指向项目（converted 必填）
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status, updated_at);
+        """)
         self.conn.commit()
 
         # Migrate: suggestions 幂等约束补项目作用域(整体 review C1)
@@ -909,6 +934,22 @@ class Database:
             "ON task_suggestions(project_id, entry_fingerprint, kind)")
         self.conn.commit()
         logger.info("Migrated task_suggestions: added UNIQUE(project_id, entry_fingerprint, kind)")
+
+    def _migrate_schedule_scope_backfill(self):
+        """存量订阅 scope 按 category 归类回填（2.11 §12，V2.1-T2）。
+
+        industry/region → sweep（撒网），其余 → focus（盯梢）；rollup 仅用户
+        显式新建不参与回填。幂等只回填 NULL 行——用户后续改值不被覆盖；
+        失败向上抛（订阅行 scope 全 NULL 会让聚合源判定歧义，静默继续不可取）。
+        """
+        cur = self.conn.execute(
+            "UPDATE task_schedules SET scope = CASE category "
+            "WHEN 'industry' THEN 'sweep' WHEN 'region' THEN 'sweep' "
+            "ELSE 'focus' END WHERE scope IS NULL")
+        self.conn.commit()
+        if cur.rowcount:
+            logger.info(
+                "Migrated task_schedules: scope backfilled x%d", cur.rowcount)
 
     def _migrate_add_column(self, table: str, column: str, col_type: str):
         """Add column to existing table if it doesn't exist yet."""
@@ -1054,6 +1095,9 @@ class Database:
             # 静默（通知中心可见+静默已读，管理台红点是完成态消费入口）；开启后
             # completed 走正常 Toast/OS 通道（ActivityMonitor 即时重读）
             "schedule_notify": False,
+            # 用户身份层（0.6 §3.8 V2-E1a）：PersonaPicker 首启呈现 + 模板排序
+            "persona": "",
+            "persona_prompted": False,
             # Report-specific settings
             "report_max_concurrent": 2,  # model-exempt: 预留位暂无 UI，后端消费（reports.py）；最大并发生成报告数
             # Form fill settings (2.4 §4.2)
@@ -1821,6 +1865,7 @@ class Database:
         "name", "prompt", "category", "interval_type", "interval_value",
         "target_type", "target_id", "auto_import", "archive_file_id",
         "archive_last_run_id", "enabled", "next_run_at",
+        "scope", "digest_schedule_ids",
     )
 
     def create_schedule(self, name: str, prompt: str, mode: str, category: str,
@@ -1828,17 +1873,21 @@ class Database:
                         target_type: str | None = None,
                         target_id: str | None = None,
                         auto_import: int = 1, next_run_at: str | None = None,
-                        enabled: int = 1) -> dict:
+                        enabled: int = 1,
+                        scope: str | None = None,
+                        digest_schedule_ids: str | None = None) -> dict:
+        """digest_schedule_ids 传 TEXT(JSON)（router 序列化后传入），NULL=全量。"""
         now = self._now()
         sch_id = f"sch_{uuid.uuid4().hex[:8]}"
         self.conn.execute(
             "INSERT INTO task_schedules (id, name, prompt, mode, category,"
             " interval_type, interval_value, target_type, target_id, auto_import,"
-            " enabled, next_run_at, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " enabled, next_run_at, scope, digest_schedule_ids,"
+            " created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sch_id, name, prompt, mode, category, interval_type, interval_value,
              target_type, target_id, int(auto_import), int(enabled),
-             next_run_at, now, now))
+             next_run_at, scope, digest_schedule_ids, now, now))
         self.conn.commit()
         return self.get_schedule(sch_id)
 
@@ -1851,6 +1900,9 @@ class Database:
             value = fields[key]
             if key in ("auto_import", "enabled"):
                 value = int(value)
+            elif key == "digest_schedule_ids" and isinstance(value, (list, tuple)):
+                # 入参归一：list 形态（直调方未序列化）落库前转 TEXT(JSON)
+                value = json.dumps(list(value), ensure_ascii=False)
             sets.append(f"{key} = ?")
             params.append(value)
         if not sets:
@@ -1891,14 +1943,24 @@ class Database:
         row = self.conn.execute(
             "SELECT * FROM task_schedules WHERE id = ?",
             (schedule_id,)).fetchone()
-        return dict(row) if row else None
+        return self._normalize_schedule_row(dict(row)) if row else None
+
+    def _normalize_schedule_row(self, row: dict) -> dict:
+        """订阅行出参归一（2.11 §12）：scope NULL → 'focus'（存量/迁移前零判空）；
+        digest_schedule_ids TEXT → list[str] | None（rollup 编辑回填直读）。"""
+        row["scope"] = row.get("scope") or "focus"
+        row["digest_schedule_ids"] = self._load_json_list(
+            row.get("digest_schedule_ids"))
+        return row
 
     def list_schedules(self, category: str | None = None,
                        enabled: int | None = None,
                        q: str | None = None,
-                       limit: int = 0, offset: int = 0) -> list[dict]:
+                       limit: int = 0, offset: int = 0,
+                       scope: str | None = None) -> list[dict]:
         """管理台左列 / 速览同源；各行附 latest_done（最新 done run 摘要，无则 None）
-        与 is_running（存在 running run，§8.4 行呼吸点数据源）。
+        与 is_running（存在 running run，§8.4 行呼吸点数据源）；scope 过滤
+        （2.11 §12，管理台定位筛选；新参数置尾防既有位置调用错位）。
         limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
         （路由层传 limit+1 探测 has_more）。"""
         sql = (
@@ -1923,6 +1985,9 @@ class Database:
         if q:
             where.append("s.name LIKE ?")
             params.append(f"%{q}%")
+        if scope:
+            where.append("s.scope = ?")
+            params.append(scope)
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY s.created_at DESC"
@@ -1931,7 +1996,7 @@ class Database:
             params.extend([limit, offset])
         rows = []
         for r in self.conn.execute(sql, params).fetchall():
-            row = dict(r)
+            row = self._normalize_schedule_row(dict(r))
             ld_id = row.pop("_ld_run_id")
             row["is_running"] = row.pop("_lr_run_id") is not None
             if ld_id:
@@ -1949,8 +2014,9 @@ class Database:
 
     def count_schedules(self, category: str | None = None,
                         enabled: int | None = None,
-                        q: str | None = None) -> int:
-        """订阅计数（与 list_schedules 同口径：category/enabled/q 筛选后计数）。"""
+                        q: str | None = None,
+                        scope: str | None = None) -> int:
+        """订阅计数（与 list_schedules 同口径：category/enabled/q/scope 筛选后计数）。"""
         sql = "SELECT COUNT(*) AS cnt FROM task_schedules"
         where, params = [], []
         if category:
@@ -1962,13 +2028,17 @@ class Database:
         if q:
             where.append("name LIKE ?")
             params.append(f"%{q}%")
+        if scope:
+            where.append("scope = ?")
+            params.append(scope)
         if where:
             sql += " WHERE " + " AND ".join(where)
         return self.conn.execute(sql, params).fetchone()["cnt"]
 
     def list_due_schedules(self, now_iso: str) -> list[dict]:
-        """调度 tick 扫描：enabled=1 AND next_run_at <= now（idx_schedules_next）。"""
-        return [dict(r) for r in self.conn.execute(
+        """调度 tick 扫描：enabled=1 AND next_run_at <= now（idx_schedules_next）；
+        出参同 _normalize_schedule_row（rollup 分支按 scope 判定，2.11 §12）。"""
+        return [self._normalize_schedule_row(dict(r)) for r in self.conn.execute(
             "SELECT * FROM task_schedules"
             " WHERE enabled = 1 AND next_run_at <= ?"
             " ORDER BY next_run_at ASC", (now_iso,)).fetchall()]
@@ -2006,11 +2076,15 @@ class Database:
         return d
 
     def insert_schedule_run(self, run_id: str, schedule_id: str,
-                            task_id: str | None, status: str = "running") -> None:
+                            task_id: str | None, status: str = "running",
+                            error: str | None = None) -> None:
+        """error：创建即带原因（V2.1-T3 rollup 空窗口 skipped 落
+        「窗口内无期次」，ReadView 留痕可读）；终态失败原因走
+        update_schedule_run（避免 skipped 行被写入 finished_at）。"""
         self.conn.execute(
-            "INSERT INTO task_schedule_runs (id, schedule_id, task_id, status, started_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (run_id, schedule_id, task_id, status, self._now()))
+            "INSERT INTO task_schedule_runs (id, schedule_id, task_id, status,"
+            " error, started_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, schedule_id, task_id, status, error, self._now()))
         self.conn.commit()
 
     def update_schedule_run(self, run_id: str, status: str,
@@ -2079,17 +2153,31 @@ class Database:
         return self._run_row(row) if row else None
 
     def list_run_inbox(self, unread_only: bool = False,
-                       limit: int = 50, offset: int = 0) -> list[dict]:
-        """跨订阅收件箱流：done、未读优先（read_at IS NULL 前置）finished_at DESC；
+                       limit: int = 50, offset: int = 0,
+                       sort: str = "unread", category: str | None = None) -> list[dict]:
+        """跨订阅收件箱流（V2-E1a 情报中心数据源）：done；sort=unread 未读
+        优先（read_at IS NULL 前置）/ sort=latest 纯 finished_at DESC；
+        category 按订阅分类直读过滤（corporate/industry/region/general）；
+        返回行附 schedule_category（卡片类别 chip 数据源）+ schedule_scope
+        （rollup 徽标随行，2.11 §12.4）；
         offset 翻页（路由层传 limit+1 探测 has_more）。"""
         sql = (
-            "SELECT r.*, s.name AS schedule_name FROM task_schedule_runs r"
+            "SELECT r.*, s.name AS schedule_name, s.category AS schedule_category,"
+            " s.scope AS schedule_scope"
+            " FROM task_schedule_runs r"
             " JOIN task_schedules s ON s.id = r.schedule_id"
             " WHERE r.status = 'done'")
         params: list = []
+        if category:
+            sql += " AND s.category = ?"
+            params.append(category)
         if unread_only:
             sql += " AND r.read_at IS NULL"
-        sql += " ORDER BY (r.read_at IS NULL) DESC, r.finished_at DESC LIMIT ? OFFSET ?"
+        if sort == "latest":
+            sql += " ORDER BY r.finished_at DESC LIMIT ? OFFSET ?"
+        else:
+            sql += (" ORDER BY (r.read_at IS NULL) DESC, r.finished_at DESC"
+                    " LIMIT ? OFFSET ?")
         params.extend([limit, offset])
         return [self._run_row(r) for r in self.conn.execute(sql, params).fetchall()]
 
@@ -2098,7 +2186,8 @@ class Database:
         COALESCE(finished_at, started_at) 排序 + rowid 兼同微秒序）+ 订阅
         enabled —— §8.4 速览行三态（运行呼吸/失败红/暂停灰）数据可达。"""
         return [self._run_row(r) for r in self.conn.execute(
-            "SELECT r.*, s.name AS schedule_name, s.enabled AS schedule_enabled"
+            "SELECT r.*, s.name AS schedule_name, s.enabled AS schedule_enabled,"
+            "       s.category AS schedule_category, s.scope AS schedule_scope"
             " FROM task_schedule_runs r"
             " JOIN task_schedules s ON s.id = r.schedule_id"
             " WHERE r.id = ("
@@ -2148,13 +2237,60 @@ class Database:
             (schedule_id,)).fetchone()
         return bool(row) and row["status"] == "running"
 
-    def last_done_run_report(self, schedule_id: str) -> str | None:
-        """增量注入（2.11 §6）：上期 done run 的 report_path。"""
+    def last_done_run(self, schedule_id: str) -> dict | None:
+        """增量注入 + 时间基准（2.11 §5.3/§6）：上期 done run 全行
+        （report_path 供复制《上一期报告.md》、finished_at 供执行侧拼
+        「上期：」时间基准行）。"""
         row = self.conn.execute(
-            "SELECT report_path FROM task_schedule_runs"
+            "SELECT id, report_path, finished_at FROM task_schedule_runs"
             " WHERE schedule_id = ? AND status = 'done'"
             " ORDER BY finished_at DESC LIMIT 1", (schedule_id,)).fetchone()
-        return row["report_path"] if row else None
+        return dict(row) if row else None
+
+    def list_digest_source_runs(self, schedule_ids: list[str] | None,
+                                window_start: str,
+                                max_runs: int | None = None) -> list[dict]:
+        """组合周报聚合素材（2.11 §12.3）：圈定订阅 × 窗口内 done 期次（升序）。
+        schedule_ids=None → 全部 enabled=1 订阅；有值 → 显式圈定（含已暂停
+        订阅的窗口内期次——勾选即用户意志，期次已产出仍可汇总）。
+        scope='rollup' 恒排除（不变量①防递归聚合，聚合侧兜底正确性；
+        IS NULL 兜住未被 backfill 覆盖的异常行）；summary 出参解析为 list
+        （与 _run_row 同口径）。空圈选集返回 []（同时规避 IN () 语法错）。
+        max_runs：防无界 prompt（CodeReview m-2）——保留窗口内最近 N 期，
+        None = 不设限（全量，向后兼容）；0 → []（无负索引切片陷阱）。"""
+        if schedule_ids is not None and not schedule_ids:
+            return []
+        sql = (
+            "SELECT r.finished_at, r.summary, s.name AS schedule_name"
+            " FROM task_schedule_runs r"
+            " JOIN task_schedules s ON s.id = r.schedule_id"
+            " WHERE r.status = 'done' AND r.finished_at > ?"
+            "   AND (s.scope IS NULL OR s.scope != 'rollup')")
+        params: list = [window_start]
+        if schedule_ids is None:
+            sql += " AND s.enabled = 1"
+        else:
+            sql += (" AND r.schedule_id IN ("
+                    + ",".join("?" * len(schedule_ids)) + ")")
+            params.extend(schedule_ids)
+        sql += " ORDER BY r.finished_at ASC"          # 素材时间序（截断前排序）
+        rows = self.conn.execute(sql, params).fetchall()
+        if max_runs is not None:
+            # 窗口内期次多时保留最近 N 期（取尾段，返回仍升序）；
+            # 不用 rows[-max_runs:]（max_runs=0 时 -0 切片返回全量）
+            rows = rows[len(rows) - max_runs:] if max_runs > 0 else []
+        return [{"schedule_name": r["schedule_name"],
+                 "finished_at": r["finished_at"],
+                 "summary": self._load_json_list(r["summary"]) or []}
+                for r in rows]
+
+    def count_schedule_runs(self, schedule_id: str) -> int:
+        """期数（2.11 §5.3 时间基准行「第 N 期」）：该订阅全部期次行数——
+        本期 run 行在 dispatch 时已插入，故含本期（第 N 期语义）。"""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM task_schedule_runs"
+            " WHERE schedule_id = ?", (schedule_id,)).fetchone()
+        return int(row["cnt"])
 
     def pending_archive_runs(self, schedule_id: str) -> list[dict]:
         """档案待合并期次：archive_last_run_id 之后的 done 副本（升序；锚点空=全部 done）。"""
@@ -2187,6 +2323,133 @@ class Database:
             " ORDER BY r.started_at DESC LIMIT -1 OFFSET ?",
             (schedule_id, keep)).fetchall()
         return [r["workspace_path"] for r in rows]
+
+    # ── Leads（线索池，0.6 §4.1 V2-E2）──
+
+    def create_lead(self, name: str, source_type: str = "manual",
+                    source_run_id: str | None = None,
+                    source_schedule_name: str = "",
+                    status: str = "new", note: str = "") -> dict:
+        """新建线索（存为线索 / 提取入池 / 手动录入共用）。"""
+        lead_id = f"lead_{uuid.uuid4().hex[:8]}"
+        now = self._now()
+        self.conn.execute(
+            "INSERT INTO leads (id, name, source_type, source_run_id,"
+            " source_schedule_name, status, note, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (lead_id, name, source_type, source_run_id,
+             source_schedule_name, status, note, now, now))
+        self.conn.commit()
+        return self.get_lead(lead_id)
+
+    def get_lead(self, lead_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_leads(self, status: str | None = None,
+                   limit: int = 0, offset: int = 0) -> list[dict]:
+        """线索列表（updated_at DESC）；status 过滤；limit=0 → 全量
+        （LeadPool 状态分组视图）；limit>0 → 至多 limit 行（路由层传
+        limit+1 探测 has_more）。"""
+        sql = "SELECT * FROM leads"
+        params: list = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY updated_at DESC"
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def count_leads(self, status: str | None = None) -> int:
+        """线索计数（与 list_leads 同口径 status 过滤后）。"""
+        sql = "SELECT COUNT(*) AS cnt FROM leads"
+        params: list = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status)
+        return self.conn.execute(sql, params).fetchone()["cnt"]
+
+    def update_lead(self, lead_id: str, fields: dict) -> bool:
+        """单行 PATCH（状态推进 / 备注编辑 / 立项回填 project_id+converted）。
+        白名单 status/note/project_id；不存在 False；updated_at 自动。"""
+        allowed = {"status", "note", "project_id"}
+        sets, params = [], []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            sets.append(f"{key} = ?")
+            params.append(value)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.extend([self._now(), lead_id])
+        cur = self.conn.execute(
+            f"UPDATE leads SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_lead(self, lead_id: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM leads WHERE id = ?", (lead_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def detach_leads_for_run(self, run_id: str) -> int:
+        """期次删除联动（0.6 §4.1）：source_run_id 置 NULL（线索保留），
+        订阅名快照兜底可读溯源。返回受影响行数（调用方日志）。"""
+        cur = self.conn.execute(
+            "UPDATE leads SET source_run_id = NULL, updated_at = ?"
+            " WHERE source_run_id = ?", (self._now(), run_id))
+        self.conn.commit()
+        return cur.rowcount
+
+    def detach_leads_for_schedule(self, schedule_id: str) -> int:
+        """订阅删除联动（runs 级联删前调用）：按订阅关联全部期次置 NULL。"""
+        cur = self.conn.execute(
+            "UPDATE leads SET source_run_id = NULL, updated_at = ?"
+            " WHERE source_run_id IN ("
+            "   SELECT id FROM task_schedule_runs WHERE schedule_id = ?)",
+            (self._now(), schedule_id))
+        self.conn.commit()
+        return cur.rowcount
+
+    def detach_leads_for_project(self, project_id: str) -> int:
+        """项目删除联动（V2-E2 CodeReview Major 2026-10-24）：立项引用置 NULL
+        （线索与 converted 状态保留——前端 project_id 为空即不渲染「查看项目」，
+        与 clear_schedules_target 同构：project_id 无外键，手动等价 SET NULL）。"""
+        cur = self.conn.execute(
+            "UPDATE leads SET project_id = NULL, updated_at = ?"
+            " WHERE project_id = ?", (self._now(), project_id))
+        self.conn.commit()
+        return cur.rowcount
+
+    def detach_rollup_digest_references(self, removed_schedule_id: str) -> int:
+        """订阅删除联动（V2.1 CodeReview Major）：从引用它的 rollup 订阅
+        digest_schedule_ids 中剔除——悬空 id 会使编辑保存 400 死锁（回填含
+        悬空 id → 勾选框只渲染现存候选无法移除 → _validate_digest_ids
+        fail-fast）。剔空保留 [] 不转 NULL：NULL=全量会突变聚合范围
+        （静默泄露未圈定订阅进 rollup）；[] → 空窗口 skipped 留痕，用户
+        主动修正。返回受影响 rollup 行数（调用方日志）。"""
+        rows = self.conn.execute(
+            "SELECT id, digest_schedule_ids FROM task_schedules"
+            " WHERE scope = 'rollup' AND digest_schedule_ids IS NOT NULL").fetchall()
+        touched = 0
+        for row in rows:
+            try:
+                ids = json.loads(row["digest_schedule_ids"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(ids, list) or removed_schedule_id not in ids:
+                continue
+            self.update_schedule(
+                row["id"],
+                {"digest_schedule_ids": [i for i in ids
+                                         if i != removed_schedule_id]})
+            touched += 1
+        return touched
 
     # ── Skills ──
 
@@ -3936,25 +4199,41 @@ class Database:
             rows.append(d)
         return rows
 
-    def count_pending_reviews_by_project(self) -> dict[str, int]:
-        """per 项目待处理发现项计数(resolved=0),供卡片墙/侧栏健康色点(3.0 §7.2)。"""
+    def count_pending_reviews_by_project(self) -> dict[str, dict[str, int]]:
+        """per 项目待处理发现项分型计数(resolved=0),供卡片墙/侧栏健康色点(3.0 §7.2)
+        与首页卡片矛盾/缺口行(V2-E4);一条 GROUP BY 出 total+分型,
+        gap = data-gap + missing-page(与知识册封面信任信号行同口径,2.6 §3.5)。"""
         cursor = self.conn.execute(
-            "SELECT project_id, COUNT(*) AS cnt FROM wiki_reviews "
-            "WHERE resolved = 0 GROUP BY project_id")
-        return {row["project_id"]: row["cnt"] for row in cursor.fetchall()}
+            "SELECT project_id, type, COUNT(*) AS cnt FROM wiki_reviews "
+            "WHERE resolved = 0 GROUP BY project_id, type")
+        acc: dict[str, dict[str, int]] = {}
+        for row in cursor.fetchall():
+            bucket = acc.setdefault(
+                row["project_id"], {"total": 0, "contradiction": 0, "gap": 0})
+            bucket["total"] += row["cnt"]
+            if row["type"] == "contradiction":
+                bucket["contradiction"] += row["cnt"]
+            elif row["type"] in ("data-gap", "missing-page"):
+                bucket["gap"] += row["cnt"]
+        return acc
 
     # ── Intelligence: Ledger entries (3.1 §3.1, phase 4) ──
 
     def list_ledger_entries(self, project_id: str, limit: int = 20,
-                            offset: int = 0) -> list[dict]:
+                            offset: int = 0,
+                            page_key: str | None = None) -> list[dict]:
         """台账条目时间轴(3.1 §4.3):entry_date 倒序,NULL 日期置尾;offset 翻页
-        (路由层传 limit+1 探测 has_more;1≤limit≤100 校验在路由层)。"""
-        cursor = self.conn.execute(
-            """SELECT * FROM ledger_entries WHERE project_id = ?
-               ORDER BY (entry_date IS NULL), entry_date DESC, created_at DESC
-               LIMIT ? OFFSET ?""",
-            (project_id, limit, offset),
-        )
+        (路由层传 limit+1 探测 has_more;1≤limit≤100 校验在路由层)。
+        page_key 非空 → 仅该台账页条目(V2 E3 台账页时间轴),空 = 全项目。"""
+        sql = "SELECT * FROM ledger_entries WHERE project_id = ?"
+        params: list = [project_id]
+        if page_key:
+            sql += " AND page_key = ?"
+            params.append(page_key)
+        sql += (" ORDER BY (entry_date IS NULL), entry_date DESC, created_at DESC"
+                " LIMIT ? OFFSET ?")
+        params.extend([limit, offset])
+        cursor = self.conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
 
     def latest_ledger_entries(self) -> list[dict]:

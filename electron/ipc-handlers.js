@@ -1543,11 +1543,14 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('schedules:inbox', async (_event, { unread, limit, offset } = {}) => {
+  ipcMain.handle('schedules:inbox', async (_event, { unread, limit, offset, sort, category } = {}) => {
     const params = new URLSearchParams()
     if (unread) params.set('unread', '1')
     if (limit !== undefined && limit !== null) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
+    // 情报流筛选/排序透传（0.6 §3.2 V2-E1a T7）：丢弃会让 chips 分类/排序静默失效
+    if (sort) params.set('sort', String(sort))
+    if (category) params.set('category', String(category))
     const qs = params.toString()
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/runs/inbox${qs ? `?${qs}` : ''}`)
     return handlePythonResponse(res)
@@ -1573,13 +1576,56 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // LLM 提炼（单次调用，同步等待）：对齐 LLM 测试连接 60s
-  ipcMain.handle('schedules:refinePrompt', async (_event, { taskId }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/schedules/refine-prompt`, {
+  // ── Leads（线索池，0.6 §5 V2-E2：五通道，同变更落地前端消费）──
+
+  ipcMain.handle('leads:list', async (_event, { status, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    if (status) params.set('status', String(status))
+    if (limit !== undefined && limit !== null) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/leads${qs ? `?${qs}` : ''}`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('leads:create', async (_event, { name, sourceType, sourceRunId, sourceScheduleName, note } = {}) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/leads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskId }),
-    }, 60000)
+      body: JSON.stringify({
+        name,
+        sourceType: sourceType || 'manual',
+        sourceRunId: sourceRunId || null,
+        sourceScheduleName: sourceScheduleName || '',
+        note: note || '',
+      }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('leads:update', async (_event, { id, status, note, projectId } = {}) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/leads/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, note, projectId }),
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('leads:delete', async (_event, id) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/leads/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    })
+    return handlePythonResponse(res)
+  })
+
+  // LLM 候选提取（同步 invoke + 按钮 loading，不进活动注册表）：超时对齐 rebuildArchive
+  ipcMain.handle('leads:extract', async (_event, runId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/leads/extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId }),
+    }, 600000)
     return handlePythonResponse(res)
   })
 
@@ -2208,6 +2254,18 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 知识册导出 docx（2.6 §14，V2.1-T4）：同步短任务，落盘路径返回后前端定位文件；
+  // pandoc 渲染（册大图片嵌入慢）可能慢于默认 15s——90s 与 python 侧渲染
+  // 超时（export-docx 传 renderer timeout=90）对齐，链路两层同一上限
+  ipcMain.handle('wiki:exportDocx', async (_event, { projectId } = {}) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/export-docx`,
+      { method: 'POST' },
+      90000,
+    )
+    return handlePythonResponse(res)
+  })
+
   // ── Activity Hub (0.4lifecycle-design.md §8.1 #0) ──
   ipcMain.handle('activities:getStatus', async () => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/activities/status`)
@@ -2482,10 +2540,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // ── Ledger: 台账条目(3.0 四期;知识首页时间轴卡 + 首页卡片墙摘要行)──
-  ipcMain.handle('wiki:listLedgerEntries', async (_event, { projectId, limit, offset } = {}) => {
+  // ── Ledger: 台账条目(3.0 四期;知识首页时间轴卡 + 首页卡片墙摘要行 +
+  // V2 E3 台账页时间轴 page_key 按页过滤)──
+  ipcMain.handle('wiki:listLedgerEntries', async (_event, { projectId, limit, offset, pageKey } = {}) => {
     const params = new URLSearchParams({ limit: String(limit ?? 20) })
     if (offset) params.set('offset', String(offset))
+    if (pageKey) params.set('page_key', String(pageKey)) // V2 E3 台账页时间轴按页过滤
     const res = await fetchWithTimeout(
       `${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/ledger/entries?${params}`)
     return handlePythonResponse(res)
