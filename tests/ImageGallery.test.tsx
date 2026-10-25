@@ -161,6 +161,30 @@ describe('ImageGallery all-tab counts', () => {
   })
 })
 
+describe('ImageGallery 首拉失败态（静默 catch 排查）', () => {
+  it('首拉失败且列表空 → image-gallery-error + 重试，不伪装空态/无匹配', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:getProjectImages') throw new Error('boom')
+      return {}
+    })
+    render(<ImageGallery projectId="p1" />)
+    await flush()
+    expect(screen.getByTestId('image-gallery-error')).toBeTruthy()
+    expect(screen.getByText('knowledge.galleryLoadFailed')).toBeTruthy()
+    // 默认 statusFilter='done'：失败不得落到「无匹配/暂无图片」分支
+    expect(screen.queryByText('knowledge.noImages')).toBeNull()
+    // 重试恢复：错误态消失，回到真实空态
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:getProjectImages') return { images: [], total: 0 }
+      return {}
+    })
+    fireEvent.click(screen.getByText('knowledge.retry'))
+    await flush()
+    expect(screen.queryByTestId('image-gallery-error')).toBeNull()
+    expect(screen.getByText('knowledge.noImages')).toBeTruthy()
+  })
+})
+
 describe('ImageGallery delete image', () => {
   const ONE = {
     images: [{ id: 'i1', status: 'done', local_path: '/x.png', category: 'chart' }],

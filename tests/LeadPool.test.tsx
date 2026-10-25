@@ -129,6 +129,24 @@ describe('LeadPool', () => {
     expect(screen.getByTestId('lead-manual-dialog')).toBeTruthy()
   })
 
+  it('首拉失败 → lead-error 错误+重试，不落到空列伪装零线索（静默 catch 排查）', async () => {
+    invokeMock.mockImplementation((channel: string) =>
+      channel === 'leads:list' ? Promise.reject(new Error('boom')) : Promise.resolve({}))
+    render(<LeadPool {...baseProps} />)
+    await waitFor(() => expect(screen.getByTestId('lead-error')).toBeTruthy())
+    expect(screen.getByText('intel.lead.loadFailed')).toBeTruthy()
+    // 不得伪装零线索空态（引导态仅在 loaded 后可达）
+    expect(screen.queryByTestId('lead-empty')).toBeNull()
+    // 重试恢复：错误态消失、回到真实空态引导
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'leads:list') return Promise.resolve({ leads: [], has_more: false, total: 0 })
+      return Promise.resolve({})
+    })
+    fireEvent.click(screen.getByText('knowledge.retry'))
+    await waitFor(() => expect(screen.queryByTestId('lead-error')).toBeNull())
+    expect(screen.getByTestId('lead-empty')).toBeTruthy()
+  })
+
   it('点击状态 pill 以 leads:update 推进并重拉（卡移入目标分组）', async () => {
     rows = [lead({ id: 'lead_1', status: 'new' })]
     render(<LeadPool {...baseProps} />)

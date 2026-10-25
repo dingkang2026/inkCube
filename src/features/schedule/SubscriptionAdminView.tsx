@@ -10,6 +10,7 @@ import { useToast } from '../knowledge/Toast'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { apiErrorText } from '../../i18n/errorCodes'
 import { ScheduleFormModal, parseInterval, WEEKDAYS } from './ScheduleFormModal'
+import type { ScheduleKind } from './ScheduleFormModal'
 import { RunRow } from './RunRow'
 import { usePagedList } from '../../hooks/usePagedList'
 import type { ScheduleRow, ScheduleRunRow } from './useSchedules'
@@ -19,9 +20,9 @@ import s from './SubscriptionAdminView.module.css'
 const CATEGORIES = ['all', 'industry', 'corporate', 'region', 'general'] as const
 type Category = (typeof CATEGORIES)[number]
 type StatusFilter = 'all' | 'abnormal' | 'paused'
-// 订阅定位筛选（2.11 §12）：all 不过滤，三型下沉服务端 scope 参数
-const SCOPES = ['all', 'focus', 'sweep', 'rollup'] as const
-type ScopeFilter = (typeof SCOPES)[number]
+// 订阅类型筛选（2.11 §12 收敛）：all 不过滤，intel/rollup 下沉服务端 scope 参数
+const TYPES = ['all', 'intel', 'rollup'] as const
+type TypeFilter = (typeof TYPES)[number]
 
 /** 周期人话文案：intervalValue → 「每天 09:00 / 每周一、四 09:00 / 每月 1,15 09:00」 */
 function periodText(row: ScheduleRow, t: (k: string, p?: Record<string, unknown>) => string): string {
@@ -64,16 +65,18 @@ export function SubscriptionAdminView({
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [category, setCategory] = useState<Category>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all')
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
   const [search, setSearch] = useState('')
   const [formOpen, setFormOpen] = useState(false)
+  // 新建类型（2.11 §12 收敛）：双入口按钮各给定，编辑态由 editing.scope 决定
+  const [createKind, setCreateKind] = useState<ScheduleKind>('intel')
   const [editing, setEditing] = useState<ScheduleRow | null>(null)
   const [rebuildingId, setRebuildingId] = useState<string | null>(null)
   const debounceRef = useRef<number | null>(null)
   // 筛选防抖 300ms（保留原语义）：防抖后的值作为 usePagedList params，输入过程不触发请求
   const [debouncedFilters, setDebouncedFilters] = useState<{
-    category: Category; statusFilter: StatusFilter; scopeFilter: ScopeFilter; q: string
-  }>({ category: 'all', statusFilter: 'all', scopeFilter: 'all', q: '' })
+    category: Category; statusFilter: StatusFilter; typeFilter: TypeFilter; q: string
+  }>({ category: 'all', statusFilter: 'all', typeFilter: 'all', q: '' })
 
   const errCode = (err: unknown) => (err as { errorCode?: string })?.errorCode
 
@@ -90,7 +93,7 @@ export function SubscriptionAdminView({
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current)
     debounceRef.current = window.setTimeout(() => {
       debounceRef.current = null
-      setDebouncedFilters({ category, statusFilter, scopeFilter, q: search })
+      setDebouncedFilters({ category, statusFilter, typeFilter, q: search })
     }, 300)
     return () => {
       if (debounceRef.current !== null) {
@@ -98,13 +101,13 @@ export function SubscriptionAdminView({
         debounceRef.current = null
       }
     }
-  }, [category, statusFilter, scopeFilter, search])
+  }, [category, statusFilter, typeFilter, search])
 
   const listParams = useMemo(() => {
     const p: Record<string, unknown> = {}
     if (debouncedFilters.category !== 'all') p.category = debouncedFilters.category
     if (debouncedFilters.statusFilter !== 'all') p.enabled = 0
-    if (debouncedFilters.scopeFilter !== 'all') p.scope = debouncedFilters.scopeFilter
+    if (debouncedFilters.typeFilter !== 'all') p.scope = debouncedFilters.typeFilter
     if (debouncedFilters.q.trim()) p.q = debouncedFilters.q.trim()
     return p
   }, [debouncedFilters])
@@ -245,15 +248,25 @@ export function SubscriptionAdminView({
       danger: true,
     })
     if (!ok) return
+    // 部分失败反馈（页面遍历 review M4-1 2026-10-24）：失败条目保留勾选可重试，
+    // 不再静默清空造成「全部成功」假象
+    const failed: string[] = []
     for (const id of ids) {
       try {
         await window.electronAPI.invoke('schedules:delete', id)
       } catch (err) {
         console.error('Batch delete schedule failed:', err)
+        failed.push(id)
       }
     }
-    setChecked(new Set())
-    setSelectedId(null)
+    if (failed.length > 0) {
+      showToast(t('schedule.batchPartialFailed', { total: ids.length, failed: failed.length }), 'warning')
+      setChecked(new Set(failed))
+      if (selectedId != null && !failed.includes(selectedId)) setSelectedId(null)
+    } else {
+      setChecked(new Set())
+      setSelectedId(null)
+    }
     refreshAll()
   }
 
@@ -277,14 +290,23 @@ export function SubscriptionAdminView({
   }
 
   const batchToggle = async (enabled: boolean) => {
-    for (const id of checked) {
+    const ids = [...checked]
+    // 部分失败反馈（M4-1，同 batchDelete）：失败条目保留勾选
+    const failed: string[] = []
+    for (const id of ids) {
       try {
         await window.electronAPI.invoke('schedules:toggle', { id, enabled })
       } catch (err) {
         console.error('Batch toggle schedule failed:', err)
+        failed.push(id)
       }
     }
-    setChecked(new Set())
+    if (failed.length > 0) {
+      showToast(t('schedule.batchPartialFailed', { total: ids.length, failed: failed.length }), 'warning')
+      setChecked(new Set(failed))
+    } else {
+      setChecked(new Set())
+    }
     refreshAll()
   }
 
@@ -344,9 +366,16 @@ export function SubscriptionAdminView({
     <div className={s.page}>
       {/* ── 左列：筛选 + 订阅列表 ── */}
       <div className={s.left}>
-        <button className={s.newBtn} onClick={() => { setEditing(null); setFormOpen(true) }}>
-          <Plus size={14} />{t('schedule.newSubscription')}
-        </button>
+        {/* 双入口（2.11 §12 收敛）：情报订阅/组合周报是两类订阅，
+            类型由入口给定，向导内不再二次选择 */}
+        <div className={s.newBtnRow}>
+          <button className={s.newBtn} onClick={() => { setEditing(null); setCreateKind('intel'); setFormOpen(true) }}>
+            <Plus size={14} />{t('schedule.newSubscription')}
+          </button>
+          <button className={s.newBtn} onClick={() => { setEditing(null); setCreateKind('rollup'); setFormOpen(true) }}>
+            <Plus size={14} />{t('schedule.newRollup')}
+          </button>
+        </div>
         <div className={s.tabs} role="tablist">
           {CATEGORIES.map((cat) => (
             <button key={cat} role="tab" aria-selected={category === cat}
@@ -368,15 +397,14 @@ export function SubscriptionAdminView({
             <option value="paused">{t('schedule.statusPaused')}</option>
           </select>
           <select
-            aria-label={t('schedule.scopeFilter')}
+            aria-label={t('schedule.typeFilter')}
             className={s.select}
-            value={scopeFilter}
-            onChange={(e) => setScopeFilter(e.target.value as ScopeFilter)}
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
           >
-            <option value="all">{t('schedule.scopeAll')}</option>
-            {SCOPES.filter((sc) => sc !== 'all').map((sc) => (
-              <option key={sc} value={sc}>{t(`schedule.scope.${sc}`)}</option>
-            ))}
+            <option value="all">{t('schedule.typeAll')}</option>
+            <option value="intel">{t('schedule.typeIntel')}</option>
+            <option value="rollup">{t('schedule.typeRollup')}</option>
           </select>
           <div className={s.searchBox}>
             <Search size={13} />
@@ -398,8 +426,11 @@ export function SubscriptionAdminView({
           </div>
         )}
         <div className={s.rows}>
+          {/* 空态随类型筛选分流（免培训：rollup 筛选下指引双入口的 rollup 侧） */}
           {schedules.length === 0 ? (
-            <div className={s.empty}>{t('schedule.empty')}</div>
+            <div className={s.empty}>
+              {t(debouncedFilters.typeFilter === 'rollup' ? 'schedule.emptyRollup' : 'schedule.empty')}
+            </div>
           ) : schedules.map((row) => (
             <div
               key={row.id}
@@ -423,7 +454,7 @@ export function SubscriptionAdminView({
                 }`} />
                 <span className={s.schedName}>{row.name}</span>
                 {row.scope === 'rollup' && (
-                  <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                  <span className={s.rollupTag}>{t('schedule.typeRollup')}</span>
                 )}
                 <span className={s.schedPeriod}>{periodText(row, t)}</span>
                 {unreadScheduleIds.has(row.id) && <span className={s.unreadDot} />}
@@ -498,7 +529,7 @@ export function SubscriptionAdminView({
               </div>
               <div className={s.detailMeta}>
                 {selected.scope === 'rollup' && (
-                  <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                  <span className={s.rollupTag}>{t('schedule.typeRollup')}</span>
                 )}
                 <span>{t(`schedule.tab.${selected.category}`, { defaultValue: selected.category })}</span>
                 <span>·</span>
@@ -593,6 +624,7 @@ export function SubscriptionAdminView({
       <ScheduleFormModal
         open={formOpen}
         editing={formOpen ? editing : null}
+        createKind={createKind}
         onClose={() => setFormOpen(false)}
         onSaved={refreshAll}
       />

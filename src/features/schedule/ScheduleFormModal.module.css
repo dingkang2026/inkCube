@@ -81,11 +81,15 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 220px;
+  max-height: 260px;
   overflow-y: auto;
 }
 
+/* 列表项 = 图标 + 标题 + 描述（2026-10-24 直观化）；去向列表复用 tplItem 单文本子节点不受影响 */
 .tplItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   font-size: var(--text-sm);
   color: var(--text-primary);
@@ -103,6 +107,57 @@
 .tplActive {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.tplIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.tplTexts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tplTitle {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.tplDesc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* 「你将获得」产出结构预览（2026-10-24）：选中内置模板即展示每期产出要点 */
+.outPreview {
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.outPreviewTitle {
+  margin-bottom: 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.outPreviewList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 
 .phForm {

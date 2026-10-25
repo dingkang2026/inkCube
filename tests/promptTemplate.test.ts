@@ -65,15 +65,17 @@ describe('TASK_TEMPLATES / INTEL_TEMPLATES', () => {
       new Set(['info', 'rep', 'off']),
     );
   });
-  it('订阅白名单 6 条且 id 唯一、分类齐全，含两新政策模板', () => {
-    expect(INTEL_TEMPLATES).toHaveLength(6);
-    expect(new Set(INTEL_TEMPLATES.map((t) => t.id)).size).toBe(6);
+  it('订阅白名单 7 条且 id 唯一、分类齐全，含两新政策模板与产业舆情', () => {
+    expect(INTEL_TEMPLATES).toHaveLength(7);
+    expect(new Set(INTEL_TEMPLATES.map((t) => t.id)).size).toBe(7);
     expect(new Set(INTEL_TEMPLATES.map((t) => t.category))).toEqual(
       new Set(['mon', 'ind', 'reg']),
     );
     const ids = INTEL_TEMPLATES.map((t) => t.id);
     expect(ids).toContain('industryPolicy');
     expect(ids).toContain('regionPolicy');
+    // 2026-10-24 新增：产业舆情扫描（盯一条赛道而非一家企业，与 sentiment 企业舆情互补）
+    expect(ids).toContain('industrySentiment');
   });
   it('INTEL_CATEGORY_MAP 覆盖全部分类且值落在订阅产出四分类', () => {
     const cats = TEMPLATE_CATEGORIES.slice(1) as unknown as string[];

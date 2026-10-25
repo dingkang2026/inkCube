@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2, RefreshCw, X } from 'lucide-react'
 import { usePolling } from '../../hooks/usePolling'
+import { useToast } from '../knowledge/Toast'
 import styles from './TaskLogViewer.module.css'
 
 interface TaskLogViewerProps {
@@ -12,6 +13,7 @@ interface TaskLogViewerProps {
 
 export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [lines, setLines] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [totalLines, setTotalLines] = useState(0)
@@ -37,7 +39,8 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
       }
     } catch (err) {
       console.error('Failed to fetch logs:', err)
-      // rethrow：轮询侧由 usePolling 计入退避（0.4 §5.8）；手动侧 onClick 内 catch
+      // rethrow：轮询侧由 usePolling 计入退避（0.4 §5.8）；effect 初次加载与
+      // onClick 手动刷新两侧就地 toast（静默 catch 排查 2026-10-24）
       throw err
     } finally {
       setLoading(false)
@@ -46,9 +49,11 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
 
   useEffect(() => {
     if (visible && taskId) {
-      fetchLogs()
+      // fetchLogs rethrow：轮询侧由 usePolling 计入退避（0.4 §5.8）；
+      // 手动侧/effect 初次加载侧就地 toast（静默 catch 排查 2026-10-24）
+      fetchLogs().catch(() => showToast(t('task.logRefreshFailed'), 'error'))
     }
-  }, [visible, taskId, fetchLogs])
+  }, [visible, taskId, fetchLogs, showToast, t])
 
   // Esc 关闭日志面板（模态面板语义 0.3 §5.2，仅 visible 时监听）
   useEffect(() => {
@@ -96,7 +101,11 @@ export function TaskLogViewer({ taskId, visible, onClose }: TaskLogViewerProps) 
               />
               {t('task.execLogAutoRefresh', '自动刷新')}
             </label>
-            <button className={styles.refreshBtn} onClick={() => void fetchLogs().catch(() => {})} disabled={loading}>
+            <button
+              className={styles.refreshBtn}
+              onClick={() => void fetchLogs().catch(() => showToast(t('task.logRefreshFailed'), 'error'))}
+              disabled={loading}
+            >
               {loading ? <Loader2 size={14} className={styles.spinning} /> : <RefreshCw size={14} />}
             </button>
             <button className={styles.closeBtn} onClick={onClose} title={t('common.close')}><X size={14} /></button>

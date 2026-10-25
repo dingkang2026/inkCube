@@ -11,6 +11,10 @@
   不存在则 create_skill 并紧接 confirm_skill_by_name（needs_confirm 是迁移列
   且 DEFAULT 1，create_skill 的 INSERT 不含该列，不显式确认则首用会弹确认框）
 - 任一步失败仅 warning，不阻塞后端启动（单个 skill 缺失可接受）
+- 文件同步后台化（2026-10-24 启动提速）：seed_builtin_skills_deferred 只做
+  毫秒级定位 + DB upsert，文件同步交调用方后台线程（main.py to_thread），
+  13,245 文件的 ppt-master 逐文件拷贝（实测 ~22s）不再阻塞 /health；拷贝走
+  _atomic_install staging 原子替换，install_path 任意时刻是完整旧版或完整新版
 """
 from __future__ import annotations
 
@@ -177,44 +181,116 @@ def _needs_recopy(src: str, install_path: str) -> bool:
     return fp.get("files") != files or fp.get("total_size") != total
 
 
-def _seed_one(db, name: str, description: str, data_dir: str) -> None:
-    src = _locate_source(name)
-    if not src:
-        logger.warning("builtin skill source not found, skip seeding: %s", name)
-        return
+def _seed_one_meta(db, name: str, description: str, data_dir: str) -> tuple[str, str] | None:
+    """种子同步部分（毫秒级，2026-10-24 启动提速拆分）：定位源 + DB upsert。
 
-    install_path = os.path.join(data_dir, "skills", name)
-    os.makedirs(os.path.dirname(install_path), exist_ok=True)
-    if _needs_recopy(src, install_path):
-        shutil.copytree(src, install_path, dirs_exist_ok=True)
-        # 拷贝后源==目标，用源树指纹免二次 walk
-        _write_fingerprint(install_path, src, _tree_fingerprint(src))
-        logger.info("builtin skill seeded: %s -> %s", src, install_path)
-    else:
-        logger.info("builtin skill fingerprint matched, skip copy: %s", name)
+    DB 行即时可见：TaskAgent 执行期实时 list_skills（task_agent.py）、Skill
+    管理页打开即见，不依赖文件同步完成。返回待后台文件同步的 (name, src)；
+    源缺失或 DB 异常返回 None（仅 warning，非阻塞契约不变）。
+    """
+    try:
+        src = _locate_source(name)
+        if not src:
+            logger.warning("builtin skill source not found, skip seeding: %s", name)
+            return None
 
-    existing = [s for s in db.list_skills() if s.get("name") == name]
-    if existing:
-        logger.info("builtin skill already present, keep user state: %s", name)
-        return
+        install_path = os.path.join(data_dir, "skills", name)
+        os.makedirs(os.path.dirname(install_path), exist_ok=True)
 
-    db.create_skill(
-        name=name,
-        description=description,
-        source_type="builtin",
-        source_path=src,
-        install_path=install_path,
-    )
-    # needs_confirm 迁移列 DEFAULT 1：内置代码可信，立即置 0 免首用确认弹窗
-    db.confirm_skill_by_name(name)
-    logger.info("builtin skill registered: %s", name)
+        existing = [s for s in db.list_skills() if s.get("name") == name]
+        if existing:
+            logger.info("builtin skill already present, keep user state: %s", name)
+        else:
+            db.create_skill(
+                name=name,
+                description=description,
+                source_type="builtin",
+                source_path=src,
+                install_path=install_path,
+            )
+            # needs_confirm 迁移列 DEFAULT 1：内置代码可信，立即置 0 免首用确认弹窗
+            db.confirm_skill_by_name(name)
+            logger.info("builtin skill registered: %s", name)
+        return (name, src)
+    except Exception as e:
+        logger.warning("builtin skill seeding failed (non-blocking): %s (%s)",
+                       name, e)
+        return None
+
+
+def _atomic_install(src: str, install_path: str) -> None:
+    """staging 原子替换拷贝（2026-10-24 启动提速）：install_path 任意时刻是
+
+    完整旧版或完整新版，消除「逐文件覆盖中的混合状态」——文件同步已后台化
+    （main.py to_thread），任务可能在拷贝中途读安装目录。
+
+    流程：清残留（.staging/.old，进程被杀的遗留）→ copytree → 指纹写 staging
+    → rename 旧→.old → rename staging→正式 → 清 .old；正式位替换失败回滚
+    .old，旧版始终完整可用。
+    """
+    staging = install_path + ".staging"
+    old = install_path + ".old"
+    for leftover in (staging, old):
+        if os.path.isdir(leftover):
+            shutil.rmtree(leftover, ignore_errors=True)
+    shutil.copytree(src, staging)
+    # 拷贝后源==目标，用源树指纹免二次 walk
+    _write_fingerprint(staging, src, _tree_fingerprint(src))
+    renamed_old = False
+    if os.path.isdir(install_path):
+        os.rename(install_path, old)
+        renamed_old = True
+    try:
+        os.rename(staging, install_path)
+    except OSError:
+        if renamed_old and not os.path.isdir(install_path):
+            os.rename(old, install_path)
+        raise
+    if renamed_old:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def sync_skill_files(name: str, src: str, data_dir: str) -> None:
+    """文件同步（线程版，2026-10-24 启动提速）：L1 指纹快检命中即零拷贝跳过；
+
+    需更新时走 staging 原子替换。全程不抛——失败仅 warning，旧版安装目录
+    保持完整可用（非阻塞契约与 seed_builtin_skills 一致）。
+    """
+    try:
+        install_path = os.path.join(data_dir, "skills", name)
+        os.makedirs(os.path.dirname(install_path), exist_ok=True)
+        if not _needs_recopy(src, install_path):
+            logger.info("builtin skill fingerprint matched, skip copy: %s", name)
+            return
+        _atomic_install(src, install_path)
+        logger.info("builtin skill synced: %s -> %s", src, install_path)
+    except Exception as e:
+        logger.warning("builtin skill file sync failed (non-blocking): %s (%s)",
+                       name, e)
+
+
+def sync_skill_files_batch(pending: list[tuple[str, str]], data_dir: str) -> None:
+    """批量文件同步（后台线程入口）：单项失败仅 warning 不阻塞其余。"""
+    for name, src in pending:
+        sync_skill_files(name, src, data_dir)
 
 
 def seed_builtin_skills(db, data_dir: str) -> None:
-    """启动自检入口：逐清单项拷贝 + DB upsert，全程不抛异常。"""
+    """同步全量入口（测试/工具直调语义不变）：逐清单项 meta + 立即文件同步。"""
     for item in BUILTIN_SKILLS:
-        try:
-            _seed_one(db, item["name"], item["description"], data_dir)
-        except Exception as e:
-            logger.warning("builtin skill seeding failed (non-blocking): %s (%s)",
-                           item["name"], e)
+        meta = _seed_one_meta(db, item["name"], item["description"], data_dir)
+        if meta:
+            sync_skill_files(meta[0], meta[1], data_dir)
+
+
+def seed_builtin_skills_deferred(db, data_dir: str) -> list[tuple[str, str]]:
+    """启动入口（2026-10-24 启动提速）：只做毫秒级同步部分（定位 + DB
+    upsert），文件同步清单交调用方后台线程执行（main.py to_thread）——
+    13,245 文件的 ppt-master 逐文件拷贝（实测 ~22s）不再阻塞 uvicorn
+    lifespan 的 /health。调用方须持后台任务引用防 GC（存储维护先例）。"""
+    pending: list[tuple[str, str]] = []
+    for item in BUILTIN_SKILLS:
+        meta = _seed_one_meta(db, item["name"], item["description"], data_dir)
+        if meta:
+            pending.append(meta)
+    return pending

@@ -129,9 +129,22 @@ async def lifespan(app: FastAPI):
     maybe_roll_daily(deps.db)
 
     # Seed builtin skills on startup (idempotent, 2.8 §4.2)：
-    # 拷 resources/skills → data/skills + skills 表 upsert (source_type='builtin')
-    from skills.seed import seed_builtin_skills
-    seed_builtin_skills(deps.db, data_dir)
+    # 同步部分仅毫秒级（定位 + DB upsert，TaskAgent 执行期实时 list_skills、
+    # 管理页立即可见）；文件同步（ppt-master 13,245 文件，实测 ~22s）后台
+    # to_thread 执行，不再阻塞 lifespan 的 /health（2026-10-24 启动提速）。
+    # 拷贝走 staging 原子替换，install_path 任意时刻完整；进程被杀仅残留
+    # .staging，下次启动开头清理。显式持引用防 GC（下方存储维护先例）。
+    from skills import seed as _skill_seed
+    _skill_seed_pending = _skill_seed.seed_builtin_skills_deferred(deps.db, data_dir)
+    if _skill_seed_pending:
+        logging.getLogger(__name__).info(
+            "Skill file sync deferred to background: %s",
+            [name for name, _src in _skill_seed_pending])
+        _skill_seed_tasks: set = set()
+        _sst = asyncio.create_task(asyncio.to_thread(
+            _skill_seed.sync_skill_files_batch, _skill_seed_pending, data_dir))
+        _skill_seed_tasks.add(_sst)
+        _sst.add_done_callback(_skill_seed_tasks.discard)
 
     # Load report templates once at cold start (single entry point):
     # preset files are the source of truth (unconditional reload overwrites DB cache);

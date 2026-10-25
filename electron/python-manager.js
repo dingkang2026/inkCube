@@ -173,6 +173,11 @@ class PythonManager {
   async waitForHealth(timeout) {
     const start = Date.now()
     while (Date.now() - start < timeout) {
+      // 进程已退出（含启动期崩溃）→ 立即失败，不傻等满 timeout（exit handler 置 null）；
+      // 否则 boot gate 的错误反馈要等满 60s 才出现。
+      if (this.process === null) {
+        throw new Error('Python process exited before becoming healthy')
+      }
       try {
         const res = await fetch(`http://127.0.0.1:${this.port}/health`)
         if (res.ok) return

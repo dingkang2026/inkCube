@@ -72,6 +72,17 @@ def prev_occurrence(rule: dict, key: str) -> tuple[str, str]:
     return str(int(key) - 1), f"{int(key) - 1}-{day or '12-31'}"
 
 
+def first_open_occurrence(rule: dict, today: date) -> tuple[str, str]:
+    """首个「未出生即逾期」期次(key, due):当期 due 未过 → 当期;已过 → 下一期。
+    2026-10-24 裁决:周期任务出生(铺入/激活/自建)前期次不生成、不算缺失——
+    否则中途接入的项目会永久挂着一段出生前的逾期。activate_phase 与自建
+    recurring 路由共用;DB 层铺入副本 _first_open_occurrence 同构(测试互证)。"""
+    occ, due = current_occurrence(rule, today)
+    if due < today.isoformat():
+        return next_occurrence(rule, occ)
+    return occ, due
+
+
 _VALID_FREQS = ("monthly", "quarterly", "yearly")
 _MMDD = re.compile(r"^(\d{2})-(\d{2})$")
 # freq → occurrence_key 形态(三格式:2026-10 / 2026-Q4 / 2026,字典序可比)。
@@ -145,14 +156,15 @@ def _roll_one_group(db, g, today: date) -> int:
     known = sorted(k for k in existing if k)
     if not known:
         return 0
-    # 迭代起点取「现存同格式最早」与「当期」的较小者(裁决 4 完整落地,
-    # 2026-10-21:改节奏仅影响未来期次——起点只认同当前 freq 格式的实例,
-    # 旧格式 key 不参与,跨格式混排从根上消灭;同格式实例晚于当期时
-    # (如用户删掉当期实例),仍能扫到并补出当期,不能只从现存最早期起扫;
-    # NULL occurrence_key 的脏数据行不参与起点计算(防 min(None) TypeError))
+    # 迭代起点取「现存同格式最早」(裁决 4 完整落地,2026-10-21:改节奏仅影响
+    # 未来期次——起点只认同当前 freq 格式的实例,旧格式 key 不参与,跨格式混排
+    # 从根上消灭;NULL occurrence_key 的脏数据行不参与起点计算,
+    # 防 min(None) TypeError)。2026-10-24 裁决:不再回退到当期(原
+    # min(same_fmt[0], cur_key) 会把铺入/激活时被跳过的出生前期次、以及用户
+    # 已删除的过去期次重新补回,重新产出出生即逾期/违背删除意愿)
     shape = _KEY_SHAPES[rule["freq"]]
     same_fmt = [k for k in known if shape.match(k)]
-    key = min(same_fmt[0], cur_key) if same_fmt else cur_key
+    key = same_fmt[0] if same_fmt else cur_key
     proto = rows[-1]  # 新期次实例的列原型(同 project/phase/type/title/rule)
     created = 0
     # 事务级锁 + 异常自动回滚(Task 2 落地的 transaction()):组内部分插入
@@ -292,11 +304,12 @@ def activate_phase(db, project_id: str, new_stage: str) -> int:
         for r in rows:
             due = None
             occ = None
-            # rule 实例(report+rule 组合同样适用)按当期算 occ+due,
-            # 否则 roll 会把缺失的当期 occurrence 当缺口补出重复实例
+            # rule 实例(report+rule 组合同样适用):按首个未过期期次算 occ+due,
+            # 否则 roll 会把缺失的当期 occurrence 当缺口补出重复实例;
+            # 当期已过时直接取下一期(2026-10-24 裁决:激活不产出出生即逾期实例)
             rule = parse_rule(r["recurrence_rule"])
             if rule:
-                occ, due = current_occurrence(rule, today)
+                occ, due = first_open_occurrence(rule, today)
             elif r["due_date_fixed"]:
                 due = r["due_date_fixed"]
             elif r["due_offset_days"]:

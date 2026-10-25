@@ -17,18 +17,26 @@
   overflow-y: auto;
 }
 
+/* 双入口（2.11 §12 收敛）：新建订阅/新建组合周报并排 */
+.newBtnRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
 .newBtn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 12px;
-  font-size: var(--text-sm);
+  padding: 8px 8px;
+  font-size: var(--text-xs);
   color: var(--text-inverse, #fff);
   background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .tabs {

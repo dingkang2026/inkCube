@@ -29,6 +29,17 @@ def _project(db, ptype="recruitment", stage="after"):
     return db.create_project(name="P", project_type=ptype, stage=stage)["id"]
 
 
+def _add_occurrence(db, src, key):
+    """受控插入一行同组实例(复制 src 列原型),使测试不依赖运行日期的播种/滚动行为。"""
+    db.conn.execute(
+        """INSERT INTO phase_tasks (id, project_id, phase, task_type, title, template_id,
+           status, occurrence_key, recurrence_rule, auto_complete)
+           SELECT ?, project_id, phase, task_type, title, template_id,
+                  'open', ?, recurrence_rule, auto_complete FROM phase_tasks WHERE id = ?""",
+        (db._uuid(), key, src["id"]))
+    db.conn.commit()
+
+
 def test_occurrence_math():
     rule = {"freq": "monthly", "due_day": 15}
     assert affairs_service.current_occurrence(rule, date(2026, 10, 9)) == ("2026-10", "2026-10-15")
@@ -48,12 +59,49 @@ def test_occurrence_math():
     assert affairs_service.current_occurrence(m31, date(2026, 4, 10)) == ("2026-04", "2026-04-30")
 
 
+def test_first_open_occurrence():
+    """2026-10-24 裁决:当期 due 已过 → 首个未过期期次 = 下期;未过/当日 → 当期。"""
+    m = {"freq": "monthly", "due_day": 15}
+    assert affairs_service.first_open_occurrence(m, date(2026, 10, 9)) == ("2026-10", "2026-10-15")
+    assert affairs_service.first_open_occurrence(m, date(2026, 10, 15)) == ("2026-10", "2026-10-15")
+    assert affairs_service.first_open_occurrence(m, date(2026, 10, 16)) == ("2026-11", "2026-11-15")
+    y = {"freq": "yearly", "due_day": "04-30"}
+    assert affairs_service.first_open_occurrence(y, date(2026, 10, 24)) == ("2027", "2027-04-30")
+    q = {"freq": "quarterly", "due_day": "end"}
+    assert affairs_service.first_open_occurrence(q, date(2026, 10, 24)) == ("2026-Q4", "2026-12-31")
+
+
 def test_roll_recurring_creates_next_once(db):
+    """播种期 = 首个未过期期次(2026-10-24 裁决);roll 只向前补齐至下期:
+    当期未过(播种=当期)→ 恰补 1 下期;当期已过(播种=下期)→ 无缺口补 0;再滚幂等。"""
     pid = _project(db)
+    m_rule = {"freq": "monthly", "due_day": 15}
+    today = date.today()
+    cur_key = affairs_service.current_occurrence(m_rule, today)[0]
+    nxt_key = affairs_service.next_occurrence(m_rule, cur_key)[0]
+    seed_key = affairs_service.first_open_occurrence(m_rule, today)[0]
+    monthly = "playbook_recruitment_after_monthly_report"
+    seed = next(t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly)
+    assert seed["occurrence_key"] == seed_key
     created = affairs_service.roll_recurring(db)
-    # 铺入已给 4 个 rule 组各当期一期(3 recurring + service_report[report+rule]);
-    # roll 按 recurrence_rule IS NOT NULL 分组,补齐至当期+下期 → 恰各补 1
-    assert created == 4
+    # created 为全部 4 个节奏组总增量:每组播种=当期(下期缺失)→ 补 1;播种=下期 → 0
+    rule_map = {
+        "playbook_recruitment_after_monthly_report": m_rule,
+        "playbook_recruitment_after_quarterly_report": {"freq": "quarterly", "due_day": "end"},
+        "playbook_recruitment_after_yearly_data": {"freq": "yearly", "due_day": "04-30"},
+        "playbook_recruitment_after_service_report": {"freq": "yearly", "due_day": "12-31"},
+    }
+    expected = sum(
+        1 for r in rule_map.values()
+        if affairs_service.first_open_occurrence(r, today)[0]
+        == affairs_service.current_occurrence(r, today)[0])
+    assert created == expected
+    keys = {t["occurrence_key"] for t in db.list_phase_tasks(pid)
+            if t["template_id"] == monthly}
+    if seed_key == cur_key:
+        assert keys == {seed_key, nxt_key}
+    else:
+        assert keys == {nxt_key}
     again = affairs_service.roll_recurring(db)
     assert again == 0    # 幂等
 
@@ -71,18 +119,24 @@ def test_roll_next_occurrence_due_is_per_period(db):
     assert row["due_date"] == nxt_due
 
 
-def test_roll_recurring_fills_gap_after_delete(db):
+def test_roll_no_refill_of_deleted_period(db):
+    """2026-10-24 裁决:已删除的过去期次不重建(删除是用户明确意愿;原
+    「用户误删当期回补」语义随出生前期次裁决一并废止——否则铺入/激活时
+    被跳过的出生前当期会被 roll 重新补回,重新产出出生即逾期)。"""
     pid = _project(db)
     affairs_service.roll_recurring(db)
-    # 模拟缺口:删掉月报当期实例 → roll 应重新补出
-    monthly = next(t for t in db.list_phase_tasks(pid)
-                   if t["template_id"] == "playbook_recruitment_after_monthly_report")
-    db.delete_phase_task(monthly["id"])
+    monthly = "playbook_recruitment_after_monthly_report"
+    src = next(t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly)
+    _add_occurrence(db, src, "2026-01")          # 受控过去期次
+    row = next(t for t in db.list_phase_tasks(pid)
+               if t["template_id"] == monthly and t["occurrence_key"] == "2026-01")
+    db.delete_phase_task(row["id"])
     created = affairs_service.roll_recurring(db)
-    assert created >= 1
-    keys = [t["occurrence_key"] for t in db.list_phase_tasks(pid)
-            if t["template_id"] == "playbook_recruitment_after_monthly_report"]
-    assert len(keys) == 2  # 当期 + 下期
+    keys = {t["occurrence_key"] for t in db.list_phase_tasks(pid)
+            if t["template_id"] == monthly}
+    assert created == 0
+    assert "2026-01" not in keys                  # 不重建
+    assert keys                                   # 现存期次保留
 
 
 def test_roll_recurring_covers_report_with_rule(db):
@@ -108,6 +162,22 @@ def test_activate_phase_opens_pending_and_computes_due(db):
                 if t["phase"] == "during"
                 and (t.get("due_offset_days") or t.get("due_date_fixed") or t.get("recurrence_rule"))}
     assert all(t["due_date"] for t in during if t["template_id"] in with_due)
+
+
+def test_activate_phase_skips_expired_occurrence(db):
+    """2026-10-24 裁决:激活时当期已过 → recurring 直接取下一期,
+    不产出出生即逾期实例(due < today)。激活期与播种对拍,运行日期无关。"""
+    pid = _project(db, stage="before")
+    n = affairs_service.activate_phase(db, pid, "after")
+    assert n > 0
+    today = date.today().isoformat()
+    for t in db.list_phase_tasks(pid):
+        if t["phase"] == "after" and t["recurrence_rule"]:
+            occ, due = affairs_service.first_open_occurrence(
+                t["recurrence_rule"], date.today())
+            assert t["occurrence_key"] == occ
+            assert t["due_date"] == due
+            assert t["due_date"] >= today
 
 
 def test_activate_phase_failure_raises_and_rolls_back(monkeypatch, db):
@@ -199,6 +269,10 @@ def test_roll_freq_change_no_history_backfill(db):
     实例语义重复并存(open-questions.md Q-1,原混排收敛测试已随根因改写)。"""
     pid = _project(db)
     affairs_service.roll_recurring(db)
+    m_rule = {"freq": "monthly", "due_day": 15}
+    seed_m = affairs_service.first_open_occurrence(m_rule, date.today())[0]
+    cur_m = affairs_service.current_occurrence(m_rule, date.today())[0]
+    nxt_m = affairs_service.next_occurrence(m_rule, cur_m)[0]
     monthly = "playbook_recruitment_after_monthly_report"
     newest = max((t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly),
                  key=lambda t: t["occurrence_key"])
@@ -206,15 +280,15 @@ def test_roll_freq_change_no_history_backfill(db):
                          {"recurrence_rule": '{"freq": "quarterly", "due_day": 15}'})
     created = affairs_service.roll_recurring(db)
     q_rule = {"freq": "quarterly", "due_day": 15}
-    m_rule = {"freq": "monthly", "due_day": 15}
     cur_q = affairs_service.current_occurrence(q_rule, date.today())[0]
     nxt_q = affairs_service.next_occurrence(q_rule, cur_q)[0]
-    cur_m = affairs_service.current_occurrence(m_rule, date.today())[0]
-    nxt_m = affairs_service.next_occurrence(m_rule, cur_m)[0]
     keys = sorted(t["occurrence_key"] for t in db.list_phase_tasks(pid)
                   if t["template_id"] == monthly and t["occurrence_key"])
     assert created == 2
-    assert keys == sorted({cur_m, nxt_m, cur_q, nxt_q})
+    # 月度:播种期 + (当期未过时 roll 补出的下期);改节奏后按 quarterly 补的
+    # 当期/下期同挂 monthly 模板组下;不回铺已跳过的出生前当期与历史季度
+    assert keys == sorted({seed_m, nxt_m, cur_q, nxt_q} if seed_m == cur_m
+                          else {seed_m, cur_q, nxt_q})
     assert affairs_service.roll_recurring(db) == 0  # 幂等
 
 
@@ -222,27 +296,25 @@ def test_roll_freq_change_yearly_to_quarterly_rolls_from_current(db):
     """yearly→quarterly:旧格式 key(4 位年份)不参与起点计算,从当期正常滚动。
     修复前该场景 yearly key 遇 quarterly 规则 key[6] 越界 IndexError,
     靠组级隔离跳过整组(原 test_roll_recurring_isolates_bad_group)——
-    根因修复后不再炸、不再跳组。"""
-    pid = _project(db)
-    affairs_service.roll_recurring(db)
-    yearly = "playbook_recruitment_after_yearly_data"
-    newest = max((t for t in db.list_phase_tasks(pid) if t["template_id"] == yearly),
-                 key=lambda t: t["occurrence_key"])
+    根因修复后不再炸、不再跳组。(受控单组数据,不依赖播种日期行为)"""
+    pid = db.create_project(name="P", project_type="recruitment", stage="after",
+                            seed_playbook=False)["id"]
+    db.create_phase_task(
+        project_id=pid, phase="after", task_type="recurring",
+        title="年度经营数据", recurrence_rule={"freq": "yearly", "due_day": "04-30"},
+        occurrence_key="2026")
+    newest = next(t for t in db.list_phase_tasks(pid)
+                  if t["task_type"] == "recurring")
     db.update_phase_task(newest["id"],
                          {"recurrence_rule": '{"freq": "quarterly", "due_day": 15}'})
-    pid2 = _project(db)
     created = affairs_service.roll_recurring(db)
     q_rule = {"freq": "quarterly", "due_day": 15}
-    y_rule = {"freq": "yearly", "due_day": "04-30"}
     cur_q = affairs_service.current_occurrence(q_rule, date.today())[0]
     nxt_q = affairs_service.next_occurrence(q_rule, cur_q)[0]
-    cur_y = affairs_service.current_occurrence(y_rule, date.today())[0]
-    nxt_y = affairs_service.next_occurrence(y_rule, cur_y)[0]
-    # pid2 的 4 组各补下期 + pid 的 yearly 组按新节奏补当期+下期
-    assert created == 6
     keys = {t["occurrence_key"] for t in db.list_phase_tasks(pid)
-            if t["template_id"] == yearly}
-    assert keys == {cur_y, nxt_y, cur_q, nxt_q}
+            if t["task_type"] == "recurring"}
+    assert created == 2
+    assert keys == {"2026", cur_q, nxt_q}   # 旧年份 key 保留,仅补当期+下期,不回铺历史季度
 
 
 def test_roll_group_failure_isolated(db, monkeypatch):
@@ -259,9 +331,12 @@ def test_roll_group_failure_isolated(db, monkeypatch):
 
     monkeypatch.setattr(affairs_service, "_roll_one_group", flaky)
     created = affairs_service.roll_recurring(db)  # 不抛
-    assert created == 4  # pid2 的 4 组各补下期;pid 全组跳过
+    monthly = "playbook_recruitment_after_monthly_report"
+    # pid 全组跳过:各 rule 组仍只有播种期(1 行);pid2 至少有下期缺口可补
+    # (quarterly/service 组播种=当期,roll 必补下期,故 created ≥ 1 恒成立)
     assert len([t for t in db.list_phase_tasks(pid)
-                if t["template_id"] == "playbook_recruitment_after_monthly_report"]) == 1
+                if t["template_id"] == monthly]) == 1
+    assert created >= 1
 
 
 def test_roll_recurring_skips_invalid_rule(db):
@@ -273,7 +348,8 @@ def test_roll_recurring_skips_invalid_rule(db):
     db.update_phase_task(newest["id"],
                          {"recurrence_rule": '{"freq": "weekly", "due_day": 1}'})
     created = affairs_service.roll_recurring(db)
-    assert created == 3  # 坏组跳过,其余 3 组各补下期
+    # 坏组跳过(行数不变);quarterly/service 组播种=当期,roll 必补下期 ≥1
+    assert created >= 1
     assert len([t for t in db.list_phase_tasks(pid)
                 if t["template_id"] == monthly]) == 1
 
@@ -281,8 +357,9 @@ def test_roll_recurring_skips_invalid_rule(db):
 def test_on_file_parsed_ignores_null_occurrence_key(db):
     """NULL occurrence_key 脏行不参与 earliest 选取(or "" 会使其恒最小)。"""
     pid = _project(db)
-    affairs_service.roll_recurring(db)  # monthly 组:当期 + 下期
     monthly = "playbook_recruitment_after_monthly_report"
+    seed = next(t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly)
+    _add_occurrence(db, seed, "2026-01")   # 受控第二行,不依赖运行日期
     rows = sorted((t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly),
                   key=lambda t: t["occurrence_key"])
     db.conn.execute("UPDATE phase_tasks SET occurrence_key = NULL WHERE id = ?",
@@ -344,21 +421,22 @@ def test_roll_capped_at_max_periods(db):
         (db._uuid(), src["id"]))
     db.conn.commit()
     affairs_service.roll_recurring(db)
-    cur_key = affairs_service.current_occurrence(
-        {"freq": "monthly", "due_day": 15}, date.today())[0]
+    m_rule = {"freq": "monthly", "due_day": 15}
+    cur_key = affairs_service.current_occurrence(m_rule, date.today())[0]
+    nxt_key = affairs_service.next_occurrence(m_rule, cur_key)[0]
     keys = [t["occurrence_key"] for t in db.list_phase_tasks(pid)
             if t["template_id"] == monthly and t["occurrence_key"]]
     assert min(keys) == "2016-01"
     new_keys = set(keys) - {"2016-01", cur_key}
     assert len(new_keys) <= affairs_service._MAX_ROLL_PERIODS  # 上限生效
-    assert affairs_service.next_occurrence({"freq": "monthly", "due_day": 15},
-                                           cur_key)[0] not in new_keys  # 未补穿下期
+    overrun = [k for k in keys if k > nxt_key]
+    assert not overrun  # 未补穿下期(下期 key 若存在,只可能是播种期)
 
 
 # ── 事务到期/逾期提醒扫描（2.11 §3.2）──
 
 def _monthly_rows(db, pid):
-    """roll 后 monthly 组当期 + 下期两行（按 occurrence_key 升序）。"""
+    """monthly 组受控两行(播种期 + 受控 2026-01,按 occurrence_key 升序)。"""
     return sorted(
         (t for t in db.list_phase_tasks(pid)
          if t["template_id"] == "playbook_recruitment_after_monthly_report"),
@@ -369,15 +447,14 @@ def test_scan_reminders_due_and_overdue(db, monkeypatch):
     """due_date==today → due；<today → overdue；未来（horizon 外）不通知（2.11 §3.2）。"""
     monkeypatch.setattr(affairs_service, "_last_reminder_date", None)
     pid = _project(db)
-    affairs_service.roll_recurring(db)
+    monthly = "playbook_recruitment_after_monthly_report"
+    seed = next(t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly)
+    _add_occurrence(db, seed, "2026-01")   # 受控两行,不依赖播种/滚动的日期行为
     today = date.today()
     rows = _monthly_rows(db, pid)
     due_row, overdue_row = rows[0], rows[1]
-    yearly = sorted(
-        (t for t in db.list_phase_tasks(pid)
-         if t["template_id"] == "playbook_recruitment_after_yearly_data"),
-        key=lambda t: t["occurrence_key"])
-    future_row = yearly[1]
+    future_row = next(t for t in db.list_phase_tasks(pid)
+                      if t["template_id"] == "playbook_recruitment_after_yearly_data")
     db.conn.execute("UPDATE phase_tasks SET due_date=? WHERE id=?",
                     (today.isoformat(), due_row["id"]))
     db.conn.execute("UPDATE phase_tasks SET due_date=? WHERE id=?",
@@ -420,7 +497,9 @@ def test_scan_reminders_notify_failure_isolated(db, monkeypatch):
     """单事务 notify 失败只丢该条（per-task 隔离），其余照发、不抛、标记照置。"""
     monkeypatch.setattr(affairs_service, "_last_reminder_date", None)
     pid = _project(db)
-    affairs_service.roll_recurring(db)
+    monthly = "playbook_recruitment_after_monthly_report"
+    seed = next(t for t in db.list_phase_tasks(pid) if t["template_id"] == monthly)
+    _add_occurrence(db, seed, "2026-01")   # 受控两行,不依赖播种/滚动的日期行为
     rows = _monthly_rows(db, pid)
     bad_row, other_row = rows[0], rows[1]
     today = date.today().isoformat()

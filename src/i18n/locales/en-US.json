@@ -3,6 +3,18 @@
     "title": "InkCube",
     "processExit": "Service process exited (code: {{code}}), please check logs or restart the app"
   },
+  "boot": {
+    "stage": {
+      "tools": "Preparing environment",
+      "python": "Starting local service",
+      "connect": "Connecting to data service"
+    },
+    "elapsed": "{{seconds}}s elapsed",
+    "errorTitle": "Startup failed",
+    "errorHint": "The local service failed to start. Retry, or quit and check the logs",
+    "retry": "Retry",
+    "quit": "Quit"
+  },
   "common": {
     "prev": "Previous",
     "next": "Next",
@@ -345,6 +357,7 @@
     "imageList": "Image list",
     "loadingImages": "Loading images...",
     "noImages": "No images",
+    "galleryLoadFailed": "Failed to load images",
     "imgStatus_pending": "Pending",
     "imgStatus_processing": "Processing",
     "imgStatus_done": "Done",
@@ -512,7 +525,7 @@
       "siteNotFound": "Site not found",
       "runNotFound": "Run not found",
       "runRunning": "Run is in progress; delete after it finishes or fails",
-      "invalidScope": "Invalid subscription scope",
+      "invalidScope": "Invalid subscription type",
       "rollupTargetForbidden": "Portfolio digests do not archive — clear the destination first",
       "rollupPromptNeedsSection": "Portfolio digest prompt must contain the {sections} placeholder",
       "rollupDigestIdsForbidden": "Only portfolio digests can configure the aggregation scope",
@@ -650,31 +663,43 @@
       "sentiment": {
         "title": "Company News Scan",
         "desc": "30 days of coverage in one sweep, positive vs negative at a glance",
+        "out": "Positive/negative/neutral lists for the last 30 days, each with date, summary, and source link\nOne-line impact note on every negative item (business / scale / credibility)\nSummary: overall volume and tilt, the top concern, trend note",
         "prompt": "Scan public sentiment coverage of \"{company}\" from the last 30 days, grouped as positive/negative/neutral. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Coverage must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from news outlets, trade media, regulatory announcements, and public social discussions, but you are not limited to these;\n- When a repost and the original coexist, trace to the first publication.\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{company}\" Sentiment Scan (YYYY-MM-DD ~ YYYY-MM-DD)\n## 1. Positive\nEach: date | title/one-line summary | source link.\n## 2. Negative\nSame format, plus a one-line impact note (which business / scale / credibility).\n## 3. Neutral\nSame format.\n## 4. Summary\nOverall volume and tilt, the single most concerning negative item, trend note.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Classify conservatively: uncertain items go to Neutral — never pad a category to fill the structure;\n- If a category is empty, state \"None found this period\" explicitly — never fabricate or exaggerate."
       },
       "competitor": {
         "title": "Competitor Watch",
-        "desc": "Track a competitor's product, market, and funding moves",
-        "prompt": "Summarize \"{competitor/product}\" moves from the past month: product launches, market moves, and funding news. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Moves must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from product launch channels, trade media, funding databases, and official announcements (website/official account), but you are not limited to these.\n\n[Output Format] Save to the task workspace and output in full in the conversation:\n# \"{competitor/product}\" Moves (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first, one subsection per item:\n### MM-DD | [Product] / [Market] / [Funding] / [Org] (pick one)\n- Summary: 2-3 sentences on what happened;\n- Source: an accessible link.\n\n## Takeaways\nUp to 3 lines: the single most important move, and what it hints for the competitive landscape.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- When official statements and media interpretation conflict, follow the official announcement and note the difference;\n- If nothing public this period, say \"No public moves found\" honestly — never pad with old news."
+        "desc": "Track a competitor's product, market, funding, and risk moves",
+        "out": "30-day moves timeline tagged Product / Market / Funding / Org / Partnership / Risk\n2-3 sentence summary + accessible source per entry\nTakeaways: the most important move and what it hints for the landscape",
+        "prompt": "Summarize \"{competitor/product}\" moves from the past month: product launches, market moves, and funding news. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Moves must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from product launch channels, trade media, funding databases, and official announcements (website/official account), but you are not limited to these.\n\n[Output Format] Save to the task workspace and output in full in the conversation:\n# \"{competitor/product}\" Moves (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first, one subsection per item:\n### MM-DD | [Product] / [Market] / [Funding] / [Org] / [Partnership] / [Risk] (pick one; Partnership = channel/ecosystem/JV moves, Risk = litigation/penalties/operational trouble)\n- Summary: 2-3 sentences on what happened;\n- Source: an accessible link.\n\n## Takeaways\nUp to 3 lines: the single most important move, and what it hints for the competitive landscape.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- When official statements and media interpretation conflict, follow the official announcement and note the difference;\n- If nothing public this period, say \"No public moves found\" honestly — never pad with old news."
+      },
+      "industrySentiment": {
+        "title": "Industry News Scan",
+        "desc": "30 days of industry coverage in one sweep, headlines and risk signals at a glance",
+        "out": "30-day industry headlines with date, summary, and source\nKey company moves (expansion / contracts / launches / org changes)\nRisk signals (halts / accidents / penalties / layoffs) with impact notes\nSummary: heat trend and a 1-3 month outlook",
+        "prompt": "Scan public sentiment and developments around the \"{industry}\" sector from the last 30 days: industry headlines, key company moves, and risk signals. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Information must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from trade media, vertical websites, official announcements of key companies (websites/official accounts), and regulatory filings, but you are not limited to these;\n- When a repost and the original coexist, trace to the first publication; focus company coverage on representative players within \"{industry}\" — do not drift into unrelated sectors.\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{industry}\" Sentiment Scan (YYYY-MM-DD ~ YYYY-MM-DD)\n## 1. Industry Headlines\nEach: date | title/one-line summary | source link. Policy releases, major project groundbreakings/production starts, industry conferences, and standards developments all count.\n## 2. Key Company Moves\nEach: date | company | summary (within 2 sentences) | source link. Capacity expansion, contracts, launches, org changes, etc.\n## 3. Risk Signals\nEach: date | company or segment | event summary | one-line impact note | source link. Production halts, accidents, regulatory penalties, layoffs, price wars, funding-chain rumors, etc.; if none, state \"No risk signals found this period\" explicitly.\n## 4. Summary\nOverall heat and trend, the single most concerning risk signal, and a 1-3 month outlook for \"{industry}\".\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Classify conservatively: items you cannot attribute go to Headlines — never pad a category;\n- If a category is empty, state \"None found this period\" explicitly — never fabricate or exaggerate."
       },
       "industryEvents": {
         "title": "Industry Investment Events",
-        "desc": "A weekly list of investment events, each with a company profile",
-        "prompt": "Compile a weekly investment-event briefing for the \"{industry}\" sector. Anchor on today's date and look back 7 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Event facts (date, round, amount, investors) must come from live web retrieval — the last 7 days are absent from any model's knowledge; answering from memory is a task failure. Start from keyword combos like \"{industry} funding\", \"{industry} raises\", \"{industry} Series A/B\", \"{industry} strategic investment\" and sources such as 36Kr, IT Juzi, Zero2IPO, Pedata, and official company announcements, but you are not limited to the listed entries.\n- For company profiles, prefer public information from live retrieval; use materials already in the task knowledge base or workspace when available; supplement with built-in knowledge only for well-known companies you are confident about, and never contradict retrieval results. Never fabricate business figures under any circumstance.\n\n[Output Format] Save a Markdown document to the task workspace and output it in full in the conversation:\n# {industry} Investment Events Weekly (YYYY-MM-DD ~ YYYY-MM-DD)\n\n## 1. Events of the Week (newest first, one subsection per event)\n### MM-DD | Company (Round, Amount)\n- Company profile: 2-3 sentences — core business and products, founding year or scale, and its position within the \"{industry}\" sector;\n- Segment: the niche it plays in;\n- Investors: lead and follow-on investors; mark \"Undisclosed\" honestly when missing;\n- Why it matters: one line on why this event deserves attention (omit if information is thin);\n- Source: an accessible link.\n\n## 2. This Week's Takeaways\n3-5 one-line highlights: largest deal, most active investor, sector heat.\n\n[Discipline]\n- Every event must carry an accessible source link; drop entries without one.\n- Quality over quantity: aim for 5-15 events; if nothing is found, honestly state \"No new public investment events found this week\" — never pad the list.\n- Strictly enforce the 7-day window: letting last month's news slip in is the worst failure of this task."
+        "desc": "A weekly list of capital events (funding/M&A/IPO), each with a company profile",
+        "out": "7-day capital events list (funding / M&A / IPO / listing / follow-on) with round, amount, investors, valuation when disclosed\nCompany profile and why-it-matters per event\nWeekly takeaways: largest deal, most active investor, sector heat",
+        "prompt": "Compile a weekly capital-events briefing for the \"{industry}\" sector: primary-market funding, M&A, IPO/listings, and follow-on offerings. Anchor on today's date and look back 7 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Event facts (date, type, amount, investors or counterparties) must come from live web retrieval — the last 7 days are absent from any model's knowledge; answering from memory is a task failure. Start from keyword combos like \"{industry} funding\", \"{industry} raises\", \"{industry} M&A\", \"{industry} IPO\" and sources such as 36Kr, IT Juzi, Zero2IPO, Pedata, exchange filings, and official company announcements, but you are not limited to the listed entries.\n- For company profiles, prefer public information from live retrieval; use materials already in the task knowledge base or workspace when available; supplement with built-in knowledge only for well-known companies you are confident about, and never contradict retrieval results. Never fabricate business figures under any circumstance.\n\n[Output Format] Save a Markdown document to the task workspace and output it in full in the conversation:\n# {industry} Capital Events Weekly (YYYY-MM-DD ~ YYYY-MM-DD)\n\n## 1. Events of the Week (newest first, one subsection per event)\n### MM-DD | Company (Event type, Amount)\n- Event type: funding → round; M&A → target and consideration; IPO/listing/follow-on → exchange and proceeds; mark \"Undisclosed\" honestly when missing;\n- Valuation: post-money valuation / market cap when disclosed; omit this line otherwise;\n- Company profile: 2-3 sentences — core business and products, founding year or scale, and its position within the \"{industry}\" sector;\n- Segment: the niche it plays in;\n- Investors / counterparties: lead and follow-on investors, or the acquirer/counterparty; mark \"Undisclosed\" honestly when missing;\n- Why it matters: one line on why this event deserves attention (omit if information is thin);\n- Source: an accessible link.\n\n## 2. This Week's Takeaways\n3-5 one-line highlights: largest deal, most active investor, sector heat.\n\n[Discipline]\n- Every event must carry an accessible source link; drop entries without one.\n- Quality over quantity: aim for 5-15 events; if nothing is found, honestly state \"No new public investment events found this week\" — never pad the list.\n- Strictly enforce the 7-day window: letting last month's news slip in is the worst failure of this task."
       },
       "industryLeads": {
         "title": "Investment Lead Scan",
         "desc": "Mine public info for actionable investment-promotion leads",
-        "prompt": "Mine public information for investment-promotion leads around the \"{industry}\" sector from the past month: capacity expansion, relocation, new subsidiaries, site selection. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Leads must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from local government and industrial-park announcements, trade media, corporate investment announcements, and environmental-impact filings, but you are not limited to these.\n\n[Output Format] Save a Markdown list to the task workspace and output it in full in the conversation:\n# \"{industry}\" Investment-Promotion Leads (YYYY-MM-DD ~ YYYY-MM-DD)\nList by lead value, one subsection each:\n### Company | Type (Expansion/Relocation/New entity/Other)\n- Lead details: what happened, scale/investment amount if disclosed, timeline;\n- Follow-up angle: one line connecting the lead to what a host city could offer (optional; omit if information is thin);\n- Source: an accessible link;\n- Status tag: confirmed (filed/announced) vs intent/rumor.\n\n## Lead Summary\nThe 1-2 leads to prioritize and why.\n\n[Discipline]\n- Every lead must carry an accessible source link; drop entries without one;\n- Quality over quantity: aim for 5-15 leads; if nothing is found, state it honestly — never fabricate;\n- Strictly enforce the 30-day window: letting older news slip in is the worst failure of this task."
+        "out": "30-day actionable leads list (expansion / relocation / new entity / capital raise / IPO proceeds)\nScale, land/facility needs, and intended host regions per lead when disclosed\nStatus tag (confirmed vs intent) + priority follow-up advice",
+        "prompt": "Mine public information for investment-promotion leads around the \"{industry}\" sector from the past month: capacity expansion, relocation, new subsidiaries, capital raises, IPO-funded projects, site selection. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Leads must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from local government and industrial-park announcements, trade media, corporate investment announcements, and environmental-impact filings, but you are not limited to these.\n\n[Output Format] Save a Markdown list to the task workspace and output it in full in the conversation:\n# \"{industry}\" Investment-Promotion Leads (YYYY-MM-DD ~ YYYY-MM-DD)\nList by lead value, one subsection each:\n### Company | Type (Expansion/Relocation/New entity/Other)\n- Lead details: what happened, scale / investment amount and land or facility needs if disclosed, timeline;\n- Intended host region: locations the company has publicly visited or negotiated with (if disclosed; omit otherwise);\n- Follow-up angle: one line connecting the lead to what a host city could offer (optional; omit if information is thin);\n- Source: an accessible link;\n- Status tag: confirmed (filed/announced) vs intent/rumor.\n\n## Lead Summary\nThe 1-2 leads to prioritize and why.\n\n[Discipline]\n- Every lead must carry an accessible source link; drop entries without one;\n- Quality over quantity: aim for 5-15 leads; if nothing is found, state it honestly — never fabricate;\n- Strictly enforce the 30-day window: letting older news slip in is the worst failure of this task."
       },
       "industryPolicy": {
         "title": "Industry Policy Scan",
         "desc": "Policy moves in {industry} over the past 30 days, with takeaways and impact per item",
-        "prompt": "Scan public policy developments around the \"{industry}\" sector from the last 30 days: industrial policies, planning documents, draft regulations, and enforcement moves issued by national ministries, local governments, and regulators. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Policy information must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from ministry websites, official gazettes, policy databases, and trade-media reposts, but you are not limited to these;\n- For reposted policies, always trace to the issuing agency's original text, noting the issuer and document number (if any).\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{industry}\" Policy Scan (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first by publication date, one subsection per policy:\n### MM-DD | Policy Name (Issuing Agency)\n- Policy essentials: 2-3 sentences — core content, scope, effective date / comment deadline;\n- Impact on \"{industry}\": one line — favorable / adverse / neutral, with a reason;\n- Source: an accessible link to the original text.\n\n## Policy Summary\nUp to 3 lines: the single most important policy move, and any compliance / application window to prepare for early.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Distinguish \"issued\" from \"open for comment\" — never present a draft as enacted policy;\n- If nothing is found this period, state \"No public policy moves found\" honestly — never pad with old policies."
+        "out": "30-day policy list with essentials, support strength, and application conditions\nOne-line favorable/adverse impact call + source link per policy\nSummary: the top move and application windows to prepare for",
+        "prompt": "Scan public policy developments around the \"{industry}\" sector from the last 30 days: industrial policies, planning documents, draft regulations, and enforcement moves issued by national ministries, local governments, and regulators. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Policy information must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from ministry websites, official gazettes, policy databases, and trade-media reposts, but you are not limited to these;\n- For reposted policies, always trace to the issuing agency's original text, noting the issuer and document number (if any).\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{industry}\" Policy Scan (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first by publication date, one subsection per policy:\n### MM-DD | Policy Name (Issuing Agency)\n- Policy essentials: 2-3 sentences — core content, scope, funding strength and application conditions (if any), effective date / comment deadline;\n- Impact on \"{industry}\": one line — favorable / adverse / neutral, with a reason;\n- Source: an accessible link to the original text.\n\n## Policy Summary\nUp to 3 lines: the single most important policy move, and any compliance / application window to prepare for early.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Distinguish \"issued\" from \"open for comment\" — never present a draft as enacted policy;\n- If nothing is found this period, state \"No public policy moves found\" honestly — never pad with old policies."
       },
       "regionPolicy": {
         "title": "Regional Investment-Policy Scan",
         "desc": "Investment-promotion and industry-support policies of {region} over the past 30 days",
+        "out": "30-day investment-promotion and industry-support policy list\nWho qualifies, support strength, application conditions and deadlines per policy\nHow-to-use advice + the policies to pitch or race to apply for",
         "prompt": "Scan public investment-promotion and industry-support policies of \"{region}\" from the last 30 days: investment-promotion measures, industry support funds, land/facility incentives, talent programs, and new business-environment policies. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Policy information must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from the local government website, government social-media accounts, the investment-promotion agency's official account, and authoritative media reposts, but you are not limited to these;\n- For reposted policies, always trace to the issuing agency's original text, noting the issuer and document number (if any).\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{region}\" Investment-Policy Scan (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first by publication date, one subsection per policy:\n### MM-DD | Policy Name (Issuing Agency)\n- Policy essentials: 2-3 sentences — who qualifies, the strength of support (funding/tax/land/talent), application conditions and deadlines;\n- How to use it: one line on how a host city could leverage this policy (benchmarking / pitch material / enterprise services);\n- Source: an accessible link to the original text.\n\n## Policy Summary\nUp to 3 lines: the policy most worth pitching externally, and one with an application window to race for.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Distinguish \"issued\" from \"open for comment\" — never present a draft as enacted policy;\n- If nothing is found this period, state \"No public policy moves found\" honestly — never pad with old policies."
       },
       "ddChecklist": {
@@ -724,6 +749,7 @@
       "confirm": "Import",
       "importing": "Importing...",
       "emptyTargets": "No targets available",
+      "loadFailed": "Failed to load target list",
       "success": "Imported to '{{name}}'",
       "duplicate": "A file with identical content already exists",
       "failed": "Import failed"
@@ -807,6 +833,14 @@
     "createInProgress": "A task is being created, please wait",
     "createFailed": "Failed to create task",
     "renameFailed": "Failed to rename task",
+    "deleteFailed": "Failed to delete task",
+    "pauseFailed": "Failed to pause task",
+    "confirmFailed": "Failed to send confirmation",
+    "resumeFailed": "Failed to resume task",
+    "logRefreshFailed": "Failed to refresh logs",
+    "archiveFailed": "Failed to archive task",
+    "unarchiveFailed": "Failed to restore task",
+    "setModeFailed": "Failed to switch mode",
     "startFailed": "Failed to start task: ",
     "skillConfirmExpired": "⚠️ This confirmation has expired and the skill was skipped. Re-initiate the request if needed.",
     "confirmWorkspace": "Use this directory as workspace?\n\n{{path}}\n\nFiles in this directory may be modified by the task.",
@@ -844,10 +878,12 @@
     "hintCreate": "Create a subscription — intelligence delivered on schedule",
     "summaryLine": "{{n}} subscriptions · {{unread}} new · {{abnormal}} abnormal",
     "newSubscription": "New Subscription",
+    "newRollup": "New Portfolio Digest",
     "badge": {
       "unread": "Unread intel"
     },
     "empty": "No subscriptions yet — click \"New Subscription\" to create one",
+    "emptyRollup": "No portfolio digests yet — click \"New Portfolio Digest\" to create one",
     "checkRow": "Select {{name}}",
     "tab": {
       "all": "All",
@@ -860,13 +896,10 @@
     "statusAll": "All statuses",
     "statusAbnormal": "Abnormal only",
     "statusPaused": "Paused only",
-    "scopeFilter": "Scope",
-    "scopeAll": "All types",
-    "scope": {
-      "focus": "Focus",
-      "sweep": "Sweep",
-      "rollup": "Portfolio Digest"
-    },
+    "typeFilter": "Type",
+    "typeAll": "All types",
+    "typeIntel": "Intel subscription",
+    "typeRollup": "Portfolio Digest",
     "searchPlaceholder": "Search subscriptions…",
     "checkedCount": "{{n}} selected",
     "batchPause": "Pause",
@@ -929,10 +962,13 @@
     "deleteRun": "Delete this run",
     "deleteRunConfirm": "Delete this run? Its report copy will be removed. This cannot be undone.",
     "opFailed": "Operation failed",
+    "batchPartialFailed": "{{failed}} of {{total}} items failed, please retry",
     "form": {
       "newTitle": "New Subscription",
+      "newRollupTitle": "New Portfolio Digest",
       "editTitle": "Edit Subscription",
-      "fromTemplate": "From task template",
+      "fromTemplate": "From templates",
+      "outPreviewTitle": "What you'll get",
       "freeInput": "Free input",
       "promptLabel": "Task prompt",
       "promptPlaceholder": "Describe the intelligence task this subscription should run on a schedule…",
@@ -940,6 +976,7 @@
       "prev": "Back",
       "stepPeriod": "Schedule",
       "stepTarget": "Name & destination",
+      "stepTargetRollup": "Name & digest skeleton",
       "nameLabel": "Subscription name",
       "namePlaceholder": "Leave empty to auto-name from the prompt",
       "categoryLabel": "Category",
@@ -955,9 +992,11 @@
       "saving": "Saving…",
       "saved": "Subscription saved",
       "saveFailed": "Failed to save",
-      "scopeLabel": "Scope",
+      "targetSectionLabel": "Output destination (archive)",
+      "targetSectionHint": "Archiving = each issue is auto-filed into the chosen container (project / base library) for long-term retrieval",
+      "rollupNoTarget": "Portfolio digests don't archive: each report is visible only in Inbox and Home, never written to projects / base libraries",
       "rollupSkeletonLabel": "Digest skeleton ({sections} marks where per-subscription material is inserted)",
-      "rollupSkeletonHint": "Portfolio digests neither fetch nor archive: each issue aggregates recent issues of the selected subscriptions into one summary report",
+      "rollupSkeletonHint": "Each issue replaces {sections} with recent outputs of the selected subscriptions; adjust the digest requirements above as needed",
       "rollupScopeLabel": "Aggregation scope",
       "rollupScopeHint": "Leave unchecked to aggregate all enabled subscriptions (excluding portfolio digests themselves)",
       "rollupPromptTemplate": "Below are recent intel issues from the selected subscriptions:\n{sections}\n\nSummarize them into one portfolio digest:\n1. Merge duplicated signals by topic, noting the source subscription;\n2. Point out contradictory information explicitly;\n3. End with a list of things worth watching next week."
@@ -1000,6 +1039,8 @@
   },
   "intel": {
     "title": "Intel Center",
+    "summaryLoadFailed": "Failed to load subscription data",
+    "feedLoadFailed": "Failed to load intel feed",
     "tab": {
       "feed": "Feed",
       "leads": "Leads",
@@ -1042,6 +1083,7 @@
       "upgradePrompt": "Track the lead \"{{name}}\" continuously: latest public updates, bids & tenders, and policy signals. Each issue: 1) new updates 2) actionable signals 3) recommended follow-ups. Report new information only; mark historical items with dates.",
       "manualAdded": "Lead saved",
       "opFailed": "Operation failed. Please retry.",
+      "loadFailed": "Failed to load lead pool",
       "deleteLabel": "Delete lead",
       "saveLead": "Save as lead",
       "saveLeadHint": "Save to lead pool (source: {{name}}); rename if needed",

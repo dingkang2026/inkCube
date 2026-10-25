@@ -24,9 +24,9 @@ export interface ScheduleRow {
   interval_value: string
   target_type: 'project' | 'baselib' | null
   target_id: string | null
-  /** 订阅定位三型（2.11 §12）：focus 盯梢 / sweep 撒网 / rollup 组合周报
-   *  （db 出参归一恒非空） */
-  scope: 'focus' | 'sweep' | 'rollup'
+  /** 订阅类型标记（2.11 §12 收敛 2026-10-25）：'rollup' 组合周报 / null 情报
+   *  订阅（focus/sweep 已退役置 NULL；db 出参归一恒为这两值） */
+  scope: 'rollup' | null
   /** rollup 聚合圈选（订阅 id 数组；null = 全部启用订阅） */
   digest_schedule_ids: string[] | null
   auto_import: number | boolean
@@ -60,15 +60,22 @@ export interface ScheduleRunRow {
   schedule_enabled?: number
   /** inbox/digest 行透传订阅分类（0.6 §3.2 情报流类别 chip；订阅删除后 fallback general） */
   schedule_category?: string
-  /** inbox/digest 行透传订阅定位（2.11 §12.4：rollup 期次徽标随行） */
-  schedule_scope?: string
+  /** inbox/digest 行透传订阅类型（2.11 §12.4：rollup 期次徽标随行） */
+  schedule_scope?: string | null
   archive_last_run_id?: string | null
 }
 
 const ZERO_TOTALS: ScheduleTotals = { n: 0, total: 0, abnormal: 0 }
 
+/** 摘要拉取三态（页面遍历 review M1-1 2026-10-24）：失败必须区别于真实零订阅，
+ *  引导类消费端（IntelFeed/IntelCardZone 空态）不得在失败时渲染「零订阅」
+ *  建订阅引导（误导创建重复订阅）；纯数字展示类消费端（NavTabs 徽章/
+ *  MorningHero/ScheduleSideSummary）失败回退 0 不触发动作、可接受 */
+export type SchedulesStatus = 'loading' | 'loaded' | 'failed'
+
 export function useSchedules() {
   const [totals, setTotals] = useState<ScheduleTotals>(ZERO_TOTALS)
+  const [status, setStatus] = useState<SchedulesStatus>('loading')
 
   const refresh = useCallback(async () => {
     try {
@@ -76,8 +83,10 @@ export function useSchedules() {
         totals?: ScheduleTotals
       }
       setTotals(res?.totals ?? ZERO_TOTALS)
+      setStatus('loaded')
     } catch (err) {
       console.error('Load schedule summary failed:', err)
+      setStatus('failed')
     }
   }, [])
 
@@ -93,5 +102,5 @@ export function useSchedules() {
     void refresh()
   })
 
-  return { totals, refresh }
+  return { totals, status, refresh }
 }

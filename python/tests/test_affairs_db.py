@@ -47,13 +47,62 @@ def test_insert_playbook_tasks_current_open_others_pending(db):
     assert not any(t["task_type"] == "recurring" for t in by["during"])
 
 
-def test_insert_playbook_tasks_seeds_current_occurrence_for_recurring(db):
+def test_insert_playbook_tasks_seeds_first_open_occurrence_for_recurring(db):
+    """2026-10-24 裁决:recurring 首期 = 首个未过期期次(当期已过 → 下一期),
+    铺入不产出出生即逾期实例。"""
+    import datetime as _dt
+    from affairs_service import first_open_occurrence
     pid = db.create_project(name="P", project_type="recruitment", stage="after")["id"]
     monthly = next(t for t in db.list_phase_tasks(pid)
                    if t["template_id"] == "playbook_recruitment_after_monthly_report")
     assert monthly["status"] == "open"
-    assert monthly["occurrence_key"]  # 非空,形如 2026-10
-    assert monthly["due_date"]
+    occ, due = first_open_occurrence(
+        {"freq": "monthly", "due_day": 15}, _dt.date.today())
+    assert monthly["occurrence_key"] == occ
+    assert monthly["due_date"] == due
+    assert monthly["due_date"] >= _dt.date.today().isoformat()
+
+
+def test_first_open_occurrence_db_service_parity(db):
+    """DB 层铺入副本与服务层口径互证(Task 3 惯例):同 rule 同日同结果。"""
+    import datetime as _dt
+    import affairs_service
+    for rule in ({"freq": "monthly", "due_day": 15},
+                 {"freq": "monthly", "due_day": 31},
+                 {"freq": "quarterly", "due_day": "end"},
+                 {"freq": "yearly", "due_day": "04-30"},
+                 {"freq": "yearly", "due_day": "12-31"}):
+        assert (db._first_open_occurrence(rule)
+                == affairs_service.first_open_occurrence(rule, _dt.date.today()))
+
+
+def test_migrate_purges_born_overdue_recurring(db):
+    """2026-10-24 存量清理:open + recurring + due < '2026-10-22'(功能上线日,
+    上线前不存在合法 open recurring 逾期 → 必为出生即逾期,零误伤)→ 启动删除;
+    其余(open 未到期/done/非 recurring)保留;重复 initialize 幂等。"""
+    pid = db.create_project(name="P", project_type="general", stage="before")["id"]
+    born = db.create_phase_task(pid, "before", "recurring", "出生即逾期",
+                                due_date="2026-04-30", occurrence_key="2026",
+                                recurrence_rule={"freq": "yearly", "due_day": "04-30"},
+                                template_id="t1")
+    kept_open = db.create_phase_task(pid, "before", "recurring", "未到期",
+                                     due_date="2027-04-30", occurrence_key="2027",
+                                     recurrence_rule={"freq": "yearly", "due_day": "04-30"},
+                                     template_id="t2")
+    done = db.create_phase_task(pid, "before", "recurring", "已完成",
+                                due_date="2026-01-15", occurrence_key="2026-01",
+                                template_id="t3")
+    db.conn.execute("UPDATE phase_tasks SET status='done' WHERE id=?", (done["id"],))
+    material = db.create_phase_task(pid, "before", "material", "过期资料",
+                                    due_date="2026-01-20")
+    db.conn.commit()
+    db.initialize()  # 启动迁移入口
+    ids = {t["id"] for t in db.list_phase_tasks(pid)}
+    assert born["id"] not in ids
+    assert {kept_open["id"], done["id"], material["id"]} <= ids
+    db.initialize()  # 幂等:重入不抛、不误删
+    assert {kept_open["id"], done["id"], material["id"]} <= {
+        t["id"] for t in db.list_phase_tasks(pid)}
 
 
 def test_create_project_rolls_back_on_seed_failure(db):

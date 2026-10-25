@@ -107,14 +107,21 @@ export function useTasks(defaultTaskTitle = 'New Task') {
 
   const handleDeleteTask = useCallback(
     async (id: string) => {
-      await window.electronAPI.invoke('tasks:delete', id)
+      // 失败反馈（页面遍历 review M2-1）：运行中拒删/后端 5xx 不再静默
+      try {
+        await window.electronAPI.invoke('tasks:delete', id)
+      } catch (err) {
+        console.error('Delete task failed:', err)
+        showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.deleteFailed'), t), 'error')
+        return
+      }
       setTasks((prev) => prev.filter((t) => t.id !== id))
       setArchivedTasks((prev) => prev.filter((t) => t.id !== id))
       if (activeTaskId === id) {
         setActiveTaskId(null)
       }
     },
-    [activeTaskId],
+    [activeTaskId, showToast, t],
   )
 
   const handleRenameTask = useCallback(
@@ -140,8 +147,19 @@ export function useTasks(defaultTaskTitle = 'New Task') {
 
   const handleArchiveTask = useCallback(
     async (id: string) => {
-      const res = await window.electronAPI.invoke('tasks:archive', id) as { error?: string }
-      if (res?.error) return
+      // 失败反馈（M2-1）：409 有活跃工作等不再「点了没反应」
+      let res: { error?: string }
+      try {
+        res = await window.electronAPI.invoke('tasks:archive', id) as { error?: string }
+      } catch (err) {
+        console.error('Archive task failed:', err)
+        showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.archiveFailed'), t), 'error')
+        return
+      }
+      if (res?.error) {
+        showToast(t('task.archiveFailed'), 'error')
+        return
+      }
       setTasks((prev) => {
         const task = prev.find((t) => t.id === id)
         if (task) {
@@ -154,13 +172,23 @@ export function useTasks(defaultTaskTitle = 'New Task') {
         setActiveTaskId(null)
       }
     },
-    [activeTaskId],
+    [activeTaskId, showToast, t],
   )
 
   const handleUnarchiveTask = useCallback(
     async (id: string) => {
-      const res = await window.electronAPI.invoke('tasks:unarchive', id) as { error?: string }
-      if (res?.error) return
+      let res: { error?: string }
+      try {
+        res = await window.electronAPI.invoke('tasks:unarchive', id) as { error?: string }
+      } catch (err) {
+        console.error('Unarchive task failed:', err)
+        showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.unarchiveFailed'), t), 'error')
+        return
+      }
+      if (res?.error) {
+        showToast(t('task.unarchiveFailed'), 'error')
+        return
+      }
       setArchivedTasks((prev) => {
         const task = prev.find((t) => t.id === id)
         if (task) {
@@ -170,19 +198,32 @@ export function useTasks(defaultTaskTitle = 'New Task') {
         return prev
       })
     },
-    [],
+    [showToast, t],
   )
 
   const handleExportTask = useCallback(
     async (id: string) => {
-      return await window.electronAPI.invoke('tasks:export', id)
+      // 失败反馈（M2-2）：导出失败不再完全静默（无对话框无提示）
+      try {
+        return await window.electronAPI.invoke('tasks:export', id)
+      } catch (err) {
+        console.error('Export task failed:', err)
+        showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.exportFailed'), t), 'error')
+        return undefined
+      }
     },
-    [],
+    [showToast, t],
   )
 
   const handleSetTaskMode = useCallback(
     async (id: string, mode: 'coding' | 'general') => {
-      await window.electronAPI.invoke('tasks:setMode', { taskId: id, mode })
+      try {
+        await window.electronAPI.invoke('tasks:setMode', { taskId: id, mode })
+      } catch (err) {
+        console.error('Set task mode failed:', err)
+        showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.setModeFailed'), t), 'error')
+        return
+      }
       setTasks((prev) =>
         prev.map((t) => (t.id === id ? { ...t, mode } : t)),
       )
@@ -190,7 +231,7 @@ export function useTasks(defaultTaskTitle = 'New Task') {
         prev.map((t) => (t.id === id ? { ...t, mode } : t)),
       )
     },
-    [],
+    [showToast, t],
   )
 
   const currentTasks = activeTab === 'active' ? tasks : archivedTasks

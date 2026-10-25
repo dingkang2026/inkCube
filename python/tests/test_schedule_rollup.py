@@ -456,6 +456,20 @@ def test_list_digest_source_runs_max_runs_keeps_latest(tmp_db):
     assert [r["summary"] for r in rows] == [["要点run_2"], ["要点run_3"]]
 
 
+def test_list_digest_source_runs_max_runs_under_limit_keeps_all(tmp_db):
+    """第二轮 CodeReview B-1：max_runs > 窗口期数 → 全量返回（负起始切片曾
+    静默丢头部；scheduler 传探测值 51，窗口 26–50 期为必经路径）。"""
+    a = _make_source(tmp_db, "华润舆情")
+    base = datetime(2026, 10, 1, 9, 0, 0)
+    for i in range(30):
+        _add_done_run(tmp_db, a["id"], f"run_{i:02d}",
+                      (base + timedelta(days=i)).isoformat(), [f"要点{i}"])
+    rows = tmp_db.list_digest_source_runs(
+        [a["id"]], "2000-01-01T00:00:00", max_runs=51)
+    assert len(rows) == 30                       # 不丢任何一期
+    assert rows[0]["finished_at"].startswith("2026-10-01")   # 最早一期仍在且升序
+
+
 def test_rollup_prompt_truncation_annotated(tmp_db, tmp_path, frozen_now):
     """m-2 端到端：素材超上限取最近 N 期且素材尾留标注（禁止静默截断）。"""
     from scheduler import ROLLUP_MAX_SOURCE_RUNS

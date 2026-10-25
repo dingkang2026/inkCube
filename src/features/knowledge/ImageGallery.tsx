@@ -1,7 +1,7 @@
 /** src/features/knowledge/ImageGallery.tsx */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Pause, Play, Trash2, X } from 'lucide-react'
+import { Search, Package, Image as ImageIcon, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight, Pause, Play, Trash2, X, AlertTriangle } from 'lucide-react'
 import type { ImageRecord, KnowledgeIpcChannels } from './types'
 import { IMAGE_CATEGORIES, DEFAULT_KNOWLEDGE_IPC_CHANNELS } from './types'
 import { SkeletonImageGrid } from './SkeletonLoader'
@@ -56,9 +56,17 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
   const [currentPage, setCurrentPage] = useState(1)
   const [lightboxIndex, setLightboxIndex] = useState(-1)
+  // 拉取失败标记（静默 catch 排查 2026-10-24）：空列表时给错误+重试，不得伪装
+  // 「暂无图片/无匹配」；有内容（筛选重拉/轮询失败）保留现有内容静默
+  const [loadFailed, setLoadFailed] = useState(false)
   const [lightboxZoom, setLightboxZoom] = useState(1)
 
   const LIMIT = 40
+
+  // 轮询/边沿补拉保持用户当前页（页面遍历 review M3-2 2026-10-24）：固定 offset:0
+  // 会把翻到第 N 页的视图替换回第一页内容，页码与内容错位
+  const currentPageRef = useRef(currentPage)
+  currentPageRef.current = currentPage
 
   const loadImages = async (projId: string, off: number) => {
     setLoading(true)
@@ -77,8 +85,11 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
       setTotal(result.total || 0)
       if (result.status_counts) setStatusCounts(result.status_counts)
       if (result.category_counts) setCategoryCounts(result.category_counts)
+      setLoadFailed(false)
     } catch (err) {
       console.error('Failed to load images:', err)
+      // 失败不覆盖现有内容；空列表置位 → 渲染层错误+重试
+      setLoadFailed(true)
     } finally {
       setLoading(false)
     }
@@ -89,7 +100,7 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
     const result: any = await window.electronAPI.invoke(ipc.getProjectImages, {
       projectId: projId,
       limit: LIMIT,
-      offset: 0,
+      offset: (currentPageRef.current - 1) * LIMIT,
       fileId: fileId || undefined,
       status: statusFilter || undefined,
       category: categoryFilter !== 'all' ? categoryFilter : undefined,
@@ -100,6 +111,8 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
     setTotal(result.total || 0)
     if (result.status_counts) setStatusCounts(result.status_counts)
     if (result.category_counts) setCategoryCounts(result.category_counts)
+    // 静默刷新成功同样复位失败态（重试按钮走本函数，loadImages 不参与）
+    setLoadFailed(false)
   }, [fileId, statusFilter, categoryFilter, sizeFilter, searchQuery, ipc])
 
   useEffect(() => {
@@ -294,7 +307,7 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
   }
 
   // Empty state (no images at all) — still show filter tabs so user can navigate
-  const showEmptyState = !loading && images.length === 0 && !statusFilter && !categoryFilter && !searchQuery
+  const showEmptyState = !loading && images.length === 0 && !statusFilter && !categoryFilter && !searchQuery && !loadFailed
 
   return (
     <div className={s.container}>
@@ -381,6 +394,21 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
         </select>
       </div>
 
+      {/* 首拉失败态（静默 catch 排查 2026-10-24）：错误+重试，区别于空态/无匹配 */}
+      {loadFailed && filteredImages.length === 0 && !loading && (
+        <div className={s.empty} data-testid="image-gallery-error">
+          <div className={s.emptyIcon}><AlertTriangle size={28} /></div>
+          <p>{t('knowledge.galleryLoadFailed')}</p>
+          <button
+            type="button"
+            className={s.categoryTab}
+            onClick={() => { if (projectId) void refreshImages(projectId).catch(() => { /* 重试失败保持错误态，下一轮轮询自愈 */ }) }}
+          >
+            {t('knowledge.retry')}
+          </button>
+        </div>
+      )}
+
       {/* Empty state: no images at all */}
       {showEmptyState && (
         <div className={s.empty}>
@@ -390,7 +418,7 @@ export function ImageGallery({ projectId, fileId, describePaused, onToggleDescri
       )}
 
       {/* No results for current filter */}
-      {!showEmptyState && filteredImages.length === 0 && !loading && (
+      {!showEmptyState && filteredImages.length === 0 && !loading && !loadFailed && (
         <div className={s.noMatch}>
           <p>{searchQuery ? t('knowledge.noImageMatch') : t('knowledge.noImages')}</p>
         </div>

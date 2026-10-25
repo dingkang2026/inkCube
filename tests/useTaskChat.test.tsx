@@ -19,6 +19,8 @@ const showCompactSpy = vi.hoisted(() => vi.fn())
 // V2.1-R10：type 输入可见性——自动放大（action）+ 输入完成回小卡（observation）
 const expandForInputSpy = vi.hoisted(() => vi.fn())
 const collapseIfAutoSpy = vi.hoisted(() => vi.fn())
+// 动作失败反馈（静默 catch 排查 2026-10-24）：pause/shell/skill/resume 失败 toast
+const toastSpy = vi.hoisted(() => vi.fn())
 vi.mock('../src/features/browser/browserPanelStore', () => ({
   browserPanelStore: {
     showCompact: showCompactSpy,
@@ -33,6 +35,9 @@ vi.mock('../src/features/browser/browserPanelStore', () => ({
 // 无 i18n 实例时 t 返回 key 本身——错误文案断言用 key 片段（见 T-2 用例）
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
+}))
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => toastSpy,
 }))
 import { useTaskChat } from '../src/features/task/useTaskChat'
 
@@ -526,5 +531,46 @@ describe('useTaskChat — 确认弹窗倒计时（timeout 载荷同步，1.1 §7
     // 到期清理路径不得发 confirm 拒绝（后端 timed_out 分支才发 confirm_expired）
     expect(invoke).not.toHaveBeenCalledWith('tasks:confirmShell', expect.anything())
     expect(invoke).not.toHaveBeenCalledWith('tasks:confirmSkill', expect.anything())
+  })
+})
+
+describe('useTaskChat 动作失败反馈（静默 catch 排查 2026-10-24）', () => {
+  beforeEach(() => { toastSpy.mockClear() })
+
+  it('pause 失败 → task.pauseFailed toast（用户不得误以为已暂停）', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:pause' ? Promise.reject(new Error('boom')) : Promise.resolve({}))
+    await act(async () => { await result.current.handlePauseTask() })
+    expect(toastSpy).toHaveBeenCalledWith('task.pauseFailed', 'error')
+  })
+
+  it('shell 确认失败 → task.confirmFailed toast（弹窗已清，后端等到超时）', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:confirmShell' ? Promise.reject(new Error('boom')) : Promise.resolve({}))
+    await act(async () => { await result.current.handleShellConfirm(true) })
+    expect(toastSpy).toHaveBeenCalledWith('task.confirmFailed', 'error')
+  })
+
+  it('skill 确认失败 → task.confirmFailed toast', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:confirmSkill' ? Promise.reject(new Error('boom')) : Promise.resolve({}))
+    await act(async () => { await result.current.handleSkillConfirm(true) })
+    expect(toastSpy).toHaveBeenCalledWith('task.confirmFailed', 'error')
+  })
+
+  it('resume 失败 → task.resumeFailed toast 且 isGenerating 复位（canResume 已提前置 false，失败必须可感知）', async () => {
+    const { result } = renderHook(() => useTaskChat('t1'))
+    await settle()
+    invoke.mockImplementation((channel: string) =>
+      channel === 'tasks:chat' ? Promise.reject(new Error('boom')) : Promise.resolve({ messages: [] }))
+    await act(async () => { await result.current.handleResumeTask() })
+    expect(toastSpy).toHaveBeenCalledWith('task.resumeFailed', 'error')
+    expect(result.current.isGenerating).toBe(false)
   })
 })

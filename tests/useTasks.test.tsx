@@ -75,3 +75,35 @@ describe('useTasks.handleRenameTask', () => {
     expect(result.current.tasks[0].title).toBe('old')
   })
 })
+
+describe('useTasks.handleDeleteTask（页面遍历 review M2-1 回归）', () => {
+  it('shows toast and keeps task on backend error（原实现无 catch 静默）', async () => {
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'tasks:listFiltered') {
+        return Promise.resolve({ tasks: [baseTask], has_more: false })
+      }
+      // 运行中拒删 409 → 抛错通道
+      return Promise.reject(new Error('Python backend error (409)'))
+    })
+    const result = await setup()
+
+    await act(async () => {
+      await result.current.handleDeleteTask('t1')
+    })
+
+    expect(showToastMock).toHaveBeenCalledWith('task.deleteFailed', 'error')
+    // 失败不更新本地列表
+    expect(result.current.tasks).toHaveLength(1)
+  })
+
+  it('removes task locally on success', async () => {
+    const result = await setup()
+
+    await act(async () => {
+      await result.current.handleDeleteTask('t1')
+    })
+
+    expect(showToastMock).not.toHaveBeenCalled()
+    expect(result.current.tasks).toHaveLength(0)
+  })
+})

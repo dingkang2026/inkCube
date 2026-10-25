@@ -33,29 +33,44 @@ export function ImportTargetDialog({ taskId, path, filename, onDone, onClose }: 
   const [projects, setProjects] = useState<TargetItem[]>([])
   const [libs, setLibs] = useState<TargetItem[]>([])
   const [loading, setLoading] = useState(true)
+  // 列表加载失败标记（静默 catch 排查 2026-10-24）：按 tab 记录，失败态给
+  // 错误+重试，不得落到「暂无可用目标」伪装零目标
+  const [loadFailed, setLoadFailed] = useState<Tab | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
 
   const errCode = (err: unknown) => (err as { errorCode?: string })?.errorCode
 
-  useEffect(() => {
-    let cancelled = false
+  const loadProjects = useCallback(() => {
     setLoading(true)
     // 选择器形态：limit=0 全量（目标列表不得截断）
     window.electronAPI.invoke('knowledge:listProjects', { limit: 0 })
       .then((res) => {
-        if (!cancelled) setProjects(((res as { projects?: TargetItem[] })?.projects ?? []))
+        setProjects(((res as { projects?: TargetItem[] })?.projects ?? []))
+        setLoadFailed((prev) => (prev === 'project' ? null : prev))
       })
-      .catch((err) => console.error('Import dialog: list projects failed:', err))
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+      .catch((err) => {
+        console.error('Import dialog: list projects failed:', err)
+        setLoadFailed('project')
+      })
+      .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    loadProjects()
+  }, [loadProjects])
 
   const loadLibs = useCallback(() => {
     setLoading(true)
     window.electronAPI.invoke('baseLib:list', { limit: 0 })
-      .then((res) => setLibs(((res as { base_libs?: TargetItem[] })?.base_libs ?? [])))
-      .catch((err) => console.error('Import dialog: list base libs failed:', err))
+      .then((res) => {
+        setLibs(((res as { base_libs?: TargetItem[] })?.base_libs ?? []))
+        setLoadFailed((prev) => (prev === 'baselib' ? null : prev))
+      })
+      .catch((err) => {
+        console.error('Import dialog: list base libs failed:', err)
+        setLoadFailed('baselib')
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -124,6 +139,17 @@ export function ImportTargetDialog({ taskId, path, filename, onDone, onClose }: 
         <div className={s.list}>
           {loading ? (
             <div className={s.empty}>{t('task.loadingFile')}</div>
+          ) : loadFailed === tab ? (
+            <div className={s.empty} data-testid="import-targets-error">
+              <p>{t('task.import.loadFailed')}</p>
+              <button
+                type="button"
+                className={s.item}
+                onClick={() => (tab === 'project' ? loadProjects() : loadLibs())}
+              >
+                {t('knowledge.retry')}
+              </button>
+            </div>
           ) : items.length === 0 ? (
             <div className={s.empty}>{t('task.import.emptyTargets')}</div>
           ) : (

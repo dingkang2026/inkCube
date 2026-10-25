@@ -28,7 +28,7 @@ interface IntelCardZoneProps {
 
 export function IntelCardZone({ onOpen }: IntelCardZoneProps) {
   const { t } = useTranslation()
-  const { totals } = useSchedules()
+  const { totals, status, refresh } = useSchedules()
   const [rows, setRows] = useState<ScheduleRunRow[]>([])
 
   const load = useCallback(async () => {
@@ -52,8 +52,38 @@ export function IntelCardZone({ onOpen }: IntelCardZoneProps) {
     void load()
   })
 
-  // 零订阅空态引导（0.6 §3.2：首页第一公民必须有路可走——建订阅）
+  // 空态三分支（M1-1，同 IntelFeed）：summary 失败给错误+重试，loading 中性占位，
+  // 仅真实零订阅引导建订阅——首页卡区同样不得误导创建重复订阅
+  if (status === 'failed') {
+    return (
+      <section className={s.block} data-testid="intel-card-zone">
+        <div className={s.titleRow}>
+          <span className={s.sectionTitle}>{t('home.digestTitle')}</span>
+        </div>
+        <div className={s.emptyGuide} data-testid="intel-zone-error">
+          <p className={s.emptyText}>{t('intel.summaryLoadFailed')}</p>
+          <button
+            type="button"
+            className={s.emptyBtn}
+            onClick={() => void refresh()}
+          >
+            {t('knowledge.retry')}
+          </button>
+        </div>
+      </section>
+    )
+  }
   if (!totals.n) {
+    if (status === 'loading') {
+      return (
+        <section className={s.block} data-testid="intel-card-zone">
+          <div className={s.titleRow}>
+            <span className={s.sectionTitle}>{t('home.digestTitle')}</span>
+          </div>
+          <div className="empty-block">{t('common.loading')}</div>
+        </section>
+      )
+    }
     return (
       <section className={s.block} data-testid="intel-card-zone">
         <div className={s.titleRow}>
@@ -130,7 +160,7 @@ export function IntelCardZone({ onOpen }: IntelCardZoneProps) {
               <div className={s.bigMeta}>
                 <span className={s.catChip}>{t(`intel.cat.${latest.schedule_category || 'general'}`)}</span>
                 {latest.schedule_scope === 'rollup' && (
-                  <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                  <span className={s.rollupTag}>{t('schedule.typeRollup')}</span>
                 )}
                 {/* 订阅名仅标题取自摘要时补显，防同名重复 */}
                 {latest.summary?.[0] && <span className={s.bigName}>{latest.schedule_name}</span>}
@@ -159,7 +189,7 @@ export function IntelCardZone({ onOpen }: IntelCardZoneProps) {
                   )}
                   <span className={s.rowTitle}>
                     {run.schedule_scope === 'rollup' && (
-                      <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                      <span className={s.rollupTag}>{t('schedule.typeRollup')}</span>
                     )}
                     {run.summary?.[0] || run.schedule_name}
                   </span>

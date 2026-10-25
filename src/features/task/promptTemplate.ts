@@ -18,11 +18,13 @@ export const TASK_TEMPLATES: TaskTemplateDef[] = [
   { id: 'dataSummary', category: 'off', icon: 'Table' },
 ];
 
-/** 订阅白名单 6 条（0.6 §3.2 V2-E1a T12：仅 ScheduleFormModal 消费）；
- *  industryPolicy/regionPolicy 为 T12 新增（产业政策/区域招商政策扫描） */
+/** 订阅白名单 7 条（0.6 §3.2 V2-E1a T12：仅 ScheduleFormModal 消费）；
+ *  industryPolicy/regionPolicy 为 T12 新增（产业政策/区域招商政策扫描）；
+ *  industrySentiment 为 2026-10-24 新增（产业舆情扫描，盯一条赛道而非一家企业） */
 export const INTEL_TEMPLATES: TaskTemplateDef[] = [
   { id: 'sentiment', category: 'mon', icon: 'Newspaper' },
   { id: 'competitor', category: 'mon', icon: 'Activity' },
+  { id: 'industrySentiment', category: 'ind', icon: 'Radio' },
   { id: 'industryEvents', category: 'ind', icon: 'TrendingUp' },
   { id: 'industryLeads', category: 'ind', icon: 'Target' },
   { id: 'industryPolicy', category: 'ind', icon: 'Landmark' },

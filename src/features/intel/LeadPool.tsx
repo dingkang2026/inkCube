@@ -57,6 +57,9 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
   const confirmDialog = useConfirm()
   const [leads, setLeads] = useState<LeadRow[]>([])
   const [loaded, setLoaded] = useState(false)
+  // 首拉失败标记（静默 catch 排查 2026-10-24）：失败 → 错误+重试，不得落到
+  // 空列结构伪装「零线索」；重拉失败（loaded=true）保留现有内容静默
+  const [loadFailed, setLoadFailed] = useState(false)
   const loadSeq = useRef(0)
 
   // 立项内联模态
@@ -77,8 +80,10 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
       if (seq !== loadSeq.current) return
       setLeads(res.leads ?? [])
       setLoaded(true)
+      setLoadFailed(false)
     } catch {
-      /* 拉取失败静默（保留现有内容） */
+      // 失败不覆盖现有内容；仅未加载过（loaded=false）时升级错误态
+      setLoadFailed(true)
     }
   }, [])
 
@@ -185,6 +190,21 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
     lead.source_type === 'run'
       ? (lead.source_schedule_name || t('intel.tab.feed'))
       : t('intel.lead.sourceManual')
+
+  // 首拉失败态（静默 catch 排查 2026-10-24）：错误+重试，区别于真实零线索引导态
+  if (loadFailed && !loaded) {
+    return (
+      <div className={s.wrap} data-testid="lead-pool">
+        <div className={s.empty} data-testid="lead-error">
+          <Target size={32} className={s.emptyIcon} />
+          <p className={s.emptyText}>{t('intel.lead.loadFailed')}</p>
+          <button type="button" className={s.emptyBtn} onClick={() => void load()}>
+            {t('knowledge.retry')}
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   // 零线索空态（0.6 §6.2）：引导从情报期次沉淀 + 手动录入兜底
   if (loaded && leads.length === 0) {

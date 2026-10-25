@@ -136,6 +136,9 @@ export function TemplateManagement({ projectType, initialSection }: TemplateMana
       setTemplates(res.templates || [])
     } catch (err) {
       console.error('Failed to load templates:', err)
+      // 列表拉取失败提示（页面遍历 review M3-4 2026-10-24）：不再静默空列表，
+      // 用户需知道当前空是失败而非真实为空（手动刷新可恢复）
+      showToast(t('common.listLoadFailed'), 'error')
     }
   }, [projectType])
 

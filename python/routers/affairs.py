@@ -83,16 +83,17 @@ async def create_phase_task(project_id: str, body: TaskIn):
     if not project or project.get("kind") != "project":
         raise HTTPException(status_code=404, detail="project not found")
     phase = affairs_service.phase_of(project.get("stage") or "none")
-    # 自建 recurring:rule 白名单校验(与 roll/activate 同口径)并铺当期实例——
-    # occ/due 由 rule 推导,用户传的 due_date 对 recurring 无意义(随期次滚动,
-    # 单期可后续 PATCH);非 recurring 沿用用户 given due
+    # 自建 recurring:rule 白名单校验(与 roll/activate 同口径)并铺首个
+    # 未过期期次实例——occ/due 由 rule 推导(当期已过 → 下一期,2026-10-24 裁决:
+    # 自建不产出出生即逾期实例),用户传的 due_date 对 recurring 无意义
+    # (随期次滚动,单期可后续 PATCH);非 recurring 沿用用户 given due
     occ = None
     due = body.due_date
     if body.task_type == "recurring":
         rule = affairs_service.parse_rule(body.recurrence_rule)
         if not rule:
             raise HTTPException(status_code=422, detail="invalid recurrence_rule")
-        occ, due = affairs_service.current_occurrence(rule, date.today())
+        occ, due = affairs_service.first_open_occurrence(rule, date.today())
     task = db.create_phase_task(
         project_id=project_id, phase=phase, task_type=body.task_type,
         title=body.title.strip(), description=body.description,

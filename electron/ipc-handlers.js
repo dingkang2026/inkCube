@@ -1460,11 +1460,13 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // ── Schedules (2.11 §4.2, E3)；rebuildArchive 通道随档案实现（E3 T10）同变更落地 ──
 
-  ipcMain.handle('schedules:list', async (_event, { category, enabled, q, limit, offset } = {}) => {
+  ipcMain.handle('schedules:list', async (_event, { category, enabled, q, scope, limit, offset } = {}) => {
     const params = new URLSearchParams()
     if (category) params.set('category', category)
     if (enabled !== undefined && enabled !== null) params.set('enabled', String(enabled))
     if (q) params.set('q', q)
+    // 类型筛选透传（2.11 §12 收敛：rollup|intel；丢弃会让筛选静默失效）
+    if (scope) params.set('scope', String(scope))
     if (limit !== undefined && limit !== null) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
     const qs = params.toString()

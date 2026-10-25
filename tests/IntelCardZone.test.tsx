@@ -139,12 +139,12 @@ describe('IntelCardZone（0.6 §3.2 首页情报卡区）', () => {
     render(<IntelCardZone onOpen={() => {}} />)
     await flush()
     const big = screen.getByTestId('digest-big') as HTMLElement
-    expect(big.textContent).toContain('schedule.scope.rollup')
+    expect(big.textContent).toContain('schedule.typeRollup')
     const pausedRow = screen.getByText('已读要点').closest('[data-testid="digest-row"]') as HTMLElement
-    expect(pausedRow.textContent).toContain('schedule.scope.rollup')
-    // 普通（focus）订阅行无徽标
+    expect(pausedRow.textContent).toContain('schedule.typeRollup')
+    // 普通（情报）订阅行无徽标
     const runningRow = screen.getByText('竞品监控').closest('[data-testid="digest-row"]') as HTMLElement
-    expect(runningRow.textContent).not.toContain('schedule.scope.rollup')
+    expect(runningRow.textContent).not.toContain('schedule.typeRollup')
   })
 
   it('done 行点击 → onOpen(runId)', async () => {

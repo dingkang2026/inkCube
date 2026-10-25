@@ -1,5 +1,6 @@
 """内置 skill 种子安装测试（2.8 §4.2 / §11）。"""
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -148,3 +149,102 @@ def test_locate_source_prefers_env_and_falls_back(monkeypatch, tmp_path):
     monkeypatch.delenv("INKCUBE_RESOURCES_DIR")
     located = seed._locate_source("browser-fetch")
     assert located is not None and Path(located) == PROJECT_SKILL_SRC
+
+
+# ── 后台化拆分（2026-10-24 启动提速）：deferred 同步部分 + 文件同步原子替换 ──
+
+
+def test_deferred_registers_db_without_file_copy(db, tmp_path, monkeypatch):
+    """deferred 入口只做 DB upsert（毫秒级），文件同步留给后台线程。"""
+    src = _make_fake_source(tmp_path)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
+    data_dir = str(tmp_path / "data")
+
+    pending = seed.seed_builtin_skills_deferred(db, data_dir)
+
+    # DB 行已注册（TaskAgent 执行期实时 list_skills 立即可见）
+    rows = _skill_rows(db)
+    assert len(rows) == 1
+    assert rows[0]["needs_confirm"] == 0
+    # 待同步清单含该 skill（清单共 3 个内置 skill，均定位到同一 fake 源），
+    # 且文件未拷
+    assert ("browser-fetch", str(src)) in pending
+    assert not (Path(data_dir) / "skills" / "browser-fetch" / "SKILL.md").exists()
+
+
+def test_sync_skill_files_atomic_replace(db, tmp_path, monkeypatch):
+    """staging 原子替换：新版就位、无 .staging/.old 残留、指纹写入。"""
+    src = _make_fake_source(tmp_path)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
+    data_dir = Path(tmp_path) / "data"
+
+    seed.seed_builtin_skills(db, str(data_dir))
+    # 源升级 → 后台同步 → 原子替换
+    (src / "NEW.md").write_text("v2", encoding="utf-8")
+    seed.sync_skill_files("browser-fetch", str(src), str(data_dir))
+
+    install = data_dir / "skills" / "browser-fetch"
+    assert (install / "NEW.md").is_file()
+    assert (install / "SKILL.md").is_file()
+    assert not (data_dir / "skills" / "browser-fetch.staging").exists()
+    assert not (data_dir / "skills" / "browser-fetch.old").exists()
+    fp = json.loads((install / seed._SEED_FINGERPRINT).read_text(encoding="utf-8"))
+    assert fp["source_marker"] == list(seed._source_marker(str(src)))
+
+
+def test_sync_skill_files_keeps_old_on_copy_failure(db, tmp_path, monkeypatch):
+    """拷贝失败：旧版安装目录完整保留，不抛异常（非阻塞契约）。"""
+    src = _make_fake_source(tmp_path)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
+    data_dir = Path(tmp_path) / "data"
+
+    seed.seed_builtin_skills(db, str(data_dir))
+    install = data_dir / "skills" / "browser-fetch"
+    before = sorted(p.name for p in install.rglob("*"))
+
+    def _boom(*args, **kwargs):
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(seed.shutil, "copytree", _boom)
+    (src / "NEW.md").write_text("v2", encoding="utf-8")
+    seed.sync_skill_files("browser-fetch", str(src), str(data_dir))  # 不抛
+
+    # 旧版完整、新版未混入
+    assert sorted(p.name for p in install.rglob("*")) == before
+    assert not (install / "NEW.md").exists()
+    assert not (data_dir / "skills" / "browser-fetch.staging").exists()
+
+
+def test_sync_skill_files_fingerprint_skips_copy(db, tmp_path, monkeypatch):
+    """源未变时文件同步零拷贝（后台线程不重复付全树拷贝成本）。"""
+    src = _make_fake_source(tmp_path)
+    monkeypatch.setattr(seed, "_locate_source", lambda name: str(src))
+    data_dir = str(tmp_path / "data")
+
+    seed.seed_builtin_skills(db, data_dir)
+
+    copy_calls = []
+    real_copytree = seed.shutil.copytree
+
+    def _counting_copytree(*args, **kwargs):
+        copy_calls.append(args)
+        return real_copytree(*args, **kwargs)
+
+    monkeypatch.setattr(seed.shutil, "copytree", _counting_copytree)
+    seed.sync_skill_files("browser-fetch", str(src), data_dir)
+
+    assert copy_calls == []
+
+
+def test_sync_skill_files_batch_continues_after_failure(tmp_path):
+    """批量入口单项失败仅 warning，其余项继续（非阻塞契约）。"""
+    good_src = _make_fake_source(tmp_path)
+    data_dir = Path(tmp_path) / "data"
+    pending = [
+        ("broken-skill", str(tmp_path / "does-not-exist")),  # copytree 会失败
+        ("browser-fetch", str(good_src)),
+    ]
+
+    seed.sync_skill_files_batch(pending, str(data_dir))  # 不抛
+
+    assert (data_dir / "skills" / "browser-fetch" / "SKILL.md").is_file()

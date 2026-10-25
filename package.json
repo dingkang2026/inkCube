@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:vite": "vite",
-    "dev:electron": "wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
+    "dev:electron": "wait-on http://[::1]:5173 && cross-env NODE_ENV=development electron .",
     "build": "vite build",
     "pack": "npm run build && electron-builder",
     "python:dev": "cd python && uvicorn main:app --reload --host 127.0.0.1 --port 8765",

@@ -91,6 +91,10 @@ class Database:
         self.conn: _LockedConnection = None
 
     def initialize(self):
+        if self.conn is not None:
+            # 重复初始化(启动迁移幂等验证会重入)先关旧连接:直接覆盖会泄漏
+            # 旧 sqlite3 连接,占用 db 文件致文件/目录清理失败(WinError 32)
+            self.conn.close()
         self.conn = _LockedConnection(
             sqlite3.connect(self.db_path, check_same_thread=False)
         )
@@ -665,6 +669,17 @@ class Database:
         """)
         self.conn.commit()
 
+        # Data fix (2026-10-24, §3.5 出生前期次裁决落地): 铺入/激活曾按「当期」
+        # 推 due,当期已过即产出出生即逾期实例(如投后项目 2026-10-22 激活时
+        # 年审 due=2026-04-30、月报 due=2026-10-15)。铺入/激活/自建已改为跳过
+        # 已过当期,此处一次性清理存量:recurring 功能 2026-10-22 上线,上线前
+        # 不存在合法 open recurring 逾期,故 due_date < '2026-10-22' 的
+        # open recurring 实例必为出生即逾期,零误伤。幂等:删过即无命中。
+        self.conn.execute(
+            "DELETE FROM phase_tasks WHERE task_type = 'recurring' "
+            "AND status = 'open' AND due_date < '2026-10-22'")
+        self.conn.commit()
+
         # ── Intelligence: ledger & suggestions (3.0 §8 phase 4, 3.1 §3) ──
         # ledger_entries: 台账结构化解析产物（时间轴卡/卡片墙摘要/AI 状态句数据源);
         #   wiki_pages.content 是唯一事实源,本表可随时全量重建(3.1 不变量 1)
@@ -808,7 +823,7 @@ class Database:
                 next_run_at TEXT,                        -- ISO；enabled=0 时为 NULL
                 last_run_at TEXT,
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,  -- ≥3 自动暂停（2.11 §5.5）
-                scope       TEXT,                        -- 'focus'|'sweep'|'rollup'，NULL 读取归一 'focus'（2.11 §12）
+                scope       TEXT,                        -- 'rollup' 组合周报 | NULL 情报订阅（2026-10-25 收敛：focus/sweep 退役置 NULL，2.11 §12）
                 digest_schedule_ids TEXT,                -- JSON 数组文本，仅 rollup 用；NULL=全部启用订阅（2.11 §12）
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
@@ -838,10 +853,10 @@ class Database:
             "TEXT REFERENCES task_schedules(id) ON DELETE SET NULL")
         # Migrate: task_schedule_runs.error（§8.4 失败原因，旧库由迁移补列）
         self._migrate_add_column("task_schedule_runs", "error", "TEXT")
-        # Migrate: 订阅 scope 三型 + rollup 聚合圈选列（2.11 §12，V2.1-T2）
+        # Migrate: 订阅类型标记列 + rollup 聚合圈选列（2.11 §12，V2.1-T2）
         self._migrate_add_column("task_schedules", "scope", "TEXT")
         self._migrate_add_column("task_schedules", "digest_schedule_ids", "TEXT")
-        self._migrate_schedule_scope_backfill()
+        self._migrate_schedule_scope_retire_focus_sweep()
         self.conn.commit()
 
         # Leads（线索池，0.6 §4.1 V2-E2 唯一新表）：情报→项目蓄水池，薄卡反 CRM。
@@ -935,21 +950,23 @@ class Database:
         self.conn.commit()
         logger.info("Migrated task_suggestions: added UNIQUE(project_id, entry_fingerprint, kind)")
 
-    def _migrate_schedule_scope_backfill(self):
-        """存量订阅 scope 按 category 归类回填（2.11 §12，V2.1-T2）。
+    def _migrate_schedule_scope_retire_focus_sweep(self):
+        """存量订阅 focus/sweep 定位退役置 NULL（2.11 §12，2026-10-25 收敛裁决）。
 
-        industry/region → sweep（撒网），其余 → focus（盯梢）；rollup 仅用户
-        显式新建不参与回填。幂等只回填 NULL 行——用户后续改值不被覆盖；
-        失败向上抛（订阅行 scope 全 NULL 会让聚合源判定歧义，静默继续不可取）。
+        focus/sweep 与分类同源派生且执行链零差异（调度器只有 rollup 一个
+        分支），纯帽子概念——scope 收敛为订阅类型标记：NULL=情报订阅、
+        'rollup'=组合周报。幂等只改 focus/sweep 行（重跑 rowcount=0）；
+        rollup 保留不动；失败向上抛（类型标记是聚合源判定依据，静默
+        继续不可取）。
         """
         cur = self.conn.execute(
-            "UPDATE task_schedules SET scope = CASE category "
-            "WHEN 'industry' THEN 'sweep' WHEN 'region' THEN 'sweep' "
-            "ELSE 'focus' END WHERE scope IS NULL")
+            "UPDATE task_schedules SET scope = NULL "
+            "WHERE scope IN ('focus', 'sweep')")
         self.conn.commit()
         if cur.rowcount:
             logger.info(
-                "Migrated task_schedules: scope backfilled x%d", cur.rowcount)
+                "Migrated task_schedules: retired focus/sweep scope -> NULL "
+                "x%d", cur.rowcount)
 
     def _migrate_add_column(self, table: str, column: str, col_type: str):
         """Add column to existing table if it doesn't exist yet."""
@@ -1946,9 +1963,10 @@ class Database:
         return self._normalize_schedule_row(dict(row)) if row else None
 
     def _normalize_schedule_row(self, row: dict) -> dict:
-        """订阅行出参归一（2.11 §12）：scope NULL → 'focus'（存量/迁移前零判空）；
+        """订阅行出参归一（2.11 §12 收敛后）：scope 仅 'rollup' 有意义，
+        NULL=情报订阅（残留 focus/sweep 脏值兜底归一 NULL）；
         digest_schedule_ids TEXT → list[str] | None（rollup 编辑回填直读）。"""
-        row["scope"] = row.get("scope") or "focus"
+        row["scope"] = "rollup" if row.get("scope") == "rollup" else None
         row["digest_schedule_ids"] = self._load_json_list(
             row.get("digest_schedule_ids"))
         return row
@@ -1960,7 +1978,7 @@ class Database:
                        scope: str | None = None) -> list[dict]:
         """管理台左列 / 速览同源；各行附 latest_done（最新 done run 摘要，无则 None）
         与 is_running（存在 running run，§8.4 行呼吸点数据源）；scope 过滤
-        （2.11 §12，管理台定位筛选；新参数置尾防既有位置调用错位）。
+        （2.11 §12 收敛后两值：'rollup' 等值 / 'intel' 非组合周报）。
         limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
         （路由层传 limit+1 探测 has_more）。"""
         sql = (
@@ -1985,7 +2003,9 @@ class Database:
         if q:
             where.append("s.name LIKE ?")
             params.append(f"%{q}%")
-        if scope:
+        if scope == "intel":
+            where.append("(s.scope IS NULL OR s.scope != 'rollup')")
+        elif scope:
             where.append("s.scope = ?")
             params.append(scope)
         if where:
@@ -2028,7 +2048,9 @@ class Database:
         if q:
             where.append("name LIKE ?")
             params.append(f"%{q}%")
-        if scope:
+        if scope == "intel":
+            where.append("(scope IS NULL OR scope != 'rollup')")
+        elif scope:
             where.append("scope = ?")
             params.append(scope)
         if where:
@@ -2254,8 +2276,9 @@ class Database:
         schedule_ids=None → 全部 enabled=1 订阅；有值 → 显式圈定（含已暂停
         订阅的窗口内期次——勾选即用户意志，期次已产出仍可汇总）。
         scope='rollup' 恒排除（不变量①防递归聚合，聚合侧兜底正确性；
-        IS NULL 兜住未被 backfill 覆盖的异常行）；summary 出参解析为 list
-        （与 _run_row 同口径）。空圈选集返回 []（同时规避 IN () 语法错）。
+        IS NULL 容纳情报订阅常态空值——2026-10-25 收敛后 NULL=情报订阅）；
+        summary 出参解析为 list（与 _run_row 同口径）。空圈选集返回 []
+        （同时规避 IN () 语法错）。
         max_runs：防无界 prompt（CodeReview m-2）——保留窗口内最近 N 期，
         None = 不设限（全量，向后兼容）；0 → []（无负索引切片陷阱）。"""
         if schedule_ids is not None and not schedule_ids:
@@ -2276,9 +2299,11 @@ class Database:
         sql += " ORDER BY r.finished_at ASC"          # 素材时间序（截断前排序）
         rows = self.conn.execute(sql, params).fetchall()
         if max_runs is not None:
-            # 窗口内期次多时保留最近 N 期（取尾段，返回仍升序）；
-            # 不用 rows[-max_runs:]（max_runs=0 时 -0 切片返回全量）
-            rows = rows[len(rows) - max_runs:] if max_runs > 0 else []
+            # 窗口内期次多时保留最近 N 期（取尾段，返回仍升序）；起始 clamp 到 0
+            # （len < max_runs 时负起始会静默丢头部——探测值 51 必经路径，
+            # 第二轮 CodeReview B-1）；不用 rows[-max_runs:]（max_runs=0 时
+            # -0 切片返回全量）
+            rows = rows[max(0, len(rows) - max_runs):] if max_runs > 0 else []
         return [{"schedule_name": r["schedule_name"],
                  "finished_at": r["finished_at"],
                  "summary": self._load_json_list(r["summary"]) or []}
@@ -4024,6 +4049,37 @@ class Database:
         mmdd = str(day or "12-31")
         return today.strftime("%Y"), f"{today.year}-{mmdd}"
 
+    def _next_occurrence_for(self, rule: dict, key: str) -> tuple[str, str]:
+        """下一期(key, due)。与 affairs_service.next_occurrence 同构;
+        DB 层自持避免循环依赖,口径以服务层为准(测试互证)。"""
+        import calendar as _cal
+        from datetime import date as _date
+        freq, day = rule.get("freq"), rule.get("due_day")
+        if freq == "monthly":
+            y, m = int(key[:4]), int(key[5:7])
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+            d = min(int(day), _cal.monthrange(y, m)[1])
+            return f"{y:04d}-{m:02d}", f"{y:04d}-{m:02d}-{d:02d}"
+        if freq == "quarterly":
+            y, q = int(key[:4]), int(key[6])
+            y, q = (y + 1, 1) if q == 4 else (y, q + 1)
+            last_month = q * 3
+            due = _date(y, last_month, 1).replace(
+                day=_cal.monthrange(y, last_month)[1])
+            return f"{y}-Q{q}", due.isoformat()
+        return str(int(key) + 1), f"{int(key) + 1}-{day or '12-31'}"
+
+    def _first_open_occurrence(self, rule: dict) -> tuple[str, str]:
+        """铺入时的首个「未出生即逾期」期次(key, due):当期 due 未过 → 当期;
+        已过 → 下一期。与 affairs_service.first_open_occurrence
+        (current+next 组合)同构;2026-10-24 裁决:出生前期次不生成、不算缺失。
+        DB 层自持避免循环依赖,口径以服务层为准(测试互证)。"""
+        from datetime import date as _date
+        occ, due = self._occurrence_for_now(rule)
+        if due < _date.today().isoformat():
+            return self._next_occurrence_for(rule, occ)
+        return occ, due
+
     def insert_playbook_tasks(self, project_id: str, project_type: str, stage: str) -> int:
         from datetime import date as _date, timedelta as _td
         templates = self.list_playbook_templates(project_type)
@@ -4036,9 +4092,11 @@ class Database:
             occ = None
             if status == "open":
                 # 节奏判定按 recurrence_rule 而非 task_type:report 类可带
-                # recurrence_rule(§3.3 服务报告/投后管理报告),同样铺当期 occurrence
+                # recurrence_rule(§3.3 服务报告/投后管理报告),同样铺首期 occurrence;
+                # 首期 = 首个未过期期次(当期已过 → 下一期,2026-10-24 裁决:
+                # 铺入不产出出生即逾期实例)
                 if t.get("recurrence_rule"):
-                    occ, due = self._occurrence_for_now(t["recurrence_rule"])
+                    occ, due = self._first_open_occurrence(t["recurrence_rule"])
                 elif t.get("due_date_fixed"):
                     due = t["due_date_fixed"]
                 elif t.get("due_offset_days"):

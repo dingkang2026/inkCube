@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TaskMessage, StreamStep, PlanData, UsageSummary } from '../../types'
 import { apiErrorText } from '../../i18n/errorCodes'
+import { useToast } from '../knowledge/Toast'
 import { browserPanelStore } from '../browser/browserPanelStore'
 
 export interface ShellConfirmData {
@@ -22,6 +23,7 @@ export interface SkillConfirmData {
 
 export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const [messages, setMessages] = useState<TaskMessage[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [streamContent, setStreamContent] = useState('')
@@ -575,8 +577,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       setIsGenerating(false)
     } catch (err) {
       console.error('Pause task error:', err)
+      // 动作类点击失败必须可感知（静默 catch 排查 2026-10-24）：用户以为已暂停
+      showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.pauseFailed'), t), 'error')
     }
-  }, [activeTaskId])
+  }, [activeTaskId, showToast, t])
 
   const handleShellConfirm = useCallback(async (confirmed: boolean, allowSession: boolean = false) => {
     if (!activeTaskId) return
@@ -585,8 +589,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       await window.electronAPI.invoke('tasks:confirmShell', { taskId: activeTaskId, confirmed, allow_session: allowSession })
     } catch (err) {
       console.error('Shell confirm error:', err)
+      // 弹窗已清除但后端未收到确认 → 任务等到超时（静默 catch 排查 2026-10-24）
+      showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.confirmFailed'), t), 'error')
     }
-  }, [activeTaskId])
+  }, [activeTaskId, showToast, t])
 
   /** 倒计时到 0 的本地清理（不发拒绝 POST）：真实等待终止由后端超时分支
    *  发 confirm_expired 留痕「确认超时，已跳过」——若此处发 confirmed=false，
@@ -614,8 +620,9 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
       }
     } catch (err) {
       console.error('Skill confirm error:', err)
+      showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.confirmFailed'), t), 'error')
     }
-  }, [activeTaskId, t])
+  }, [activeTaskId, t, showToast])
 
   /** Resume a task from saved state (crash recovery or pause). */
   const handleResumeTask = useCallback(async () => {
@@ -646,8 +653,10 @@ export function useTaskChat(activeTaskId: string | null, onDone?: () => void) {
     } catch (err) {
       console.error('Resume task error:', err)
       setIsGenerating(false)
+      // canResume 已提前置 false，恢复按钮消失——失败必须提示（静默 catch 排查 2026-10-24）
+      showToast(apiErrorText((err as { errorCode?: string })?.errorCode, t('task.resumeFailed'), t), 'error')
     }
-  }, [activeTaskId, isGenerating, clearStreamState, t])
+  }, [activeTaskId, isGenerating, clearStreamState, t, showToast])
 
   /** Reset generating state after Python process crash (Phase 1 crash recovery). */
   const resetGeneratingState = useCallback(() => {

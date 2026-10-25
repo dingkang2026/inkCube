@@ -1,4 +1,4 @@
-/** src/features/project/ProjectDetailPage.tsx — 项目详情页：knowledge-first tabs + 事务 Tab + PulseBar（3.0 一期+二期） */
+/** src/features/project/ProjectDetailPage.tsx — 项目详情页：事务置首四 Tab + PulseBar（0.6 §3.4 V2 翻转决议 + 3.0 一期+二期） */
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FolderOpen, Library, FileText, CalendarDays, Pencil } from 'lucide-react'
@@ -34,10 +34,12 @@ interface ProjectDetailPageProps {
 
 type TabKey = 'materials' | 'wiki' | 'affairs' | 'output'
 
-// 事务第二位(3.0 §2.1:知识置首、事务次之)；产出合并 reports/forms（0.6 §3.2 V2-E1a T11）
+// 事务置首（0.6 §3.4 V2 翻转决议，用户认可 2026-10-23：四支柱排序生命周期 > 知识，
+// 显式翻转 3.0 一期「知识置首」；E1a plan T11 原定序，实施偏差 2026-10-24 补正）；
+// 产出合并 reports/forms（0.6 §3.2 V2-E1a T11）
 const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
-  { key: 'wiki', labelKey: 'project.tab.wiki', Icon: Library },
   { key: 'affairs', labelKey: 'project.tab.affairs', Icon: CalendarDays },
+  { key: 'wiki', labelKey: 'project.tab.wiki', Icon: Library },
   { key: 'output', labelKey: 'project.tab.output', Icon: FileText },
   { key: 'materials', labelKey: 'project.tab.materials', Icon: FolderOpen },
 ]
@@ -48,7 +50,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const { byProject } = useActivity()
   const { items: compileItems } = useActivity('wiki_compile')
   const { items: ledgerParseItems } = useActivity('ledger_parse')
-  const [activeTab, setActiveTab] = useState<TabKey>('wiki')
+  const [activeTab, setActiveTab] = useState<TabKey>('affairs')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
   const [wikiExpanded, setWikiExpanded] = useState(false)
@@ -123,12 +125,13 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
       const rv = rvR.value as any
       const pg = pgR.value as any
       // 分型计数改消费 counts 桶（{type: {pending, resolved, total}}，全表不分页），
-      // gap 桶保持原语义（data-gap + missing-page + broken-link 三型 pending 合计）
+      // gap 桶与后端 E4 分型桶/封面信任信号行同口径：data-gap + missing-page 两型
+      // （broken-link 不计入——3.0 §2.3 chip 缺口原定义即两型，三处统一，
+      // V2 全量 review M-1 2026-10-24 对齐）
       const c = rv?.counts ?? {}
       setReviewsCounts({
         contradiction: c.contradiction?.pending ?? 0,
-        gap: (c['data-gap']?.pending ?? 0) + (c['missing-page']?.pending ?? 0)
-          + (c['broken-link']?.pending ?? 0),
+        gap: (c['data-gap']?.pending ?? 0) + (c['missing-page']?.pending ?? 0),
       })
       setPendingCompile(pg?.pending_compile_count ?? 0)
     }
@@ -234,8 +237,8 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   useEdgeRefetch(ledgerParsing, () => { onProjectDataChanged?.() })
 
   // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）。
-  // 默认 Tab 即 wiki（3.0 一期知识置首）：挂载首跑由上方「挂载拉快照」覆盖，
-  // 此处仅响应「切到」动作，否则挂载即双重 IPC（P10 裁决）。
+  // 默认 Tab 为事务（0.6 §3.4 翻转决议）：挂载首跑由上方「挂载拉快照」覆盖
+  // （无条件快照与 Tab 无关），此处仅响应「切到」动作，否则挂载即双重 IPC（P10 裁决）。
   const prevTabRef = useRef<TabKey>(activeTab)
   useEffect(() => {
     if (prevTabRef.current === activeTab) return

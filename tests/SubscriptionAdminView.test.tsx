@@ -51,7 +51,7 @@ const SCHEDULE = {
   id: 'sch_1', name: '华润舆情', prompt: '扫描并输出报告', category: 'corporate',
   interval_type: 'daily', interval_value: '09:00',
   target_type: null, target_id: null, auto_import: 1, enabled: 1,
-  scope: 'focus', digest_schedule_ids: null,
+  scope: null, digest_schedule_ids: null,
   next_run_at: null, last_run_at: null, consecutive_failures: 0,
   archive_last_run_id: null, archive_file_id: null, is_running: false,
   latest_done: null, created_at: '', updated_at: '',
@@ -90,7 +90,9 @@ beforeEach(() => {
     if (channel === 'schedules:list') {
       let rows = [...INDUSTRY, ...CORPORATE]
       if (args?.category) rows = rows.filter((r) => r.category === args.category)
-      if (args?.scope) rows = rows.filter((r) => r.scope === args.scope)
+      // 两值口径对齐真实 db（2.11 §12 收敛）：intel = 非 rollup（NULL 安全），rollup 等值
+      if (args?.scope) rows = rows.filter(
+        (r) => (args.scope === 'intel' ? r.scope !== 'rollup' : r.scope === args.scope))
       if (args?.q) rows = rows.filter((r) => r.name.includes(args.q as string))
       return { schedules: rows, has_more: false }
     }
@@ -372,7 +374,7 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     expect(mainOf('运行中').className).not.toContain('rowPaused')
   })
 
-  /* ── 订阅定位三型（2.11 §12，V2.1-T2） ── */
+  /* ── 订阅类型两类（2.11 §12 收敛，V2.1 修订） ── */
 
   it('rollup 行徽标；点进详情卡徽标随行（2.11 §12.4）', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
@@ -390,19 +392,38 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     })
     renderView({ onOpenRead: () => {} })
     await waitFor(() => expect(screen.getByText('组合周报')).toBeTruthy())
-    // 行徽标 span 断言（getByText 会撞 scope 筛选 select 的同名 option）
+    // 行徽标 span 断言（getByText 会撞类型筛选 select 的同名 option）
     expect(document.querySelector('span[class*="rollupTag"]')).toBeTruthy()
     fireEvent.click(screen.getByText('组合周报'))
     await waitFor(() =>
       expect(document.querySelectorAll('span[class*="rollupTag"]').length).toBe(2))
   })
 
-  it('scope 筛选 select 下沉服务端 scope 参数（防抖 300ms）', async () => {
+  it('类型筛选 select 下沉服务端 scope 参数（防抖 300ms）', async () => {
     renderView({ onOpenRead: () => {} })
     await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(30))
-    fireEvent.change(screen.getByLabelText('schedule.scopeFilter'), {
+    fireEvent.change(screen.getByLabelText('schedule.typeFilter'), {
       target: { value: 'rollup' },
     })
     await waitFor(() => expect(lastListArgs()).toMatchObject({ scope: 'rollup' }))
+  })
+
+  it('rollup 筛选空态指引「新建组合周报」（免培训：指引与筛选意图一致）', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'schedules:list') return { schedules: [], has_more: false }
+      if (channel === 'schedules:inbox') return { runs: [], has_more: false }
+      if (channel === 'schedules:runs') return { runs: [], has_more: false }
+      if (channel === 'knowledge:listProjects') return { projects: [] }
+      if (channel === 'baseLib:list') return { base_libs: [] }
+      return { ok: true }
+    })
+    renderView({ onOpenRead: () => {} })
+    // 默认（all）空态指「新建订阅」；切 rollup 后指「新建组合周报」
+    await waitFor(() => expect(screen.getByText('schedule.empty')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('schedule.typeFilter'), {
+      target: { value: 'rollup' },
+    })
+    await waitFor(() => expect(lastListArgs()).toMatchObject({ scope: 'rollup' }))
+    await waitFor(() => expect(screen.getByText('schedule.emptyRollup')).toBeTruthy())
   })
 })

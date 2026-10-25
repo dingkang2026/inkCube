@@ -1,7 +1,10 @@
-/* 2.11 E3 T8:期次阅读页（§8.2：标题行/摘要卡/Markdown 全文/底部动作条） */
+/* 2.11 E3 T8:期次阅读页（§8.2：标题行/摘要卡/Markdown 全文/底部动作条）
+   flex:1 + min-width:0：.app-layout 横向 flex 子项铺满宽度（IntelPage 同缺陷页统一补齐） */
 .page {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   gap: 12px;
   height: 100%;
   min-height: 0;

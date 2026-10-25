@@ -1,19 +1,21 @@
 /**
- * tests/ScheduleFormModal.test.tsx — 订阅表单弹层单测（2.11 §12 V2.1-T2）。
+ * tests/ScheduleFormModal.test.tsx — 订阅表单弹层单测（2.11 §12；2026-10-25 收敛
+ * 后两类交互：类型由入口给定 createKind，不可中途切换）。
  *
- * 覆盖（scope 三型交互，2.11 §12.4）：
- * - 新建 rollup：第③步三选切组合周报 → 去向区隐藏、骨架预填默认模板（含
+ * 覆盖：
+ * - 新建 rollup（createKind）：直达周期步（跳过模板步）、骨架预填默认模板（含
  *   {sections}）、汇总范围候选（排除 rollup 自身）+ 勾选 → 保存 payload 断言；
  * - 骨架被清空（无 {sections}）→ 保存禁用（后端 400 前置拦截）；
- * - 默认 focus：payload scope/digestScheduleIds=null 原语义零漂移；
- * - 编辑 rollup 回填：骨架/圈选回显 + update payload。
+ * - 新建 intel 默认：payload scope/digestScheduleIds=null，语义零漂移；
+ * - 编辑 rollup 回填：骨架/圈选回显 + update payload；
+ * - 跨开合候选重拉（review m-1）：组件关闭不卸载，重开候选重新加载。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { ScheduleFormModal } from '../src/features/schedule/ScheduleFormModal'
 
 vi.mock('react-i18next', () => ({
-  // 默认骨架模板需返回含 {sections} 的真实形态（switchScope 预填值断言依赖）
+  // 默认骨架模板需返回含 {sections} 的真实形态（新建 rollup 预填断言依赖）
   useTranslation: () => ({
     t: (k: string) =>
       k === 'schedule.form.rollupPromptTemplate' ? '汇总各订阅期次\n{sections}' : k,
@@ -32,12 +34,13 @@ vi.mock('../src/features/settings/useSettings', () => ({
   useSettings: () => ({ settings: {} }),
 }))
 
+// 情报订阅行基座（scope=NULL 两值语义收敛后）；rollup 行以 { ...ROW, scope: 'rollup' } 派生
 const ROW = {
   id: 'sch_1', name: '华润舆情', prompt: '扫描并输出报告', category: 'corporate',
   interval_type: 'daily', interval_value: '09:00',
   target_type: null, target_id: null, auto_import: 1, enabled: 1,
   next_run_at: null, last_run_at: null, consecutive_failures: 0,
-  scope: 'focus', digest_schedule_ids: null,
+  scope: null, digest_schedule_ids: null,
   archive_last_run_id: null, archive_file_id: null, is_running: false,
   latest_done: null, created_at: '', updated_at: '',
 }
@@ -76,7 +79,7 @@ const flush = async () => {
   }
 }
 
-/** 新建流走到第③步（自由输入 prompt → daily 默认周期） */
+/** 新建 intel 流走到第③步（自由输入 prompt → daily 默认周期） */
 const renderToTargetStep = () => {
   render(<ScheduleFormModal open onClose={() => {}} onSaved={() => {}} />)
   fireEvent.click(screen.getByRole('tab', { name: 'schedule.form.freeInput' }))
@@ -92,17 +95,17 @@ const lastInvoke = (channel: string) => {
   return calls[calls.length - 1]
 }
 
-describe('ScheduleFormModal（2.11 §12 scope 三型）', () => {
-  it('新建 rollup：骨架预填含 {sections}、去向区隐藏、汇总范围排除 rollup；保存 payload 正确', async () => {
-    renderToTargetStep()
-    // 默认 focus：去向 radioCol 在场；切 rollup 后隐藏
-    expect(screen.getByText('schedule.form.target.none')).toBeTruthy()
-    fireEvent.click(screen.getByText('schedule.scope.rollup'))
-    expect(screen.queryByText('schedule.form.target.none')).toBeNull()
+describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
+  it('新建 rollup（createKind）：跳过模板步、骨架预填含 {sections}、汇总范围排除 rollup；保存 payload 正确', async () => {
+    render(<ScheduleFormModal open createKind="rollup" onClose={() => {}} onSaved={() => {}} />)
+    // 直达周期步：来源步 tab 不在场，标题为组合周报
+    expect(screen.queryByRole('tab', { name: 'schedule.form.freeInput' })).toBeNull()
+    expect(screen.getByText('schedule.form.newRollupTitle')).toBeTruthy()
+    fireEvent.click(screen.getByText('schedule.form.next'))
     // 骨架预填默认模板（含 {sections}），保存可用
     const skeleton = screen.getByLabelText('schedule.form.rollupSkeletonLabel') as HTMLTextAreaElement
     expect(skeleton.value).toContain('{sections}')
-    // 汇总范围候选：rollup 行被排除（防自聚合），仅 focus 候选
+    // 汇总范围候选：rollup 行被排除（防自聚合），仅情报订阅候选
     await waitFor(() => expect(screen.getByLabelText('华润舆情')).toBeTruthy())
     expect(screen.queryByLabelText('组合周报甲')).toBeNull()
     expect(lastInvoke('schedules:list')?.[1]).toMatchObject({ limit: 0 })
@@ -114,6 +117,7 @@ describe('ScheduleFormModal（2.11 §12 scope 三型）', () => {
     expect(call![1]).toMatchObject({
       scope: 'rollup',
       digestScheduleIds: ['sch_x'],
+      category: 'general',
       targetType: null,
       targetId: null,
       autoImport: false,
@@ -122,21 +126,22 @@ describe('ScheduleFormModal（2.11 §12 scope 三型）', () => {
   })
 
   it('骨架被清空（无 {sections}）→ 保存禁用', () => {
-    renderToTargetStep()
-    fireEvent.click(screen.getByText('schedule.scope.rollup'))
+    render(<ScheduleFormModal open createKind="rollup" onClose={() => {}} onSaved={() => {}} />)
+    fireEvent.click(screen.getByText('schedule.form.next'))
     const skeleton = screen.getByLabelText('schedule.form.rollupSkeletonLabel') as HTMLTextAreaElement
     fireEvent.change(skeleton, { target: { value: '占位符被我删了' } })
     expect((screen.getByText('schedule.form.save') as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('默认 focus 保存：payload scope=focus、digestScheduleIds=null，去向语义零漂移', async () => {
+  it('新建 intel 默认：payload scope/digestScheduleIds=null，去向语义零漂移', async () => {
     renderToTargetStep()
     fireEvent.click(screen.getByText('schedule.form.save'))
     await flush()
     const call = lastInvoke('schedules:create')
     expect(call![1]).toMatchObject({
-      scope: 'focus',
+      scope: null,
       digestScheduleIds: null,
+      category: 'corporate',
       prompt: '采集指令',
     })
   })
@@ -155,7 +160,7 @@ describe('ScheduleFormModal（2.11 §12 scope 三型）', () => {
         onSaved={() => {}}
       />,
     )
-    // 编辑态跳过第①步，从周期步前进
+    // 编辑态直达周期步，从周期步前进
     fireEvent.click(screen.getByText('schedule.form.next'))
     const skeleton = screen.getByLabelText('schedule.form.rollupSkeletonLabel') as HTMLTextAreaElement
     expect(skeleton.value).toBe('骨架\n{sections}')
@@ -167,5 +172,31 @@ describe('ScheduleFormModal（2.11 §12 scope 三型）', () => {
     expect(call![1]).toMatchObject({
       id: 'sch_1', scope: 'rollup', digestScheduleIds: ['sch_x'],
     })
+  })
+
+  it('跨开合候选重拉（review m-1）：关闭重开后汇总范围候选重新加载', async () => {
+    const { rerender } = render(
+      <ScheduleFormModal open createKind="rollup" onClose={() => {}} onSaved={() => {}} />,
+    )
+    // 第一次：周期步前进到第③步，候选首拉（组件关闭不卸载，状态常驻）
+    fireEvent.click(screen.getByText('schedule.form.next'))
+    await waitFor(() => expect(screen.getByLabelText('华润舆情')).toBeTruthy())
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'schedules:list').length).toBe(1)
+
+    // 关闭 → 候选集变化（模拟会话中新建订阅）→ 重开走到第③步
+    rerender(<ScheduleFormModal open={false} createKind="rollup" onClose={() => {}} onSaved={() => {}} />)
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'schedules:list') {
+        return { schedules: [{ ...ROW, id: 'sch_new', name: '新增订阅' }], has_more: false }
+      }
+      return { ok: true }
+    })
+    rerender(<ScheduleFormModal open createKind="rollup" onClose={() => {}} onSaved={() => {}} />)
+    // 新建分支重置 step='period'（rollup），再次前进到第③步
+    fireEvent.click(screen.getByText('schedule.form.next'))
+    // 重拉后候选 = 新集合（旧候选不再残留，新增订阅入候选）
+    await waitFor(() => expect(screen.getByLabelText('新增订阅')).toBeTruthy())
+    expect(screen.queryByLabelText('华润舆情')).toBeNull()
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'schedules:list').length).toBe(2)
   })
 })

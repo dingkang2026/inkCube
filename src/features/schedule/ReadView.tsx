@@ -244,7 +244,7 @@ export function ReadView({ runId, onBack, onReplay, onTrackFollow, initialAction
             data-testid="read-rollup-tag"
             title={t('schedule.read.rollupTagHint')}
           >
-            {t('schedule.scope.rollup')}
+            {t('schedule.typeRollup')}
           </span>
         )}
         <span className={`${s.state} ${failed ? s.stateFailed : ''}`}>

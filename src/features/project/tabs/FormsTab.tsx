@@ -6,7 +6,7 @@
  * form-fill:update 同步重放——值集形状与 AI 初填同构（§5.4 不变量 3），服务端
  * 归一化后的值集/报告以响应为准回填（严进宽出，非法编辑形状被丢弃）。
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Table, Plus, ArrowLeft, Download, Trash2, Loader2, CheckCircle, Circle, AlertCircle, RefreshCw } from 'lucide-react'
 import { useToast } from '../../knowledge/Toast'
@@ -423,23 +423,28 @@ function CreateFillDialog({ projectId, onClose, onCreated }: {
   const { t } = useTranslation()
   const showToast = useToast()
   const [templates, setTemplates] = useState<FormTemplateLite[] | null>(null)
+  // 模板列表拉取失败态（页面遍历 review M3-3 2026-10-24）：失败不再与「真无模板」
+  // 同路渲染空态误导用户（有模板可用却被告知无可选）
+  const [tplError, setTplError] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [creating, setCreating] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        // 选择器形态：limit=0 全量（分页不得截断模板选择列表）
-        const res: any = await window.electronAPI.invoke('form-template:list', { limit: 0 })
-        if (!cancelled) setTemplates(res.templates ?? [])
-      } catch {
-        if (!cancelled) setTemplates([])
-      }
-    })()
-    return () => { cancelled = true }
+  const loadTemplates = useCallback(async () => {
+    setTemplates(null)
+    setTplError(false)
+    try {
+      // 选择器形态：limit=0 全量（分页不得截断模板选择列表）
+      const res: any = await window.electronAPI.invoke('form-template:list', { limit: 0 })
+      setTemplates(res.templates ?? [])
+    } catch {
+      setTplError(true)
+    }
   }, [])
+
+  useEffect(() => {
+    void loadTemplates()
+  }, [loadTemplates])
 
   // 可选 = 分析成功且文件未变更（变更的模板需先重解析，后端 create 同步准入拦截）
   const isSelectable = (tpl: FormTemplateLite) =>
@@ -493,6 +498,13 @@ function CreateFillDialog({ projectId, onClose, onCreated }: {
           <p className={s.sectionLabel}>{t('project.forms.createSelectTemplate')}</p>
           {templates === null ? (
             <div className={s.emptyInline}><Loader2 size={14} className={s.spinIcon} /></div>
+          ) : tplError ? (
+            <div className={s.emptyInline}>
+              <p>{t('project.forms.tplLoadFailed')}</p>
+              <button className={s.cancelBtn} onClick={() => void loadTemplates()}>
+                {t('knowledge.retry')}
+              </button>
+            </div>
           ) : selectableCount === 0 ? (
             <div className={s.emptyInline}>{t('project.forms.createNoTemplates')}</div>
           ) : (

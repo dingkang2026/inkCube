@@ -1,7 +1,10 @@
-/* src/features/project/BaseLibDetailPage.module.css */
+/* src/features/project/BaseLibDetailPage.module.css
+   flex:1 + min-width:0：.app-layout 横向 flex 子项铺满宽度（IntelPage 同缺陷页统一补齐） */
 .page {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   overflow: hidden;
 }

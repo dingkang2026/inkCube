@@ -2,9 +2,13 @@
    滚动容器 = TaskMessageList 的 .list：.messages 只做弹性占位不得自带
    overflow（双滚动容器会让 .list 上的 onScroll/atBottomRef 判定失效，
    消息加载后每次重渲染都被 scrollIntoView 强拉底部，2026-10-22 修复） */
+/* flex:1 + min-width:0：.app-layout 横向 flex 子项铺满宽度；且无 overflow 时
+   min-width:auto 不解除，长标题/长消息会撑破布局（IntelPage 同缺陷页统一补齐） */
 .page {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
 }

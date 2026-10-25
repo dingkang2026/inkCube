@@ -1,9 +1,11 @@
-"""python/tests/test_schedule_scope.py — 2.11 §12 V2.1-T2: 订阅 scope 三型。
+"""python/tests/test_schedule_scope.py — 2.11 §12 收敛（2026-10-25）：订阅类型标记。
 
-迁移回填（category→scope CASE，幂等只回填 NULL、用户显式值不覆盖）/
-db 出参归一（scope 零判空 + digest_schedule_ids TEXT(JSON) 读侧解析）/
-API create·update rollup 约束（不沉淀 400、{sections} 占位符校验、
-汇总范围仅 rollup 可圈选、scope 切入 rollup 清残留去向与档案锚点）。
+存量迁移（focus/sweep 退役置 NULL，rollup 保留，幂等重入）/
+db 出参归一（非 rollup 值兜底归一 NULL + digest_schedule_ids TEXT(JSON) 读侧解析）/
+db intel/rollup 过滤（list_schedules/count_schedules 两值口径）/
+API create scope 收窄（仅 rollup 或缺省；focus/sweep/hacker 均 400）/
+PATCH scope 白名单移除（类型由创建入口给定，PATCH 静默忽略 scope 字段）/
+rollup 约束保留（不沉淀 400、{sections} 占位符、汇总范围仅 rollup 可圈选）。
 """
 import os
 import sys
@@ -24,7 +26,7 @@ def tmp_db():
         db.conn.close()
 
 
-# ── 存量回填迁移（2.11 §12.2）─────────────────────────────────
+# ── 存量迁移：focus/sweep 退役置 NULL（2.11 §12.2 收敛）──────────
 
 
 def _reopen(db):
@@ -40,46 +42,58 @@ def _reopen(db):
     return db2
 
 
-def test_scope_backfill_by_category(tmp_db):
+def test_scope_retire_focus_sweep(tmp_db):
     db = tmp_db
-    for cat in ("corporate", "industry", "region", "general"):
-        db.create_schedule(f"s-{cat}", "p", "general", cat, "daily", "09:00")
-    # 模拟存量行：scope 全 NULL（列迁移刚补上、尚未回填的形态）
-    db.conn.execute("UPDATE task_schedules SET scope = NULL")
-    db.conn.commit()
-    db2 = _reopen(db)   # 重启升级：backfill 回填全部 NULL 行
-    rows = {r["category"]: r["scope"] for r in db2.list_schedules()}
-    assert rows == {"corporate": "focus", "industry": "sweep",
-                    "region": "sweep", "general": "focus"}
+    s_focus = db.create_schedule("a", "p", "general", "corporate", "daily", "09:00",
+                                 scope="focus")
+    s_sweep = db.create_schedule("b", "p", "general", "industry", "daily", "09:00",
+                                 scope="sweep")
+    s_rollup = db.create_schedule("w", "骨架 {sections}", "general", "general",
+                                  "weekly", "MON 09:00", scope="rollup")
+    db2 = _reopen(db)   # 重启升级：focus/sweep → NULL，rollup 保留
+    assert db2.get_schedule(s_focus["id"])["scope"] is None
+    assert db2.get_schedule(s_sweep["id"])["scope"] is None
+    assert db2.get_schedule(s_rollup["id"])["scope"] == "rollup"
     db2.conn.close()
 
 
-def test_scope_backfill_idempotent_and_keeps_user_value(tmp_db):
+def test_scope_retire_idempotent(tmp_db):
     db = tmp_db
-    s = db.create_schedule("s-ind", "p", "general", "industry", "daily", "09:00")
-    db.conn.execute("UPDATE task_schedules SET scope = NULL")
-    db.conn.commit()
-    db = _reopen(db)
-    assert db.get_schedule(s["id"])["scope"] == "sweep"
-    # 用户显式改为 rollup 后再次重启迁移不覆盖（只回填 NULL 行）
-    db.update_schedule(s["id"], {"scope": "rollup"})
+    s = db.create_schedule("a", "p", "general", "corporate", "daily", "09:00",
+                           scope="focus")
     db2 = _reopen(db)
-    assert db2.get_schedule(s["id"])["scope"] == "rollup"
-    db2.conn.close()
+    assert db2.get_schedule(s["id"])["scope"] is None
+    # 再次重启迁移重入：已是 NULL 无事发生；rollup 值二次确认不被误清
+    s2 = db2.create_schedule("w", "骨架 {sections}", "general", "general",
+                             "weekly", "MON 09:00", scope="rollup")
+    db3 = _reopen(db2)
+    assert db3.get_schedule(s["id"])["scope"] is None
+    assert db3.get_schedule(s2["id"])["scope"] == "rollup"
+    db3.conn.close()
 
 
-# ── db 出参归一（2.11 §12.2 读取归一化）───────────────────────
+# ── db 出参归一（2.11 §12.2 收敛后）──────────────────────────
 
 
 def test_default_scope_normalized(tmp_db):
     db = tmp_db
     s = db.create_schedule("a", "p", "general", "general", "daily", "09:00")
     row = db.get_schedule(s["id"])
-    assert row["scope"] == "focus" and row["digest_schedule_ids"] is None
-    valid = ("focus", "sweep", "rollup")
-    assert all(r["scope"] in valid for r in db.list_schedules())
-    assert all(r["scope"] in valid
+    assert row["scope"] is None and row["digest_schedule_ids"] is None
+    # 出参恒为两值：None（情报订阅）/ 'rollup'（组合周报）
+    assert all(r["scope"] in (None, "rollup") for r in db.list_schedules())
+    assert all(r["scope"] in (None, "rollup")
                for r in db.list_due_schedules("2999-01-01T00:00:00"))
+
+
+def test_legacy_dirty_value_normalized_to_none(tmp_db):
+    """脏值兜底：迁移遗漏的残留 focus/sweep 读侧归一 NULL（零判空消费）。"""
+    db = tmp_db
+    s = db.create_schedule("a", "p", "general", "general", "daily", "09:00")
+    db.conn.execute("UPDATE task_schedules SET scope = 'focus' WHERE id = ?",
+                    (s["id"],))
+    db.conn.commit()
+    assert db.get_schedule(s["id"])["scope"] is None
 
 
 def test_rollup_ids_roundtrip(tmp_db):
@@ -95,7 +109,28 @@ def test_rollup_ids_roundtrip(tmp_db):
     assert db.get_schedule(s["id"])["digest_schedule_ids"] == ["c"]
 
 
-# ── API create rollup 约束 ────────────────────────────────────
+# ── db intel/rollup 过滤（2.11 §12 收敛后两值口径）───────────────
+
+
+def test_list_count_scope_filter(tmp_db):
+    db = tmp_db
+    db.create_schedule("情报一", "p", "general", "corporate", "daily", "09:00")
+    db.create_schedule("情报二", "p", "general", "industry", "daily", "09:00")
+    db.create_schedule("周报", "骨架 {sections}", "general", "general",
+                       "weekly", "MON 09:00", scope="rollup")
+    intel = db.list_schedules(scope="intel")
+    # created_at DESC；同秒创建顺序不定，按集合比较
+    assert {r["name"] for r in intel} == {"情报一", "情报二"}
+    rollup = db.list_schedules(scope="rollup")
+    assert [r["name"] for r in rollup] == ["周报"]
+    assert db.count_schedules(scope="intel") == 2
+    assert db.count_schedules(scope="rollup") == 1
+    assert db.count_schedules() == 3
+    # 与其他筛选叠加
+    assert db.count_schedules(scope="intel", category="industry") == 1
+
+
+# ── API create scope 收窄 ────────────────────────────────────
 
 
 @pytest.fixture()
@@ -121,6 +156,16 @@ _ROLLUP_BODY = {
     "intervalType": "weekly", "intervalValue": "MON 09:00",
     "scope": "rollup",
 }
+
+
+def test_create_intel_default_scope_none(client_and_db):
+    client, _db = client_and_db
+    r = client.post("/schedules", json={
+        "prompt": "盯一个企业", "intervalType": "daily",
+        "intervalValue": "09:00"})
+    assert r.status_code == 200
+    row = r.json()["schedule"]
+    assert row["scope"] is None and row["target_type"] is None
 
 
 def test_create_rollup_ok(client_and_db):
@@ -154,6 +199,17 @@ def test_create_rollup_prompt_needs_section(client_and_db):
     assert r.json()["code"] == "ROLLUP_PROMPT_NEEDS_SECTION"
 
 
+def test_create_scope_retired_values_rejected(client_and_db):
+    """focus/sweep 已退役：创建传入即 400（存量行由迁移置 NULL）。"""
+    client, _db = client_and_db
+    for legacy in ("focus", "sweep"):
+        r = client.post("/schedules", json={
+            "prompt": "p", "intervalType": "daily",
+            "intervalValue": "09:00", "scope": legacy})
+        assert r.status_code == 400
+        assert r.json()["code"] == "INVALID_SCOPE"
+
+
 def test_create_scope_invalid(client_and_db):
     client, _db = client_and_db
     r = client.post("/schedules", json={
@@ -163,30 +219,45 @@ def test_create_scope_invalid(client_and_db):
     assert r.json()["code"] == "INVALID_SCOPE"
 
 
-def test_create_focus_with_digest_ids_forbidden(client_and_db):
+def test_create_intel_with_digest_ids_forbidden(client_and_db):
+    """非 rollup（缺省 scope）带 digestScheduleIds → 400（仅组合周报可圈选）。"""
     client, _db = client_and_db
     r = client.post("/schedules", json={
         "prompt": "p", "intervalType": "daily", "intervalValue": "09:00",
-        "scope": "focus", "digestScheduleIds": ["s1"]})
+        "digestScheduleIds": ["s1"]})
     assert r.status_code == 400
     assert r.json()["code"] == "ROLLUP_DIGEST_IDS_FORBIDDEN"
 
 
-# ── API update scope 切换与 rollup 约束 ───────────────────────
+# ── API PATCH：scope 白名单移除 + rollup 约束保留 ─────────────────
 
 
-def test_update_switch_to_rollup_clears_target(client_and_db):
+def test_update_scope_field_ignored(client_and_db):
+    """类型由创建入口给定不可 PATCH 切换：scope 字段被白名单静默忽略。"""
     client, db = client_and_db
-    s = db.create_schedule("盯梢", "p", "general", "corporate", "daily",
-                           "09:00", target_type="project", target_id="proj_1")
-    db.update_schedule(s["id"], {"archive_file_id": "file_1"})
-    r = client.patch(f"/schedules/{s['id']}", json={"scope": "rollup"})
+    s = db.create_schedule("盯梢", "p", "general", "corporate", "daily", "09:00",
+                           target_type="project", target_id="proj_1")
+    r = client.patch(f"/schedules/{s['id']}",
+                     json={"scope": "rollup", "name": "改名"})
     assert r.status_code == 200
     row = r.json()["schedule"]
-    assert row["scope"] == "rollup"
-    assert row["target_type"] is None and row["target_id"] is None
-    # §12 档案合并对 rollup 不适用：置空锚点（deps.scheduler=None 分支）
-    assert row["archive_file_id"] is None
+    assert row["scope"] is None            # 类型未变
+    assert row["name"] == "改名"            # 其余字段正常更新
+    assert row["target_type"] == "project"  # 去向不受 rollup 切换影响（未切换）
+    # 非法值同样被忽略（白名单外键不校验）
+    r2 = client.patch(f"/schedules/{s['id']}", json={"scope": "hacker"})
+    assert r2.status_code == 200
+    assert r2.json()["schedule"]["scope"] is None
+
+
+def test_update_rollup_target_forbidden(client_and_db):
+    client, db = client_and_db
+    s = db.create_schedule("w", "骨架 {sections}", "general", "general",
+                           "weekly", "MON 09:00", scope="rollup")
+    r = client.patch(f"/schedules/{s['id']}",
+                     json={"targetType": "project", "targetId": "proj_1"})
+    assert r.status_code == 400
+    assert r.json()["code"] == "ROLLUP_TARGET_FORBIDDEN"
 
 
 def test_update_rollup_digest_ids_roundtrip(client_and_db):
@@ -207,7 +278,7 @@ def test_update_rollup_digest_ids_roundtrip(client_and_db):
     assert r2.json()["schedule"]["digest_schedule_ids"] is None
 
 
-def test_update_focus_digest_ids_forbidden(client_and_db):
+def test_update_intel_digest_ids_forbidden(client_and_db):
     client, db = client_and_db
     s = db.create_schedule("a", "p", "general", "general", "daily", "09:00")
     r = client.patch(f"/schedules/{s['id']}",
@@ -225,11 +296,3 @@ def test_update_rollup_prompt_needs_section(client_and_db):
     assert r.json()["code"] == "ROLLUP_PROMPT_NEEDS_SECTION"
     # 先验证后落库：现值未被半提交
     assert "{sections}" in db.get_schedule(s["id"])["prompt"]
-
-
-def test_update_scope_invalid(client_and_db):
-    client, db = client_and_db
-    s = db.create_schedule("a", "p", "general", "general", "daily", "09:00")
-    r = client.patch(f"/schedules/{s['id']}", json={"scope": "hacker"})
-    assert r.status_code == 400
-    assert r.json()["code"] == "INVALID_SCOPE"

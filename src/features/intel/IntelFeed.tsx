@@ -37,10 +37,13 @@ interface IntelFeedProps {
 
 export function IntelFeed({ onOpenRead, onOpenAdmin }: IntelFeedProps) {
   const { t } = useTranslation()
-  const { totals } = useSchedules()
+  const { totals, status, refresh } = useSchedules()
   const [rows, setRows] = useState<ScheduleRunRow[]>([])
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
+  // inbox 拉取失败标记（静默 catch 排查 2026-10-24）：空列表时升级为错误+重试，
+  // 不得伪装「暂无产出」；有内容（翻页/筛选重拉失败）保留现有内容静默，轮询自愈
+  const [fetchFailed, setFetchFailed] = useState(false)
   const [sort, setSort] = useState<'unread' | 'latest'>('unread')
   const [category, setCategory] = useState('')
   // 请求序号：筛选/排序切换后晚到的旧「加载更多」响应不得污染新列表
@@ -59,20 +62,25 @@ export function IntelFeed({ onOpenRead, onOpenAdmin }: IntelFeedProps) {
       if (seq !== loadSeq.current) return
       setRows((prev) => (append ? [...prev, ...(res.runs ?? [])] : (res.runs ?? [])))
       setHasMore(!!res.has_more)
+      setFetchFailed(false)
     } catch {
-      /* 情报流拉取失败静默（保留现有内容，分页态不变） */
+      // 失败不覆盖现有内容（分页态不变）；空列表置位 → 渲染层错误+重试
+      setFetchFailed(true)
     } finally {
       if (seq === loadSeq.current) setLoading(false)
     }
   }, [sort, category])
 
   // 挂载 + 筛选/排序变更 → 重拉第一页；零订阅（totals.n=0，含 summary 未回的初始态）
-  // 不拉取 —— inbox 必空，白拉请求；summary 返回后 n>0 自动补拉
+  // 不拉取 —— inbox 必空，白拉请求；summary 返回后 n>0 自动补拉。
+  // summary 拉取失败（failed）时照拉（M1-1）：真实有订阅的场景不得因 summary
+  // 瞬时错误永挂空态；inbox 自身失败不再用 rows 空态兜底（静默 catch 排查
+  // 2026-10-24）：空列表升级错误+重试，有内容保留静默
   useEffect(() => {
-    if (!totals.n) return undefined
+    if (!totals.n && status !== 'failed') return undefined
     void load(0, false)
     return undefined
-  }, [load, totals.n])
+  }, [load, totals.n, status])
 
   // 订阅期次终态边沿重拉第一页（'schedule' 活动源——task 源不含影子任务终态，
   // 误订阅会导致新产出永不上屏；零新增轮询，同 useSchedules）
@@ -90,8 +98,27 @@ export function IntelFeed({ onOpenRead, onOpenAdmin }: IntelFeedProps) {
       : t('activity.time.daysAgo', { count: Math.floor(hours / 24) })
   }
 
-  // 零订阅空态：引导建订阅（情报流的存在前提）
+  // 空态三分支（M1-1）：summary 失败 ≠ 真实零订阅——失败给错误+重试，
+  // loading 中性占位，仅真实零订阅引导建订阅（不误导创建重复订阅）
+  if (status === 'failed') {
+    return (
+      <div className={s.empty} data-testid="intel-feed-error">
+        <Inbox size={32} className={s.emptyIcon} />
+        <p className={s.emptyText}>{t('intel.summaryLoadFailed')}</p>
+        <button type="button" className={s.emptyBtn} onClick={() => void refresh()}>
+          {t('knowledge.retry')}
+        </button>
+      </div>
+    )
+  }
   if (!totals.n) {
+    if (status === 'loading') {
+      return (
+        <div className={s.empty} data-testid="intel-feed-loading">
+          <p className={s.emptyText}>{t('common.loading')}</p>
+        </div>
+      )
+    }
     return (
       <div className={s.empty} data-testid="intel-feed-empty">
         <Inbox size={32} className={s.emptyIcon} />
@@ -136,7 +163,15 @@ export function IntelFeed({ onOpenRead, onOpenAdmin }: IntelFeedProps) {
         </div>
       </div>
 
-      {rows.length === 0 ? (
+      {fetchFailed && rows.length === 0 && !loading ? (
+        <div className={s.empty} data-testid="intel-feed-fetch-error">
+          <Inbox size={32} className={s.emptyIcon} />
+          <p className={s.emptyText}>{t('intel.feedLoadFailed')}</p>
+          <button type="button" className={s.emptyBtn} onClick={() => void load(0, false)}>
+            {t('knowledge.retry')}
+          </button>
+        </div>
+      ) : rows.length === 0 ? (
         <div className={s.empty}>
           <Inbox size={32} className={s.emptyIcon} />
           <p className={s.emptyText}>{t('intel.emptyNoOutputs')}</p>
@@ -173,7 +208,7 @@ export function IntelFeed({ onOpenRead, onOpenAdmin }: IntelFeedProps) {
                     {t(`intel.cat.${run.schedule_category || 'general'}`)}
                   </span>
                   {run.schedule_scope === 'rollup' && (
-                    <span className={s.rollupTag}>{t('schedule.scope.rollup')}</span>
+                    <span className={s.rollupTag}>{t('schedule.typeRollup')}</span>
                   )}
                   <span className={s.cardName}>{run.schedule_name}</span>
                   <span className={s.cardTime}>{relTime(when)}</span>

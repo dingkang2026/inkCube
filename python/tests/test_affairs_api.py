@@ -58,8 +58,11 @@ def test_list_and_crud(client_and_db):
     assert client.delete(f"/projects/{pid}/tasks/{tid}").status_code == 404
 
 
-def test_create_recurring_task_seeds_current_occurrence(client_and_db):
-    """自建 recurring:校验 rule 并铺当期实例(occ+due 由 rule 推导)。"""
+def test_create_recurring_task_seeds_first_open_occurrence(client_and_db):
+    """自建 recurring:校验 rule 并铺首个未过期期次实例(2026-10-24 裁决:
+    当期已过 → 下一期,不产出出生即逾期)。"""
+    import datetime as _dt
+    from affairs_service import first_open_occurrence
     client, db = client_and_db
     pid = db.create_project(name="P", project_type="general", stage="before")["id"]
     r = client.post(f"/projects/{pid}/tasks", json={
@@ -67,7 +70,11 @@ def test_create_recurring_task_seeds_current_occurrence(client_and_db):
         "recurrence_rule": {"freq": "monthly", "due_day": 20},
         "auto_complete": {"on": "file_parsed", "match": "周报"}})
     task = r.json()["task"]
-    assert task["occurrence_key"] and task["due_date"]
+    occ, due = first_open_occurrence(
+        {"freq": "monthly", "due_day": 20}, _dt.date.today())
+    assert task["occurrence_key"] == occ
+    assert task["due_date"] == due
+    assert task["due_date"] >= _dt.date.today().isoformat()
     assert task["template_id"].startswith("user_")  # 裁决 2:自建节奏共享 id
 
 

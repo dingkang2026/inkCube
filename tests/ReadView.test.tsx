@@ -231,15 +231,15 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.getByTestId('read-open-replay')).toBeTruthy()
   })
 
-  it('组合周报期次 → 标题行「组合周报」徽标（2.11 §12.4）；盯梢订阅无', async () => {
+  it('组合周报期次 → 标题行「组合周报」徽标（2.11 §12.4）；情报订阅无', async () => {
     const invoke = wireInvoke({ schedule: { ...SCHEDULE, scope: 'rollup' } })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
     const { unmount } = render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
-    expect(screen.getByTestId('read-rollup-tag').textContent).toBe('schedule.scope.rollup')
+    expect(screen.getByTestId('read-rollup-tag').textContent).toBe('schedule.typeRollup')
     unmount()
 
-    const invoke2 = wireInvoke({ schedule: { ...SCHEDULE, scope: 'focus' } })
+    const invoke2 = wireInvoke({ schedule: { ...SCHEDULE, scope: null } })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: invoke2, on: () => () => {} }
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()

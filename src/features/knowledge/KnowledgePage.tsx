@@ -100,6 +100,10 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   // 浏览第 N 页的用户强行拉回首页
   const filePageRef = useRef(filePage)
   filePageRef.current = filePage
+  // 项目代际守卫（页面遍历 review M3-1 2026-10-24）：上传循环/轮询/翻页请求在飞时
+  // 用户切换项目，晚到的旧项目响应不得覆盖当前视图（同 WikiTab latestPidRef 模式）
+  const activePidRef = useRef<string | null>(null)
+  activePidRef.current = selectedProject?.id ?? null
 
   const ACCEPT = ['.pdf', '.docx', '.pptx', '.xlsx', '.html', '.png', '.jpg', '.jpeg'].join(',')
 
@@ -132,6 +136,8 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
     }
     try {
       const result: any = await fetchPage(page)
+      // 晚到的旧项目响应丢弃（代际守卫，M3-1）：不写任何共享状态
+      if (projectId !== activePidRef.current) return
       setStatusCounts(result.status_counts || {})
       const rows = result.files || []
       const total = result.total || 0
@@ -140,6 +146,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
         const lastPage = Math.max(1, Math.ceil(total / FILE_LIMIT))
         if (lastPage < page) {
           const retry: any = await fetchPage(lastPage)
+          if (projectId !== activePidRef.current) return
           setStatusCounts(retry.status_counts || {})
           setFiles(retry.files || [])
           setFileTotal(retry.total || 0)
@@ -178,8 +185,11 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
           if (result && !result.success) {
             showToast(`${file.name}: ${apiErrorText(result.code, result.message || result.error || t('knowledge.uploadFailed'), t)}`, 'error')
           }
-          // Refresh file list after each upload so the new file appears immediately
-          loadFiles(selectedProject.id, 1, filenameSearchRef.current)
+          // Refresh file list after each upload so the new file appears immediately;
+          // 读 ref 对准当前项目（M3-1）：上传中用户切走项目时刷新跟随新视图而非旧闭包，
+          // 文件本身仍归属发起上传的项目；响应侧由 loadFiles 代际守卫兑底
+          const refreshPid = activePidRef.current
+          if (refreshPid) loadFiles(refreshPid, 1, filenameSearchRef.current)
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)

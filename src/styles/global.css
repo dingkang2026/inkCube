@@ -400,3 +400,92 @@ html, body, #root {
   0%, 40% { background: rgba(255, 170, 0, 0.32); }
   100% { background: transparent; }
 }
+
+/* ── BootGate 启动门（窗口先行 2026-10-24）：boot 期全屏 loading / 错误态。
+   视觉与 index.html 静态 splash（.bootstrap-splash-*）同源：衬线「墨」字呼吸
+   + 底部墨渍晕染带；此阶段 global.css 已随 bundle 加载，直接用 token。 */
+.boot-gate {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  user-select: none;
+  overflow: hidden;
+}
+.boot-gate-inkchar {
+  font-family: var(--font-serif);
+  font-size: 56px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  animation: boot-gate-breathe 2.4s ease-in-out infinite;
+}
+@keyframes boot-gate-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.88; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+.boot-gate-brand {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+.boot-gate-stage {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.boot-gate-elapsed {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.boot-gate-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.boot-gate-msg {
+  max-width: 70%;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  word-break: break-all;
+}
+.boot-gate-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+.boot-gate-btn {
+  padding: 6px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.boot-gate-btn:hover { background: var(--bg-hover); }
+.boot-gate-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+.boot-gate-btn-primary:hover { background: var(--accent-hover); }
+.boot-gate-ink {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background:
+    radial-gradient(ellipse 60% 80% at 80% 90%, rgba(30, 30, 30, 0.4) 0%, transparent 55%),
+    radial-gradient(ellipse 40% 60% at 15% 85%, rgba(50, 50, 50, 0.3) 0%, transparent 50%),
+    radial-gradient(circle at 50% 100%, rgba(20, 20, 20, 0.15) 0%, transparent 45%);
+  filter: blur(5px);
+  pointer-events: none;
+}

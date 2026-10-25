@@ -112,4 +112,26 @@ describe('ImportTargetDialog (0.5 E2 T5)', () => {
     await waitFor(() => expect(screen.getByText(/task\.import\.failed/)).toBeTruthy())
     expect(props.onDone).not.toHaveBeenCalled()
   })
+
+  it('项目列表加载失败 → import-targets-error + 重试恢复，不伪装零目标（静默 catch 排查）', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:listProjects') throw new Error('boom')
+      if (channel === 'baseLib:list') return { base_libs: [] }
+      return { success: true, file_id: 'file_x' }
+    })
+    renderDialog()
+    await waitFor(() => expect(screen.getByTestId('import-targets-error')).toBeTruthy())
+    expect(screen.getByText('task.import.loadFailed')).toBeTruthy()
+    // 不得伪装「暂无可用目标」（拉取失败 ≠ 零目标）
+    expect(screen.queryByText('task.import.emptyTargets')).toBeNull()
+    // 重试恢复
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'knowledge:listProjects') return { projects: [{ id: 'p1', name: '项目A' }] }
+      if (channel === 'baseLib:list') return { base_libs: [] }
+      return { success: true, file_id: 'file_x' }
+    })
+    fireEvent.click(screen.getByText('knowledge.retry'))
+    await waitFor(() => expect(screen.getByText('项目A')).toBeTruthy())
+    expect(screen.queryByTestId('import-targets-error')).toBeNull()
+  })
 })

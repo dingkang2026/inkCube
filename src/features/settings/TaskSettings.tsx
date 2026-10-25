@@ -24,8 +24,10 @@ export function TaskSettings({ settings, onUpdate }: TaskSettingsProps) {
         min={5}
         max={300}
         className={styles.input}
-        value={settings?.task_timeout ?? 300}
-        onChange={(e) => onUpdate?.('task_timeout', parseInt(e.target.value) || 300)}
+        // 回退值对齐 DEFAULT_SETTINGS.task_timeout（页面遍历 review N5-1 2026-10-24）：
+        // 原回退 300 是 HTML max 而非默认值，清空重输瞬间跳到最大超时
+        value={settings?.task_timeout ?? 30}
+        onChange={(e) => onUpdate?.('task_timeout', parseInt(e.target.value) || 30)}
       />
       <p className={styles.hint}>{t('settings.task.timeoutHint')}</p>
 

@@ -5,10 +5,16 @@
  *  覆盖：截断态提示（showing < total）、未截断态行数直显、取数上限 lines=2000。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 vi.mock('../src/features/task/TaskLogViewer.module.css', () => ({
-  default: { meta: 'meta' },
+  default: { meta: 'meta', refreshBtn: 'refreshBtn' },
+}))
+
+// 手动刷新失败 toast（静默 catch 排查 2026-10-24）
+const toastMock = vi.hoisted(() => vi.fn())
+vi.mock('../src/features/knowledge/Toast', () => ({
+  useToast: () => toastMock,
 }))
 
 // t 直出 key；带插值对象时附带参数，便于断言传参正确
@@ -82,5 +88,16 @@ describe('TaskLogViewer 截断提示', () => {
       'tasks:getLogs',
       expect.objectContaining({ lines: 2000 }),
     )
+  })
+
+  it('手动刷新失败 → logRefreshFailed toast（fetchLogs rethrow，onClick 侧消费）', async () => {
+    invokeMock.mockRejectedValue(new Error('boom'))
+    renderViewer()
+    // 初次加载失败：无日志空态，无崩溃
+    await screen.findByText('task.execLogEmpty')
+    const btn = document.querySelector('[class*="refreshBtn"]') as HTMLButtonElement
+    expect(btn).toBeTruthy()
+    fireEvent.click(btn)
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith('task.logRefreshFailed', 'error'))
   })
 })

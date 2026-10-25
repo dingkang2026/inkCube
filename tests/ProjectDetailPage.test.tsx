@@ -50,9 +50,10 @@ vi.mock('../src/features/project/tabs/FormsTab', () => ({ FormsTab: () => null }
 vi.mock('../src/features/project/affairs/AffairsTab', () => ({ AffairsTab: () => null }))
 vi.mock('../src/features/project/ProjectChatPanel', () => ({ ProjectChatPanel: () => null }))
 vi.mock('../src/features/project/PulseBar', () => ({
-  PulseBar: (props: { reviews?: { contradiction: number }; pendingCompile?: number;
+  PulseBar: (props: { reviews?: { contradiction: number; gap: number }; pendingCompile?: number;
     aiStatus?: string; suggestionCount?: number }) => (
     <div data-testid="pulsebar" data-contradiction={props.reviews?.contradiction}
+      data-gap={props.reviews?.gap}
       data-pending={props.pendingCompile} data-ai={props.aiStatus}
       data-suggestions={props.suggestionCount} />
   ),
@@ -160,18 +161,23 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     expect(container.querySelector('.tabPulse')).toBeNull()
   })
 
-  it('defaults to the wiki tab (knowledge-first, 3.0 §8 phase 1)', async () => {
+  it('defaults to the affairs tab, first in TABS order (0.6 §3.4 V2 翻转决议)', async () => {
     const { container } = render(<ProjectDetailPage project={project} />)
     await flush()
     const tabs = Array.from(container.querySelectorAll('button'))
     const active = tabs.find((b) => b.className.includes('tabActive'))
-    expect(active?.textContent).toContain('project.tab.wiki')
+    expect(active?.textContent).toContain('project.tab.affairs')
+    // 顺序不变量（0.6 §6.3 规则 4）：事务恒第一（E1a plan T11 原定序，实施偏差 2026-10-24 补正）
+    const tabBtns = tabs.filter((b) => b.textContent?.startsWith('project.tab.'))
+    expect(tabBtns.map((b) => b.textContent)).toEqual([
+      'project.tab.affairs', 'project.tab.wiki', 'project.tab.output', 'project.tab.materials',
+    ])
   })
 
   it('refetches once per manual switch back to wiki (prev-tab guard)', async () => {
     const { getByText } = render(<ProjectDetailPage project={project} />)
     await flush()
-    // 挂载恰 1 次（守卫防默认 wiki 的挂载双拉）
+    // 挂载恰 1 次（挂载无条件快照与 Tab 无关；默认事务 Tab 下切到 wiki 时由此守卫补拉防双拉）
     expect(compileStatusCount()).toBe(1)
     // 用户切走再切回：恰 +1（锁守卫「切到仍拉取」半边；删 effect 则停在 1）
     fireEvent.click(getByText('project.tab.materials'))
@@ -188,6 +194,9 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
           counts: {
             contradiction: { pending: 2, resolved: 0, total: 2 },
             'data-gap': { pending: 1, resolved: 0, total: 1 },
+            // broken-link 不计入 gap（V2 全量 review M-1：与后端 E4 桶/封面行两型口径对齐）
+            'missing-page': { pending: 2, resolved: 0, total: 2 },
+            'broken-link': { pending: 7, resolved: 0, total: 7 },
           },
         }
       }
@@ -196,9 +205,11 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     })
     const { rerender, container } = render(<ProjectDetailPage project={project} />)
     await flush()
-    // 挂载注入脉搏数据：矛盾分型计数 + 后端 pending_compile_count 直读（P11 裁决）
+    // 挂载注入脉搏数据：矛盾分型计数 + 后端 pending_compile_count 直读（P11 裁决）；
+    // gap = data-gap(1) + missing-page(2) 两型，broken-link(7) 不计入（M-1 口径对齐）
     const bar = container.querySelector('[data-testid="pulsebar"]')!
     expect(bar.getAttribute('data-contradiction')).toBe('2')
+    expect(bar.getAttribute('data-gap')).toBe('3')
     expect(bar.getAttribute('data-pending')).toBe('5')
 
     // 活跃期推进两个轮询周期：listReviews 不随 #4 轮询增长（零轮询回归锁，若被轮询化则必然 >1）

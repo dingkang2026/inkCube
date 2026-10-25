@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>墨方 InkCube</title>
+    <style>
+      /* dev 启动过渡页（2026-10-24）：vite 冷启动期启动任务把单线程事件循环
+         吃满（实测 ~3-4 分钟 99% CPU），HTTP 管道全局饿死——dev 窗口不能直接
+         loadURL 白等。本页为本地 file:// 静态 splash（毫秒级加载），main.js 的
+         waitForDevServer 轮询到 dev server 可响应后自动切换到主页面。视觉与
+         index.html 品牌 splash 同源（AboutDialog 墨字语言），纯 CSS 无脚本。 */
+      html, body { height: 100%; margin: 0; }
+      .boot-splash {
+        position: relative;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #ffffff;
+        color: #1a1a1a;
+        font-family: "Inter", "Noto Sans SC", -apple-system, sans-serif;
+        user-select: none;
+        overflow: hidden;
+      }
+      .boot-splash-ink {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 120px;
+        background:
+          radial-gradient(ellipse 60% 80% at 80% 90%, rgba(30, 30, 30, 0.4) 0%, transparent 55%),
+          radial-gradient(ellipse 40% 60% at 15% 85%, rgba(50, 50, 50, 0.3) 0%, transparent 50%),
+          radial-gradient(circle at 50% 100%, rgba(20, 20, 20, 0.15) 0%, transparent 45%);
+        filter: blur(5px);
+        pointer-events: none;
+      }
+      .boot-splash-inkchar {
+        font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+        font-size: 56px;
+        font-weight: 900;
+        line-height: 1;
+        letter-spacing: 0.05em;
+        animation: boot-splash-breathe 2.4s ease-in-out infinite;
+      }
+      @keyframes boot-splash-breathe {
+        0%, 100% { transform: scale(1); opacity: 0.88; }
+        50% { transform: scale(1.04); opacity: 1; }
+      }
+      .boot-splash-brand {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.15em;
+      }
+      .boot-splash-hint {
+        font-size: 12px;
+        color: #9ca3af;
+      }
+      .boot-splash-dev {
+        font-size: 11px;
+        color: #c0c4cc;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="boot-splash">
+      <div class="boot-splash-inkchar">墨</div>
+      <div class="boot-splash-brand">墨方 InkCube</div>
+      <div class="boot-splash-hint">正在启动 · Loading…</div>
+      <div class="boot-splash-dev">开发模式 · 正在准备界面资源（首次编译较慢）</div>
+      <div class="boot-splash-ink"></div>
+    </div>
+  </body>
+</html>

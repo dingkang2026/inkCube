@@ -23,8 +23,9 @@ router = APIRouter()
 
 _INTERVAL_TYPES = ("daily", "weekly", "monthly")
 
-# 订阅定位三型（2.11 §12，V2.1-T2）：focus 盯梢 / sweep 撒网 / rollup 组合周报
-_SCOPES = ("focus", "sweep", "rollup")
+# 订阅类型标记（2.11 §12 收敛 2026-10-25）：NULL 情报订阅 / rollup 组合周报；
+# focus/sweep 已退役（与分类同源、执行链零差异）
+_SCOPE_ROLLUP = "rollup"
 # ROLLUP_SECTION_MARK（汇总骨架素材插入点）自 scheduler import——创建校验与
 # 执行期替换（_build_rollup_prompt）两处共享，与 OUTPUT_CONTRACT 同款惯例
 
@@ -34,7 +35,8 @@ _FIELD_MAP = {
     "intervalType": "interval_type", "intervalValue": "interval_value",
     "targetType": "target_type", "targetId": "target_id",
     "autoImport": "auto_import", "enabled": "enabled",
-    "scope": "scope", "digestScheduleIds": "digest_schedule_ids",
+    "digestScheduleIds": "digest_schedule_ids",
+    # scope 不入白名单：类型由创建入口给定（情报订阅/组合周报），PATCH 不改类型
 }
 
 
@@ -47,7 +49,7 @@ class ScheduleCreateBody(BaseModel):
     targetType: str | None = None
     targetId: str | None = None
     autoImport: bool = True
-    scope: str = "focus"
+    scope: str | None = None   # 仅接受 'rollup'；None/缺省=情报订阅（2.11 §12 收敛）
     digestScheduleIds: list[str] | None = None
 
 
@@ -61,7 +63,6 @@ class ScheduleUpdateBody(BaseModel):
     targetId: str | None = None
     autoImport: bool | None = None
     enabled: bool | None = None
-    scope: str | None = None
     digestScheduleIds: list[str] | None = None
 
 
@@ -98,7 +99,7 @@ def _validate_digest_ids(db, ids: list[str]):
 async def list_schedules(category: str | None = None,
                          enabled: int | None = None,
                          q: str | None = None,
-                         scope: str | None = None,   # focus|sweep|rollup（2.11 §12）；普通默认值（非 Query）兼容测试直调端点
+                         scope: str | None = None,   # rollup|intel（2.11 §12 收敛）；普通默认值（非 Query）兼容测试直调端点
                          limit: int = Query(50, ge=0, description="Page size; 0 = return all"),
                          offset: int = Query(0, ge=0, description="Rows to skip")):
     """订阅列表（管理台左列 / 速览同源，服务端过滤 + 分页）。"""
@@ -122,11 +123,13 @@ async def create_schedule(body: ScheduleCreateBody):
     if body.intervalType not in _INTERVAL_TYPES:
         return _err(400, "intervalType 须为 daily/weekly/monthly",
                     "INVALID_INTERVAL_TYPE")
-    # V2.1-T2 订阅定位校验（2.11 §12）：rollup 不沉淀（阅读产物非档案素材）、
-    # prompt 为汇总骨架须含 {sections} 素材插入点；仅 rollup 可圈选汇总范围
-    if body.scope not in _SCOPES:
-        return _err(400, "scope 须为 focus/sweep/rollup", "INVALID_SCOPE")
-    if body.scope == "rollup":
+    # V2.1-T2 订阅类型校验（2.11 §12 收敛 2026-10-25）：scope 仅接受 rollup
+    # 或缺省（NULL=情报订阅）；rollup 不沉淀（阅读产物非档案素材）、prompt 为
+    # 汇总骨架须含 {sections} 素材插入点；仅 rollup 可圈选汇总范围
+    if body.scope is not None and body.scope != _SCOPE_ROLLUP:
+        return _err(400, "scope 须为组合周报标记 rollup 或缺省（情报订阅）",
+                    "INVALID_SCOPE")
+    if body.scope == _SCOPE_ROLLUP:
         if body.targetType or body.targetId:
             return _err(400, "组合周报不沉淀档案，请清空去向",
                         "ROLLUP_TARGET_FORBIDDEN")
@@ -307,23 +310,17 @@ async def update_schedule(schedule_id: str, body: ScheduleUpdateBody):
         and (value is not None or key in ("targetType", "targetId",
                                           "digestScheduleIds"))
     }
-    # V2.1-T2 scope 校验 + rollup 约束（2.11 §12）：三型枚举；rollup 不沉淀
-    # （显式给去向 400；scope 切入 rollup 而存量去向残留 → 强制置空，经
-    # target_changed 联动 retarget 清旧档案）；汇总范围仅 rollup 可圈选
-    if "scope" in fields and fields["scope"] not in _SCOPES:
-        return _err(400, "scope 须为 focus/sweep/rollup", "INVALID_SCOPE")
-    final_scope = fields.get("scope") or current["scope"]
-    if final_scope == "rollup":
+    # V2.1-T2 scope 校验 + rollup 约束（2.11 §12）：scope 已移出白名单——
+    # 类型由创建入口给定不可 PATCH 切换；rollup 约束按存量行类型判定
+    final_scope = current["scope"]
+    if final_scope == _SCOPE_ROLLUP:
         if fields.get("target_type") or fields.get("target_id"):
             return _err(400, "组合周报不沉淀档案，请清空去向",
                         "ROLLUP_TARGET_FORBIDDEN")
-        if current["target_id"] and "target_id" not in fields:
-            fields["target_type"] = None
-            fields["target_id"] = None
     elif fields.get("digest_schedule_ids") is not None:
         return _err(400, "仅组合周报订阅可配置汇总范围",
                     "ROLLUP_DIGEST_IDS_FORBIDDEN")
-    if (final_scope == "rollup"
+    if (final_scope == _SCOPE_ROLLUP
             and isinstance(fields.get("digest_schedule_ids"), list)):
         bad = _validate_digest_ids(deps.db, fields["digest_schedule_ids"])
         if bad:
@@ -335,7 +332,7 @@ async def update_schedule(schedule_id: str, body: ScheduleUpdateBody):
         p = fields["prompt"].rstrip()
         if p.endswith(OUTPUT_CONTRACT):
             p = p[:-len(OUTPUT_CONTRACT)].rstrip()
-        if final_scope == "rollup" and ROLLUP_SECTION_MARK not in p:
+        if final_scope == _SCOPE_ROLLUP and ROLLUP_SECTION_MARK not in p:
             return _err(
                 400,
                 "组合周报 prompt 须含 {sections} 占位符（期次素材插入点）",
