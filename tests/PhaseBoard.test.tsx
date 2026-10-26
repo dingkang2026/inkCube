@@ -56,14 +56,13 @@ describe('PhaseBoard', () => {
     expect(container.textContent).toContain('affairs.overdueDays')
   })
 
-  it('renders general type as flat list without phase bar', () => {
+  it('renders general type as flat list without phase grouping', () => {
     const { container } = render(
       <PhaseBoard {...base} projectType="general" stage="none"
         tasks={[mk({ title: '通用资料' }), mk({ id: 't9', title: '通用报告', task_type: 'report' })]} />
     )
     expect(container.textContent).toContain('通用资料')
     expect(container.textContent).toContain('通用报告')
-    expect(container.querySelector('.phaseBar')).toBeNull()
   })
 
   it('renders pending_activation dimmed with hint text', () => {
@@ -78,7 +77,7 @@ describe('PhaseBoard', () => {
     const tasks = [mk({}), mk({ id: 't2', phase: 'during', title: '尽调材料' })]
     const { container } = render(<PhaseBoard {...base} tasks={tasks} />)
     expect(container.textContent).not.toContain('尽调材料')
-    // 组头用类名定位:同文案也出现在顶部 phaseBar 段,getByText 会多匹配(计划测试 bug)
+    // 组头用类名定位(顶部时期进度条已撤下,组头是期名唯一出现处,类名定位保留稳健)
     const head = Array.from(container.querySelectorAll('.groupHead'))
       .find((b) => b.textContent!.includes('recruitmentDuring'))!
     fireEvent.click(head)

@@ -48,6 +48,34 @@
   min-width: 0;
 }
 
+/* 名称行：标题 + 内联编辑按钮（2026-10-25 用户裁决：编辑入口紧贴名称） */
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nameEditBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.nameEditBtn:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+
 .projectName {
   margin: 0;
   font-size: var(--text-xl);
@@ -248,26 +276,8 @@
 }
 
 /* ── 编辑项目弹层（todo「项目创建后不能修改」，2026-10-23）：表单模态面板，
-   数值对齐 ProjectList 表单模态惯例（z-index 2000 / radius-md / 点蒙板防丢输入） ── */
-.editBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-}
-
-.editBtn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
+   数值对齐 ProjectList 表单模态惯例（z-index 2000 / radius-md / 点蒙板防丢输入）；
+   原右上 editBtn 已前移为名称后 nameEditBtn（2026-10-25），样式随位删除 ── */
 .editOverlay {
   position: fixed;
   inset: 0;

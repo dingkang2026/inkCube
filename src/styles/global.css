@@ -439,6 +439,11 @@ html, body, #root {
   font-size: 12px;
   color: var(--text-secondary);
 }
+.boot-gate-progress {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
 .boot-gate-elapsed {
   font-size: 11px;
   color: var(--text-muted);

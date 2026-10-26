@@ -4,8 +4,9 @@
  *  - 情报订阅（intel）：①来源（从模板占位符表单化 / 自由输入）→ ②周期
  *    （daily 时刻 / weekly 星期多选+时刻 / monthly 日期多选+时刻）→
  *    ③名称+分类+去向+保存；
- *  - 组合周报（rollup）：无来源步（情报模板对汇总无意义）→ ②周期 →
- *    ③名称+汇总骨架（预填默认模板含 {sections}）+汇总范围+「不沉淀」说明。
+ *  - 聚合简报（rollup）：无来源步（情报模板对汇总无意义）→ ②周期 →
+ *    ③名称+追加要求（可选，拼接进 prompt；骨架为内部模板不渲染，
+ *    2.11 §12.2 骨架治理二次收敛）+汇总范围+「不沉淀」说明。
  *  editing（编辑态）→ 跳过①，统一回填，类型随 editing.scope。 */
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -50,13 +51,14 @@ interface ScheduleFormModalProps {
   open: boolean
   /** 编辑态：跳过第①步，prompt+配置回填（类型随 editing.scope） */
   editing?: ScheduleRow | null
-  /** 新建类型（2.11 §12 收敛）：intel 情报订阅（默认）/ rollup 组合周报
+  /** 新建类型（2.11 §12 收敛）：intel 情报订阅（默认）/ rollup 聚合简报
    *  （跳过模板步，第③步为骨架+汇总范围）；编辑态忽略 */
   createKind?: ScheduleKind
-  /** 新建态预填（0.6 §6.1 V2-E2 线索升级订阅）：名称进订阅名、
-   *  prompt 进自由输入（并切到自由输入 tab）；编辑态忽略（editing 走 update，
+  /** 新建态预填（0.6 §3.2/§6.1 线索升级订阅，2026-10-25 模板化）：名称进订阅名、
+   *  tplId 预选白名单模板（落模板页签，产出要点自解释）、phValues 预填占位符
+   *  （{企业名}=线索名），分类随模板映射；编辑态忽略（editing 走 update，
    *  两者不可混用） */
-  prefill?: { name?: string; prompt?: string }
+  prefill?: { name?: string; tplId?: string; phValues?: Record<string, string> }
   onClose: () => void
   onSaved: () => void
 }
@@ -64,7 +66,7 @@ interface ScheduleFormModalProps {
 type Step = 'source' | 'period' | 'target'
 type SourceTab = 'template' | 'free'
 type IntervalType = 'daily' | 'weekly' | 'monthly'
-/** 订阅类型（2.11 §12 收敛）：intel 情报订阅（scope=NULL）/ rollup 组合周报；
+/** 订阅类型（2.11 §12 收敛）：intel 情报订阅（scope=NULL）/ rollup 聚合简报；
  *  由创建入口给定，编辑态随 editing.scope，不可切换 */
 export type ScheduleKind = 'intel' | 'rollup'
 
@@ -102,7 +104,10 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
 
   // 订阅类型（2.11 §12 收敛）：由入口给定不可切换；rollup 第③步为骨架+汇总范围
   const [kind, setKind] = useState<ScheduleKind>('intel')
-  const [rollupPrompt, setRollupPrompt] = useState('')
+  // 骨架只读（2.11 §12.2 骨架治理 2026-10-25）：skeleton 为只读基础（新建=i18n 模板、
+  // 编辑态解析回填），extras 为追加要求（可空）；保存 prompt 见下方派生拼接
+  const [rollupSkeleton, setRollupSkeleton] = useState('')
+  const [rollupExtras, setRollupExtras] = useState('')
   const [digestIds, setDigestIds] = useState<string[]>([])
   const [digestSources, setDigestSources] = useState<{ id: string; name: string }[]>([])
 
@@ -125,7 +130,18 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
       setTargetType(editing.target_type ?? 'none')
       setTargetId(editing.target_id)
       setAutoImport(!!editing.auto_import)
-      setRollupPrompt(editing.scope === 'rollup' ? editing.prompt : '')
+      // rollup 骨架解析回填（2.11 §12.2 骨架治理）：仅精确识别「骨架+引导语+追加」
+      // 拼接形态剥离回填（裸骨架自然落 else 分支、语义不变），其余（手改过/跨语言）
+      // 存量全文无损转只读骨架、追加框留空——零猜测、不丢用户数据
+      if (editing.scope === 'rollup') {
+        const skeleton = t('schedule.form.rollupPromptTemplate')
+        const joint = `${skeleton}\n\n${t('schedule.form.rollupExtrasPrefix')}\n`
+        setRollupSkeleton(editing.prompt.startsWith(joint) ? skeleton : editing.prompt)
+        setRollupExtras(editing.prompt.startsWith(joint) ? editing.prompt.slice(joint.length) : '')
+      } else {
+        setRollupSkeleton('')
+        setRollupExtras('')
+      }
       setDigestIds(editing.digest_schedule_ids ?? [])
       setStep('period')
       return
@@ -133,13 +149,20 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
     const k: ScheduleKind = createKind ?? 'intel'
     setKind(k)
     setStep(k === 'rollup' ? 'period' : 'source')
-    setSourceTab(prefill?.prompt ? 'free' : 'template')
-    setTplId(null)
-    setPhValues({})
-    setFreePrompt(prefill?.prompt ?? '')
+    // prefill 模板化（0.6 §3.2/§6.1，2026-10-25）：落模板页签预选 + 占位符预填，
+    // 产出要点自解释（免培训 §3.9-②），不再以隐形模板串伪装自由输入
+    setSourceTab('template')
+    setTplId(prefill?.tplId ?? null)
+    setPhValues(prefill?.phValues ?? {})
+    setFreePrompt('')
     setName(prefill?.name ?? '')
     setPrompt('')
-    setCategory('corporate')
+    // 分类随预选模板映射；INTEL_TEMPLATES 静态常量同步查找，
+    // 不依赖 useTaskTemplates 异步加载完成（模板列表未就绪时分类已正确）
+    const prefTpl = prefill?.tplId
+      ? INTEL_TEMPLATES.find((b) => `${BUILTIN_PREFIX}${b.id}` === prefill.tplId)
+      : undefined
+    setCategory(prefTpl ? INTEL_CATEGORY_MAP[prefTpl.category] : 'corporate')
     setIntervalType('daily')
     setWeekDays([])
     setMonthDays([])
@@ -148,8 +171,9 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
     setTargetId(null)
     setAutoImport(true)
     // 新建 rollup 预填默认骨架（i18n rollupPromptTemplate，含 {sections}）：
-    // 跳过模板步的补偿——用户不试错即知产出形态，可改可清
-    setRollupPrompt(k === 'rollup' ? t('schedule.form.rollupPromptTemplate') : '')
+    // 跳过模板步的补偿——用户不试错即知产出形态；骨架只读，个性化走追加框
+    setRollupSkeleton(k === 'rollup' ? t('schedule.form.rollupPromptTemplate') : '')
+    setRollupExtras('')
     setDigestIds([])
   }, [open, editing, prefill, createKind])
 
@@ -211,14 +235,21 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
   // 自由输入四分类直落 category（corporate/industry/region/general，0.6 §3.2 T12）
   const INTEL_CATEGORIES = ['corporate', 'industry', 'region', 'general'] as const
 
+  // rollup 保存态 prompt 派生（2.11 §12.2 骨架治理）：追加非空时拼接（空行 + 引导语
+  // 区隔固定骨架与本期个性化，LLM 可区分）；骨架只读故 {sections} 恒在
+  const rollupPrompt = rollupExtras.trim()
+    ? `${rollupSkeleton}\n\n${t('schedule.form.rollupExtrasPrefix')}\n${rollupExtras.trim()}`
+    : rollupSkeleton
+
   const step1Ready = sourceTab === 'template'
     ? !!selectedTpl && !hasUnfilledPlaceholders(templatePrompt)
     : !!freePrompt.trim()
   const days = intervalType === 'weekly' ? weekDays : monthDays
   const step2Ready = time !== '' && (intervalType === 'daily' || days.length > 0)
-  // rollup：骨架须含 {sections}（后端同校验 400 ROLLUP_PROMPT_NEEDS_SECTION）
+  // rollup：骨架只读永含 {sections}，前端校验退役（2026-10-25 骨架治理）；
+  // 后端 400 ROLLUP_PROMPT_NEEDS_SECTION 保留为纵深防御（拦截存量坏数据）
   const step3Ready = kind === 'rollup'
-    ? rollupPrompt.includes('{sections}')
+    ? true
     : targetType === 'none' || !!targetId
 
   const handleSave = async () => {
@@ -228,7 +259,7 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
     const payload = {
       name: name.trim() || null,
       prompt: isRollup ? rollupPrompt : (prompt || sourcePrompt),
-      // 组合周报是跨订阅汇总，产出入通用页签（后端默认同值，显式发送自明）
+      // 聚合简报是跨订阅汇总，产出入通用页签（后端默认同值，显式发送自明）
       category: isRollup ? 'general' : category,
       intervalType,
       intervalValue,
@@ -453,16 +484,19 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
             </label>
             {kind === 'rollup' ? (
               <>
+                {/* 骨架不渲染（2.11 §12.2 骨架治理二次收敛 2026-10-25）：内部模板对用户
+                  * 是噪音且不可改；产出形态由说明文案交代，个性化走追加框（数据流不变） */}
+                <p className={s.rollupHint}>{t('schedule.form.rollupBaseHint')}</p>
                 <label className={s.phRow}>
-                  <span>{t('schedule.form.rollupSkeletonLabel')}</span>
+                  <span>{t('schedule.form.rollupExtrasLabel')}</span>
                   <textarea
-                    className={s.promptArea}
-                    aria-label={t('schedule.form.rollupSkeletonLabel')}
-                    value={rollupPrompt}
-                    onChange={(e) => setRollupPrompt(e.target.value)}
+                    className={`${s.promptArea} ${s.extrasArea}`}
+                    aria-label={t('schedule.form.rollupExtrasLabel')}
+                    placeholder={t('schedule.form.rollupExtrasPlaceholder')}
+                    value={rollupExtras}
+                    onChange={(e) => setRollupExtras(e.target.value)}
                   />
                 </label>
-                <p className={s.rollupHint}>{t('schedule.form.rollupSkeletonHint')}</p>
                 <div className={s.fieldLabel}>{t('schedule.form.rollupScopeLabel')}</div>
                 <div className={s.targetList}>
                   {digestSources.length === 0 ? (

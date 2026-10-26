@@ -35,6 +35,11 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
   const dragging = useRef(false)
   const startX = useRef(0)
   const startW = useRef(DEFAULT_W)
+  // mousedown 起于 panel 内而 mouseup 落于遮罩时，浏览器把 click 合成到两者公共
+  // 祖先(即 overlay,绕过 panel 的 stopPropagation)——手柄拖宽、文本选字后
+  // 拖出松手均属此类非用户意图 click;松手后一个 tick 内吞掉,防误关抽屉
+  const suppressClick = useRef(false)
+  const mouseDownInPanel = useRef(false)
 
   const onDragDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -52,10 +57,16 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
       setWidth(Math.min(MAX_W, Math.max(MIN_W, startW.current + delta)))
     }
     const up = () => {
-      if (!dragging.current) return
-      dragging.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
+      if (dragging.current) {
+        dragging.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+      if (!mouseDownInPanel.current) return
+      mouseDownInPanel.current = false
+      // click 同步派发于 mouseup 之后、本定时器之前，此窗口内吞掉合成 click
+      suppressClick.current = true
+      setTimeout(() => { suppressClick.current = false }, 0)
     }
     document.addEventListener('mousemove', move)
     document.addEventListener('mouseup', up)
@@ -124,8 +135,16 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
   }
 
   return (
-    <div className={s.overlay} onClick={busy ? undefined : onClose}>
-      <div className={s.panel} style={{ width }} onClick={(e) => e.stopPropagation()}>
+    <div
+      className={s.overlay}
+      onClick={() => { if (!busy && !suppressClick.current) onClose() }}
+    >
+      <div
+        className={s.panel}
+        style={{ width }}
+        onMouseDown={() => { mouseDownInPanel.current = true }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className={s.dragHandle} onMouseDown={onDragDown} />
         <div className={s.body}>
           <div className={s.headRow}>

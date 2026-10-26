@@ -8,6 +8,8 @@
 - DELETE /leads/{id}：404 / ok
 - POST /leads/extract：404 / running 409 / 无报告 404 / LLM 候选 JSON 解析
   （monkeypatch llm.client.LLMClient）/ 解析失败 500 EXTRACT_PARSE_FAILED
+- POST /leads/convert-extract：404 lead / 400 无来源 / 404 run 悬空 /
+  五字段提取 + 档位路由 / suggestedType 值域外归 general / 解析失败 500
 """
 import os
 import sys
@@ -248,6 +250,95 @@ def test_extract_parse_failure_500(client_and_db, monkeypatch):
     _mk_done_run(db, td)
     monkeypatch.setattr("llm.client.LLMClient", _BadLLM)
     r = client.post("/leads/extract", json={"runId": "run_l1"})
+    assert r.status_code == 500
+    assert r.json()["code"] == "EXTRACT_PARSE_FAILED"
+
+
+# ── POST /leads/convert-extract ──────────────────────
+
+
+def _obj_llm_class(content):
+    """返回固定 JSON 对象的 LLM Fake 类工厂；记录构造 settings——
+    档位路由注入回归锚点（同 _FakeLLM，漏 resolve_model 时 model 为空串）."""
+
+    class _FakeObjLLM:
+        received_settings: dict = {}
+
+        def __init__(self, settings):
+            _FakeObjLLM.received_settings = dict(settings or {})
+
+        async def chat_full(self, messages, tools=None):
+            return {"content": content, "finish_reason": "stop", "usage": {}}
+
+    return _FakeObjLLM
+
+
+def test_convert_extract_lead_not_found(client_and_db):
+    client, db, _td = client_and_db
+    r = client.post("/leads/convert-extract", json={"leadId": "lead_nope"})
+    assert r.status_code == 404
+
+
+def test_convert_extract_manual_no_source_400(client_and_db):
+    """手动录入线索无来源报告 → 400（0.6 §3.3：无来源空白手填不阻断）。"""
+    client, db, _td = client_and_db
+    lead = db.create_lead("甲", source_type="manual")
+    r = client.post("/leads/convert-extract", json={"leadId": lead["id"]})
+    assert r.status_code == 400
+    assert r.json()["code"] == "LEAD_NO_SOURCE"
+
+
+def test_convert_extract_run_gone_404(client_and_db):
+    """source_run_id 悬空防御校验（正常由删除联动置 NULL 不经此分支）。"""
+    client, db, _td = client_and_db
+    lead = db.create_lead("甲", source_type="run", source_run_id="run_gone")
+    r = client.post("/leads/convert-extract", json={"leadId": lead["id"]})
+    assert r.status_code == 404
+    assert r.json()["code"] == "RUN_NOT_FOUND"
+
+
+def test_convert_extract_fields(client_and_db, monkeypatch):
+    client, db, td = client_and_db
+    _mk_done_run(db, td)
+    lead = db.create_lead("华润", source_type="run", source_run_id="run_l1",
+                          source_schedule_name="舆情订阅")
+    fake = _obj_llm_class(
+        '{"name": "华润置地", "description": "物业开发与园区运营企业",'
+        ' "companyName": "华润置地有限公司",'
+        ' "creditCode": "91440300192231808N", "suggestedType": "recruitment"}')
+    monkeypatch.setattr("llm.client.LLMClient", fake)
+    r = client.post("/leads/convert-extract", json={"leadId": lead["id"]})
+    assert r.status_code == 200
+    assert r.json()["fields"] == {
+        "name": "华润置地",
+        "description": "物业开发与园区运营企业",
+        "companyName": "华润置地有限公司",
+        "creditCode": "91440300192231808N",
+        "suggestedType": "recruitment",
+    }
+    # 档位路由回归（同 test_extract_candidates：空串 = 漏路由，真实调用被网关拒）
+    assert (fake.received_settings.get("model") or "") != ""
+
+
+def test_convert_extract_type_fallback_general(client_and_db, monkeypatch):
+    """suggestedType 值域外（LLM 输出漂移）归 general，不阻断立项动线。"""
+    client, db, td = client_and_db
+    _mk_done_run(db, td)
+    lead = db.create_lead("甲", source_type="run", source_run_id="run_l1")
+    monkeypatch.setattr("llm.client.LLMClient", _obj_llm_class(
+        '{"name": "甲", "description": "d", "companyName": "",'
+        ' "creditCode": "", "suggestedType": "产业园"}'))
+    r = client.post("/leads/convert-extract", json={"leadId": lead["id"]})
+    assert r.status_code == 200
+    assert r.json()["fields"]["suggestedType"] == "general"
+
+
+def test_convert_extract_parse_failure_500(client_and_db, monkeypatch):
+    client, db, td = client_and_db
+    _mk_done_run(db, td)
+    lead = db.create_lead("甲", source_type="run", source_run_id="run_l1")
+    monkeypatch.setattr("llm.client.LLMClient", _BadLLM)
+    r = client.post("/leads/convert-extract", json={"leadId": lead["id"]})
     assert r.status_code == 500
     assert r.json()["code"] == "EXTRACT_PARSE_FAILED"
 

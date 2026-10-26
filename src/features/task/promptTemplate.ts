@@ -67,6 +67,16 @@ export function applyValues(template: string, values: Record<string, string>): s
 /** 内置模板 id 前缀（合并后 MergedTemplate.id 形态 'builtin_companyBasic'） */
 export const BUILTIN_PREFIX = 'builtin_';
 
+/** 线索「升级为订阅」预选模板（0.6 §3.2/§6.1 模板化预填，2026-10-25）：
+ *  企业动态跟踪（原竞品动态，去竞品预设化）是白名单中定点盯一家已识别主体的
+ *  商机视角模板；id 为合并后 MergedTemplate 形态（含前缀） */
+export const LEAD_UPGRADE_TPL_ID = `${BUILTIN_PREFIX}competitor`;
+
+/** 项目画像「盯产业」预选模板（2.11 §8.1「从项目画像」渠道，2026-10-25）：
+ *  产业舆情扫描（盯一条赛道而非一家企业，上下游语义已覆盖）；
+ *  id 为合并后 MergedTemplate 形态（含前缀） */
+export const PROFILE_SUBSCRIBE_TPL_ID = `${BUILTIN_PREFIX}industrySentiment`;
+
 /** 后端 category（db 存名）→ 前端 tab 分类（面板/管理弹层用短名） */
 export const CATEGORY_ALIASES: Record<string, TemplateCategory> = {
   info_gather: 'info',

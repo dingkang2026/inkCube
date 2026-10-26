@@ -3,22 +3,31 @@
  * 后两类交互：类型由入口给定 createKind，不可中途切换）。
  *
  * 覆盖：
- * - 新建 rollup（createKind）：直达周期步（跳过模板步）、骨架预填默认模板（含
- *   {sections}）、汇总范围候选（排除 rollup 自身）+ 勾选 → 保存 payload 断言；
- * - 骨架被清空（无 {sections}）→ 保存禁用（后端 400 前置拦截）；
+ * - 新建 rollup（createKind）：直达周期步（跳过模板步）、骨架不渲染（治理二次
+ *   收敛：说明文案+追加框）、追加要求拼接、汇总范围候选（排除 rollup 自身）
+ *   + 勾选 → 保存 payload 断言；
+ * - 追加框降高样式类（extrasArea）；前端 {sections} 校验退役（后端 400 纵深防御）；
  * - 新建 intel 默认：payload scope/digestScheduleIds=null，语义零漂移；
- * - 编辑 rollup 回填：骨架/圈选回显 + update payload；
+ * - prefill 模板化（0.6 §3.2/§6.1，2026-10-25）：落模板页签预选企业动态跟踪、
+ *   {企业名} 预填线索名，payload 分类静态映射 corporate；
+ * - 编辑 rollup 回填：圈选回显 + update payload；骨架解析（骨架治理）：拼接形态
+ *   剥离回填追加框（payload 拼接还原），不匹配存量无损原样保存；
  * - 跨开合候选重拉（review m-1）：组件关闭不卸载，重开候选重新加载。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { ScheduleFormModal } from '../src/features/schedule/ScheduleFormModal'
+import zhCN from '../src/i18n/locales/zh-CN.json'
+import enUS from '../src/i18n/locales/en-US.json'
+import { uniquePlaceholderNames } from '../src/features/task/promptTemplate'
 
 vi.mock('react-i18next', () => ({
-  // 默认骨架模板需返回含 {sections} 的真实形态（新建 rollup 预填断言依赖）
+  // 骨架/引导语需返回真实形态（新建 rollup 预填断言 + 编辑态拼接解析依赖）
   useTranslation: () => ({
     t: (k: string) =>
-      k === 'schedule.form.rollupPromptTemplate' ? '汇总各订阅期次\n{sections}' : k,
+      k === 'schedule.form.rollupPromptTemplate' ? '汇总各订阅期次\n{sections}'
+        : k === 'schedule.form.rollupExtrasPrefix' ? '此外，用户特别要求：'
+        : k,
   }),
 }))
 
@@ -26,8 +35,16 @@ vi.mock('../src/features/knowledge/Toast', () => ({
   useToast: () => () => {},
 }))
 
+// 模板列表提供 builtin_competitor（企业动态跟踪）：prefill 模板化用例依赖
+// selectedTpl 渲染占位符表单；其余用例不点模板卡，不受影响
 vi.mock('../src/features/task/useTaskTemplates', () => ({
-  useTaskTemplates: () => ({ templates: [] }),
+  useTaskTemplates: () => ({
+    templates: [{
+      id: 'builtin_competitor', builtin: true, category: 'mon',
+      title: 'task.tpl.competitor.title', desc: 'task.tpl.competitor.desc',
+      prompt: '跟踪「{企业名}」近一个月的动态', pinned: false,
+    }],
+  }),
 }))
 
 vi.mock('../src/features/settings/useSettings', () => ({
@@ -55,7 +72,7 @@ beforeEach(() => {
       return {
         schedules: [
           { ...ROW, id: 'sch_x' },
-          { ...ROW, id: 'sch_2', name: '组合周报甲', scope: 'rollup' },
+          { ...ROW, id: 'sch_2', name: '聚合简报甲', scope: 'rollup' },
         ],
         has_more: false,
       }
@@ -98,18 +115,22 @@ const lastInvoke = (channel: string) => {
 describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
   it('新建 rollup（createKind）：跳过模板步、骨架预填含 {sections}、汇总范围排除 rollup；保存 payload 正确', async () => {
     render(<ScheduleFormModal open createKind="rollup" onClose={() => {}} onSaved={() => {}} />)
-    // 直达周期步：来源步 tab 不在场，标题为组合周报
+    // 直达周期步：来源步 tab 不在场，标题为聚合简报
     expect(screen.queryByRole('tab', { name: 'schedule.form.freeInput' })).toBeNull()
     expect(screen.getByText('schedule.form.newRollupTitle')).toBeTruthy()
     fireEvent.click(screen.getByText('schedule.form.next'))
-    // 骨架预填默认模板（含 {sections}），保存可用
-    const skeleton = screen.getByLabelText('schedule.form.rollupSkeletonLabel') as HTMLTextAreaElement
-    expect(skeleton.value).toContain('{sections}')
+    // 骨架不渲染（骨架治理二次收敛）：无骨架文本框，说明文案交代产出形态
+    expect(screen.queryByLabelText('schedule.form.rollupSkeletonLabel')).toBeNull()
+    expect(screen.getByText('schedule.form.rollupBaseHint')).toBeTruthy()
     // 汇总范围候选：rollup 行被排除（防自聚合），仅情报订阅候选
     await waitFor(() => expect(screen.getByLabelText('华润舆情')).toBeTruthy())
-    expect(screen.queryByLabelText('组合周报甲')).toBeNull()
+    expect(screen.queryByLabelText('聚合简报甲')).toBeNull()
     expect(lastInvoke('schedules:list')?.[1]).toMatchObject({ limit: 0 })
     fireEvent.click(screen.getByLabelText('华润舆情'))
+    // 追加要求拼接（骨架治理）：prompt = 骨架 + 空行 + 引导语 + 追加
+    fireEvent.change(screen.getByLabelText('schedule.form.rollupExtrasLabel'), {
+      target: { value: '重点关注融资' },
+    })
     fireEvent.click(screen.getByText('schedule.form.save'))
     await flush()
     const call = lastInvoke('schedules:create')
@@ -122,15 +143,20 @@ describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
       targetId: null,
       autoImport: false,
     })
-    expect((call![1] as { prompt: string }).prompt).toContain('{sections}')
+    expect((call![1] as { prompt: string }).prompt)
+      .toBe('汇总各订阅期次\n{sections}\n\n此外，用户特别要求：\n重点关注融资')
   })
 
-  it('骨架被清空（无 {sections}）→ 保存禁用', () => {
+  it('追加框降高样式类（骨架不渲染后唯一多行输入），独立可填，保存恒可用', () => {
     render(<ScheduleFormModal open createKind="rollup" onClose={() => {}} onSaved={() => {}} />)
     fireEvent.click(screen.getByText('schedule.form.next'))
-    const skeleton = screen.getByLabelText('schedule.form.rollupSkeletonLabel') as HTMLTextAreaElement
-    fireEvent.change(skeleton, { target: { value: '占位符被我删了' } })
-    expect((screen.getByText('schedule.form.save') as HTMLButtonElement).disabled).toBe(true)
+    // 骨架治理二次收敛：骨架 textarea 不渲染，追加框独立可编辑
+    const extras = screen.getByLabelText('schedule.form.rollupExtrasLabel') as HTMLTextAreaElement
+    expect(extras.className).toContain('extrasArea')
+    fireEvent.change(extras, { target: { value: '结尾增加风险提示' } })
+    expect(extras.value).toBe('结尾增加风险提示')
+    // 前端 {sections} 校验退役（骨架用户不可达），保存恒可用
+    expect((screen.getByText('schedule.form.save') as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('新建 intel 默认：payload scope/digestScheduleIds=null，去向语义零漂移', async () => {
@@ -146,13 +172,49 @@ describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
     })
   })
 
+  it('prefill 模板化（0.6 §3.2/§6.1）：落模板页签预选企业动态跟踪 + {企业名} 预填，分类映射 corporate', async () => {
+    render(
+      <ScheduleFormModal
+        open
+        prefill={{ name: '华润置地', tplId: 'builtin_competitor', phValues: { 企业名: '华润置地' } }}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+    // 直落模板页签（免培训 §3.9-②：产出要点自解释，不以隐形模板串伪装自由输入）
+    expect(screen.getByRole('tab', { name: 'schedule.form.fromTemplate' })
+      .getAttribute('aria-selected')).toBe('true')
+    // 预选模板的占位符表单已渲染且预填线索名
+    expect((screen.getByLabelText('schedule.ph.企业名') as HTMLInputElement).value).toBe('华润置地')
+    fireEvent.click(screen.getByText('schedule.form.next'))
+    fireEvent.click(screen.getByText('schedule.form.next'))
+    // 订阅名预填线索名
+    expect((screen.getByLabelText('schedule.form.nameLabel') as HTMLInputElement).value).toBe('华润置地')
+    fireEvent.click(screen.getByText('schedule.form.save'))
+    await flush()
+    const call = lastInvoke('schedules:create')
+    expect(call![1]).toMatchObject({
+      name: '华润置地',
+      // mon→corporate 静态映射（INTEL_TEMPLATES 同步查找，不依赖模板列表异步加载）
+      category: 'corporate',
+      // prompt = 模板 applyValues 固化快照
+      prompt: '跟踪「华润置地」近一个月的动态',
+      scope: null,
+    })
+  })
+
+  it('升级订阅动线前提（review 守护）：competitor prompt 双语均恰含单个占位符「企业名/company」（prefill 仅填线索名一值）', () => {
+    expect(uniquePlaceholderNames(zhCN.task.tpl.competitor.prompt)).toEqual(['企业名'])
+    expect(uniquePlaceholderNames(enUS.task.tpl.competitor.prompt)).toEqual(['company'])
+  })
+
   it('编辑 rollup：骨架与圈选回填；保存走 update 且 payload 带现值', async () => {
     render(
       <ScheduleFormModal
         open
         editing={{
           ...ROW,
-          name: '组合周报', scope: 'rollup',
+          name: '聚合简报', scope: 'rollup',
           prompt: '骨架\n{sections}',
           digest_schedule_ids: ['sch_x'],
         } as never}
@@ -162,8 +224,8 @@ describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
     )
     // 编辑态直达周期步，从周期步前进
     fireEvent.click(screen.getByText('schedule.form.next'))
-    const skeleton = screen.getByLabelText('schedule.form.rollupSkeletonLabel') as HTMLTextAreaElement
-    expect(skeleton.value).toBe('骨架\n{sections}')
+    // 骨架不渲染：存量与模板不匹配（手改）走无损形态——追加框留空
+    expect((screen.getByLabelText('schedule.form.rollupExtrasLabel') as HTMLTextAreaElement).value).toBe('')
     await waitFor(() => expect(screen.getByLabelText('华润舆情')).toBeTruthy())
     expect((screen.getByLabelText('华润舆情') as HTMLInputElement).checked).toBe(true)
     fireEvent.click(screen.getByText('schedule.form.save'))
@@ -172,6 +234,55 @@ describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
     expect(call![1]).toMatchObject({
       id: 'sch_1', scope: 'rollup', digestScheduleIds: ['sch_x'],
     })
+    // 不匹配存量原样保存（无损，零改写）
+    expect((call![1] as { prompt: string }).prompt).toBe('骨架\n{sections}')
+  })
+
+  it('编辑 rollup 骨架解析（骨架治理 2026-10-25）：拼接形态剥离回填；不匹配存量无损转只读骨架', async () => {
+    // 形态 A：骨架+引导语+追加 → 精确剥离回填（零猜测）
+    const { unmount } = render(
+      <ScheduleFormModal
+        open
+        editing={{
+          ...ROW,
+          name: '聚合简报', scope: 'rollup',
+          prompt: '汇总各订阅期次\n{sections}\n\n此外，用户特别要求：\n重点关注融资',
+        } as never}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByText('schedule.form.next'))
+    // 骨架不渲染：解析经追加框回填间接可观测
+    expect((screen.getByLabelText('schedule.form.rollupExtrasLabel') as HTMLTextAreaElement).value)
+      .toBe('重点关注融资')
+    // 保存 payload 拼接还原原 prompt（数据流零漂移）
+    fireEvent.click(screen.getByText('schedule.form.save'))
+    await flush()
+    expect((lastInvoke('schedules:update')![1] as { prompt: string }).prompt)
+      .toBe('汇总各订阅期次\n{sections}\n\n此外，用户特别要求：\n重点关注融资')
+    unmount()
+    // 形态 D：不匹配（手改过/跨语言）→ 存量全文无损转只读骨架，追加框留空
+    render(
+      <ScheduleFormModal
+        open
+        editing={{
+          ...ROW,
+          name: '聚合简报', scope: 'rollup',
+          prompt: '完全自定义的历史骨架 {sections}',
+        } as never}
+        onClose={() => {}}
+        onSaved={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByText('schedule.form.next'))
+    expect((screen.getByLabelText('schedule.form.rollupExtrasLabel') as HTMLTextAreaElement).value)
+      .toBe('')
+    // 保存 payload 原样保留（存量全文无损）
+    fireEvent.click(screen.getByText('schedule.form.save'))
+    await flush()
+    expect((lastInvoke('schedules:update')![1] as { prompt: string }).prompt)
+      .toBe('完全自定义的历史骨架 {sections}')
   })
 
   it('跨开合候选重拉（review m-1）：关闭重开后汇总范围候选重新加载', async () => {

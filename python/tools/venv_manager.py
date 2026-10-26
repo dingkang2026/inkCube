@@ -120,6 +120,55 @@ def get_venv_path_from_python(venv_python: str) -> str:
     return os.path.dirname(os.path.dirname(venv_python))
 
 
+# 进程内已探活记忆：探活每次起子进程（~百 ms），同进程探过即记。base
+# （userData/python）被 tool-initializer 更新只发生在应用升级重启时，
+# Python 后端随之重启，进程内记忆不会跨 base 更新失效。
+_venv_health_verified: set[str] = set()
+
+
+def _venv_interpreter_healthy(venv_path: str) -> bool:
+    """探活 venv 解释器：能否正常启动（0 退出）。
+
+    升级场景（打包/卸载复盘 2026-10-25 #1）：base 被 tool-initializer
+    删除重建后，旧 venv 的 python.exe 可能因 base 大版本变化找不到
+    python3XX.dll 而无法启动（pyvenv.cfg home 失链）——按「文件存在」
+    复用会让该任务所有代码执行持续失败，必须删旧重建。
+    """
+    key = os.path.normcase(os.path.abspath(venv_path))
+    if key in _venv_health_verified:
+        return True
+    try:
+        proc = subprocess.run(
+            [get_venv_python(venv_path), "-c", "pass"],
+            capture_output=True,
+            timeout=30,
+            **low_priority_kwargs(),   # 2.11 §5.6 R3
+        )
+        healthy = proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        healthy = False  # spawn 失败（DLL 缺失）/超时均视为损坏
+    if healthy:
+        _venv_health_verified.add(key)
+    return healthy
+
+
+def is_venv_ready(venv_path: str) -> bool:
+    """venv 就绪单一判据：解释器在位、可启动（探活）、预装 marker 在位。
+
+    task_agent 快路径与首用预检（_venv_env_needs_setup）共用此判据
+    （打包/卸载复盘 2026-10-25 #1 收口）：升级后 base 重建产生的失链
+    venv（python.exe 与 marker 均在、解释器无法启动）必须判「未就绪」
+    落入慢路径删旧重建，不得按文件存在性直接交付。isfile/marker 为
+    廉价检查放在前，探活（子进程，进程内缓存后稳态零开销）收尾——
+    marker 缺失时无需付出探活成本。
+    """
+    return (
+        os.path.isfile(get_venv_python(venv_path))
+        and is_preinstall_done(venv_path)
+        and _venv_interpreter_healthy(venv_path)
+    )
+
+
 def create_venv(task_dir: str) -> str:
     """Create a venv for a task. Returns the venv path.
 
@@ -127,8 +176,17 @@ def create_venv(task_dir: str) -> str:
     """
     venv_path = os.path.join(task_dir, ".venv")
     if os.path.isfile(get_venv_python(venv_path)):
-        logger.info("venv already exists: %s", venv_path)
-        return venv_path
+        if _venv_interpreter_healthy(venv_path):
+            logger.info("venv already exists: %s", venv_path)
+            return venv_path
+        # 损坏 venv（解释器无法启动）：删旧重建，不能按「已存在」复用
+        logger.warning("Broken venv (interpreter not startable), recreating: %s",
+                       venv_path)
+        shutil.rmtree(venv_path, ignore_errors=True)
+        if os.path.exists(venv_path):
+            # 删不净（如残留任务进程占用文件）：报错走既有 retryable 链路，
+            # 下次调用重试；不做半重建（残留目录上的 uv/venv 行为不可控）
+            raise RuntimeError(f"无法删除损坏的任务虚拟环境: {venv_path}")
 
     os.makedirs(task_dir, exist_ok=True)
     uv_path = _find_uv()

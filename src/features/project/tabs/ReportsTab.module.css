@@ -50,14 +50,21 @@
   padding-bottom: 8px;
 }
 
+/* 泳道均分铺满（2026-10-25 二次裁决：撤销空列窄条化——全空项目四列全部命中窄条
+   压缩至左侧 132px×4，与「泳道铺开」预期相悖；空列与有内容列同权均分） */
 .kanbanColumn {
   flex: 1;
-  min-width: 200px;
+  min-width: 220px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
+}
+
+/* general 单列特例：独占全宽时限内容宽，防报告卡拉伸过长（2.5 看板 general 单列） */
+.kanbanColumn:only-child .columnBody {
+  max-width: 640px;
 }
 
 .columnHeader {
@@ -96,10 +103,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px 12px;
+  padding: 24px 6px;
   font-size: var(--text-sm);
   color: var(--text-muted);
   opacity: 0.7;
+  text-align: center;
 }
 
 .reportCard {

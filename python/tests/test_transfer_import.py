@@ -186,6 +186,10 @@ def test_validate_rejects_bomb(tmp_path, monkeypatch):
 def test_roundtrip_full(db, tmp_path):
     data_dir = _make_data_dir(tmp_path, "data1")
     pid, refs = _seed_full(db, data_dir)
+    # 2.6 §4.8：画像随包往返（manual 编辑是用户数据，不属可再生 AI 字段）
+    db.update_project(
+        pid, industry_profile='[{"chain": "具身智能", "segment": "四足机器狗"}]',
+        profile_source="manual")
     pkg = str(tmp_path / "swap.inkproj")
     export_project(db, data_dir, pid, pkg)
 
@@ -203,6 +207,9 @@ def test_roundtrip_full(db, tmp_path):
     proj = db2.get_project(new_pid)
     assert proj["name"] == "Alpha"
     assert proj["kind"] == "project"
+    # 画像随包（含 manual 来源）：导出/导入不丢，manual 保护语义在新库延续
+    assert proj["industry_profile"] == '[{"chain": "具身智能", "segment": "四足机器狗"}]'
+    assert proj["profile_source"] == "manual"
     files2 = db2.list_files(new_pid)
     assert len(files2) == 1
     new_f1 = files2[0]["id"]

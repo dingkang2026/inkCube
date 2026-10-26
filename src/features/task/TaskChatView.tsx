@@ -42,11 +42,6 @@ interface TaskChatViewProps {
   onFilesUploaded?: (taskId: string) => void
   /** 零任务态「上传即建任务」句柄（0.5 §4.4）：返回新建/现有任务 id，失败返回 null */
   onEnsureTask?: () => Promise<string | null>
-  /** 跨页预填信号（0.6 §3.2 情报转跟进任务）：App 级 taskPrefill 经 TaskPage 透传，
-   *  effect 消费设值（不走 phForm.start——情报文本非模板，防误激活占位符表单） */
-  incomingPrefill?: { text: string; ts: number } | null
-  /** 预填信号消费完成回调（App 清信号防重复消费） */
-  onPrefillConsumed?: () => void
 }
 
 export function TaskChatView({
@@ -73,8 +68,6 @@ export function TaskChatView({
   canResume,
   onFilesUploaded,
   onEnsureTask,
-  incomingPrefill,
-  onPrefillConsumed,
 }: TaskChatViewProps) {
   const { t } = useTranslation()
   const guard = useFeatureGuard()
@@ -138,17 +131,6 @@ export function TaskChatView({
       el.style.height = Math.min(el.scrollHeight, 200) + 'px'
     }
   }, [input])
-
-  // 跨页预填信号消费（0.6 §3.2 情报转跟进任务）：ts 去重防重复消费；
-  // 只设值不发送，聚焦输入框供直接补充/发送
-  const lastPrefillTsRef = useRef(0)
-  useEffect(() => {
-    if (!incomingPrefill || incomingPrefill.ts === lastPrefillTsRef.current) return
-    lastPrefillTsRef.current = incomingPrefill.ts
-    phForm.setText(incomingPrefill.text)
-    onPrefillConsumed?.()
-    textareaRef.current?.focus()
-  }, [incomingPrefill, onPrefillConsumed])
 
   /** 入口 guard（0.4 §5.3 第二层）：任务发送依赖 LLM 配置；放行后才置 sending 防重标记。
    *  onSendMessage 允许异步（零任务态发送需先建任务，0.5 §4.4）：await 到「发送受理」为止，

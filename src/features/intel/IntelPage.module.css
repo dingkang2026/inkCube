@@ -12,9 +12,6 @@
 }
 
 .header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   margin-bottom: 12px;
 }
 
@@ -23,19 +20,6 @@
   font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.newBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  font-size: var(--text-sm);
-  color: var(--bg-primary);
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius-md);
-  cursor: pointer;
 }
 
 .tabs {

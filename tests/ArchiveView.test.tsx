@@ -6,7 +6,7 @@
  *   Markdown 渲染 + 头部标题 + 「在文件夹中显示」可用；
  * - 「在文件夹中显示」→ shell:showItemInFolder(abs_path)；
  * - not_found → 档案不存在文案（订阅改名未重建场景）；
- * - 头部「返回」→ onBack；
+ * - 头部「返回」→ onBack（关闭期次抽屉）；
  * - Ctrl+F 文档内查找：FindBar 开启 + 命中计数 + Esc 关闭。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -95,7 +95,7 @@ describe('ArchiveView（2.11 §8.4 档案阅读页）', () => {
     expect(screen.getByText('schedule.archiveTooLarge')).toBeTruthy()
   })
 
-  it('头部「返回」→ onBack（App 分发回管理台恢复选中）', async () => {
+  it('头部「返回」→ onBack（关闭期次抽屉，App onClose 收口）', async () => {
     mount(wireInvoke({ success: true, content: ARCHIVE_MD, abs_path: 'x' }))
     await flush()
     fireEvent.click(screen.getByTestId('archive-back-btn'))

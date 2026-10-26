@@ -10,6 +10,8 @@ import type { ProjectActivity } from '../activity/types'
 import { HealthDot } from '../project/affairs/HealthDot'
 import type { ProjectHealthSummary } from '../project/affairs/types'
 import { UsageText } from '../usage/UsageText'
+import { useToast } from './Toast'
+import { quickCreateTrackingSub } from '../schedule/quickCreateSub'
 import s from './ProjectList.module.css'
 
 interface ProjectListProps {
@@ -62,6 +64,7 @@ export function ProjectList({
   onCreateSignalConsumed,
 }: ProjectListProps) {
   const { t } = useTranslation()
+  const showToast = useToast()
   const { byProject } = useActivity()
   // 导出/导入活动态（2.9 §8.2）：导出中菜单禁用 + 条目 spinner、导入中按钮进度态；
   // 前端禁用 = 幂等防重第一层，后端 409 为纵深防御
@@ -74,6 +77,9 @@ export function ProjectList({
   const [newProjectType, setNewProjectType] = useState<ProjectType>('general')
   const [newCompanyName, setNewCompanyName] = useState('')
   const [newCreditCode, setNewCreditCode] = useState('')
+  // 勾选同时创建盯梢订阅（0.6 §3.3，2026-10-25 扩展到空白新建）：默认不勾——
+  // 订阅是周期性持续消耗（每期一次 LLM 任务），不可静默代做；企业全称非空才可用
+  const [createSub, setCreateSub] = useState(false)
   const [creating, setCreating] = useState(false)
   // 在途创建代际:取消按钮中途关闭后,晚到的成功结果必须丢弃,否则 confirmInfo 残留,
   // 下次打开 modal 直接渲染陈旧确认态(误导航到旧项目)(3.0 二期 Task 13 review M1;
@@ -131,6 +137,7 @@ export function ProjectList({
     setNewProjectType('general')
     setNewCompanyName('')
     setNewCreditCode('')
+    setCreateSub(false)
     setConfirmInfo(null)
     setShowCreateModal(false)
   }
@@ -145,6 +152,16 @@ export function ProjectList({
       if (result?.id) {
         // 裁决 8:创建成功不关 modal,切确认态(App 已 auto-select 项目)
         setConfirmInfo({ projectId: result.id, name: newProjectName.trim(), type: newProjectType, count: result.seeded_tasks_count ?? 0 })
+        // 勾选「同时创建盯梢订阅」（0.6 §3.3，2026-10-25 扩展）：确认态先呈现，
+        // 静默创建失败仅 toast 不阻断（项目已建成，同 LeadPool patchFailed 部分
+        // 失败语义；共享实现 quickCreateTrackingSub，payload 契约单一来源）
+        if (createSub && newCompanyName.trim()) {
+          try {
+            await quickCreateTrackingSub(newCompanyName.trim(), result.id, t)
+          } catch {
+            showToast(t('schedule.createSub.failed'), 'error')
+          }
+        }
       } else {
         resetAndClose()
       }
@@ -411,6 +428,24 @@ export function ProjectList({
               value={newCreditCode}
               onChange={(e) => setNewCreditCode(e.target.value)}
             />
+            {/* 勾选同时创建盯梢订阅（0.6 §3.3，2026-10-25 扩展到空白新建）：
+                企业名空时禁用，hint 动态解释禁用原因/勾选后果（免培训 §3.9-②，
+                与 LeadPool 立项勾选同款） */}
+            <label className={s.subRow}>
+              <input
+                type="checkbox"
+                data-testid="project-create-sub"
+                checked={createSub}
+                disabled={!newCompanyName.trim()}
+                onChange={(e) => setCreateSub(e.target.checked)}
+              />
+              <span>{t('schedule.createSub.label')}</span>
+            </label>
+            <p className={s.subHint} data-testid="project-create-sub-hint">
+              {newCompanyName.trim()
+                ? t('schedule.createSub.hint')
+                : t('schedule.createSub.needCompany')}
+            </p>
             <div className={s.modalActions}>
               <button className={s.btnCancel} onClick={resetAndClose}>
                 {t('knowledge.cancel')}

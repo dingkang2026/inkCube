@@ -251,6 +251,8 @@ async def list_projects(
                 p.stage,
                 p.company_name,
                 p.credit_code,
+                p.industry_profile,
+                p.profile_source,
                 p.archived_at,
                 COUNT(DISTINCT f.id) as file_count,
                 COALESCE(SUM(f.chunk_count), 0) as chunk_count,
@@ -282,6 +284,8 @@ async def list_projects(
                 "stage": row["stage"],
                 "company_name": row["company_name"],
                 "credit_code": row["credit_code"],
+                "industry_profile": row["industry_profile"],
+                "profile_source": row["profile_source"],
                 "archived_at": row["archived_at"],
                 "file_count": row["file_count"],
                 "chunk_count": row["chunk_count"],
@@ -644,6 +648,10 @@ class ProjectUpdate(BaseModel):
     # 修改通道（schema 不含 → 前端无入口）。PATCH 语义不传不改，存量零迁移
     company_name: Optional[str] = None
     credit_code: Optional[str] = None
+    # 2.6 §4.8 / 2.1 §4.5（2026-10-25）：产业画像与来源标记 —— 头部画像行
+    # 人工编辑（置 manual）经此 PATCH；不传不改（提取回写走 service 内部）
+    industry_profile: Optional[str] = None
+    profile_source: Optional[str] = None
 
 
 @router.patch("/projects/{project_id}")
@@ -653,7 +661,8 @@ async def update_project(project_id: str, body: ProjectUpdate):
         db = get_db()
         if (body.name is None and body.description is None and body.type is None
                 and body.stage is None and body.company_name is None
-                and body.credit_code is None):
+                and body.credit_code is None and body.industry_profile is None
+                and body.profile_source is None):
             raise HTTPException(status_code=400, detail="No fields to update")
         # 3.0 §5.3: 阶段切换 → 激活该时期 pending_activation 实例。先激活后写 stage
         # （review M-2）：激活失败异常上抛→500，stage 保持旧值——避免「阶段已换、
@@ -671,8 +680,51 @@ async def update_project(project_id: str, body: ProjectUpdate):
             stage=body.stage,
             company_name=body.company_name,
             credit_code=body.credit_code,
+            industry_profile=body.industry_profile,
+            profile_source=body.profile_source,
         )
         return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/profile/extract")
+async def extract_project_profile(project_id: str):
+    """重新提取产业画像（2.6 §4.8 / 2.1 §4.5）：异步受理即返回。
+
+    run_in_executor 后台提取（活动 kind=profile_extract 经注册表暴露进行中
+    态，完成由前端心跳边沿消费刷新，0.4 §3.1 零新增轮询）；用户显式动作，
+    覆盖 manual 保护；在途重复调用 409 PROFILE_EXTRACT_RUNNING。
+    """
+    # 事前准入（§7.3 第三层）：LLM 依赖缺失受理前拦截——否则受理成功后
+    # 静默失败，活动闪现即消失、画像无变化，用户零反馈（review m-2）
+    ensure_ready("task")
+    try:
+        db = get_db()
+        proj = db.get_project(project_id)
+        if not proj or proj.get("kind") != "project":
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        from wiki.profile_service import (
+            release, run_manual_extract_sync, try_acquire)
+        if not try_acquire(project_id):
+            return JSONResponse(
+                status_code=409,
+                content={"error": "画像提取已在进行中，请稍候",
+                         "code": "PROFILE_EXTRACT_RUNNING"},
+            )
+        settings = db.get_settings()
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                None, lambda: run_manual_extract_sync(db, project_id, settings))
+        except Exception:
+            # executor 提交失败须归还占坑（review Info 2026-10-25）：泄漏则
+            # 该项目恒 409 直至重启；正常路径由 run_manual_extract_sync
+            # 的 finally 清理，此处仅兑 get_running_loop 等提交期异常
+            release(project_id)
+            raise
+        return {"accepted": True}
     except HTTPException:
         raise
     except Exception as e:

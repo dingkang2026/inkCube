@@ -813,8 +813,9 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   // 2026-10-23 编辑补全（todo：项目创建后不能修改）：透传企业字段（PATCH 语义
   // 不传不改，与后端 ProjectUpdate 对齐）。消费方：详情页头部「编辑」弹层 +
-  // type/stage 下拉/脉搏带；侧栏重命名走 knowledge:renameProject（仅名称，独立通道）
-  ipcMain.handle('knowledge:updateProject', async (_event, { projectId, name, description, type, stage, company_name, credit_code }) => {
+  // type/stage 下拉/脉搏带；侧栏重命名走 knowledge:renameProject（仅名称，独立通道）；
+  // 2026-10-25 产业画像（2.6 §4.8/2.1 §4.5）：画像行人工编辑置 manual 经此透传
+  ipcMain.handle('knowledge:updateProject', async (_event, { projectId, name, description, type, stage, company_name, credit_code, industry_profile, profile_source }) => {
     const body = {}
     if (name !== undefined) body.name = name
     if (description !== undefined) body.description = description
@@ -822,12 +823,24 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     if (stage !== undefined) body.stage = stage
     if (company_name !== undefined) body.company_name = company_name
     if (credit_code !== undefined) body.credit_code = credit_code
+    if (industry_profile !== undefined) body.industry_profile = industry_profile
+    if (profile_source !== undefined) body.profile_source = profile_source
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     return handlePythonResponse(res)
+  })
+
+  // 产业画像重新提取（2.6 §4.8/2.1 §4.5）：异步受理即返回（在途 409
+  // PROFILE_EXTRACT_RUNNING 经 structuredPythonResponse 透传）；完成由前端
+  // 心跳边沿消费刷新（活动 kind=profile_extract）
+  ipcMain.handle('knowledge:extractProfile', async (_event, projectId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/projects/${projectId}/profile/extract`, {
+      method: 'POST',
+    })
+    return structuredPythonResponse(res)
   })
 
   // 项目归档/恢复（生命周期软关闭；409 守门 code 经返回值透传，见 structuredPythonResponse）
@@ -1545,12 +1558,12 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  ipcMain.handle('schedules:inbox', async (_event, { unread, limit, offset, sort, category } = {}) => {
+  ipcMain.handle('schedules:inbox', async (_event, { limit, offset, sort, category } = {}) => {
     const params = new URLSearchParams()
-    if (unread) params.set('unread', '1')
     if (limit !== undefined && limit !== null) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
-    // 情报流筛选/排序透传（0.6 §3.2 V2-E1a T7）：丢弃会让 chips 分类/排序静默失效
+    // 收件箱筛选/排序透传（0.6 §3.2 V2-E1a T7；V2 收敛后消费方=管理台收件箱）：
+    // 丢弃会让分类页签联动/排序切换静默失效
     if (sort) params.set('sort', String(sort))
     if (category) params.set('category', String(category))
     const qs = params.toString()
@@ -1627,6 +1640,17 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ runId }),
+    }, 600000)
+    return handlePythonResponse(res)
+  })
+
+  // 立项字段提取（来源报告 → 项目五字段预填，0.6 §3.3）：同步 invoke，
+  // 超时对齐 leads:extract（同一 LLM 调用形态）
+  ipcMain.handle('leads:convertExtract', async (_event, leadId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/leads/convert-extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leadId }),
     }, 600000)
     return handlePythonResponse(res)
   })

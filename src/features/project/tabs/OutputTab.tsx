@@ -2,13 +2,14 @@
  * src/features/project/tabs/OutputTab.tsx — 项目「产出」Tab（0.6 §3.2 V2-E1a T11：
  * 报告 + 填表两分支合并为产出，项目五 Tab 收敛为四）。内部二级分区「报告/填表」
  * ＝渲染原 ReportsTab / FormsTab（迁移宿主，非重写，组件行为与既有测试不变）；
+ * 二级分区按钮带图标（FileText/ClipboardList，2026-10-25 对齐 AffairsTab 视图切换按钮形态）。
  * 头部「模板管理」直达钮 → app:navigate-template-management（按当前分区落对应模板页签）。
  * sectionSignal：跨 Tab 锚点（ProjectDetailPage 旧 tab 值 'forms'/'reports' 兼容映射，
  * 一个版本周期后 E3 清理）。
  */
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { LayoutTemplate } from 'lucide-react'
+import { ClipboardList, FileText, LayoutTemplate } from 'lucide-react'
 import { ReportsTab } from './ReportsTab'
 import { FormsTab } from './FormsTab'
 import type { ProjectType } from '../types'
@@ -46,6 +47,7 @@ export function OutputTab({ projectId, projectType, sectionSignal, onSectionCons
             className={`${s.seg} ${section === 'reports' ? s.segActive : ''}`}
             onClick={() => setSection('reports')}
           >
+            <FileText size={14} />
             {t('project.tab.reports')}
           </button>
           <button
@@ -55,6 +57,7 @@ export function OutputTab({ projectId, projectType, sectionSignal, onSectionCons
             className={`${s.seg} ${section === 'forms' ? s.segActive : ''}`}
             onClick={() => setSection('forms')}
           >
+            <ClipboardList size={14} />
             {t('project.tab.forms')}
           </button>
         </div>

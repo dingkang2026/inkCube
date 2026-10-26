@@ -23,7 +23,7 @@ router = APIRouter()
 
 _INTERVAL_TYPES = ("daily", "weekly", "monthly")
 
-# 订阅类型标记（2.11 §12 收敛 2026-10-25）：NULL 情报订阅 / rollup 组合周报；
+# 订阅类型标记（2.11 §12 收敛 2026-10-25）：NULL 情报订阅 / rollup 聚合简报；
 # focus/sweep 已退役（与分类同源、执行链零差异）
 _SCOPE_ROLLUP = "rollup"
 # ROLLUP_SECTION_MARK（汇总骨架素材插入点）自 scheduler import——创建校验与
@@ -36,7 +36,7 @@ _FIELD_MAP = {
     "targetType": "target_type", "targetId": "target_id",
     "autoImport": "auto_import", "enabled": "enabled",
     "digestScheduleIds": "digest_schedule_ids",
-    # scope 不入白名单：类型由创建入口给定（情报订阅/组合周报），PATCH 不改类型
+    # scope 不入白名单：类型由创建入口给定（情报订阅/聚合简报），PATCH 不改类型
 }
 
 
@@ -87,7 +87,7 @@ def _validate_digest_ids(db, ids: list[str]):
             return _err(400, f"汇总范围引用的订阅不存在：{sid}",
                         "DIGEST_TARGET_NOT_FOUND")
         if row["scope"] == "rollup":
-            return _err(400, "汇总范围不能包含组合周报订阅（防递归聚合）",
+            return _err(400, "汇总范围不能包含聚合简报订阅（防递归聚合）",
                         "ROLLUP_DIGEST_RECURSIVE")
     return None
 
@@ -127,22 +127,22 @@ async def create_schedule(body: ScheduleCreateBody):
     # 或缺省（NULL=情报订阅）；rollup 不沉淀（阅读产物非档案素材）、prompt 为
     # 汇总骨架须含 {sections} 素材插入点；仅 rollup 可圈选汇总范围
     if body.scope is not None and body.scope != _SCOPE_ROLLUP:
-        return _err(400, "scope 须为组合周报标记 rollup 或缺省（情报订阅）",
+        return _err(400, "scope 须为聚合简报标记 rollup 或缺省（情报订阅）",
                     "INVALID_SCOPE")
     if body.scope == _SCOPE_ROLLUP:
         if body.targetType or body.targetId:
-            return _err(400, "组合周报不沉淀档案，请清空去向",
+            return _err(400, "聚合简报不沉淀档案，请清空去向",
                         "ROLLUP_TARGET_FORBIDDEN")
         if ROLLUP_SECTION_MARK not in body.prompt:
             return _err(
                 400,
-                "组合周报 prompt 须含 {sections} 占位符（期次素材插入点）",
+                "聚合简报 prompt 须含 {sections} 占位符（期次素材插入点）",
                 "ROLLUP_PROMPT_NEEDS_SECTION")
         bad = _validate_digest_ids(deps.db, body.digestScheduleIds or [])
         if bad:
             return bad
     elif body.digestScheduleIds is not None:
-        return _err(400, "仅组合周报订阅可配置汇总范围",
+        return _err(400, "仅聚合简报订阅可配置汇总范围",
                     "ROLLUP_DIGEST_IDS_FORBIDDEN")
     try:
         next_run = compute_next_run(body.intervalType, body.intervalValue)
@@ -181,30 +181,29 @@ async def schedule_digest():
 
 @router.get("/schedules/runs/inbox")
 async def schedule_inbox(
-    unread: int | None = None,
     sort: str = Query("unread", pattern="^(unread|latest)$"),
     category: str = "",   # 空=不过滤；普通默认值（非 Query）兼容测试直调端点
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """跨订阅期次流（情报流卡片流，0.6 §3.2）：done、sort=unread 未读优先
-    （read_at NULL 前置）/latest 纯 finished_at 倒序（排序独立于类别筛选，
-    §6.3-3）；category=订阅分类直读过滤（corporate/industry/region/general）；
-    offset 翻页。2026-10-23 V2-E1a 扩展（原仅 unread/limit/offset）。"""
+    """跨订阅期次流（管理台收件箱，情报流退役后唯一消费面，0.6 §3.2 V2 收敛
+    2026-10-25）：done、sort=unread 未读优先（read_at NULL 前置）/latest 纯
+    finished_at 倒序（排序独立于类别筛选，§6.3-3）；category=订阅分类直读过滤
+    （corporate/industry/region/general，左列页签联动）；offset 翻页。
+    2026-10-23 V2-E1a 扩展（sort/category）；原 unread 纯未读过滤参数随收敛
+    退役删除链（sort=unread 语义为未读前置非过滤，前端零消费，2026-10-25）。"""
     db = deps.db
     # limit+1 探测 has_more（list_tasks 同款，免 COUNT）
-    runs = db.list_run_inbox(unread_only=bool(unread), sort=sort,
-                             category=category, limit=limit + 1, offset=offset)
+    runs = db.list_run_inbox(sort=sort, category=category,
+                             limit=limit + 1, offset=offset)
     has_more = len(runs) > limit
     if has_more:
         runs = runs[:limit]
-    # total 与列表同口径（unread/category 过滤后），供分页控件
+    # total 与列表同口径（category 过滤后），供分页控件
     sql = ("SELECT COUNT(*) AS cnt FROM task_schedule_runs r"
            " JOIN task_schedules s ON s.id = r.schedule_id"
            " WHERE r.status = 'done'")
     params: list = []
-    if unread:
-        sql += " AND r.read_at IS NULL"
     if category:
         sql += " AND s.category = ?"
         params.append(category)
@@ -315,10 +314,10 @@ async def update_schedule(schedule_id: str, body: ScheduleUpdateBody):
     final_scope = current["scope"]
     if final_scope == _SCOPE_ROLLUP:
         if fields.get("target_type") or fields.get("target_id"):
-            return _err(400, "组合周报不沉淀档案，请清空去向",
+            return _err(400, "聚合简报不沉淀档案，请清空去向",
                         "ROLLUP_TARGET_FORBIDDEN")
     elif fields.get("digest_schedule_ids") is not None:
-        return _err(400, "仅组合周报订阅可配置汇总范围",
+        return _err(400, "仅聚合简报订阅可配置汇总范围",
                     "ROLLUP_DIGEST_IDS_FORBIDDEN")
     if (final_scope == _SCOPE_ROLLUP
             and isinstance(fields.get("digest_schedule_ids"), list)):
@@ -335,7 +334,7 @@ async def update_schedule(schedule_id: str, body: ScheduleUpdateBody):
         if final_scope == _SCOPE_ROLLUP and ROLLUP_SECTION_MARK not in p:
             return _err(
                 400,
-                "组合周报 prompt 须含 {sections} 占位符（期次素材插入点）",
+                "聚合简报 prompt 须含 {sections} 占位符（期次素材插入点）",
                 "ROLLUP_PROMPT_NEEDS_SECTION")
         fields["prompt"] = p + "\n\n" + OUTPUT_CONTRACT
     if isinstance(fields.get("digest_schedule_ids"), list):

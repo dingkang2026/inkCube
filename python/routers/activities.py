@@ -178,10 +178,26 @@ def _active_model_downloads() -> list[dict]:
         return []
 
 
-def _active_ledger_parses() -> list[dict]:
+def _with_project_names(db, items: list[dict]) -> list[dict]:
+    """内存型活动快照补项目名（DB 型源 SQL JOIN projects 携带，0.4 §2.2 对齐；
+    缺名则首页进行中行 i18n 插值落空，渲染成「：XX中」，review m-1 2026-10-25；
+    在途条目个位数，逐条 get_project 开销可忽略）。"""
+    for it in items:
+        row = db.get_project(it["project_id"]) if db else None
+        it["project_name"] = (row.get("name") or "") if row else ""
+    return items
+
+
+def _active_ledger_parses(db) -> list[dict]:
     """台账解析中(3.1 §4.2:编译后直调,进程内存态源;0.4 §8.1 台账新增 kind)。"""
     from wiki.ledger_service import fetch_running
-    return fetch_running()
+    return _with_project_names(db, fetch_running())
+
+
+def _active_profile_extracts(db) -> list[dict]:
+    """产业画像提取中(2.6 §4.8:编译后直调,进程内存态源)。"""
+    from wiki.profile_service import fetch_running
+    return _with_project_names(db, fetch_running())
 
 
 # form_template / form_fill（2.4 §3.4）：fetch 实现在 routers/forms.py
@@ -197,7 +213,10 @@ registry.register(registry.FunctionSource("wiki_compile", lambda: _active_compil
 registry.register(registry.FunctionSource("report", lambda: _active_reports(deps.db)))
 registry.register(registry.FunctionSource("task", lambda: _active_tasks(deps.db)))
 registry.register(registry.FunctionSource("model_download", lambda: _active_model_downloads()))
-registry.register(registry.FunctionSource("ledger_parse", lambda: _active_ledger_parses()))
+registry.register(registry.FunctionSource("ledger_parse",
+                                          lambda: _active_ledger_parses(deps.db)))
+registry.register(registry.FunctionSource("profile_extract",
+                                          lambda: _active_profile_extracts(deps.db)))
 registry.register(registry.FunctionSource("form_template",
                                           lambda: forms.active_form_templates(deps.db)))
 registry.register(registry.FunctionSource("form_fill",

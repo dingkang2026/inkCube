@@ -24,7 +24,7 @@ export interface ScheduleRow {
   interval_value: string
   target_type: 'project' | 'baselib' | null
   target_id: string | null
-  /** 订阅类型标记（2.11 §12 收敛 2026-10-25）：'rollup' 组合周报 / null 情报
+  /** 订阅类型标记（2.11 §12 收敛 2026-10-25）：'rollup' 聚合简报 / null 情报
    *  订阅（focus/sweep 已退役置 NULL；db 出参归一恒为这两值） */
   scope: 'rollup' | null
   /** rollup 聚合圈选（订阅 id 数组；null = 全部启用订阅） */
@@ -68,7 +68,7 @@ export interface ScheduleRunRow {
 const ZERO_TOTALS: ScheduleTotals = { n: 0, total: 0, abnormal: 0 }
 
 /** 摘要拉取三态（页面遍历 review M1-1 2026-10-24）：失败必须区别于真实零订阅，
- *  引导类消费端（IntelFeed/IntelCardZone 空态）不得在失败时渲染「零订阅」
+ *  引导类消费端（管理台收件箱 / IntelCardZone 空态）不得在失败时渲染「零订阅」
  *  建订阅引导（误导创建重复订阅）；纯数字展示类消费端（NavTabs 徽章/
  *  MorningHero/ScheduleSideSummary）失败回退 0 不触发动作、可接受 */
 export type SchedulesStatus = 'loading' | 'loaded' | 'failed'

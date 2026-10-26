@@ -198,6 +198,40 @@ describe('FormsTab 实例卡状态', () => {
     const delBtn = screen.getByText('project.forms.delete').closest('button') as HTMLButtonElement
     expect(delBtn.disabled).toBe(true)
   })
+
+  it('头部统计行：非空带活跃 → headCountActive；无活跃 → headCount；空列表不渲染', async () => {
+    // 有活跃（filling）→ 带进行中后缀（mock 含 total：统计取服务端全量口径，非已载入量）
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'form-fill:list') {
+        return { fills: [successFill, { ...successFill, id: 'f9', status: 'filling', progress: 30 }], total: 120 }
+      }
+      return {}
+    })
+    const { rerender } = render(<FormsTab projectId="p1" />)
+    await flush()
+    expect(screen.getByText('project.forms.headCountActive')).toBeTruthy()
+    expect(screen.queryByText('project.forms.headCount')).toBeNull()
+
+    // 全终态 → 仅总量（换 projectId 触发 usePagedList 重拉，同 mocking 不触发）
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'form-fill:list') return { fills: [successFill] }
+      return {}
+    })
+    rerender(<FormsTab projectId="p2" />)
+    await flush()
+    expect(screen.getByText('project.forms.headCount')).toBeTruthy()
+    expect(screen.queryByText('project.forms.headCountActive')).toBeNull()
+
+    // 空列表 → 统计行不渲染
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'form-fill:list') return { fills: [] }
+      return {}
+    })
+    rerender(<FormsTab projectId="p3" />)
+    await flush()
+    expect(screen.queryByText('project.forms.headCount')).toBeNull()
+    expect(screen.queryByText('project.forms.headCountActive')).toBeNull()
+  })
 })
 
 describe('FormsTab preview 修订链路', () => {

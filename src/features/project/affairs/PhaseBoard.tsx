@@ -1,7 +1,8 @@
 /** src/features/project/affairs/PhaseBoard.tsx — 时期看板(3.0 §6.1.3)
- *  顶部时期进度条仅展示当前期高亮(general 无时期则不渲染);任务按时期分组,
+ *  任务按时期分组,
  *  当前期默认展开、其余折叠为计数(展开历史组即「回看」);阶段 pill 切换仅自动
  *  展开对应组,不激活任务(§6.4-2)。行内类型徽章标注任务类型。
+ *  （2026-10-25 裁决：顶部时期进度条撤下——当前期高亮与详情页 stage pills 重复）
  *  行状态色(§6.3):逾期 --error / 7 日内 --warning / 进行中 --accent /
  *  done 灰 / skipped 灰划线 / pending_activation 灰斜体「等待进入时期」。
  *  头部计数 = 当前期任务数(默认视角,不含 skipped/pending 占位)+ 7 日内到期数;
@@ -90,15 +91,6 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
   return (
     <div className={s.container}>
       <div className={s.head}>
-        {STAGE_MAP[projectType].length > 0 && (
-          <div className={s.phaseBar}>
-            {PHASES.map((p) => (
-              <span key={p} className={`${s.phaseSeg} ${stage === p ? s.phaseSegActive : ''}`}>
-                {t(phaseLabelKey(p))}
-              </span>
-            ))}
-          </div>
-        )}
         <div className={s.headActions}>
           <span className={s.headMeta}>
             {t('affairs.headCount', headCount)}

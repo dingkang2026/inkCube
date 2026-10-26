@@ -80,7 +80,7 @@ def test_default_scope_normalized(tmp_db):
     s = db.create_schedule("a", "p", "general", "general", "daily", "09:00")
     row = db.get_schedule(s["id"])
     assert row["scope"] is None and row["digest_schedule_ids"] is None
-    # 出参恒为两值：None（情报订阅）/ 'rollup'（组合周报）
+    # 出参恒为两值：None（情报订阅）/ 'rollup'（聚合简报）
     assert all(r["scope"] in (None, "rollup") for r in db.list_schedules())
     assert all(r["scope"] in (None, "rollup")
                for r in db.list_due_schedules("2999-01-01T00:00:00"))
@@ -151,7 +151,7 @@ def client_and_db(monkeypatch):
 
 
 _ROLLUP_BODY = {
-    "name": "组合周报",
+    "name": "聚合简报",
     "prompt": "汇总本期要点\n{sections}",
     "intervalType": "weekly", "intervalValue": "MON 09:00",
     "scope": "rollup",
@@ -220,7 +220,7 @@ def test_create_scope_invalid(client_and_db):
 
 
 def test_create_intel_with_digest_ids_forbidden(client_and_db):
-    """非 rollup（缺省 scope）带 digestScheduleIds → 400（仅组合周报可圈选）。"""
+    """非 rollup（缺省 scope）带 digestScheduleIds → 400（仅聚合简报可圈选）。"""
     client, _db = client_and_db
     r = client.post("/schedules", json={
         "prompt": "p", "intervalType": "daily", "intervalValue": "09:00",

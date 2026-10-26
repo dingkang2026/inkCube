@@ -1,5 +1,6 @@
 # V2-E1a 结构骨架实施计划
 
+> **状态注记（2026-10-25）**：本文为历史实施快照，仅存档不再维护。其中 T9「转跟进任务」全链（incomingPrefill/trackFollow）已于 2026-10-25 退役删除（阅读页出口收敛为线索链与订阅，出口收紧原则见 [0.6 §7](../0.6v2-ux-redesign.md) 删除链行）；文中 T9 及 L5 「转任务跨页预填」相关描述随之失效。
 > Spec: docs/0.6v2-ux-redesign.md §2/§3.2/§3.3/§3.6/§3.8/§5/§7/§9（E1a 行）；配套 docs/2.11scheduled-task-design.md §5.3/§8。
 > 执行方式：inline 顺序执行；**禁止 git 操作（用户手动提交）**；每任务完成即跑对应验证，全部完成后跑终验五件套。
 > 已查证关键事实：scheduler._execute 组装点 L384（prompt_full = incr_note + s["prompt"]）；db.last_done_run_report L2151 唯一调用方 = scheduler L372；refinePrompt 链 = FileTree.tsx L110/L198 + ScheduleFormModal initial.taskId + ipc-handlers.js schedules:refinePrompt + routers/schedules.py L34-41/L67/L236-283 + i18n L739/L931；SettingsModel schemas.py L4-75，save_settings 自由 kv（routers 层 SettingsModel 过滤）；inbox 端点 routers L142-162（unread/limit/offset），db.list_run_inbox 未读前置排序；useSchedules totals={n,total(未读),abnormal} 自含终态边沿；NavTabs TABS L13-17；App scheduleView L142-148、Ctrl 键表 L649、handleNavSchedules L693、ScheduleSideSummary L831；HomePage IntelDigest 侧列 L285、QuickActions 两卡；ProjectDetailPage TABS 五键（wiki/affairs/materials/reports/forms）；TaskChatView 预填 = usePlaceholderFill.start（模板链，转任务跨页预填需 App 级信号）；task_templates.category TEXT 无 CHECK 约束（可加 reg）。

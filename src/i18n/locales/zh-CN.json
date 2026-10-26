@@ -10,6 +10,7 @@
       "connect": "正在连接数据服务"
     },
     "elapsed": "已等待 {{seconds}} 秒",
+    "toolProgress": "正在初始化 Python 运行环境（{{copied}}/{{total}} 个文件）",
     "errorTitle": "启动失败",
     "errorHint": "本地服务未能启动，可重试或退出后查看日志",
     "retry": "重试",
@@ -94,6 +95,9 @@
     "navMissingTitle": "必配项未完成，点击进入配置",
     "general": "通用",
     "language": "语言",
+    "identity": "身份",
+    "identityUnset": "未设置",
+    "identityUnsetHint": "选择你的主要工作类型，任务模板与订阅建议的排序会据此调整，可随时修改",
     "notification": {
       "title": "通知",
       "osEnabled": "系统通知",
@@ -429,7 +433,8 @@
     "ctFigure": "图片",
     "ctCaption": "说明",
     "ctList": "列表",
-    "dropZoneCompact": "上传文件",
+    "dropZoneCompact": "点击上传，或拖拽文件到页面任意位置",
+    "dropOverlay": "松开鼠标，上传到当前项目",
     "chatBtnLabel": "AI 问答",
     "tabChat": "AI 问答",
     "recentChunks": "最近 {{count}} 条切片",
@@ -526,11 +531,11 @@
       "runNotFound": "期次不存在",
       "runRunning": "期次执行中，完成或失败后才能删除",
       "invalidScope": "订阅类型值非法",
-      "rollupTargetForbidden": "组合周报不沉淀档案，请清空去向",
-      "rollupPromptNeedsSection": "组合周报提示词须包含 {sections} 占位符",
-      "rollupDigestIdsForbidden": "仅组合周报可配置汇总范围",
+      "rollupTargetForbidden": "聚合简报不沉淀档案，请清空去向",
+      "rollupPromptNeedsSection": "聚合简报提示词须包含 {sections} 占位符",
+      "rollupDigestIdsForbidden": "仅聚合简报可配置汇总范围",
       "digestTargetNotFound": "汇总范围引用的订阅不存在",
-      "rollupDigestRecursive": "汇总范围不能包含组合周报订阅（防递归聚合）",
+      "rollupDigestRecursive": "汇总范围不能包含聚合简报订阅（防递归聚合）",
       "fileDuplicate": "文件已存在",
       "manuallyArchived": "手动归档",
       "projectHasActiveWork": "项目仍有进行中的活动（解析/报告/填表/Wiki 汇编/图片描述），完成后才能归档或删除",
@@ -662,15 +667,15 @@
       },
       "sentiment": {
         "title": "企业舆情扫描",
-        "desc": "近 30 天舆情一网打尽，正负面一目了然",
+        "desc": "别人怎么说它：近 30 天正负面舆情清单与风险预警",
         "out": "近 30 天正面/负面/中性三类舆情清单，每条附日期、摘要与来源链接\n负面条目附一句话影响评估（涉及业务/规模/可信度）\n舆情小结：整体声量与倾向、最需关注的负面、趋势提示",
         "prompt": "扫描「{企业名}」近 30 天公开舆情，按正面/负面/中性分类汇总。以任务执行当天为基准回溯 30 天，窗口外信息一律不要。\n\n【检索要求】\n- 舆情必须来自实时检索——近 30 天报道不在任何模型知识内，凭记忆作答即任务失败；可从新闻媒体、行业媒体、监管公告及公开社交平台讨论等入口入手，但不限于所列信源；\n- 报道原文与转载并存时优先溯源到首发。\n\n【输出格式】保存为 Markdown 报告到任务工作区，并在对话中完整输出：\n# 「{企业名}」舆情扫描（YYYY-MM-DD ~ YYYY-MM-DD）\n## 一、正面\n每条：日期｜标题/一句话摘要｜来源链接。\n## 二、负面\n同上格式，每条附一句话影响评估（涉及业务/规模/可信度）。\n## 三、中性\n同上格式。\n## 四、舆情小结\n整体声量与倾向判断、最需要关注的一条负面、趋势提示。\n\n【纪律】\n- 每条必须附可访问来源链接，无来源条目直接删除；\n- 分类克制：不确定倾向的归中性，不为凑数量硬归类；\n- 某类没有就明确写「本周期未检索到」，禁止凑数或夸大。"
       },
       "competitor": {
-        "title": "竞品动态",
-        "desc": "盯住竞品的产品、市场、融资与风险动向",
-        "out": "近 30 天竞品动态时间线，按产品/市场/融资/组织/合作/风险分类\n每条 2~3 句摘要 + 可访问来源链接\n动向小结：最重要的动作与竞争格局提示",
-        "prompt": "汇总「{竞品名/产品}」近一个月的产品发布、市场动作与融资新闻。以任务执行当天为基准回溯 30 天。\n\n【检索要求】\n- 动态必须来自实时检索——近一个月的信息不在任何模型知识内，凭记忆作答即任务失败；可从产品发布渠道、行业媒体、融资数据库及官方公告（官网/公众号）等入口入手，但不限于所列信源。\n\n【输出格式】保存为 Markdown 到任务工作区，并在对话中完整输出：\n# 「{竞品名/产品}」动态汇总（YYYY-MM-DD ~ YYYY-MM-DD）\n按日期倒序逐条列出，每条格式：\n### MM-DD｜[产品] / [市场] / [融资] / [组织] / [合作] / [风险]（选标类型；合作=渠道/生态/合资等动向，风险=诉讼/处罚/经营异常等）\n- 动态摘要：2~3 句说清发生了什么；\n- 来源：可访问链接。\n\n## 动向小结\n3 条以内：最重要的一个动作、对竞争格局的提示。\n\n【纪律】\n- 每条必须附可访问来源链接，无来源条目直接删除；\n- 官方口径与媒体解读冲突时以官方公告为准并注明差异；\n- 本周期没有公开动态就如实写「未检索到公开动态」，禁止用旧闻凑数。"
+        "title": "企业动态跟踪",
+        "desc": "它做了什么：产品/市场/融资/合作/风险动向时间线",
+        "out": "近 30 天企业动态时间线，按产品/市场/融资/组织/合作/风险分类\n每条 2~3 句摘要 + 可访问来源链接\n动向小结：最重要的动作与后续关注提示",
+        "prompt": "跟踪「{企业名}」近一个月的动态：产品发布、市场动作与融资新闻。以任务执行当天为基准回溯 30 天。\n\n【检索要求】\n- 动态必须来自实时检索——近一个月的信息不在任何模型知识内，凭记忆作答即任务失败；可从产品发布渠道、行业媒体、融资数据库及官方公告（官网/公众号）等入口入手，但不限于所列信源。\n\n【输出格式】保存为 Markdown 到任务工作区，并在对话中完整输出：\n# 「{企业名}」动态汇总（YYYY-MM-DD ~ YYYY-MM-DD）\n按日期倒序逐条列出，每条格式：\n### MM-DD｜[产品] / [市场] / [融资] / [组织] / [合作] / [风险]（选标类型；合作=渠道/生态/合资等动向，风险=诉讼/处罚/经营异常等）\n- 动态摘要：2~3 句说清发生了什么；\n- 来源：可访问链接。\n\n## 动向小结\n3 条以内：最重要的一个动作、对该企业后续走势的提示。\n\n【纪律】\n- 每条必须附可访问来源链接，无来源条目直接删除；\n- 官方口径与媒体解读冲突时以官方公告为准并注明差异；\n- 本周期没有公开动态就如实写「未检索到公开动态」，禁止用旧闻凑数。"
       },
       "industrySentiment": {
         "title": "产业舆情扫描",
@@ -878,12 +883,12 @@
     "hintCreate": "创建定时订阅，情报自动送达",
     "summaryLine": "订阅 {{n}} · 新产出 {{unread}} · 异常 {{abnormal}}",
     "newSubscription": "新建订阅",
-    "newRollup": "新建组合周报",
+    "newRollup": "新建聚合简报",
     "badge": {
       "unread": "未读情报"
     },
     "empty": "暂无订阅，点击「新建订阅」创建",
-    "emptyRollup": "暂无组合周报，点击「新建组合周报」创建",
+    "emptyRollup": "暂无聚合简报，点击「新建聚合简报」创建",
     "checkRow": "选择 {{name}}",
     "tab": {
       "all": "全部",
@@ -899,7 +904,7 @@
     "typeFilter": "类型",
     "typeAll": "全部类型",
     "typeIntel": "情报订阅",
-    "typeRollup": "组合周报",
+    "typeRollup": "聚合简报",
     "searchPlaceholder": "搜索订阅…",
     "checkedCount": "已选 {{n}} 项",
     "batchPause": "暂停",
@@ -965,7 +970,7 @@
     "batchPartialFailed": "{{total}} 项中 {{failed}} 项操作失败，请重试",
     "form": {
       "newTitle": "新建订阅",
-      "newRollupTitle": "新建组合周报",
+      "newRollupTitle": "新建聚合简报",
       "editTitle": "编辑订阅",
       "fromTemplate": "从模板",
       "outPreviewTitle": "你将获得",
@@ -976,7 +981,7 @@
       "prev": "上一步",
       "stepPeriod": "执行周期",
       "stepTarget": "名称与去向",
-      "stepTargetRollup": "名称与汇总骨架",
+      "stepTargetRollup": "名称与追加要求",
       "nameLabel": "订阅名称",
       "namePlaceholder": "留空将按提示词自动命名",
       "categoryLabel": "分类",
@@ -994,12 +999,14 @@
       "saveFailed": "保存失败",
       "targetSectionLabel": "产出去向（沉淀）",
       "targetSectionHint": "沉淀 = 每期产出自动归档到所选容器（项目/基础库），便于长期检索",
-      "rollupNoTarget": "组合周报不沉淀：每期报告仅在收件箱与首页可见，不写入项目/基础库",
-      "rollupSkeletonLabel": "汇总骨架（{sections} 为期次素材插入点）",
-      "rollupSkeletonHint": "{sections} 处每期替换为所选订阅的近期产出要点；上方即汇总要求，可自行调整",
+      "rollupNoTarget": "聚合简报不沉淀：每期报告仅在收件箱与首页可见，不写入项目/基础库",
+      "rollupBaseHint": "每期自动汇总所选订阅的近期产出：按主题归并重复信号、显式标注矛盾、结尾给出接下来的关注清单；下方追加的要求将并入汇总指令",
+      "rollupExtrasLabel": "追加要求（可选）",
+      "rollupExtrasPlaceholder": "例：重点关注融资与人事变动；结尾增加风险提示小节",
+      "rollupExtrasPrefix": "此外，用户特别要求：",
       "rollupScopeLabel": "汇总范围",
-      "rollupScopeHint": "不勾选 = 聚合全部启用的订阅（组合周报自身除外）",
-      "rollupPromptTemplate": "以下是各订阅近期的情报期次素材：\n{sections}\n\n请汇总为一份组合周报：\n1. 按主题归并重复信号，标注来源订阅；\n2. 相互矛盾的信息显式指出；\n3. 结尾给出下周值得关注的事项清单。"
+      "rollupScopeHint": "不勾选 = 聚合全部启用的订阅（聚合简报自身除外）",
+      "rollupPromptTemplate": "以下是各订阅近期的情报期次素材：\n{sections}\n\n请汇总为一份聚合简报：\n1. 按主题归并重复信号，标注来源订阅；\n2. 相互矛盾的信息显式指出；\n3. 结尾给出接下来值得关注的事项清单。"
     },
     "read": {
       "loading": "加载中…",
@@ -1024,8 +1031,6 @@
       "archivedUnit": " ·档案",
       "archivedJumpHint": "在目标容器「素材」中查看「{{name}}·档案」文件",
       "openReplay": "执行过程",
-      "trackFollow": "转跟进任务",
-      "trackFollowPrompt": "请围绕以上情报制定跟进计划",
       "settings": "订阅设置"
     },
     "replay": {
@@ -1035,20 +1040,25 @@
     "digest": {
       "viewAll": "查看全部",
       "empty": "暂无产出"
+    },
+    "createSub": {
+      "label": "同时创建企业动态跟踪订阅（每日 09:00，可改）",
+      "hint": "订阅期次产出将自动汇入本项目知识",
+      "needCompany": "填写企业全称后可用（订阅需盯梢对象）",
+      "name": "{{name}}企业动态跟踪",
+      "failed": "项目已创建，但订阅创建失败；可到情报中心手动创建"
     }
   },
   "intel": {
     "title": "情报中心",
     "summaryLoadFailed": "订阅数据加载失败",
-    "feedLoadFailed": "情报流加载失败",
     "tab": {
-      "feed": "情报流",
       "leads": "线索池",
       "admin": "订阅管理"
     },
     "lead": {
       "empty": "还没有线索，从情报期次存一条试试",
-      "emptyGoFeed": "去情报流看看",
+      "emptyGoAdmin": "去订阅管理看看",
       "addManual": "手动录入",
       "manualTitle": "录入线索",
       "nameLabel": "线索名称",
@@ -1056,6 +1066,7 @@
       "noteLabel": "备注",
       "notePlaceholder": "添加备注…",
       "sourceManual": "手动录入",
+      "sourceRun": "订阅期次",
       "statusLabel": "状态推进",
       "status": {
         "new": "新线索",
@@ -1068,11 +1079,18 @@
       "convert": {
         "action": "立项",
         "title": "立项为项目",
+        "extracting": "正在从来源报告提取立项信息…",
         "nameLabel": "项目名称",
+        "descLabel": "项目描述",
+        "descPlaceholder": "一句话描述该主体的核心业务或合作机会（选填）",
         "typeLabel": "项目类型",
         "typeRecruit": "招商项目",
         "typeInvest": "投资项目",
         "typeGeneral": "通用项目",
+        "companyLabel": "企业全称",
+        "companyPlaceholder": "报告中的企业/机构全称（选填）",
+        "creditLabel": "统一社会信用代码",
+        "creditPlaceholder": "报告中明确出现时填写（选填）",
         "confirm": "创建项目",
         "converting": "创建中…",
         "success": "已立项，可在项目页查看",
@@ -1080,14 +1098,10 @@
       },
       "viewProject": "查看项目",
       "upgrade": "升级订阅",
-      "upgradePrompt": "持续盯梢线索「{{name}}」的最新公开动态、招投标与政策信号，每期输出：①新动态摘要 ②值得行动的信号 ③可执行的跟进建议。仅报新增，历史信息标注日期。",
       "manualAdded": "已录入线索池",
       "opFailed": "操作失败，请重试",
       "loadFailed": "线索池加载失败",
       "deleteLabel": "删除线索",
-      "saveLead": "存为线索",
-      "saveLeadHint": "存入线索池（来源：{{name}}），可修改名称",
-      "added": "已存入线索池",
       "goLeads": "查看线索池",
       "extractLead": "提取线索",
       "extractTitle": "提取线索",
@@ -1113,8 +1127,7 @@
       "unread": "未读优先",
       "latest": "最新"
     },
-    "emptyNoSubs": "还没有订阅，创建一个让情报自动送达",
-    "emptyNoOutputs": "暂无情报，订阅产出后将出现在这里"
+    "emptyNoSubs": "还没有订阅，创建一个让情报自动送达"
   },
   "chat": {
     "copy": "复制",
@@ -1194,11 +1207,7 @@
     "typeGeneralDesc": "知识资料与任务的自由组合",
     "step2": "为项目命名",
     "namePlaceholder": "例如：华东智能制造产业招商",
-    "create": "创建项目",
-    "step3": "接下来",
-    "afterWiki": "上传第一批资料",
-    "afterMaterials": "发起第一个任务",
-    "afterAsk": "向项目助手提问"
+    "create": "创建项目"
   },
   "homeTodo": {
     "title": "今日待办",
@@ -1287,6 +1296,7 @@
       "schedule": "订阅《{{title}}》执行中",
       "model_download": "{{title}} 下载中 {{progress}}%",
       "ledger_parse": "{{project}}：台账解析中",
+      "profile_extract": "{{project}}：产业画像提取中",
       "form_template": "填表模板《{{title}}》{{status}}",
       "formAnalyzing": "分析中",
       "formPending": "排队中",
@@ -2272,14 +2282,14 @@
     },
     "forms": {
       "newForm": "新建填表",
-      "myForms": "我的表单",
+      "headCount": "共 {{count}} 份",
+      "headCountActive": "共 {{count}} 份 · {{active}} 个进行中",
       "emptyForms": "暂无填表实例，点击右上角「新建填表」开始",
       "completed": "已完成",
       "filling": "进行中",
       "statusPending": "排队中",
       "statusFailed": "失败",
       "open": "打开",
-      "export": "导出",
       "download": "下载",
       "delete": "删除",
       "back": "返回",
@@ -2298,7 +2308,6 @@
       "deleteFailed": "删除失败",
       "downloadSuccess": "已保存到 {{path}}",
       "downloadFailed": "下载失败",
-      "progressLabel": "进度",
       "errorLabel": "失败原因",
       "retryFill": "重新填写",
       "badgeFilled": "已填 {{count}}",
@@ -2357,7 +2366,6 @@
         "deleteSuccess": "模板已删除",
         "deleteFailed": "删除模板失败",
         "detailLoadFailed": "加载模板详情失败",
-        "confidence": "置信度",
         "confHigh": "高",
         "confMedium": "中",
         "confLow": "低",
@@ -2380,6 +2388,26 @@
     "editSaving": "保存中…",
     "editSaved": "项目已更新",
     "editProjectFailed": "项目更新失败",
+    "profile": {
+      "label": "产业画像",
+      "emptyHint": "编译 Wiki 后自动提取",
+      "noneFound": "暂未识别到产业链",
+      "extracting": "提取产业画像…",
+      "watch": "盯产业",
+      "watchTitle": "订阅「{{industry}}」产业舆情",
+      "removeTitle": "移除该条目",
+      "add": "添加",
+      "addTitle": "手动添加产业链条目",
+      "chainPh": "产业链，如：具身智能",
+      "segmentPh": "细分领域，如：四足机器狗",
+      "confirmAdd": "确认添加",
+      "reExtract": "重新提取",
+      "reExtractTitle": "忽略手动修改，从 Wiki 重新提取",
+      "manualSaved": "画像已更新，编译不再自动覆盖（可「重新提取」恢复）",
+      "editFailed": "画像更新失败",
+      "extractRunning": "画像提取已在进行中",
+      "extractFailed": "画像提取发起失败"
+    },
     "chat": {
       "title": "知识问答",
       "placeholder": "输入问题，基于项目知识库回答...",

@@ -132,14 +132,6 @@ class TestScheduleInboxPagination:
         assert {r["id"] for r in result["runs"]} == {"r-done-1", "r-done-2"}
         assert result["total"] == 2
 
-    def test_unread_filter_with_scoped_total(self, deps_db):
-        sid = _seed_schedule(deps_db, "订阅", seq=0)
-        _seed_run(deps_db, "r-read", sid, status="done", seq=0, read=True)
-        _seed_run(deps_db, "r-unread", sid, status="done", seq=1)
-        result = asyncio.run(schedules.schedule_inbox(unread=1, limit=50, offset=0))
-        assert {r["id"] for r in result["runs"]} == {"r-unread"}
-        assert result["total"] == 1
-
     def test_limit_returns_page_and_has_more(self, deps_db):
         sid = _seed_schedule(deps_db, "订阅", seq=0)
         for i in range(5):
@@ -173,7 +165,7 @@ class TestScheduleInboxPagination:
         assert [r["id"] for r in default["runs"]] == ["r-old-unread", "r-new-read"]
 
     def test_category_filter_scopes_runs_and_total(self, deps_db):
-        """V2-E1a：category=订阅分类直读过滤（情报流 chips），runs 与 total
+        """V2-E1a：category=订阅分类直读过滤（管理台收件箱左列页签联动），runs 与 total
         同口径。"""
         corp = _seed_schedule(deps_db, "企业订阅", category="corporate", seq=0)
         ind = _seed_schedule(deps_db, "产业订阅", category="industry", seq=1)
@@ -186,7 +178,7 @@ class TestScheduleInboxPagination:
         assert result["total"] == 2
 
     def test_rows_carry_schedule_category(self, deps_db):
-        """V2-E1a：行附 schedule_category（情报卡片类别 chip 数据源）；
+        """V2-E1a：行附 schedule_category（收件箱行/卡片类别数据源）；
         digest 同口径（IntelCardZone 卡片同需）。"""
         sid = _seed_schedule(deps_db, "区域订阅", category="region", seq=0)
         _seed_run(deps_db, "r-region", sid, status="done", seq=1)

@@ -174,6 +174,8 @@ powershell scripts/build-installer.ps1   # Windows 安装包全流程
 
 > 注：`resources/tools/` 与 `resources/python-backend/` 为不入库的可再生构建产物——前者先运行 `powershell scripts/prepare-tools.ps1` 自动下载（版本锁定于 `tool-versions.json`；网络受限可加 `-MirrorPrefix` 走加速代理，或按 [0.2 §6.2](docs/0.2packaging-design.md) 手动放置），后者由打包脚本自动装配。
 
+**安装与卸载（Windows）**：安装包为 NSIS 向导式（需管理员权限，可自选安装目录）；卸载时应用数据（`%APPDATA%/InkCube/` 下的设置、任务、知识库等）默认保留以便重装续用，卸载器会询问是否一并删除。手动彻底清理：删除 `%APPDATA%/InkCube` 整个目录。详见 [0.2 打包设计](docs/0.2packaging-design.md)。
+
 ## 🧪 测试与验证
 
 ```powershell

@@ -9,6 +9,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const compileItems: Array<{ project_id?: string }> = []
 const ledgerItems: Array<{ project_id?: string }> = []
+// 画像提取活动（2.1 §6.2 2026-10-25）：组件 L54 useActivity('profile_extract') 消费，
+// mock 须返回 items 否则 undefined.some 崩（交付缺口修复：组件接线时同步补）
+const profileItems: Array<{ project_id?: string }> = []
 const byProject = new Map<
   string,
   { files: number; imageDescribing: number; compiles: number; reports: number }
@@ -20,7 +23,9 @@ vi.mock('../src/features/activity/ActivityContext', () => ({
       ? { kind, items: compileItems, isActive: compileItems.length > 0 }
       : kind === 'ledger_parse'
         ? { items: ledgerItems }
-        : {
+        : kind === 'profile_extract'
+          ? { items: profileItems }
+          : {
             status: null,
             summary: {},
             byProject,
@@ -83,6 +88,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   compileItems.length = 0
   ledgerItems.length = 0
+  profileItems.length = 0
   byProject.clear()
   invokeMock.mockReset()
   invokeMock.mockImplementation(async () => ({ task: null, ingest_summaries: [] }))
@@ -271,8 +277,9 @@ describe('ProjectDetailPage edit project modal (todo: fields editable after crea
       <ProjectDetailPage project={companyProject} onProjectDataChanged={onDataChanged} />,
     )
     await flush()
-    // 头部铅笔按钮（title/aria 为 i18n key，icon 内容不参与文本匹配）
-    fireEvent.click(container.querySelector('.editBtn')!)
+    // 头部名称后内联铅笔按钮（类名 nameEditBtn：2026-10-25 编辑钮从右上 headerActions 前移至名称后；
+    // title/aria 为 i18n key，icon 内容不参与文本匹配）
+    fireEvent.click(container.querySelector('.nameEditBtn')!)
     // 弹层 4 字段全量回填
     const inputs = container.querySelectorAll('.editModal input')
     expect(inputs.length).toBe(4)
@@ -300,7 +307,7 @@ describe('ProjectDetailPage edit project modal (todo: fields editable after crea
   it('disables save and refuses to invoke when name is blank', async () => {
     const { getByText, container } = render(<ProjectDetailPage project={companyProject} />)
     await flush()
-    fireEvent.click(container.querySelector('.editBtn')!)
+    fireEvent.click(container.querySelector('.nameEditBtn')!)
     const nameInput = container.querySelector('.editModal input') as HTMLInputElement
     fireEvent.change(nameInput, { target: { value: '   ' } })
     const saveBtn = getByText('project.save').closest('button') as HTMLButtonElement
@@ -313,7 +320,7 @@ describe('ProjectDetailPage edit project modal (todo: fields editable after crea
   it('closes the edit modal when switching to another project (no cross-project write)', async () => {
     const { container, rerender } = render(<ProjectDetailPage project={companyProject} />)
     await flush()
-    fireEvent.click(container.querySelector('.editBtn')!)
+    fireEvent.click(container.querySelector('.nameEditBtn')!)
     expect(container.querySelector('.editModal')).not.toBeNull()
     // 弹层开着时切项目（活动 Toast「查看」/OS 通知点击可绕过全屏遮罩）：
     // 弹层必须随 project.id 变化关闭，否则保存会把旧项目字段串写到新项目

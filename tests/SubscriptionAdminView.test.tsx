@@ -13,13 +13,19 @@
  * - 重建 in-flight 禁用（防双击）；
  * - 「查看档案」→ onOpenArchive(row) 切档案阅读页（2026-10-23 应用内查看，
  *   不再 file:openOriginal 系统打开）。
- * 返回交互改造回归（2026-10-22）：
- * - 收件箱期次行点击 → onOpenRead(run 完整对象，携带 schedule_id 供返回恢复选中)；
+ * 返回交互改造回归（2026-10-22；三态抽屉化 2026-10-25 修订）：
+ * - 收件箱期次行点击 → onOpenRead(run 完整对象，App 开期次阅读抽屉)；
  * - 期次历史行点击统一进报告页（历史版本按 task_id 分流进回放，已废弃——
  *   回放唯一入口为报告页头部「执行过程」切换）；
- * - restoreScheduleId 挂载恢复选中订阅（read/replay 返回宿主页不落回收件箱）；
+ * - restoreScheduleId 挂载恢复选中订阅用例退役（抽屉化后管理台不卸载，
+ *   选中天然保持，0.6 §7 删除链）；
  * - 「返回收件箱」按钮 → 右列复位收件箱默认视图；
  * - 暂停行文字灰显（rowPaused）+ 状态点互斥（2026-10-23，§8.1/§9.2 不变量 1）。
+ * V2 收敛回归（2026-10-25，情报流退役后能力迁入收件箱）：
+ * - 收件箱默认 sort=unread，点「最新」→ sort=latest 下沉服务端；
+ * - 分类页签 → 收件箱 category 联动（与订阅列表同参数）；
+ * - 订阅行 toggle 选中（再点同行取消，右列回默认收件箱）；
+ * - 订阅期次终态边沿（'schedule' 活动源 true→false）→ 收件箱重拉新产出。
  *
  * 时序说明：既有筛选类用例含 300ms 真实防抖，用 waitFor（真实计时器）；
  * 返回交互类用例无防抖依赖，用 flush（排空 microtask，更快）。
@@ -38,6 +44,14 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('../src/features/knowledge/Toast', () => ({
   useToast: () => () => {},
+}))
+
+// useActivity 打桩（无 Provider 环境直调会 throw）：isActive 由模块级变量驱动
+// （命名须 mock* 前缀——vi.mock 工厂仅允许引用该前缀的外部变量），
+// 边沿重拉用例改变量 + rerender 模拟 true→false 边沿
+let mockScheduleActive = false
+vi.mock('../src/features/activity/ActivityContext', () => ({
+  useActivity: () => ({ kind: 'schedule', items: [], isActive: mockScheduleActive }),
 }))
 
 // ScheduleFormModal 打桩：管理台另引用 parseInterval/WEEKDAYS 渲染周期文案
@@ -85,6 +99,7 @@ const HISTORY_RUN = {
 const invokeMock = vi.fn()
 
 beforeEach(() => {
+  mockScheduleActive = false
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string, args?: Record<string, unknown>) => {
     if (channel === 'schedules:list') {
@@ -125,6 +140,14 @@ const lastListArgs = () => {
   return calls[calls.length - 1]?.[1] ?? {}
 }
 
+const lastInboxArgs = () => {
+  const calls = invokeMock.mock.calls.filter((c) => c[0] === 'schedules:inbox')
+  return calls[calls.length - 1]?.[1] ?? {}
+}
+
+const inboxCallCount = () =>
+  invokeMock.mock.calls.filter((c) => c[0] === 'schedules:inbox').length
+
 /** 排空 microtask（usePagedList 三列表拉取链；无防抖依赖的用例用） */
 const flush = async () => {
   for (let i = 0; i < 8; i++) {
@@ -144,6 +167,60 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'schedule.tab.corporate' }))
     await waitFor(() => expect(lastListArgs()).toMatchObject({ category: 'corporate' }))
     await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(20))
+  })
+
+  it('收件箱默认 sort=unread；点「最新」→ sort=latest 下沉服务端（V2 收敛）', async () => {
+    renderView({ onOpenRead: () => {} })
+    await waitFor(() => expect(lastInboxArgs()).toMatchObject({ sort: 'unread' }))
+    fireEvent.click(screen.getByText('intel.sort.latest'))
+    await waitFor(() => expect(lastInboxArgs()).toMatchObject({ sort: 'latest' }))
+    // 切回未读优先同理
+    fireEvent.click(screen.getByText('intel.sort.unread'))
+    await waitFor(() => expect(lastInboxArgs()).toMatchObject({ sort: 'unread' }))
+  })
+
+  it('分类页签 → 收件箱 category 联动（与订阅列表同参数，V2 收敛）', async () => {
+    renderView({ onOpenRead: () => {} })
+    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(30))
+    fireEvent.click(screen.getByRole('tab', { name: 'schedule.tab.corporate' }))
+    await waitFor(() => expect(lastInboxArgs()).toMatchObject({ category: 'corporate' }))
+    // 「全部」页签不过滤（不传 category）
+    fireEvent.click(screen.getByRole('tab', { name: 'schedule.tab.all' }))
+    await waitFor(() => expect(lastInboxArgs()).toEqual(expect.not.objectContaining({ category: expect.anything() })))
+  })
+
+  it('订阅行 toggle 选中：点行出详情，再点同行取消回收件箱（V2 收敛）', async () => {
+    renderView({ onOpenRead: () => {} })
+    await waitFor(() => expect(screen.getAllByRole('checkbox').length).toBe(30))
+    expect(screen.getByText('schedule.inboxTitle')).toBeTruthy()
+    fireEvent.click(screen.getByText('订阅0'))          // 选中 → 详情 + 期次历史
+    await waitFor(() => expect(screen.getByText('schedule.runsTitle')).toBeTruthy())
+    expect(screen.queryByText('schedule.inboxTitle')).toBeNull()
+    // 选中后右列详情头部 detailName 同名，取 getAllByText 首个（DOM 前序 = 左列行）
+    fireEvent.click(screen.getAllByText('订阅0')[0])   // 再点同行 → 取消选中
+    await waitFor(() => expect(screen.getByText('schedule.inboxTitle')).toBeTruthy())
+    expect(screen.queryByText('schedule.runsTitle')).toBeNull()
+  })
+
+  it('订阅期次终态边沿（schedule 活动源 true→false）→ 收件箱重拉新产出（V2 收敛）', async () => {
+    const view = renderView({ onOpenRead: () => {} })
+    await flush()
+    const before = inboxCallCount()
+    mockScheduleActive = true
+    view.rerender(
+      <ConfirmProvider>
+        <SubscriptionAdminView onOpenRead={() => {}} onOpenArchive={() => {}} />
+      </ConfirmProvider>,
+    )
+    mockScheduleActive = false
+    await act(async () => {
+      view.rerender(
+        <ConfirmProvider>
+          <SubscriptionAdminView onOpenRead={() => {}} onOpenArchive={() => {}} />
+        </ConfirmProvider>,
+      )
+    })
+    await waitFor(() => expect(inboxCallCount()).toBeGreaterThan(before))
   })
 
   it('搜索防抖后 q 下沉服务端 schedules:list', async () => {
@@ -298,7 +375,7 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
 
   /* ── 返回交互改造回归（flush：无防抖依赖） ── */
 
-  it('收件箱期次行点击 → onOpenRead(run)：携带 schedule_id 供返回恢复选中', async () => {
+  it('收件箱期次行点击 → onOpenRead(run) 完整对象透传（App 开期次阅读抽屉）', async () => {
     const onOpenRead = vi.fn()
     renderView({ onOpenRead })
     await flush()
@@ -325,18 +402,14 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     expect((onOpenRead.mock.calls[0][0] as { task_id?: string }).task_id).toBe('t1')
   })
 
-  it('restoreScheduleId 挂载恢复选中订阅（返回宿主页不落回收件箱）', async () => {
-    renderView({ onOpenRead: () => {}, restoreScheduleId: 'sch_1' })
-    await flush()
-    // 右列直接是详情视图（期次历史），而非收件箱
-    expect(screen.queryByText('schedule.inboxTitle')).toBeNull()
-    expect(screen.getByText('schedule.runsTitle')).toBeTruthy()
-    expect(screen.getByTestId('back-to-inbox')).toBeTruthy()
-  })
-
   it('「返回收件箱」按钮 → 右列复位收件箱默认视图', async () => {
-    renderView({ onOpenRead: () => {}, restoreScheduleId: 'sch_1' })
+    const { container } = renderView({ onOpenRead: () => {} })
     await flush()
+    // 选中订阅进入详情视图（原经 restoreScheduleId 直达，抽屉化后恢复锚退役，
+    // 改 toggle 点击——与期次行点击用例同款类名定位，不受 CSS modules hash 影响）
+    fireEvent.click(container.querySelector('button[class*="schedMain"]') as HTMLElement)
+    await flush()
+    expect(screen.getByTestId('back-to-inbox')).toBeTruthy()
     fireEvent.click(screen.getByTestId('back-to-inbox'))
     expect(screen.getByText('schedule.inboxTitle')).toBeTruthy()
     expect(screen.queryByTestId('back-to-inbox')).toBeNull()
@@ -380,7 +453,7 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'schedules:list') {
         return {
-          schedules: [{ ...SCHEDULE, id: 'sch_r', name: '组合周报', scope: 'rollup' }],
+          schedules: [{ ...SCHEDULE, id: 'sch_r', name: '聚合简报', scope: 'rollup' }],
           has_more: false,
         }
       }
@@ -391,10 +464,10 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
       return { ok: true }
     })
     renderView({ onOpenRead: () => {} })
-    await waitFor(() => expect(screen.getByText('组合周报')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('聚合简报')).toBeTruthy())
     // 行徽标 span 断言（getByText 会撞类型筛选 select 的同名 option）
     expect(document.querySelector('span[class*="rollupTag"]')).toBeTruthy()
-    fireEvent.click(screen.getByText('组合周报'))
+    fireEvent.click(screen.getByText('聚合简报'))
     await waitFor(() =>
       expect(document.querySelectorAll('span[class*="rollupTag"]').length).toBe(2))
   })
@@ -408,7 +481,7 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
     await waitFor(() => expect(lastListArgs()).toMatchObject({ scope: 'rollup' }))
   })
 
-  it('rollup 筛选空态指引「新建组合周报」（免培训：指引与筛选意图一致）', async () => {
+  it('rollup 筛选空态指引「新建聚合简报」（免培训：指引与筛选意图一致）', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'schedules:list') return { schedules: [], has_more: false }
       if (channel === 'schedules:inbox') return { runs: [], has_more: false }
@@ -418,7 +491,7 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
       return { ok: true }
     })
     renderView({ onOpenRead: () => {} })
-    // 默认（all）空态指「新建订阅」；切 rollup 后指「新建组合周报」
+    // 默认（all）空态指「新建订阅」；切 rollup 后指「新建聚合简报」
     await waitFor(() => expect(screen.getByText('schedule.empty')).toBeTruthy())
     fireEvent.change(screen.getByLabelText('schedule.typeFilter'), {
       target: { value: 'rollup' },

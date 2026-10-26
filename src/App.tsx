@@ -21,16 +21,19 @@ import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
 import { TaskStatusMonitor } from './features/task/TaskStatusMonitor'
 import { ScheduleSideSummary } from './features/schedule/ScheduleSideSummary'
-import { ReadView } from './features/schedule/ReadView'
-import { RunReplay } from './features/schedule/RunReplay'
-import { ArchiveView } from './features/schedule/ArchiveView'
+import { ScheduleDrawer, type ScheduleView } from './features/schedule/ScheduleDrawer'
 import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { PersonaPicker, type Persona } from './features/onboarding/PersonaPicker'
 import { IntelPage } from './features/intel/IntelPage'
 import type { LeadRow } from './features/intel/LeadPool'
 import { ScheduleFormModal } from './features/schedule/ScheduleFormModal'
-import type { ScheduleRunRow } from './features/schedule/useSchedules'
+import {
+  BUILTIN_PREFIX,
+  LEAD_UPGRADE_TPL_ID,
+  PROFILE_SUBSCRIBE_TPL_ID,
+  uniquePlaceholderNames,
+} from './features/task/promptTemplate'
 import { navAfterOnboarding } from './features/onboarding/finishNav'
 import { useResizeHandle } from './hooks/useResizeHandle'
 import { useExplicitDeselect } from './hooks/useExplicitDeselect'
@@ -139,31 +142,22 @@ export default function App() {
   // 0.5 E1 T4:首页「新建项目」信号(纯前端):切到项目导航 + ProjectList 自动打开创建模态
   const [projectCreateSignal, setProjectCreateSignal] = useState(0)
 
-  // ── 2.11 E3 T7 → 0.6 V2-E1a：期次 peer 态（阅读 / 回放 / 档案）；
-  // 管理台 peer 态退役——SubscriptionAdminView 迁入情报中心 intel 页（§5）──
-  // from = 宿主页来路（头部「返回」分发；admin=情报中心管理台 tab /
-  // intel=情报流 / home=首页）；scheduleId = 期次所属订阅（返回管理台时
-  // 恢复选中）；restoreScheduleId 仅管理台挂载消费
-  const [scheduleView, setScheduleView] = useState<
-    | { type: 'read'; runId: string; from: 'admin' | 'intel' | 'home'; scheduleId?: string;
-        initialAction?: 'extract' }
-    | { type: 'replay'; runId: string; taskId: string; from: 'admin' | 'intel' | 'home'; scheduleId?: string }
-    | { type: 'archive'; targetId: string; fileId: string; scheduleName: string; scheduleId: string }
-    | null
-  >(null)
+  // ── 2.11 E3 T7 → 0.6 V2-E1a → 第二步三态统一抽屉（2026-10-25）：
+  // 阅读 / 回放 / 档案为 App 级右侧遮罩抽屉（ScheduleDrawer），宿主页不卸载——
+  // 原 from 来路字段与 scheduleId 返回恢复锚随整页 peer 态退役（0.6 §7 删除链）
+  const [scheduleView, setScheduleView] = useState<ScheduleView | null>(null)
 
-  // 情报中心（0.6 §3.2 V2-E1a/E2）：四 Tab 导航 intel 支柱；tab 跨 read 往返保持，
-  // restoreId 供 read/replay 返回管理台 tab 时恢复选中订阅
-  const [intelTab, setIntelTab] = useState<'feed' | 'leads' | 'admin'>('feed')
-  const [intelRestoreId, setIntelRestoreId] = useState<string | null>(null)
+  // 情报中心（0.6 §3.2 V2-E1a/E2；两 Tab 收敛 2026-10-25）：默认订阅 tab
+  // （收件箱即跨订阅期次消费面）；期次抽屉打开期间管理台不卸载，tab 与
+  // 订阅选中天然保持（原 intelRestoreId 恢复锚随整页 peer 态退役）
+  const [intelTab, setIntelTab] = useState<'admin' | 'leads'>('admin')
 
-  // 线索升级订阅预填（0.6 §6.1 V2-E2）：非 null 时打开 App 级新建订阅弹层
-  // （复用 schedules:create，零新通道）；保存/关闭后清空
-  const [leadUpgradePrefill, setLeadUpgradePrefill] = useState<{ name: string; prompt: string } | null>(null)
-
-  // 情报转跟进任务预填信号（0.6 §3.2 V2-E1a T9）：text + 时间戳，TaskChatView
-  // 消费后置 null（跨页单向一次消费，projectTabSignal 同款模式）
-  const [taskPrefill, setTaskPrefill] = useState<{ text: string; ts: number } | null>(null)
+  // 订阅预填（0.6 §6.1 线索升级 + 2.11 §8.1 项目画像盯产业共用一条 App 级
+  // 弹层链）：非 null 时打开新建订阅弹层（复用 schedules:create，零新通道）；
+  // 保存/关闭后清空
+  const [schedulePrefill, setSchedulePrefill] = useState<{
+    name: string; tplId: string; phValues: Record<string, string>
+  } | null>(null)
 
   // ── First-run onboarding (0.4 §7.3): 一次性判定所需状态 ──
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -589,8 +583,10 @@ export default function App() {
     void finalizeImportSelection()
   }, [finalizeImportSelection])
 
-  // 同级页面（设置 / 模板管理 / 基础库详情 / 定时订阅管理台）打开期间，侧边栏不残留
-  // 项目 / 任务列表——与首页同样清空；切回导航时 handleNavChange 清掉各 peer 态后复原
+  // 同级页面（设置 / 模板管理 / 基础库详情）打开期间，侧边栏不残留项目 / 任务列表
+  // ——与首页同样清空；切回导航时 handleNavChange 清掉各 peer 态后复原。
+  // 期次抽屉（scheduleView）保留该因子：遮罩盖全屏期间导航不可交互，
+  // 维持 sidebar 空载避免遮罩下无谓挂载
   const peerPageOpen = settingsOpen || showTemplateManagement || !!selectedBaseLibId || !!scheduleView
 
   const handleNavChange = useCallback((nav: string) => {
@@ -604,20 +600,46 @@ export default function App() {
   }, [closeSettings, deselect.reset])
 
   // 情报中心管理台 tab 直达（0.6 §5 V2-E1a：原 admin peer 态入口全部改道）：
-  // 通知点击 / 侧栏摘要行 / 首页快捷卡共用；恢复选中无意义，清 restoreId
+  // 通知点击 / 侧栏摘要行 / 首页快捷卡共用
   const openIntelAdmin = useCallback(() => {
     setActiveNav('intel')
     setIntelTab('admin')
-    setIntelRestoreId(null)
   }, [])
 
-  // 线索池接线（0.6 §6.1 V2-E2）：升级订阅 = App 级新建订阅弹层（盯梢指令
-  // 以线索名组装预填，零新通道）；查看项目 = 切项目导航并选中
+  // 线索池接线（0.6 §6.1 V2-E2；2026-10-25 模板化预填）：升级订阅 = App 级新建订阅
+  // 弹层，预选「企业动态跟踪」模板 + {企业名} 占位符填线索名（零新通道）；
+  // 占位符名经 t() 语言无关提取（zh「企业名」/en「company」不同名）；
+  // 查看项目 = 切项目导航并选中
   const handleLeadUpgrade = useCallback((lead: LeadRow) => {
-    setLeadUpgradePrefill({
+    // i18n prompt 键从常量派生（消除 tplId/键名双写，换模板时占位符提取自动跟随）
+    const phName = uniquePlaceholderNames(
+      t(`task.tpl.${LEAD_UPGRADE_TPL_ID.slice(BUILTIN_PREFIX.length)}.prompt`),
+    )[0]
+    setSchedulePrefill({
       name: lead.name,
-      prompt: t('intel.lead.upgradePrompt', { name: lead.name }),
+      tplId: LEAD_UPGRADE_TPL_ID,
+      phValues: phName ? { [phName]: lead.name } : {},
     })
+  }, [t])
+
+  // 项目画像「盯产业」（2.11 §8.1「从项目画像」渠道，2026-10-25）：
+  // ProjectProfileLine 每条标签盯产业钮 dispatch 全局事件 → 同一 App 级新建订阅
+  // 弹层，预选「产业舆情扫描」+ {产业} 占位符填细分领域（无细分用链条名，
+  // detail.phValue 已裁决）；占位符名同上经 i18n 语言无关提取
+  useEffect(() => {
+    const h = (e: Event) => {
+      const { name, phValue } = (e as CustomEvent).detail ?? {}
+      const phName = uniquePlaceholderNames(
+        t(`task.tpl.${PROFILE_SUBSCRIBE_TPL_ID.slice(BUILTIN_PREFIX.length)}.prompt`),
+      )[0]
+      setSchedulePrefill({
+        name,
+        tplId: PROFILE_SUBSCRIBE_TPL_ID,
+        phValues: phName && phValue ? { [phName]: phValue } : {},
+      })
+    }
+    window.addEventListener('app:open-schedule-wizard', h)
+    return () => window.removeEventListener('app:open-schedule-wizard', h)
   }, [t])
 
   const handleLeadOpenProject = useCallback(async (projectId: string) => {
@@ -640,47 +662,6 @@ export default function App() {
     setSelectedProjectId(projectId)
     handleNavChange('projects')
   }, [projects, archivedProjects, loadArchivedProjects, showToast, t, handleNavChange])
-
-  // 情报转跟进任务（0.6 §3.2 V2-E1a T9）：新建独立任务承接（不混入当前选中任务，
-  // 在途/失败反馈由 useTasks 已有 toast 负责）→ 预填要点（不自动发送）→ 切任务页；
-  // 预填文本 = Markdown 标题（摘要首行）+ 要点逐行 + 跟进指令
-  const handleTrackFollow = useCallback(async (run: ScheduleRunRow) => {
-    try {
-      if (taskCreating) {
-        showToast(t('task.createInProgress'), 'info')
-        return
-      }
-      const id = await handleCreateTask()
-      if (!id) return
-      const title = run.summary?.[0] || run.schedule_name || ''
-      const points = (run.summary ?? []).filter(Boolean)
-      setActiveTaskId(id)
-      setTaskPrefill({
-        // 数组 join 拼接：要点为空时不留双空行（字符串模板空串插入会多一个空行）
-        text: [`# ${title}`, ...points, '', t('schedule.read.trackFollowPrompt')].join('\n'),
-        ts: Date.now(),
-      })
-      handleNavChange('tasks')
-    } catch {
-      showToast(t('schedule.opFailed'), 'error')
-    }
-  }, [taskCreating, handleCreateTask, showToast, t, setActiveTaskId, handleNavChange])
-
-  // 期次 read/replay/archive 头部「返回」宿主页分发（2.11 §8.2/§8.3 +
-  // 0.6 §3.2 V2-E1a 迁移）：admin=情报中心管理台 tab（恢复选中订阅）；
-  // intel=情报流；home=首页——均退出 peer 态
-  const handleScheduleBack = useCallback((from: 'admin' | 'intel' | 'home', scheduleId?: string) => {
-    if (from === 'admin') {
-      setActiveNav('intel')
-      setIntelTab('admin')
-      setIntelRestoreId(scheduleId ?? null)
-    } else if (from === 'intel') {
-      setActiveNav('intel')   // intelTab 保持 feed 来路
-    } else {
-      setActiveNav('home')
-    }
-    setScheduleView(null)
-  }, [])
 
   // Settings is a peer page too: opening it exits template management / base lib detail
   // section 可选：设置页锚点直达（0.4 §7.4，首页红卡 / 引导弹层 / 向导）
@@ -711,9 +692,7 @@ export default function App() {
       const { projectId, tab, container, taskId, wikiFocus } = (e as CustomEvent).detail
       closeSettings()
       setShowTemplateManagement(false)
-      // 订阅视图（管理台/阅读/回放）同为 peer 页：不清会以 peerPageOpen 挡住
-      // projects 内容区——订阅去向跳转点击「看似无反应」（2026-10-23 根因修复；
-      // 同构参照：模板管理 handler 清 scheduleView，本 handler 原只清模板管理态）
+      // 期次抽屉打开中跳转去向：导航切换须同时关抽屉（态不清则抽屉悬浮残留）
       setScheduleView(null)
       // 基础库容器（0.4 §3.6 导航分流）：projectId 即 baseLibId，与项目详情互斥；
       // tab 信号只对项目详情页生效，基础库详情内嵌素材区即 file 活动目标位置
@@ -820,8 +799,7 @@ export default function App() {
       closeSettings()
       setSelectedBaseLibId(null)
       setShowTemplateManagement(false)
-      // peer 态（read/replay/archive）优先于 intel 导航分支渲染，不清则 peer 页
-      // 打开期间订阅类 Toast/通知点击「看似无反应」（与模板管理 handler 同构）
+      // 期次抽屉打开中点订阅类通知：导航切换同时关抽屉（态不清则抽屉残留）
       setScheduleView(null)
       openIntelAdmin()
     }
@@ -833,20 +811,21 @@ export default function App() {
       closeSettings()
       setSelectedBaseLibId(null)
       setShowTemplateManagement(false)
-      // 同 handleNavSchedules：peer 态优先渲染，不清则通知点击被遮蔽
+      // 同 handleNavSchedules：导航切换同时关抽屉
       setScheduleView(null)
       setActiveNav('intel')
-      setIntelTab(tab === 'leads' || tab === 'admin' ? tab : 'feed')
+      // 无 detail 落订阅 tab（默认消费面=收件箱；原落情报流随 Tab 退役改道）
+      setIntelTab(tab === 'leads' ? 'leads' : 'admin')
     }
     window.addEventListener('app:navigate-intel', handleNavIntel)
-    // 情报速览行点击 → 期次阅读页（2.11 §8.1 动线②，E3 T9；detail.runId）
+    // 情报速览行点击 → 期次阅读抽屉（2.11 §8.1 动线②，E3 T9；detail.runId）
     const handleNavScheduleRead = (e: Event) => {
       const { runId } = (e as CustomEvent).detail ?? {}
       if (!runId) return
       closeSettings()
       setSelectedBaseLibId(null)
       setShowTemplateManagement(false)
-      setScheduleView({ type: 'read', runId, from: 'home' })
+      setScheduleView({ type: 'read', runId })
     }
     window.addEventListener('app:navigate-schedule-read', handleNavScheduleRead)
     // Listen for Python process exit
@@ -1002,52 +981,19 @@ export default function App() {
         ) : selectedBaseLibId ? (
           /* Base library is parallel to projects — accessible from any nav */
           <BaseLibDetailPage baseLibId={selectedBaseLibId} />
-        ) : scheduleView?.type === 'read' ? (
-          /* 期次阅读页（2.11 §8.2）：头部「返回」回宿主页，「执行过程」切回放 */
-          <ReadView
-            runId={scheduleView.runId}
-            onBack={() => handleScheduleBack(scheduleView.from, scheduleView.scheduleId)}
-            onReplay={(taskId) => setScheduleView({ type: 'replay', runId: scheduleView.runId, taskId, from: scheduleView.from, scheduleId: scheduleView.scheduleId })}
-            onTrackFollow={handleTrackFollow}
-            initialAction={scheduleView.initialAction}
-          />
-        ) : scheduleView?.type === 'replay' ? (
-          /* 执行回放（2.11 §8.3）：只读消息流，头部「返回」回宿主页，「查看报告」切阅读页 */
-          <RunReplay
-            runId={scheduleView.runId}
-            taskId={scheduleView.taskId}
-            onBack={() => handleScheduleBack(scheduleView.from, scheduleView.scheduleId)}
-            onOpenReport={() => setScheduleView({ type: 'read', runId: scheduleView.runId, from: scheduleView.from, scheduleId: scheduleView.scheduleId })}
-          />
-        ) : scheduleView?.type === 'archive' ? (
-          /* 档案阅读页（2.11 §8.4，2026-10-23）：订阅档案应用内查看（Markdown 渲染），
-             入口 = 管理台去向行「查看档案」；返回回管理台恢复选中订阅 */
-          <ArchiveView
-            targetId={scheduleView.targetId}
-            fileId={scheduleView.fileId}
-            scheduleName={scheduleView.scheduleName}
-            onBack={() => handleScheduleBack('admin', scheduleView.scheduleId)}
-          />
         ) : activeNav === 'intel' ? (
-          /* 情报中心（0.6 §3.2 V2-E1a）：feed 卡片流 + 订阅管理迁入；
-             期次打开 from='intel'，管理台内打开 from='admin'（返回恢复选中）。
-             排序在 scheduleView 三 peer 态之后：intel 内打开期次/档案时 scheduleView
-             非 null，须 peer 态优先渲染（本分支后置，否则会遮蔽三态不可达） */
+          /* 情报中心（0.6 §3.2 V2-E1a；两 Tab 收敛 2026-10-25）：订阅管理（默认，
+             收件箱即消费面）+ 线索池。期次 read/replay/archive 已抽屉化（第二步
+             三态统一 2026-10-25），宿主页不再被 peer 态替换——本分支无遮蔽问题 */
           <IntelPage
             tab={intelTab}
-            onTabChange={(tab) => {
-              setIntelTab(tab)
-              // 手动切 tab 即清恢复锚（消费后回收）：防管理台重挂载复现陈旧选中
-              setIntelRestoreId(null)
-            }}
-            restoreScheduleId={intelRestoreId ?? undefined}
-            onOpenRead={(run, action) => setScheduleView({ type: 'read', runId: run.id, from: intelTab === 'admin' ? 'admin' : 'intel', scheduleId: run.schedule_id, initialAction: action })}
+            onTabChange={setIntelTab}
+            onOpenRead={(run) => setScheduleView({ type: 'read', runId: run.id })}
             onOpenArchive={(row) => setScheduleView({
               type: 'archive',
               targetId: row.target_id!,
               fileId: row.archive_file_id!,
               scheduleName: row.name,
-              scheduleId: row.id,
             })}
             onConvertProject={handleCreateProject}
             onOpenProject={handleLeadOpenProject}
@@ -1121,8 +1067,6 @@ export default function App() {
               loadTaskMessages(uploadedTaskId)
             }}
             onEnsureTask={ensureTask}
-            incomingPrefill={taskPrefill}
-            onPrefillConsumed={() => setTaskPrefill(null)}
             onSwitchMode={(mode) => activeTaskId && handleSetTaskMode(activeTaskId, mode)}
           />
         ) : (
@@ -1135,16 +1079,26 @@ export default function App() {
         onOpenStats={() => handleOpenSettings('usage')}
         onShowAbout={() => setAboutOpen(true)}
       />
+      {/* 期次三态抽屉（0.6 §3.2 第二步 2026-10-25）：read/replay/archive 右侧滑出，
+          宿主页保持原位；关闭=头部返回/Esc/点遮罩，全局导航动作经各 handler
+          setScheduleView(null) 同步关闭 */}
+      {!!scheduleView && (
+        <ScheduleDrawer
+          view={scheduleView}
+          onClose={() => setScheduleView(null)}
+          onViewChange={setScheduleView}
+        />
+      )}
       {/* 内嵌浏览器面板（2.8 §8）：App 级常驻，三态由 store 驱动 */}
       <BrowserPanel />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      {/* 线索升级订阅（0.6 §6.1 V2-E2）：App 级新建订阅弹层，盯梢指令预填；
-          保存后情报流/管理台侧数据由各自挂载拉取，此处仅收口弹层 */}
+      {/* 订阅预填弹层（0.6 §6.1 线索升级 + 2.11 §8.1 画像盯产业共用）：
+          App 级新建订阅弹层，保存后管理台侧数据由挂载/边沿刷新，此处仅收口 */}
       <ScheduleFormModal
-        open={!!leadUpgradePrefill}
-        prefill={leadUpgradePrefill ?? undefined}
-        onClose={() => setLeadUpgradePrefill(null)}
-        onSaved={() => setLeadUpgradePrefill(null)}
+        open={!!schedulePrefill}
+        prefill={schedulePrefill ?? undefined}
+        onClose={() => setSchedulePrefill(null)}
+        onSaved={() => setSchedulePrefill(null)}
       />
       {/* 通知中心全局面板（2.11 §6.1）：铃铛 / 首页「查看全部」打开 */}
       {notifCenterOpen && <NotificationCenter open onClose={() => setNotifCenterOpen(false)} />}

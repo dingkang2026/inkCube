@@ -12,10 +12,19 @@ import { useTranslation } from 'react-i18next'
 // python:process-exit / 确认 invoke 失败)转错误屏(重试 = app:relaunch)。
 type BootStage = 'tools' | 'python' | 'connect' | 'error'
 
+// 阶段内进度（首装工具链复制，2026-10-25）：主进程 tool-initializer
+// 结构化载荷，文案由本组件经 i18n 渲染（主进程不硬编码语言）
+interface BootProgress {
+  phase: 'copy-tools' | 'copy-python'
+  copied?: number
+  total?: number
+}
+
 interface BootStatus {
   stage: 'tools' | 'python' | 'ready' | 'error'
   message: string | null
   elapsedMs: number
+  progress?: BootProgress | null
 }
 
 const STAGE_I18N_KEY: Record<BootStage, string> = {
@@ -161,6 +170,14 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
       <div className="boot-gate-inkchar" aria-hidden>墨</div>
       <div className="boot-gate-brand">墨方 InkCube</div>
       <div className="boot-gate-stage">{t(STAGE_I18N_KEY[stage])}</div>
+      {stage === 'tools' && status?.progress?.total ? (
+        <div className="boot-gate-progress">
+          {t('boot.toolProgress', {
+            copied: status.progress.copied ?? 0,
+            total: status.progress.total,
+          })}
+        </div>
+      ) : null}
       <div className="boot-gate-elapsed">{t('boot.elapsed', { seconds: elapsed })}</div>
       <div className="boot-gate-ink" aria-hidden />
     </div>

@@ -5,12 +5,18 @@
  * 卡片动作（薄卡不变量 §6.3-8：只有名称/来源/状态/备注/立项指向）：
  * - 状态推进：pill 点击即 PATCH leads:update（当前态禁用）
  * - 备注：inline 编辑 blur 保存（值有变才发请求）
- * - 立项：内联模态（类型三选 + 名称预填）→ onConvertProject（App 层
- *   knowledge:createProject，失败 toast 留原页可重试）→ 成功后回填
- *   projectId + converted；回填失败只提示不重试（项目已建，重试会重复立项）
+ * - 立项：内联模态（五字段与项目标准创建表单对齐：名称/描述/类型三选/
+ *   企业全称/信用代码）→ onConvertProject（App 层 knowledge:createProject，
+ *   失败 toast 留原页可重试）→ 成功后回填 projectId + converted；回填失败只提示
+ *   不重试（项目已建，重试会重复立项）；可选勾选「同时创建企业动态跟踪订阅」
+ *   （默认不勾、企业全称非空才可用，0.6 §3.3）——建项目成功即静默创建
+ *   （共享实现 quickCreateTrackingSub，ProjectList 新建项目同款；失败仅提示）；
+ *   有 source_run_id 的线索打开模态即调
+ *   leads:convertExtract 由 AI 从来源报告预填五字段（人确认/修改，
+ *   §6.3-15 智能体优先；失败/无来源静默，name 已有预填）
  * - 升级订阅：onUpgrade(lead) → App 级 ScheduleFormModal prefill（零新通道）
  * - 删除：leads:delete（裸 id 参数契约）
- * 空态引导：「从情报期次存一条线索试试」→ 去情报流 + 手动录入。
+ * 空态引导：「从情报期次存一条线索试试」→ 去订阅管理（收件箱）+ 手动录入。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -18,6 +24,7 @@ import { Plus, Repeat, Rocket, Target, X } from 'lucide-react'
 import { useToast } from '../knowledge/Toast'
 import { useConfirm } from '../../components/ConfirmDialog'
 import type { ProjectType } from '../project/types'
+import { quickCreateTrackingSub } from '../schedule/quickCreateSub'
 import s from './LeadPool.module.css'
 
 export interface LeadRow {
@@ -41,17 +48,22 @@ const CONVERT_TYPES: Array<{ value: ProjectType; labelKey: string }> = [
 ]
 
 interface LeadPoolProps {
-  /** 立项 = App 层 knowledge:createProject（失败返回 undefined 并自行 toast） */
-  onConvertProject: (name: string, type: ProjectType) => Promise<{ id?: string } | undefined>
+  /** 立项 = App 层 knowledge:createProject（失败返回 undefined 并自行 toast）；
+   *  五参与 ProjectList.onCreate 同构（原 (name, type) 两参第二参错落
+   *  description 形参——type 写进描述、恒 general，2026-10-25 根修） */
+  onConvertProject: (
+    name: string, description: string, type: ProjectType,
+    companyName?: string, creditCode?: string,
+  ) => Promise<{ id?: string } | undefined>
   /** 已立项卡「查看项目」→ App 切项目页 */
   onOpenProject: (projectId: string) => void
-  /** 升级订阅 → App 级 ScheduleFormModal（盯梢 prompt 预填，零新通道） */
+  /** 升级订阅 → App 级 ScheduleFormModal（模板化预填，零新通道） */
   onUpgrade: (lead: LeadRow) => void
-  /** 空态「去情报流看看」→ 情报流子 Tab */
-  onGoFeed: () => void
+  /** 空态「去订阅管理看看」→ 订阅子 Tab（期次收件箱所在地） */
+  onGoAdmin: () => void
 }
 
-export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed }: LeadPoolProps) {
+export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoAdmin }: LeadPoolProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
@@ -62,11 +74,21 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
   const [loadFailed, setLoadFailed] = useState(false)
   const loadSeq = useRef(0)
 
-  // 立项内联模态
+  // 立项内联模态（五字段；convertExtract 预填，0.6 §3.3）
   const [convertTarget, setConvertTarget] = useState<LeadRow | null>(null)
   const [convertName, setConvertName] = useState('')
+  const [convertDesc, setConvertDesc] = useState('')
   const [convertType, setConvertType] = useState<ProjectType>('general')
+  const [convertCompanyName, setConvertCompanyName] = useState('')
+  const [convertCreditCode, setConvertCreditCode] = useState('')
   const [converting, setConverting] = useState(false)
+  // 勾选同时创建盯梢订阅（0.6 §3.3 立项勾选动线 2026-10-25）：默认不勾——
+  // 订阅是周期性持续消耗（每期一次 LLM 任务），不可静默代做；企业全称非空才可用
+  const [convertCreateSub, setConvertCreateSub] = useState(false)
+  // AI 重新提取进行中（有来源报告的线索打开模态即调，非阻塞——字段可先手填）
+  const [convertExtracting, setConvertExtracting] = useState(false)
+  // 提取响应竞态守卫：快速开关模态时 late response 不得写入新会话 state
+  const convertSeqRef = useRef(0)
   // 手动录入模态
   const [manualOpen, setManualOpen] = useState(false)
   const [manualName, setManualName] = useState('')
@@ -122,11 +144,47 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
     }
   }, [confirmDialog, load, showToast, t])
 
+  // 立项模态打开：name 以线索名预填兜底；有来源报告即调 convertExtract 由 AI
+  // 从来源报告重新提取五字段（0.6 §3.3，2026-10-25）——提取为增强不阻塞：
+  // 失败/无来源静默保持线索名预填，人确认/修改（§6.3-15 智能体优先）
   const openConvert = (lead: LeadRow) => {
     setConvertTarget(lead)
     setConvertName(lead.name)
+    setConvertDesc('')
     setConvertType('general')
+    setConvertCompanyName('')
+    setConvertCreditCode('')
     setConverting(false)
+    setConvertCreateSub(false)
+    const seq = ++convertSeqRef.current
+    if (!lead.source_run_id) {
+      setConvertExtracting(false)
+      return
+    }
+    setConvertExtracting(true)
+    window.electronAPI.invoke('leads:convertExtract', lead.id)
+      .then((res) => {
+        if (seq !== convertSeqRef.current) return
+        // invoke 返回 unknown：此处收窄为 convertExtract 载荷契约
+        const f = (res as {
+          fields?: {
+            name?: string
+            description?: string
+            companyName?: string
+            creditCode?: string
+            suggestedType?: ProjectType
+          }
+        })?.fields
+        if (f?.name) setConvertName(f.name)
+        if (f?.description) setConvertDesc(f.description)
+        if (f?.companyName) setConvertCompanyName(f.companyName)
+        if (f?.creditCode) setConvertCreditCode(f.creditCode)
+        if (f?.suggestedType) setConvertType(f.suggestedType)
+      })
+      .catch(() => {})   // 提取失败不阻断：字段留人工填（后端错误已日志）
+      .finally(() => {
+        if (seq === convertSeqRef.current) setConvertExtracting(false)
+      })
   }
 
   // 立项：建项目成功 → 回填 projectId + converted（失败不推进，模态保留可重试）；
@@ -136,7 +194,9 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
     setConverting(true)
     let created: { id?: string } | undefined
     try {
-      created = await onConvertProject(convertName.trim() || convertTarget.name, convertType)
+      created = await onConvertProject(
+        convertName.trim() || convertTarget.name, convertDesc.trim(), convertType,
+        convertCompanyName.trim() || undefined, convertCreditCode.trim() || undefined)
     } catch {
       created = undefined
     }
@@ -151,6 +211,17 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
       showToast(t('intel.lead.convert.success'), 'success')
     } catch {
       showToast(t('intel.lead.convert.patchFailed'), 'error')
+    }
+    // 勾选「同时创建盯梢订阅」（0.6 §3.3）：建项目成功即静默创建——共享实现
+    // quickCreateTrackingSub（ProjectList 新建项目同款，payload 契约单一来源）；
+    // 失败仅提示不阻断（项目已建成，同 patchFailed 部分失败语义，可到情报中心
+    // 手动创建）
+    if (convertCreateSub && convertCompanyName.trim()) {
+      try {
+        await quickCreateTrackingSub(convertCompanyName.trim(), created.id, t)
+      } catch {
+        showToast(t('schedule.createSub.failed'), 'error')
+      }
     }
     setConverting(false)
     setConvertTarget(null)
@@ -188,7 +259,8 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
 
   const sourceLabel = (lead: LeadRow) =>
     lead.source_type === 'run'
-      ? (lead.source_schedule_name || t('intel.tab.feed'))
+      // 来源标签 fallback「订阅期次」：原指情报流 Tab，2026-10-25 Tab 退役后指向收件箱期次
+      ? (lead.source_schedule_name || t('intel.lead.sourceRun'))
       : t('intel.lead.sourceManual')
 
   // 首拉失败态（静默 catch 排查 2026-10-24）：错误+重试，区别于真实零线索引导态
@@ -214,8 +286,8 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
           <Target size={32} className={s.emptyIcon} />
           <p className={s.emptyText}>{t('intel.lead.empty')}</p>
           <div className={s.emptyActions}>
-            <button type="button" className={s.emptyBtn} onClick={onGoFeed}>
-              {t('intel.lead.emptyGoFeed')}
+            <button type="button" className={s.emptyBtn} onClick={onGoAdmin}>
+              {t('intel.lead.emptyGoAdmin')}
             </button>
             <button type="button" className={s.ghostBtn} data-testid="lead-add-manual" onClick={() => setManualOpen(true)}>
               <Plus size={14} />{t('intel.lead.addManual')}
@@ -352,12 +424,27 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
                 <X size={14} />
               </button>
             </div>
+            {/* AI 预填进行中提示（免培训 §2.10：决策点状态可见，非静默等待） */}
+            {convertExtracting && (
+              <p className={s.extractHint} data-testid="lead-convert-extracting">
+                {t('intel.lead.convert.extracting')}
+              </p>
+            )}
             <label className={s.field}>
               <span>{t('intel.lead.convert.nameLabel')}</span>
               <input
                 data-testid="lead-convert-name"
                 value={convertName}
                 onChange={(e) => setConvertName(e.target.value)}
+              />
+            </label>
+            <label className={s.field}>
+              <span>{t('intel.lead.convert.descLabel')}</span>
+              <textarea
+                data-testid="lead-convert-desc"
+                value={convertDesc}
+                placeholder={t('intel.lead.convert.descPlaceholder')}
+                onChange={(e) => setConvertDesc(e.target.value)}
               />
             </label>
             <div className={s.fieldLabel}>{t('intel.lead.convert.typeLabel')}</div>
@@ -375,6 +462,41 @@ export function LeadPool({ onConvertProject, onOpenProject, onUpgrade, onGoFeed 
                 </button>
               ))}
             </div>
+            <label className={s.field}>
+              <span>{t('intel.lead.convert.companyLabel')}</span>
+              <input
+                data-testid="lead-convert-company"
+                value={convertCompanyName}
+                placeholder={t('intel.lead.convert.companyPlaceholder')}
+                onChange={(e) => setConvertCompanyName(e.target.value)}
+              />
+            </label>
+            <label className={s.field}>
+              <span>{t('intel.lead.convert.creditLabel')}</span>
+              <input
+                data-testid="lead-convert-credit"
+                value={convertCreditCode}
+                placeholder={t('intel.lead.convert.creditPlaceholder')}
+                onChange={(e) => setConvertCreditCode(e.target.value)}
+              />
+            </label>
+            {/* 勾选同时创建盯梢订阅（0.6 §3.3）：企业名空时禁用，hint 动态
+                解释禁用原因 / 勾选后果（免培训 §3.9-②） */}
+            <label className={s.subRow}>
+              <input
+                type="checkbox"
+                data-testid="lead-convert-sub"
+                checked={convertCreateSub}
+                disabled={!convertCompanyName.trim()}
+                onChange={(e) => setConvertCreateSub(e.target.checked)}
+              />
+              <span>{t('schedule.createSub.label')}</span>
+            </label>
+            <p className={s.extractHint} data-testid="lead-convert-sub-hint">
+              {convertCompanyName.trim()
+                ? t('schedule.createSub.hint')
+                : t('schedule.createSub.needCompany')}
+            </p>
             <div className={s.dialogActions}>
               <button type="button" className={s.ghostBtn} onClick={() => setConvertTarget(null)}>
                 {t('common.cancel')}

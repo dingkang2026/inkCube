@@ -52,7 +52,7 @@ export function IntelCardZone({ onOpen }: IntelCardZoneProps) {
     void load()
   })
 
-  // 空态三分支（M1-1，同 IntelFeed）：summary 失败给错误+重试，loading 中性占位，
+  // 空态三分支（M1-1，同管理台收件箱）：summary 失败给错误+重试，loading 中性占位，
   // 仅真实零订阅引导建订阅——首页卡区同样不得误导创建重复订阅
   if (status === 'failed') {
     return (

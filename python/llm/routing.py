@@ -21,6 +21,7 @@ _TASK_MODEL_KEYS: dict[str, str] = {
     "lint": "wiki_lint_model",                   # 语义 Lint——轻量分析，快速响应
     "dedup": "wiki_dedup_model",                 # 去重——JSON 输出，中等能力
     "ledger_parse": "wiki_ledger_parse_model",   # 台账解析（轻模型；JSON 输出）
+    "profile": "wiki_profile_model",             # 产业画像提取（轻量 JSON 输出，2.6 §4.8）
     "enrich": "wiki_enrich_model",               # 链接补全——轻量结构化
     # 报告
     "report": "report_model",                    # 报告生成——长文写作

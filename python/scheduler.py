@@ -56,7 +56,7 @@ OUTPUT_CONTRACT = (
     "1. {来源名} · {日期} · {URL}"
 )
 
-# V2.1-T3 组合周报（2.11 §12）：汇总骨架素材插入点，routers/schedules.py
+# V2.1-T3 聚合简报（2.11 §12）：汇总骨架素材插入点，routers/schedules.py
 # 同名常量自本模块 import（与 OUTPUT_CONTRACT 同款两处共享惯例）
 ROLLUP_SECTION_MARK = "{sections}"
 
@@ -304,7 +304,7 @@ class ScheduleScheduler:
         if not self.agent.can_start_task():
             return None
         now = _now_dt()
-        # V2.1-T3 组合周报（2.11 §12.3）：空窗口判定放在 R1/闸门之后——
+        # V2.1-T3 聚合简报（2.11 §12.3）：空窗口判定放在 R1/闸门之后——
         # 让路/延迟期间源订阅可能产出新期次，空窗口结论须在「确定本次执行」
         # 时作出，否则误记 skipped 错过本该有的汇总
         rollup_prompt: str | None = None
@@ -392,7 +392,7 @@ class ScheduleScheduler:
     # ── 执行链（§5.3，复用 D2）───────────────────────────────
 
     def _build_rollup_prompt(self, s: dict, now: datetime) -> str | None:
-        """组合周报素材聚合 + prompt 组装（2.11 §12.3）：窗口 = 本订阅上次
+        """聚合简报素材聚合 + prompt 组装（2.11 §12.3）：窗口 = 本订阅上次
         done finished_at → now（无 done 历史 → 近 ROLLUP_WINDOW_DAYS 天）；
         素材 = 圈定订阅（digest_schedule_ids，NULL=全部 enabled=1 非 rollup）
         的 done 期次摘要；空窗口返回 None（调用方记 skipped 留痕）。
@@ -429,7 +429,7 @@ class ScheduleScheduler:
         try:
             now = _now_dt()
             if rollup_prompt is not None:
-                # V2.1-T3 组合周报（2.11 §12.3）：不走增量注入（上一期 rollup
+                # V2.1-T3 聚合简报（2.11 §12.3）：不走增量注入（上一期 rollup
                 # 报告非聚合素材）；时间基准仅保留执行时刻（「仅报新增」是
                 # 增量语义，汇总型不适用）
                 prompt_full = (f"【本期执行：{now:%Y-%m-%d %H:%M}】\n"

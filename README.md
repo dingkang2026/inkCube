@@ -174,6 +174,8 @@ powershell scripts/build-installer.ps1   # full Windows installer pipeline
 
 > Note: `resources/tools/` and `resources/python-backend/` are git-ignored build artifacts — run `powershell scripts/prepare-tools.ps1` first for the former (pinned versions; add `-MirrorPrefix` behind restrictive networks, or place files manually per the [packaging design doc](docs/0.2packaging-design.md), Chinese), the latter is assembled by the build script.
 
+**Install & uninstall (Windows)**: the installer is a guided NSIS wizard (admin required, custom install directory supported). On uninstall, user data under `%APPDATA%/InkCube/` (settings, tasks, knowledge base, ...) is kept by default so a reinstall picks up where you left off; the uninstaller asks whether to remove it. To wipe everything manually, delete the whole `%APPDATA%/InkCube` folder. See the [packaging design doc](docs/0.2packaging-design.md) (Chinese) for details.
+
 ## 🧪 Testing & verification
 
 ```powershell

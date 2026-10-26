@@ -5,8 +5,9 @@
  */
 
 /** 活跃侧实体类型（活动注册表 kind，0.4 §2.2 后端写入值）：affair 仅通知侧
- *  （事务到期提醒，2.11 §3.2 无活跃条目），不在此联合内 */
-export type ActiveEntityType = 'file' | 'wiki_compile' | 'report' | 'task' | 'model_download' | 'ledger_parse' | 'form_template' | 'form_fill' | 'project_export' | 'project_import' | 'ppt' | 'schedule'
+ *  （事务到期提醒，2.11 §3.2 无活跃条目），不在此联合内；
+ *  profile_extract = 产业画像提取（2.6 §4.8，仅项目详情头部消费，不入 summary 计数） */
+export type ActiveEntityType = 'file' | 'wiki_compile' | 'report' | 'task' | 'model_download' | 'ledger_parse' | 'profile_extract' | 'form_template' | 'form_fill' | 'project_export' | 'project_import' | 'ppt' | 'schedule'
 
 /** 通知条目类型（notifications 表 entity_type 取值 = 活跃侧 + affair + schedule_run；
  *  schedule 双侧兼有：订阅级通知（档案合并失败/错过跳过/中断清扫，2.11 §6/§5.4）

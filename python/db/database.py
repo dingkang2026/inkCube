@@ -231,6 +231,13 @@ class Database:
         # 删除准入 = 已归档；NULL = 有效，非空 = 已归档且时间戳兼作展示字段)
         self._migrate_add_column("projects", "archived_at", "DATETIME DEFAULT NULL")
 
+        # Migrate: projects table - industry profile (产业画像，2.6 §4.8 / 2.1 §4.5：
+        # industry_profile = JSON 数组文本 [{"chain":...,"segment":...},...]，
+        # NULL=未提取 / []=已提取未识别；profile_source = wiki_compile/manual，
+        # manual 行编译自动提取跳过。存量为 NULL，语义即「未提取」，零数据迁移)
+        self._migrate_add_column("projects", "industry_profile", "TEXT DEFAULT NULL")
+        self._migrate_add_column("projects", "profile_source", "TEXT DEFAULT NULL")
+
         # Project-BaseLib association table
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS project_base_libs (
@@ -823,7 +830,7 @@ class Database:
                 next_run_at TEXT,                        -- ISO；enabled=0 时为 NULL
                 last_run_at TEXT,
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,  -- ≥3 自动暂停（2.11 §5.5）
-                scope       TEXT,                        -- 'rollup' 组合周报 | NULL 情报订阅（2026-10-25 收敛：focus/sweep 退役置 NULL，2.11 §12）
+                scope       TEXT,                        -- 'rollup' 聚合简报 | NULL 情报订阅（2026-10-25 收敛：focus/sweep 退役置 NULL，2.11 §12）
                 digest_schedule_ids TEXT,                -- JSON 数组文本，仅 rollup 用；NULL=全部启用订阅（2.11 §12）
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL
@@ -955,7 +962,7 @@ class Database:
 
         focus/sweep 与分类同源派生且执行链零差异（调度器只有 rollup 一个
         分支），纯帽子概念——scope 收敛为订阅类型标记：NULL=情报订阅、
-        'rollup'=组合周报。幂等只改 focus/sweep 行（重跑 rowcount=0）；
+        'rollup'=聚合简报。幂等只改 focus/sweep 行（重跑 rowcount=0）；
         rollup 保留不动；失败向上抛（类型标记是聚合源判定依据，静默
         继续不可取）。
         """
@@ -1126,6 +1133,7 @@ class Database:
             "wiki_lint_model": "standard",
             "wiki_dedup_model": "standard",
             "wiki_ledger_parse_model": "standard",  # 3.1 §4.2 台账解析（轻量）
+            "wiki_profile_model": "standard",  # 2.6 §4.8 产业画像提取（轻量 JSON 输出）
             "report_model": "standard",  # 报告生成（长文写作）
             "report_extract_model": "standard",  # 报告模板提取（样例结构识别）
             "form_analyze_model": "standard",  # 填表模板分析（结构提取与语义映射）
@@ -1271,6 +1279,8 @@ class Database:
         stage: str | None = None,
         company_name: str | None = None,
         credit_code: str | None = None,
+        industry_profile: str | None = None,
+        profile_source: str | None = None,
     ):
         updates = []
         params = []
@@ -1292,6 +1302,13 @@ class Database:
         if credit_code is not None:
             updates.append("credit_code = ?")
             params.append(credit_code)
+        # 2.6 §4.8：产业画像与来源标记（画像行人工编辑置 manual / 提取回写 wiki_compile）
+        if industry_profile is not None:
+            updates.append("industry_profile = ?")
+            params.append(industry_profile)
+        if profile_source is not None:
+            updates.append("profile_source = ?")
+            params.append(profile_source)
         updates.append("updated_at = ?")
         params.append(self._now())
         params.append(proj_id)
@@ -1978,7 +1995,7 @@ class Database:
                        scope: str | None = None) -> list[dict]:
         """管理台左列 / 速览同源；各行附 latest_done（最新 done run 摘要，无则 None）
         与 is_running（存在 running run，§8.4 行呼吸点数据源）；scope 过滤
-        （2.11 §12 收敛后两值：'rollup' 等值 / 'intel' 非组合周报）。
+        （2.11 §12 收敛后两值：'rollup' 等值 / 'intel' 非聚合简报）。
         limit=0 → 全量（默认，向后兼容）；limit>0 → 至多 limit 行
         （路由层传 limit+1 探测 has_more）。"""
         sql = (
@@ -2174,13 +2191,13 @@ class Database:
             " WHERE r.id = ?", (run_id,)).fetchone()
         return self._run_row(row) if row else None
 
-    def list_run_inbox(self, unread_only: bool = False,
-                       limit: int = 50, offset: int = 0,
+    def list_run_inbox(self, limit: int = 50, offset: int = 0,
                        sort: str = "unread", category: str | None = None) -> list[dict]:
-        """跨订阅收件箱流（V2-E1a 情报中心数据源）：done；sort=unread 未读
-        优先（read_at IS NULL 前置）/ sort=latest 纯 finished_at DESC；
-        category 按订阅分类直读过滤（corporate/industry/region/general）；
-        返回行附 schedule_category（卡片类别 chip 数据源）+ schedule_scope
+        """跨订阅管理台收件箱流（V2-E1a 扩展；情报流退役后唯一消费面）：done；
+        sort=unread 未读优先（read_at IS NULL 前置）/ sort=latest 纯
+        finished_at DESC；category 按订阅分类直读过滤
+        （corporate/industry/region/general）；
+        返回行附 schedule_category（收件箱行类别数据源）+ schedule_scope
         （rollup 徽标随行，2.11 §12.4）；
         offset 翻页（路由层传 limit+1 探测 has_more）。"""
         sql = (
@@ -2193,8 +2210,6 @@ class Database:
         if category:
             sql += " AND s.category = ?"
             params.append(category)
-        if unread_only:
-            sql += " AND r.read_at IS NULL"
         if sort == "latest":
             sql += " ORDER BY r.finished_at DESC LIMIT ? OFFSET ?"
         else:
@@ -2272,7 +2287,7 @@ class Database:
     def list_digest_source_runs(self, schedule_ids: list[str] | None,
                                 window_start: str,
                                 max_runs: int | None = None) -> list[dict]:
-        """组合周报聚合素材（2.11 §12.3）：圈定订阅 × 窗口内 done 期次（升序）。
+        """聚合简报聚合素材（2.11 §12.3）：圈定订阅 × 窗口内 done 期次（升序）。
         schedule_ids=None → 全部 enabled=1 订阅；有值 → 显式圈定（含已暂停
         订阅的窗口内期次——勾选即用户意志，期次已产出仍可汇总）。
         scope='rollup' 恒排除（不变量①防递归聚合，聚合侧兜底正确性；

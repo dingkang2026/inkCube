@@ -455,17 +455,21 @@ class TestSkillEnvSetupVisibility:
         """venv_path 空（chat-only 任务）不会发生预装，不推 note。"""
         from agent.task_agent import _venv_env_needs_setup
 
-        assert _venv_env_needs_setup("") is False
+        assert _run(_venv_env_needs_setup("")) is False
 
     def test_needs_setup_true_when_venv_dir_missing(self, tmp_path: Path):
         """venv 目录不存在（首用）→ 预检为真 → 应推 note。"""
         from agent.task_agent import _venv_env_needs_setup
 
         venv_path = str(tmp_path / "venv")
-        assert _venv_env_needs_setup(venv_path) is True
+        assert _run(_venv_env_needs_setup(venv_path)) is True
 
-    def test_needs_setup_false_when_ready(self, tmp_path: Path):
-        """venv python + marker 均在位（快路径）→ 不推 note。"""
+    def test_needs_setup_false_when_ready(self, tmp_path: Path, monkeypatch):
+        """venv python + marker 均在位且探活通过（快路径）→ 不推 note。
+
+        探活需 mock（骨架 python.exe 无法真启动，真探活必判损坏）。
+        """
+        import tools.venv_manager as vm
         from agent.task_agent import _venv_env_needs_setup
         from tools.venv_manager import get_venv_python, _PREINSTALL_MARKER
 
@@ -475,7 +479,8 @@ class TestSkillEnvSetupVisibility:
         py.parent.mkdir(parents=True, exist_ok=True)
         py.write_text("", encoding="utf-8")
         (venv_dir / _PREINSTALL_MARKER).write_text("", encoding="utf-8")
-        assert _venv_env_needs_setup(str(venv_dir)) is False
+        monkeypatch.setattr(vm, "_venv_interpreter_healthy", lambda p: True)
+        assert _run(_venv_env_needs_setup(str(venv_dir))) is False
 
     def test_needs_setup_true_when_marker_missing_but_python_exists(self, tmp_path: Path):
         """python 在位但 marker 缺失（预装中断/被删）→ 仍要补装 → 推 note。"""
@@ -486,7 +491,23 @@ class TestSkillEnvSetupVisibility:
         py = Path(get_venv_python(str(venv_dir)))
         py.parent.mkdir(parents=True, exist_ok=True)
         py.write_text("", encoding="utf-8")
-        assert _venv_env_needs_setup(str(venv_dir)) is True
+        assert _run(_venv_env_needs_setup(str(venv_dir))) is True
+
+    def test_needs_setup_true_when_interpreter_broken(self, tmp_path: Path, monkeypatch):
+        """解释器损坏但 python.exe/marker 均在位（升级后 base 重建的失链
+        venv，打包/卸载复盘 2026-10-25 #1）→ 探活拦截 → 推 note（重建
+        + 补装 10~60s 黑盒必须可见，不得按文件存在性判「就绪」静默）。"""
+        import tools.venv_manager as vm
+        from agent.task_agent import _venv_env_needs_setup
+        from tools.venv_manager import get_venv_python, _PREINSTALL_MARKER
+
+        venv_dir = tmp_path / "venv"
+        py = Path(get_venv_python(str(venv_dir)))
+        py.parent.mkdir(parents=True, exist_ok=True)
+        py.write_text("", encoding="utf-8")
+        (venv_dir / _PREINSTALL_MARKER).write_text("", encoding="utf-8")
+        monkeypatch.setattr(vm, "_venv_interpreter_healthy", lambda p: False)
+        assert _run(_venv_env_needs_setup(str(venv_dir))) is True
 
     def test_setup_failed_when_venv_python_empty(self):
         """_ensure_task_venv 失败回退空串 → 环境未就绪。"""

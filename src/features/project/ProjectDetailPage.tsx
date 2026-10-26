@@ -14,7 +14,7 @@ import { AffairsTab } from './affairs/AffairsTab'
 import { summarizeDueTasks } from './affairs/types'
 import type { PulseDueSummary } from './affairs/types'
 import { PulseBar } from './PulseBar'
-import { FirstProjectHint } from './FirstProjectHint'
+import { ProjectProfileLine } from './ProjectProfileLine'
 import { ProjectChatPanel } from './ProjectChatPanel'
 import { ProjectUsageBadge } from '../usage/ProjectUsageBadge'
 import type { Project } from '../knowledge/types'
@@ -50,6 +50,7 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const { byProject } = useActivity()
   const { items: compileItems } = useActivity('wiki_compile')
   const { items: ledgerParseItems } = useActivity('ledger_parse')
+  const { items: profileExtractItems } = useActivity('profile_extract')
   const [activeTab, setActiveTab] = useState<TabKey>('affairs')
   const [chatFileId, setChatFileId] = useState<string | null>(null)
   const [chatFilename, setChatFilename] = useState<string | null>(null)
@@ -236,6 +237,11 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
   const ledgerParsing = ledgerParseItems.some((a) => a.project_id === project.id)
   useEdgeRefetch(ledgerParsing, () => { onProjectDataChanged?.() })
 
+  // 画像提取终态边沿（2.6 §4.8/2.1 §6.2）：profile_extract 活动从有到无 →
+  // 通知 App 刷新 projects（新画像从 projects 行浮现）；同台账解析先例零新增轮询
+  const profileExtracting = profileExtractItems.some((a) => a.project_id === project.id)
+  useEdgeRefetch(profileExtracting, () => { onProjectDataChanged?.() })
+
   // 切到 wiki Tab 时拉一次快照（#4 停轮期间 WikiTab 挂载，防停留旧快照）。
   // 默认 Tab 为事务（0.6 §3.4 翻转决议）：挂载首跑由上方「挂载拉快照」覆盖
   // （无条件快照与 Tab 无关），此处仅响应「切到」动作，否则挂载即双重 IPC（P10 裁决）。
@@ -370,9 +376,20 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
               <typeConfig.Icon size={18} />
             </div>
             <div className={s.headerText}>
-              <h2 className={s.projectName}>
-                {project.name}
-              </h2>
+              {/* 名称 + 内联编辑（2026-10-25 用户裁决：编辑入口紧贴名称，不再远置右上） */}
+              <div className={s.nameRow}>
+                <h2 className={s.projectName}>
+                  {project.name}
+                </h2>
+                <button
+                  className={s.nameEditBtn}
+                  title={t('project.editProject')}
+                  aria-label={t('project.editProject')}
+                  onClick={openEdit}
+                >
+                  <Pencil size={14} />
+                </button>
+              </div>
               {project.description && (
                 <p className={s.projectDesc}>{project.description}</p>
               )}
@@ -383,19 +400,18 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
                   {project.credit_code && <span className={s.creditCode}>{project.credit_code}</span>}
                 </p>
               )}
+              {/* 产业画像行（2.1 §4.5/§6.2）：编译后自动提取，人工编辑置 manual；
+                * 每条「盯产业」开 App 级订阅弹层（app:open-schedule-wizard 链） */}
+              <ProjectProfileLine
+                project={project}
+                extracting={profileExtracting}
+                onProjectDataChanged={onProjectDataChanged}
+              />
             </div>
           </div>
           <div className={s.headerActions}>
-            {/* 编辑基础信息（名称/描述/企业字段）——type 走右侧下拉，stage 走脉搏带 */}
-            <button
-              className={s.editBtn}
-              title={t('project.editProject')}
-              aria-label={t('project.editProject')}
-              onClick={openEdit}
-            >
-              <Pencil size={15} />
-            </button>
-            {/* 用量徽章（2.10 §6.1/线框 5）：hover 出 by_source 分拆，点击跳统计页筛本项目 */}
+            {/* 用量徽章（2.10 §6.1/线框 5）：hover 出 by_source 分拆，点击跳统计页筛本项目；
+              编辑基础信息已前移至名称后（名称/描述/企业字段），type 走右侧下拉、stage 走脉搏带 */}
             <ProjectUsageBadge projectId={project.id} />
             {/* Type selector */}
             <select
@@ -430,13 +446,6 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
           </div>
         )}
       </div>
-
-      {/* 首个项目一次性引导提示条(0.5 §4.3 ③):点击动作或关闭后写 localStorage 永不再现 */}
-      <FirstProjectHint
-        onUploadMaterials={() => setActiveTab('materials')}
-        onStartTask={() => window.dispatchEvent(new CustomEvent('app:navigate-tasks'))}
-        onAskAssistant={() => handleChatOpen()}
-      />
 
       {/* 脉搏带（3.0 §2）：状态感知层；矛盾/缺口 chip 点击直达知识治理视图 */}
       <PulseBar

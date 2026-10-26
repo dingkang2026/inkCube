@@ -220,7 +220,7 @@
   flex-shrink: 0;
 }
 
-/* 组合周报徽标（2.11 §12.4，大卡 meta 与紧凑行随行） */
+/* 聚合简报徽标（2.11 §12.4，大卡 meta 与紧凑行随行） */
 .rollupTag {
   flex-shrink: 0;
   padding: 1px 6px;

@@ -3,7 +3,7 @@
  *
  * 覆盖：挂载即 readReport + markRead（打开即已读，规则 10）；摘要卡（run.summary
  * 直读）+ Markdown 全文；失败态（error 文案 + 重跑 → schedules:runNow）；
- * 头部动作条（返回 → onBack / 执行过程 → onReplay，2026-10-22 上移自底部）；
+ * 头部动作条（返回 → onBack 关抽屉 / 执行过程 → onReplay，2026-10-22 上移自底部）；
  * 底部动作条（订阅设置 → 编辑弹层）；已沉淀态
  * （target 绑定 → 「已沉淀至 {目标名}·档案」，目标名经列表通道解析）。
  */
@@ -26,7 +26,8 @@ vi.mock('../src/features/knowledge/Toast', () => ({
   },
 }))
 
-// PromptDialog 捕获（存为线索预填断言；可控 resolve）
+// PromptDialog 打桩（存为线索已退役 2026-10-25，本文件无 usePrompt 消费；保留 mock 防
+// 组件树内其它 PromptDialog 使用方意外发真实弹层）
 const promptState = vi.hoisted(() => ({ fn: vi.fn(() => Promise.resolve(null)) }))
 vi.mock('../src/components/PromptDialog', () => ({
   usePrompt: () => promptState.fn,
@@ -231,7 +232,7 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.getByTestId('read-open-replay')).toBeTruthy()
   })
 
-  it('组合周报期次 → 标题行「组合周报」徽标（2.11 §12.4）；情报订阅无', async () => {
+  it('聚合简报期次 → 标题行「聚合简报」徽标（2.11 §12.4）；情报订阅无', async () => {
     const invoke = wireInvoke({ schedule: { ...SCHEDULE, scope: 'rollup' } })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
     const { unmount } = render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
@@ -255,7 +256,7 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(onReplay).toHaveBeenCalledWith('t1')
   })
 
-  it('头部动作条：「返回」回调 onBack（宿主页分发在 App）', async () => {
+  it('头部动作条：「返回」回调 onBack（关闭期次抽屉）', async () => {
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
@@ -300,14 +301,14 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
   })
 
-  // ── 线索动线（0.6 §3.3/§6.1 V2-E2）：存为线索 / 提取线索 ──
+  // ── 线索动线（0.6 §3.3/§6.1 V2-E2）：提取线索唯一入口（存为线索 2026-10-25 退役）──
 
-  it('done 期次头部有「存为线索」「提取线索」；running 无（无报告不可提取）', async () => {
+  it('done 期次头部只有「提取线索」（存为线索已退役不渲染）；running 无（无报告不可提取）', async () => {
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
     const { unmount } = render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
-    expect(screen.getByTestId('read-save-lead')).toBeTruthy()
     expect(screen.getByTestId('read-extract-lead')).toBeTruthy()
+    expect(screen.queryByTestId('read-save-lead')).toBeNull()
     unmount()
 
     const invokeRunning = wireInvoke({
@@ -316,43 +317,7 @@ describe('ReadView（2.11 §8.2）', () => {
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: invokeRunning, on: () => () => {} }
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
-    expect(screen.queryByTestId('read-save-lead')).toBeNull()
     expect(screen.queryByTestId('read-extract-lead')).toBeNull()
-  })
-
-  it('存为线索：PromptDialog 预填要点首段 → 确认 leads:create（run 来源+订阅名快照）+ toast action 跳线索池', async () => {
-    promptState.fn.mockResolvedValueOnce('华润置地')
-    const invoke = wireInvoke()
-    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    const events: CustomEvent[] = []
-    const listener = (e: Event) => events.push(e as CustomEvent)
-    window.addEventListener('app:navigate-intel', listener)
-    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
-    await flush()
-    fireEvent.click(screen.getByTestId('read-save-lead'))
-    await flush()
-    expect(promptState.fn).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: '要点A' }))
-    expect(invoke).toHaveBeenCalledWith('leads:create', {
-      name: '华润置地', sourceType: 'run', sourceRunId: 'run_1',
-      sourceScheduleName: '华润舆情', note: '',
-    })
-    expect(toastState.calls.map(([m]) => m)).toContain('intel.lead.added')
-    // toast action 触发 → 跳线索池（app:navigate-intel detail.tab='leads'）
-    const last = toastState.options[toastState.options.length - 1]
-    last?.action?.onClick()
-    window.removeEventListener('app:navigate-intel', listener)
-    expect(events).toHaveLength(1)
-    expect(events[0].detail).toEqual({ tab: 'leads' })
-  })
-
-  it('存为线索：PromptDialog 取消（resolve null）→ 不建线索', async () => {
-    const invoke = wireInvoke()
-    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
-    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
-    await flush()
-    fireEvent.click(screen.getByTestId('read-save-lead'))
-    await flush()
-    expect(invoke.mock.calls.some((c) => c[0] === 'leads:create')).toBe(false)
   })
 
   it('提取线索：点击打开 LeadExtractModal（extract runId 契约）', async () => {
@@ -366,11 +331,11 @@ describe('ReadView（2.11 §8.2）', () => {
     expect(screen.getByTestId('lead-extract-modal')).toBeTruthy()
   })
 
-  it('initialAction=extract：挂载即打开提取模态（产业卡直达动线）', async () => {
+  it('挂载默认不开提取模态（initialAction 直达动线已随情报流退役，2026-10-25）', async () => {
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
-    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} initialAction="extract" />)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
-    expect(screen.getByTestId('lead-extract-modal')).toBeTruthy()
+    expect(screen.queryByTestId('lead-extract-modal')).toBeNull()
   })
 
   it('skipped run（rollup 空窗口）→ 留痕原因可读 + 重跑可用（CodeReview m-3）', async () => {

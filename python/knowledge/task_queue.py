@@ -682,6 +682,13 @@ class KnowledgeWorker:
                 asyncio.get_running_loop().run_in_executor(
                     None, lambda: on_compile_complete_sync(
                         self.db, project_id, llm_settings))
+                # 2.6 §4.8:编译完成后直调产业画像提取 —— 同款后台化与吞异常
+                # 语义(提取失败绝不影响编译主流程,画像保旧值,下次编译重试);
+                # manual 保护在 profile_service 内短路(人工修正不被编译覆盖)
+                from wiki.profile_service import on_compile_complete_sync as on_profile_extract_sync
+                asyncio.get_running_loop().run_in_executor(
+                    None, lambda: on_profile_extract_sync(
+                        self.db, project_id, llm_settings))
                 return
 
             # Process the next pending file

@@ -129,7 +129,7 @@ describe('IntelCardZone（0.6 §3.2 首页情报卡区）', () => {
     expect(screen.getAllByTestId('digest-row')).toHaveLength(2)
   })
 
-  it('rollup 期次「组合周报」徽标随行：大卡 meta 与紧凑行（2.11 §12.4）', async () => {
+  it('rollup 期次「聚合简报」徽标随行：大卡 meta 与紧凑行（2.11 §12.4）', async () => {
     // 最新行（大卡）= rollup；紧凑行注入一条 rollup done 行验证随行
     mount({ digest: [
       { ...ROW_UNREAD_DONE, schedule_scope: 'rollup' },

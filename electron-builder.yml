@@ -57,6 +57,12 @@ nsis:
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   shortcutName: 墨方 InkCube
+  # 卸载时询问是否删除用户数据（默认保留，0.2 §3）：自定义宏在
+  # resources/installer.nsh，RMDir 路径随 productName 变化需同步
+  include: resources/installer.nsh
+  # 无 electron-updater（手动分发），差分更新 blockmap 无人消费（孤儿产物），
+  # 关闭省 ~600KB/版本（2026-10-25 复盘 #7）
+  differentialPackage: false
 
 mac:
   target: dmg

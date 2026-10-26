@@ -189,11 +189,11 @@ def test_digest_inbox_and_read(client_and_db):
     inbox = client.get("/schedules/runs/inbox").json()["runs"]
     assert [r["id"] for r in inbox] == ["run_1"]
     assert inbox[0]["schedule_name"] == s["name"]
-    assert client.get("/schedules/runs/inbox",
-                      params={"unread": 1}).json()["runs"][0]["id"] == "run_1"
     assert client.post("/schedules/runs/run_1/read").json() == {"ok": True}
-    assert client.get("/schedules/runs/inbox",
-                      params={"unread": 1}).json()["runs"] == []
+    # 已读不逐出收件箱（sort=unread 为未读前置非过滤；unread 纯过滤参数
+    # 已随两 Tab 收敛退役删除链，2026-10-25）
+    assert [r["id"] for r in
+            client.get("/schedules/runs/inbox").json()["runs"]] == ["run_1"]
     assert client.post("/schedules/runs/run_x/read").status_code == 404
 
 

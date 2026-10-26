@@ -3,7 +3,8 @@
  *  档案文件 → Markdown 渲染 + Ctrl/Cmd+F 文档内查找（useMarkdownBlockFind + FindBar，
  *  同 ReadView）；「在文件夹中显示」为唯一定位逃生门——产品主张校准：系统打开
  *  （file:openOriginal）仅限用户主动上传的文件，应用生成物一律应用内查看。
- *  返回：管理台恢复选中订阅（scheduleView 'archive' 形态，App 分发）。 */
+ *  返回：关闭期次抽屉（第二步三态统一 2026-10-25——原「管理台恢复选中订阅」
+ *  随整页 peer 态退役，宿主页不卸载选中天然保持）。 */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, FolderOpen } from 'lucide-react'

@@ -3,7 +3,9 @@
  * 覆盖：全量拉取契约（limit=0 分组豁免）、四状态分组 + 已立项置灰区、
  * 零线索空态引导（去情报流 + 手动录入）、状态推进（leads:update）、
  * 备注 inline 保存、立项（成功回填 converted / 建项目失败不推进不关模态 /
- * 回填失败提示不重复建项目）、升级订阅回调、删除、手动录入、已立项跳项目。
+ * 回填失败提示不重复建项目；五参签名对位 ProjectList.onCreate 2026-10-25）、
+ * convertExtract AI 预填三态（有来源即调覆盖字段 / 无来源不发请求 /
+ * 失败静默留手填）、升级订阅回调、删除、手动录入、已立项跳项目。
  * 隔离：mock electronAPI.invoke（内存态联装）/ Toast；i18n mock 透传 key。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -11,7 +13,12 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { LeadPool, type LeadRow } from '../src/features/intel/LeadPool'
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
+  // 立项勾选创建订阅用例依赖真实形态的 competitor prompt（含 {企业名} 占位符）：
+  // 占位符提取 → applyValues 固化断言都建立在真实模板结构上
+  useTranslation: () => ({
+    t: (k: string) =>
+      k === 'task.tpl.competitor.prompt' ? '跟踪「{企业名}」近一个月的动态' : k,
+  }),
 }))
 
 const toastMock = vi.fn()
@@ -26,6 +33,9 @@ vi.mock('../src/components/ConfirmDialog', () => ({
 }))
 
 const invokeMock = vi.fn()
+// leads:convertExtract 预填响应（用例可改写为带 fields 的对象或 rejected
+// promise）；默认空对象 = fields 缺省不覆盖字段，等价提取失败静默
+let convertExtractRes: Promise<unknown>
 
 function lead(overrides: Partial<LeadRow> = {}): LeadRow {
   return {
@@ -47,6 +57,7 @@ function lead(overrides: Partial<LeadRow> = {}): LeadRow {
 let rows: LeadRow[] = []
 beforeEach(async () => {
   rows = []
+  convertExtractRes = Promise.resolve({})
   toastMock.mockReset()
   // mockClear 保留默认 resolve(true) 实现（mockReset 会清掉导致后续用例取消删除）
   confirmMock.mockClear()
@@ -81,6 +92,8 @@ beforeEach(async () => {
       case 'leads:delete':
         rows = rows.filter((r) => r.id !== payload)
         return Promise.resolve({ ok: true })
+      case 'leads:convertExtract':
+        return convertExtractRes
       default:
         return Promise.resolve({})
     }
@@ -91,7 +104,7 @@ const baseProps = {
   onConvertProject: vi.fn(),
   onOpenProject: vi.fn(),
   onUpgrade: vi.fn(),
-  onGoFeed: vi.fn(),
+  onGoAdmin: vi.fn(),
 }
 
 describe('LeadPool', () => {
@@ -117,16 +130,27 @@ describe('LeadPool', () => {
     }
   })
 
-  it('零线索空态：引导文案 + 去情报流回调 + 手动录入开模态', async () => {
-    const onGoFeed = vi.fn()
-    render(<LeadPool {...baseProps} onGoFeed={onGoFeed} />)
+  it('零线索空态：引导文案 + 去订阅管理回调 + 手动录入开模态', async () => {
+    const onGoAdmin = vi.fn()
+    render(<LeadPool {...baseProps} onGoAdmin={onGoAdmin} />)
     await waitFor(() => expect(screen.getByTestId('lead-empty')).toBeTruthy())
 
-    fireEvent.click(screen.getByText('intel.lead.emptyGoFeed'))
-    expect(onGoFeed).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByText('intel.lead.emptyGoAdmin'))
+    expect(onGoAdmin).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByTestId('lead-add-manual'))
     expect(screen.getByTestId('lead-manual-dialog')).toBeTruthy()
+  })
+
+  it('run 来源卡显示订阅名；订阅名缺失回落「订阅期次」（intel.tab.feed 退役后收口）', async () => {
+    rows = [
+      lead({ id: 'lead_1' }),                                                  // source_schedule_name='产业周报'
+      lead({ id: 'lead_2', name: '无名来源', source_schedule_name: '' }),
+    ]
+    render(<LeadPool {...baseProps} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(2))
+    expect(screen.getByText('产业周报')).toBeTruthy()
+    expect(screen.getByText('intel.lead.sourceRun')).toBeTruthy()
   })
 
   it('首拉失败 → lead-error 错误+重试，不落到空列伪装零线索（静默 catch 排查）', async () => {
@@ -199,7 +223,7 @@ describe('LeadPool', () => {
     fireEvent.click(screen.getByTestId('lead-convert-confirm'))
     // onConvertProject 为异步 mock：排空微任务链再断言（fireEvent 不等待 async handler）
     await waitFor(() => {
-      expect(onConvertProject).toHaveBeenCalledWith('华润置地', 'general')
+      expect(onConvertProject).toHaveBeenCalledWith('华润置地', '', 'general', undefined, undefined)
     })
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith('leads:update', {
@@ -222,8 +246,83 @@ describe('LeadPool', () => {
     fireEvent.click(screen.getByText('intel.lead.convert.typeInvest'))
     fireEvent.click(screen.getByTestId('lead-convert-confirm'))
     await waitFor(() => {
-      expect(onConvertProject).toHaveBeenCalledWith('华润置地', 'investment')
+      expect(onConvertProject).toHaveBeenCalledWith('华润置地', '', 'investment', undefined, undefined)
     })
+  })
+
+  it('有来源报告的线索打开立项模态：即调 leads:convertExtract，AI 预填五字段', async () => {
+    rows = [lead({ id: 'lead_1', name: '华润置地' })]
+    convertExtractRes = Promise.resolve({
+      fields: {
+        name: '华润置地有限公司',
+        description: '商业地产开发与运营',
+        companyName: '华润置地有限公司',
+        creditCode: '91440300192307052G',
+        suggestedType: 'investment',
+      },
+    })
+    render(<LeadPool {...baseProps} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(1))
+
+    fireEvent.click(screen.getByTestId('lead-convert'))
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('leads:convertExtract', 'lead_1')
+    })
+    // AI 字段覆盖线索名预填；suggestedType 与前端 ProjectType 值域对位直填
+    await waitFor(() => {
+      expect((screen.getByTestId('lead-convert-name') as HTMLInputElement).value).toBe('华润置地有限公司')
+    })
+    expect((screen.getByTestId('lead-convert-desc') as HTMLTextAreaElement).value).toBe('商业地产开发与运营')
+    expect((screen.getByTestId('lead-convert-company') as HTMLInputElement).value).toBe('华润置地有限公司')
+    expect((screen.getByTestId('lead-convert-credit') as HTMLInputElement).value).toBe('91440300192307052G')
+    expect(screen.getByText('intel.lead.convert.typeInvest').getAttribute('aria-checked')).toBe('true')
+    // 提取完成后提示行消失（extracting 为进行中专用）
+    await waitFor(() => {
+      expect(screen.queryByTestId('lead-convert-extracting')).toBeNull()
+    })
+  })
+
+  it('无来源报告的线索（手动录入）打开模态：不发提取请求，字段保持线索名预填', async () => {
+    rows = [lead({
+      id: 'lead_m', name: '展会认识企业',
+      source_type: 'manual', source_run_id: null, source_schedule_name: '',
+    })]
+    render(<LeadPool {...baseProps} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(1))
+
+    fireEvent.click(screen.getByTestId('lead-convert'))
+    expect(screen.getByTestId('lead-convert-dialog')).toBeTruthy()
+    // 排空微任务后再断言（有来源才会发出的通道不得被调用）
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(invokeMock).not.toHaveBeenCalledWith('leads:convertExtract', 'lead_m')
+    expect(screen.queryByTestId('lead-convert-extracting')).toBeNull()
+    expect((screen.getByTestId('lead-convert-name') as HTMLInputElement).value).toBe('展会认识企业')
+  })
+
+  it('convertExtract 失败：静默不阻断，模态保留、字段保持线索名预填可手填', async () => {
+    rows = [lead({ id: 'lead_1', name: '华润置地' })]
+    render(<LeadPool {...baseProps} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(1))
+
+    // 用例级 override：convertExtract 拒绝——reject 于 invoke 调用时同步创建，
+    // 组件消费链紧随附加，无 unhandled 窗口（模块级预建 rejected promise
+    // 会在 await 让出窗口被 Node 判无 handler，实测）
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'leads:convertExtract') return Promise.reject(new Error('llm timeout'))
+      if (channel === 'leads:list') return Promise.resolve({ leads: rows, has_more: false, total: rows.length })
+      return Promise.resolve({})
+    })
+
+    fireEvent.click(screen.getByTestId('lead-convert'))
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('leads:convertExtract', 'lead_1')
+    })
+    // 组件内 .catch 吞掉提取失败；字段留线索名预填，人手动补（智能体优先语义）
+    await waitFor(() => {
+      expect(screen.queryByTestId('lead-convert-extracting')).toBeNull()
+    })
+    expect(screen.getByTestId('lead-convert-dialog')).toBeTruthy()
+    expect((screen.getByTestId('lead-convert-name') as HTMLInputElement).value).toBe('华润置地')
   })
 
   it('建项目失败（返回 undefined）：状态不推进、模态保留可重试、不调 leads:update', async () => {
@@ -264,6 +363,85 @@ describe('LeadPool', () => {
     // 模态已关（防用户重试再建一个重复项目）
     expect(screen.queryByTestId('lead-convert-dialog')).toBeNull()
     expect(onConvertProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('立项勾选创建盯梢订阅：企业名空禁用+hint 解释；勾选后 schedules:create 静默创建（模板固化 prompt + 绑项目去向）', async () => {
+    rows = [lead({ id: 'lead_1' })]
+    const onConvertProject = vi.fn().mockResolvedValue({ id: 'proj_new' })
+    render(<LeadPool {...baseProps} onConvertProject={onConvertProject} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(1))
+
+    fireEvent.click(screen.getByTestId('lead-convert'))
+    // 企业名空 → 勾选禁用，hint 解释禁用原因（免培训 §3.9-②）
+    expect((screen.getByTestId('lead-convert-sub') as HTMLInputElement).disabled).toBe(true)
+    expect(screen.getByTestId('lead-convert-sub-hint').textContent).toBe('schedule.createSub.needCompany')
+    fireEvent.change(screen.getByTestId('lead-convert-company'), { target: { value: '华润置地有限公司' } })
+    // 企业名非空 → 可勾选，hint 切换为勾选后果说明
+    expect((screen.getByTestId('lead-convert-sub') as HTMLInputElement).disabled).toBe(false)
+    expect(screen.getByTestId('lead-convert-sub-hint').textContent).toBe('schedule.createSub.hint')
+    fireEvent.click(screen.getByTestId('lead-convert-sub'))
+    fireEvent.click(screen.getByTestId('lead-convert-confirm'))
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('schedules:create', {
+        // t mock 透传 key：插值形态不展开（真实 i18n 由渲染层消费）
+        name: 'schedule.createSub.name',
+        // prompt = 模板 applyValues 固化快照（{企业名}=企业全称）
+        prompt: '跟踪「华润置地有限公司」近一个月的动态',
+        category: 'corporate',   // mon→corporate 静态映射
+        intervalType: 'daily',
+        intervalValue: '09:00',
+        targetType: 'project',   // 去向绑新项目，autoImport 期次产出自动沉淀
+        targetId: 'proj_new',
+        autoImport: true,
+        scope: null,
+        digestScheduleIds: null,
+      })
+    })
+  })
+
+  it('立项不勾选订阅：零 schedules:create（默认不勾 = 持续消耗不可静默代做）', async () => {
+    rows = [lead({ id: 'lead_1' })]
+    const onConvertProject = vi.fn().mockResolvedValue({ id: 'proj_new' })
+    render(<LeadPool {...baseProps} onConvertProject={onConvertProject} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(1))
+
+    fireEvent.click(screen.getByTestId('lead-convert'))
+    fireEvent.change(screen.getByTestId('lead-convert-company'), { target: { value: '华润置地有限公司' } })
+    fireEvent.click(screen.getByTestId('lead-convert-confirm'))
+    await waitFor(() => {
+      expect(onConvertProject).toHaveBeenCalledTimes(1)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(invokeMock).not.toHaveBeenCalledWith('schedules:create', expect.anything())
+  })
+
+  it('订阅创建失败：立项主链不受影响（回填+success 照常），仅提示手动补建（部分失败语义）', async () => {
+    rows = [lead({ id: 'lead_1' })]
+    const onConvertProject = vi.fn().mockResolvedValue({ id: 'proj_new' })
+    render(<LeadPool {...baseProps} onConvertProject={onConvertProject} />)
+    await waitFor(() => expect(screen.getAllByTestId('lead-card')).toHaveLength(1))
+
+    invokeMock.mockImplementation((channel: string) => {
+      if (channel === 'schedules:create') return Promise.reject(new Error('boom'))
+      if (channel === 'leads:list') return Promise.resolve({ leads: rows, has_more: false, total: rows.length })
+      return Promise.resolve({})
+    })
+
+    fireEvent.click(screen.getByTestId('lead-convert'))
+    fireEvent.change(screen.getByTestId('lead-convert-company'), { target: { value: '华润置地有限公司' } })
+    fireEvent.click(screen.getByTestId('lead-convert-sub'))
+    fireEvent.click(screen.getByTestId('lead-convert-confirm'))
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalledWith('schedule.createSub.failed', 'error')
+    })
+    // 主链路不受影响：回填照常 + success toast + 模态正常关闭
+    await waitFor(() => {
+      expect(toastMock).toHaveBeenCalledWith('intel.lead.convert.success', 'success')
+    })
+    expect(invokeMock).toHaveBeenCalledWith('leads:update', {
+      id: 'lead_1', projectId: 'proj_new', status: 'converted',
+    })
+    expect(screen.queryByTestId('lead-convert-dialog')).toBeNull()
   })
 
   it('升级订阅按钮 → onUpgrade(lead) 回调', async () => {

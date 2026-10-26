@@ -50,6 +50,19 @@ def db(tmp_path):
     return database
 
 
+# import 时抓取真实探活实现，供探活专项用例恢复（autouse mock 之下）
+_real_probe = vm._venv_interpreter_healthy
+
+
+@pytest.fixture(autouse=True)
+def _venv_interpreter_healthy_by_default(monkeypatch):
+    """默认把 venv 视为健康（探活通过）：既有用例用 _fake_venv_skeleton
+    预置骨架 venv（空 python.exe 无法真启动），探活上线后若不 mock，
+    走 create_venv 复用分支的用例会误判损坏被删除。探活自身行为在
+    TestVenvHealthProbe 恢复真实实现专项覆盖。"""
+    monkeypatch.setattr(vm, "_venv_interpreter_healthy", lambda p: True)
+
+
 @pytest.fixture
 def agent(db):
     return TaskAgent(db)
@@ -487,6 +500,104 @@ class TestUvExclusionGate:
         assert not os.path.isfile(os.path.join(venv_path, vm._PREINSTALL_MARKER))
 
 
+# ── 2e. 损坏 venv 探活自愈（升级健壮性，2026-10-25 复盘 #1）────
+
+
+class TestVenvHealthProbe:
+    """探活背景：venv 的 pyvenv.cfg home 指向 userData/python，应用升级时
+    tool-initializer 删除重建该 base；Python 大版本变化后旧 venv 解释器
+    因 base DLL 失链无法启动，按「文件存在」复用会让该任务所有代码执行
+    持续失败。create_venv 须探活，失败删旧重建。"""
+
+    @pytest.fixture(autouse=True)
+    def _use_real_probe(self, monkeypatch):
+        """本类恢复真实探活实现（覆盖 autouse 的恒 True mock）。"""
+        monkeypatch.setattr(vm, "_venv_interpreter_healthy", _real_probe)
+
+    def _patch_probe_run(self, monkeypatch, behavior):
+        """mock vm.subprocess.run：按命令形态分发（探活 vs venv 创建）。
+        behavior(probe_cmd) 返回值：int 作 returncode；BaseException 实例
+        则 raise。返回创建调用收集器。"""
+        monkeypatch.setattr(vm, "_find_uv", lambda: None)
+        created = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1:3] == ["-c", "pass"]:
+                r = behavior(cmd)
+                if isinstance(r, BaseException):
+                    raise r
+                return types.SimpleNamespace(returncode=r, stdout="", stderr="")
+            venv_path = cmd[-1]
+            _fake_venv_skeleton(venv_path)
+            created.append(venv_path)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(vm, "subprocess", types.SimpleNamespace(
+            run=fake_run,
+            CalledProcessError=_real_subprocess.CalledProcessError,
+            TimeoutExpired=_real_subprocess.TimeoutExpired,
+            SubprocessError=_real_subprocess.SubprocessError,
+        ))
+        return created
+
+    def test_probe_true_on_zero_exit(self, tmp_path, monkeypatch):
+        self._patch_probe_run(monkeypatch, lambda cmd: 0)
+        assert _real_probe(str(tmp_path / ".venv")) is True
+
+    def test_probe_false_on_nonzero_exit(self, tmp_path, monkeypatch):
+        self._patch_probe_run(monkeypatch, lambda cmd: 1)
+        assert _real_probe(str(tmp_path / ".venv")) is False
+
+    def test_probe_false_on_spawn_error(self, tmp_path, monkeypatch):
+        """DLL 失链时 spawn 直接 OSError（Win: not a valid application）。"""
+        self._patch_probe_run(monkeypatch, lambda cmd: OSError("bad exe"))
+        assert _real_probe(str(tmp_path / ".venv")) is False
+
+    def test_probe_false_on_timeout(self, tmp_path, monkeypatch):
+        self._patch_probe_run(
+            monkeypatch, lambda cmd: _real_subprocess.TimeoutExpired(cmd=cmd, timeout=30))
+        assert _real_probe(str(tmp_path / ".venv")) is False
+
+    def test_probe_cached_within_process(self, tmp_path, monkeypatch):
+        """同进程内同 venv 只探一次（避免每次 ensure 起子进程的开销）。"""
+        calls = []
+
+        def behavior(cmd):
+            calls.append(cmd)
+            return 0
+
+        self._patch_probe_run(monkeypatch, behavior)
+        venv_path = str(tmp_path / ".venv")
+        assert _real_probe(venv_path) is True
+        assert _real_probe(venv_path) is True
+        assert len(calls) == 1
+
+    def test_broken_venv_recreated_by_create_venv(self, tmp_path, monkeypatch):
+        """探活失败的存量 venv：删旧重建，返回新 venv 路径。"""
+        created = self._patch_probe_run(monkeypatch, lambda cmd: 0)
+        monkeypatch.setattr(vm, "_venv_interpreter_healthy", lambda p: False)
+        task_dir = str(tmp_path)
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+
+        assert vm.create_venv(task_dir) == venv_path
+        # 骨架被删后由创建分支重建（created 非空 = 走了创建，而非复用旧骨架）
+        assert created == [venv_path]
+
+    def test_undeletable_venv_raises_instead_of_half_rebuild(self, tmp_path, monkeypatch):
+        """损坏 venv 删不净（文件被占用）→ RuntimeError 走 retryable 链路，
+        不在残留目录上做半重建。"""
+        self._patch_probe_run(monkeypatch, lambda cmd: 0)
+        monkeypatch.setattr(vm, "_venv_interpreter_healthy", lambda p: False)
+        monkeypatch.setattr(vm.shutil, "rmtree", lambda *a, **k: None)
+        task_dir = str(tmp_path)
+        venv_path = str(tmp_path / ".venv")
+        _fake_venv_skeleton(venv_path)
+
+        with pytest.raises(RuntimeError):
+            vm.create_venv(task_dir)
+
+
 # ── 3. agent 侧懒 ensure ───────────────────────────────────
 
 
@@ -503,6 +614,28 @@ class TestAgentEnsureTaskVenv:
                   encoding="utf-8") as f:
             f.write("ok")
         assert asyncio.run(agent._ensure_task_venv("t1", venv_path)) == venv_path
+
+    def test_broken_interpreter_with_marker_bypasses_fast_path(self, agent, db, tmp_path, monkeypatch):
+        """解释器损坏但 python.exe/marker 均在位（升级后 base 重建的失链
+        venv，打包/卸载复盘 2026-10-25 #1）→ 快路径必须被探活拦截落入
+        慢路径，不得按文件存在性直接交付损坏环境。"""
+        import agent.task_agent as ta
+
+        task = db.create_task("t", str(tmp_path / "data"), "")
+        venv_path = task["venv_path"]
+        _fake_venv_skeleton(venv_path)
+        with open(os.path.join(venv_path, vm._PREINSTALL_MARKER), "w",
+                  encoding="utf-8") as f:
+            f.write("ok")
+        # autouse fixture 默认放行，本用例显式判损坏
+        monkeypatch.setattr(vm, "_venv_interpreter_healthy", lambda p: False)
+        ensured = []
+        monkeypatch.setattr(
+            ta, "ensure_venv", lambda task_dir: ensured.append(task_dir))
+
+        # 修复前：快路径按「文件+marker」短路返回损坏 venv，慢路径不触达
+        assert asyncio.run(agent._ensure_task_venv(task["id"], venv_path)) == venv_path
+        assert ensured == [os.path.dirname(venv_path)]
 
     def test_venv_without_marker_retries_preinstall(self, agent, db, tmp_path, monkeypatch):
         """venv 在位但 marker 缺失（预装中断/跨重启）→ 补跑预装（重试语义）。"""

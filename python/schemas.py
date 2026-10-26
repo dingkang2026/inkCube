@@ -43,6 +43,7 @@ class SettingsModel(BaseModel):
     wiki_lint_model: str = "standard"
     wiki_dedup_model: str = "standard"
     wiki_ledger_parse_model: str = "standard"  # 3.1 §4.2 台账解析（轻量）
+    wiki_profile_model: str = "standard"  # 2.6 §4.8 产业画像提取（轻量 JSON 输出）
     report_model: str = "standard"  # 报告生成（长文写作）
     report_extract_model: str = "standard"  # 报告模板提取（样例结构识别）
     form_analyze_model: str = "standard"  # 填表模板分析（结构提取与语义映射）

@@ -3,8 +3,8 @@
  *
  * 覆盖：标题「{订阅名} · M/D」；消息流经 tasks:getMessages 拉取（只读复用
  * TaskMessageList，isGenerating=false）；无输入区（无 textarea——规则 6 只读，
- * 输入区属 TaskPage，不在本组件）；头部动作条（2026-10-22）：返回 → onBack /
- * 查看报告 → onOpenReport（报告↔回放双向切换）；消息流与报告标题解耦加载
+ * 输入区属 TaskPage，不在本组件）；头部动作条（2026-10-22）：返回 → onBack（关闭
+ * 抽屉）/ 查看报告 → onOpenReport（报告↔回放双向切换）；消息流与报告标题解耦加载
  * （2026-10-23 review S-1）：报告侧失败仅标题缺省，不连累消息流。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -84,7 +84,7 @@ describe('RunReplay（2.11 §8.3 只读回放）', () => {
     expect(container.querySelector('textarea')).toBeNull() // 只读：无输入区
   })
 
-  it('头部动作条：「返回」回宿主页、「查看报告」切阅读页（2026-10-22）', async () => {
+  it('头部动作条：「返回」关闭期次抽屉、「查看报告」切阅读页（2026-10-22）', async () => {
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke: wireInvoke(), on: () => () => {} }
     render(<RunReplay runId="run_1" taskId="t1" onBack={onBack} onOpenReport={onOpenReport} />)
     await flush()

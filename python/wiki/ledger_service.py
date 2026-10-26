@@ -78,24 +78,30 @@ def fetch_running() -> list[dict]:
 def on_compile_complete_sync(db, project_id: str, settings: dict) -> None:
     """同步入口(测试直调;task_queue 经 run_in_executor 后台化)。
 
-    整体吞异常 —— 解析失败绝不影响编译主流程(3.1 §4.4);finally 无条件
-    清理 _RUNNING,活动不残留(挂掉的活动行会永久污染全局心跳)。
+    整体吞异常 —— 解析失败绝不影响编译主流程(3.1 §4.4);并发守卫 +
+    finally 只清理自己占的坑(acquired 绑定清理责任,无条件 pop 会误删
+    他方在途标记击穿单飞,与 profile_service 同修,review M-1 2026-10-25);
+    占坑从 _run 上提到此 —— 占坑所有权与清理责任须同函数闭环。
     """
+    acquired = False
     try:
+        with _LOCK:
+            if project_id in _RUNNING:
+                logger.info("ledger parse for %s already running — skipped",
+                            project_id)
+                return                               # 并发守卫(3.1 §4.5)
+            _RUNNING[project_id] = {"started_at": time.time()}
+            acquired = True
         _run(db, project_id, settings)
     except Exception:
         logger.exception("ledger parse failed for %s", project_id)
     finally:
-        with _LOCK:
-            _RUNNING.pop(project_id, None)
+        if acquired:
+            with _LOCK:
+                _RUNNING.pop(project_id, None)
 
 
 def _run(db, project_id: str, settings: dict) -> None:
-    with _LOCK:
-        if project_id in _RUNNING:
-            logger.info("ledger parse for %s already running — skipped", project_id)
-            return                                   # 并发守卫(3.1 §4.5)
-        _RUNNING[project_id] = {"started_at": time.time()}
     project = db.get_project(project_id)
     if not project:
         return

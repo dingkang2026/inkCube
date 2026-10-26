@@ -335,6 +335,27 @@
   resize: vertical;
 }
 
+/* 立项勾选「同时创建盯梢订阅」（横排 checkbox + label 文本） */
+.subRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.subRow input:disabled {
+  cursor: not-allowed;
+}
+
+/* AI 预填进行中提示（立项模态头下，免培训：决策点状态可见非静默等待） */
+.extractHint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
 .fieldLabel {
   font-size: var(--text-sm);
   color: var(--text-secondary);

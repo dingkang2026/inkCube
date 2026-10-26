@@ -167,6 +167,8 @@ def export_project(db, data_dir: str, project_id: str, target_path: str,
         "project": {k: project.get(k) for k in (
             "name", "description", "type", "stage", "company_name", "credit_code",
             "wiki_purpose", "wiki_overview", "playbook_seeded", "archived_at",
+            # 2.6 §4.8 画像随包:manual 编辑是用户策展数据,不属可再生 AI 字段
+            "industry_profile", "profile_source",
             "created_at", "updated_at")},
         "counts": {
             "files": len(files_meta), "images": len(images_meta),

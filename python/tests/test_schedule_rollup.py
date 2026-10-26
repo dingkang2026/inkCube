@@ -1,4 +1,4 @@
-"""python/tests/test_schedule_rollup.py — 2.11 §12.3 V2.1-T3: 组合周报执行链。
+"""python/tests/test_schedule_rollup.py — 2.11 §12.3 V2.1-T3: 聚合简报执行链。
 
 覆盖：聚合素材窗口（rollup 上次 done finished_at → now / 无历史近 7 天）、
 digest_schedule_ids 圈定（NULL=全部 enabled=1 非 rollup / 勾选即用户意志
@@ -99,7 +99,7 @@ def _run_dispatch(sched, db, s):
 
 def _make_rollup(db, **kw):
     """rollup 订阅（prompt 存库形态模拟 API 落库：骨架 + OUTPUT_CONTRACT）。"""
-    args = dict(name="组合周报",
+    args = dict(name="聚合简报",
                 prompt=(f"汇总各订阅期次：\n{ROLLUP_SECTION_MARK}\n"
                         f"要求：突出风险\n\n{OUTPUT_CONTRACT}"),
                 mode="general", category="general", interval_type="weekly",
@@ -343,7 +343,7 @@ def client_and_db(monkeypatch):
 
 
 _ROLLUP_BODY = {
-    "name": "组合周报",
+    "name": "聚合简报",
     "prompt": "汇总本期要点\n{sections}",
     "intervalType": "weekly", "intervalValue": "MON 09:00",
     "scope": "rollup",

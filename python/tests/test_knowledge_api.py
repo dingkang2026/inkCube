@@ -69,3 +69,36 @@ def test_update_project_company_fields(client_and_db):
     # 空体 PATCH → 400(No fields to update)
     r3 = client.patch(f"/knowledge/projects/{pid}", json={})
     assert r3.status_code == 400
+
+
+def test_profile_extract_executor_submit_failure_releases_slot(
+        client_and_db, monkeypatch):
+    """占坑防泄漏回归（review Info 2026-10-25）：executor 提交失败（如
+    get_running_loop 抿不到事件循环）→ 占坑归还，不残留致死锁
+    （泄漏则该项目恒 409 直至重启）；且归还后可再次受理。"""
+    import types
+
+    from wiki import profile_service as ps
+
+    client, db = client_and_db
+    proj = db.create_project("Acme", seed_playbook=False)
+
+    def _boom():
+        raise RuntimeError("no running event loop")
+
+    # 精准替换模块内 asyncio 引用（不 patch 全局 asyncio，避免波及
+    # TestClient 自身的事件循环设施）；ensure_ready 摘除 LLM 准入依赖
+    import routers.knowledge as knowledge_router
+    monkeypatch.setattr(
+        knowledge_router, "asyncio",
+        types.SimpleNamespace(get_running_loop=_boom))
+    monkeypatch.setattr(knowledge_router, "ensure_ready", lambda kind: None)
+
+    r = client.post(f"/knowledge/projects/{proj['id']}/profile/extract")
+
+    assert r.status_code == 500
+    assert ps.fetch_running() == []            # 占坑已归还：活动不残留
+    assert ps.try_acquire(proj["id"]) is True  # 可再次受理（未死锁 409）
+    ps.release(proj["id"])                     # 收尾释放（review Info：_RUNNING 是
+    # 进程级共享态，不把占坑残留带给后续用例；顺带覆盖 release 幂等路径）
+    assert ps.fetch_running() == []

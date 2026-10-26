@@ -10,6 +10,12 @@ export interface Project {
   stage?: ProjectStage
   company_name?: string
   credit_code?: string
+  /** 产业画像 JSON 数组文本（2.6 §4.8/2.1 §4.5）：
+   *  [{"chain":"具身智能","segment":"四足机器狗"},...]；
+   *  NULL=未提取（编译后自动提取），'[]'=已提取未识别 */
+  industry_profile?: string | null
+  /** 画像来源：wiki_compile（编译自动提取）/ manual（人工编辑过，编译不覆盖） */
+  profile_source?: string | null
   /** AI 状态句(3.0 四期):编译时点快照,空串/未生成 = 回落规则句 */
   pulse_ai_status?: string | null
   /** 归档时间(非空 = 已归档,生命周期软关闭;NULL = 有效) */

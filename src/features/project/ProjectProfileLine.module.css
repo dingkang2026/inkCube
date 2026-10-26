@@ -1,0 +1,187 @@
+/* 详情头部产业画像行（2.1 §6.2）：企业信息行下方，与 companyInfo 同层级视觉 */
+
+.profileLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.profileLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.profileChips {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.profileChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+}
+
+.profileChipText {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-primary);
+}
+
+.profileChipSegment {
+  color: var(--text-secondary);
+}
+
+/* 盯产业（2.11 §8.1）：打开 App 级新建订阅弹层（预填产业舆情模板） */
+.profileWatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}
+
+.profileWatch:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.profileRemove {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.profileRemove:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.profileRemove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.profileEmpty {
+  opacity: 0.85;
+}
+
+.profileExtracting {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+}
+
+.spin {
+  animation: profile-spin 1s linear infinite;
+}
+
+@keyframes profile-spin {
+  to { transform: rotate(360deg); }
+}
+
+.profileAdd,
+.profileReExtract {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px dashed var(--border);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  padding: 2px 8px;
+  border-radius: 999px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.profileAdd:hover:not(:disabled),
+.profileReExtract:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.profileAdd:disabled,
+.profileReExtract:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.profileAddForm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.profileAddInput {
+  width: 130px;
+  font-size: var(--text-sm);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.profileAddInputShort {
+  width: 110px;
+}
+
+.profileAddInput:focus {
+  border-color: var(--accent);
+}
+
+.profileAddInput::placeholder {
+  color: var(--text-muted);
+}
+
+.profileAddConfirm,
+.profileAddCancel {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
+
+.profileAddConfirm {
+  color: var(--accent);
+}
+
+.profileAddConfirm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.profileAddCancel:hover {
+  color: var(--text-primary);
+}

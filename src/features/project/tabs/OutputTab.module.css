@@ -1,7 +1,12 @@
 /* OutputTab（0.6 §3.2 V2-E1a T11）：产出合并二级分区条；token 对齐现状（E1b 重排） */
+/* 根容器：flex:1 铺满 .tabContent（flex row 子项默认 flex:0 1 auto 不拉伸——
+   T11 起缺 flex:1 导致产出内容只占内容自然宽、右侧留白，
+   2026-10-25 三轮留白反馈的真正根因，对齐 AffairsTab/FormsTab/KnowledgePage 根类惯例） */
 .wrap {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
 }
@@ -10,32 +15,46 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 水平 24px 沟槽：wrap 全宽后分区条不贴窗缘，左右对齐下方看板（.container padding 16px 24px）
+     与事务 viewSwitch（AffairsTab.container 内缩）——review Minor 2026-10-25 */
+  padding: 0 24px;
   margin-bottom: 10px;
 }
 
+/* 报告/填表分段控件：形态对齐 AffairsTab viewSwitch（2026-10-25 用户裁决：
+   产出二级分区与事务三视图切换同款样式——整组单边框无缝拼接、激活态 accent 10% 底） */
 .segs {
-  display: inline-flex;
-  gap: 4px;
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
 }
 
 .seg {
-  padding: 5px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
   font-size: var(--text-sm);
+  font-weight: 500;
   color: var(--text-secondary);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: none;
   cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
 }
 
 .seg:hover {
   color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .segActive {
   color: var(--accent);
-  border-color: var(--accent);
-  background: var(--bg-secondary);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-weight: 600;
 }
 
 .tplBtn {

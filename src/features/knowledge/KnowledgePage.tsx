@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Search, Image as ImageIcon, FileText } from 'lucide-react'
+import { Search, Image as ImageIcon, FileText, Upload } from 'lucide-react'
 import { FileUploader } from './FileUploader'
 import { ImageGallery } from './ImageGallery'
 import { SearchBar } from './SearchBar'
@@ -444,7 +444,21 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
   const processingTotal = files.length
 
   return (
-    <div className={s.page}>
+    // 整页拖拽上传（2026-10-25 用户裁决：拖拽响应从上传区扩大到素材页任意位置；
+    // dragLeave 用 relatedTarget contains 判定防子元素间移动闪烁；
+    // 反馈统一由 dropOverlay 遮罩承担，uploadZone 不再自带拖拽态防双触发）
+    <div
+      className={s.page}
+      onDrop={handleDrop}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false) }}
+    >
+      {dragOver && (
+        <div className={s.dropOverlay}>
+          <Upload size={28} />
+          <span>{t('knowledge.dropOverlay')}</span>
+        </div>
+      )}
       {/* Project header — hidden in compact mode (already shown in ProjectDetailPage header) */}
       {!compact && (
         <div className={s.projectHeader}>
@@ -520,12 +534,9 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
               ))}
             </div>
           </div>
-          {/* Upload zone — always visible */}
+          {/* Upload zone — always visible（点击入口；拖拽已提升至整页，反馈见 dropOverlay） */}
           <div
-            className={`${s.uploadZone} ${dragOver ? s.uploadZoneDragOver : ''}`}
-            onDrop={handleDrop}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-            onDragLeave={() => setDragOver(false)}
+            className={s.uploadZone}
             onClick={() => fileInputRef.current?.click()}
           >
             <input
@@ -540,7 +551,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
             <span className={s.uploadText} title={uploading ? `${uploadProgress.current}/${uploadProgress.total} — ${uploadProgress.filename}` : undefined}>
               {uploading
                 ? t('knowledge.uploading') + ` ${uploadProgress.current}/${uploadProgress.total} — ${uploadProgress.filename}`
-                : '+ ' + t('knowledge.dropZoneCompact')}
+                : <><Upload size={16} />{t('knowledge.dropZoneCompact')}</>}
             </span>
           </div>
           <div className={s.inputContent}>

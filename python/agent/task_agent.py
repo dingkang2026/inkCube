@@ -37,6 +37,7 @@ from tools.venv_manager import (
     get_venv_python,
     is_preinstall_done,
     is_uv_exclusion_verified,
+    is_venv_ready,
 )
 from skills.registry import SkillRegistry
 from skills.context import SkillContext
@@ -70,22 +71,21 @@ def _llm_error_msg(e: Exception) -> str:
     return f"调用模型出错: {getattr(e, 'detail', '') or str(e)}"
 
 
-def _venv_env_needs_setup(venv_path: str) -> bool:
+async def _venv_env_needs_setup(venv_path: str) -> bool:
     """任务 venv 首用环境预检（2.8 §5.5 step_note 可见性）。
 
-    venv python 与预装 marker 均在位才算就绪（与 _ensure_task_venv 快路径
-    同一判据）；venv_path 为空（任务无 venv，chat-only）不会发生预装，
-    返回 False。预检为真时马上要发生同步预装（3~60s+ 黑盒），调用方推
-    step_note 呈现给用户。判据本为通用 venv 判据，2026-10-13 随 tool 链
+    判据与 _ensure_task_venv 快路径同一（is_venv_ready：解释器在位、
+    可启动、预装 marker 在位）；venv_path 为空（任务无 venv，chat-only）
+    不会发生预装，返回 False。预检为真时马上要发生慢路径（创建/重建
+    + 同步预装，3~60s+ 黑盒），调用方推 step_note 呈现给用户。探活
+    （首次 ~百 ms，缓存后零开销）经 to_thread 在线程池执行，不阻塞
+    事件循环。判据本为通用 venv 判据，2026-10-13 随 tool 链
     （code_executor/shell/package_manager 首用可见性）接入由 skill 专属
     升为 tool/skill 共用，更名（原名 _skill_env_needs_setup）。
     """
     if not venv_path:
         return False
-    return not (
-        os.path.isfile(get_venv_python(venv_path))
-        and is_preinstall_done(venv_path)
-    )
+    return not await asyncio.to_thread(is_venv_ready, venv_path)
 
 
 def _skill_env_setup_failed(venv_python: str, result_str: str) -> bool:
@@ -638,8 +638,10 @@ class TaskAgent:
     async def _ensure_task_venv(self, task_id: str, venv_path: str) -> str:
         """懒创建任务 venv：任务创建时仅登记路径，首次执行代码/装包/跑 Skill 时落盘。
 
-        快路径要求 venv 与预装 marker 均在位（零创建开销）——marker 缺失时
-        落入 ensure_venv 补跑预装（create_venv 幂等 no-op），兑现「预装失败
+        快路径判据 is_venv_ready（解释器在位、可启动、预装 marker 在位，
+        打包/卸载复盘 2026-10-25 #1 收口）：升级后 base 重建的失链 venv
+        被探活拦截落入慢路径删旧重建；marker 缺失时落入 ensure_venv 补跑
+        预装（create_venv 幂等 no-op），兑现「预装失败
         不写 marker、下次 ensure 重试」的承诺（含跨重启的中断预装补装）。
         marker 缺失后区分两种原因（2026-10-13 误报修复）：白名单未验证 →
         抛 UvExclusionRequired（真阻断）；已验证 → ensure_venv_blocking
@@ -654,7 +656,7 @@ class TaskAgent:
         """
         if not venv_path:
             return ""
-        if os.path.isfile(get_venv_python(venv_path)) and is_preinstall_done(venv_path):
+        if await asyncio.to_thread(is_venv_ready, venv_path):
             return venv_path
         try:
             await asyncio.to_thread(ensure_venv, os.path.dirname(venv_path))
@@ -2069,11 +2071,11 @@ class TaskAgent:
                     # Lazy venv: materialize on first venv-configured tool use
                     # (失败时 venv_path 置 ""，同轮后续外部 Skill 上下文一并降级)。
                     # 首用环境准备 UI 可见（2.8 §5.5，2026-10-13 从 skill 链
-                    # 补齐到 tool 链）：预检 marker 缺失才推 step_note（快路径
-                    # 零噪音），终态按 venv 物化结果 + marker 落定。
+                    # 补齐到 tool 链）：预检 is_venv_ready 不过才推 step_note
+                    # （快路径零噪音），终态按 venv 物化结果 + marker 落定。
                     if tool_name in _VENV_TOOL_ATTRS and getattr(
                             tool, _VENV_TOOL_ATTRS[tool_name], ""):
-                        _tool_env_setup = _venv_env_needs_setup(venv_path)
+                        _tool_env_setup = await _venv_env_needs_setup(venv_path)
                         if _tool_env_setup:
                             yield {"type": "step_note", "data": {
                                 "text": ("⏳ 首次执行需要 Python 环境，正在准备"
@@ -2183,10 +2185,11 @@ class TaskAgent:
                         # External skill execution via SkillRegistry
                         if result_str is None:
                             # ── 首用依赖安装可见性（2.8 §5.5）──
-                            # 预检判据与终态判定见模块级纯函数；marker 在位则
-                            # 零开销跳过。粗粒度两条（开始/终态）：预装一次性
-                            # （venv 常驻任务目录），不做逐行下载进度。
-                            _need_setup = _venv_env_needs_setup(venv_path)
+                            # 预检判据与终态判定见模块级纯函数；is_venv_ready
+                            # 通过（探活缓存后）则零开销跳过。粗粒度两条
+                            # （开始/终态）：预装一次性（venv 常驻任务目录），
+                            # 不做逐行下载进度。
+                            _need_setup = await _venv_env_needs_setup(venv_path)
                             if _need_setup:
                                 yield {"type": "step_note", "data": {
                                     "text": (f"⏳ 首次使用 {tool_name}，正在准备运行环境"

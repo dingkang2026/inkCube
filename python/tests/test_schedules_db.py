@@ -159,8 +159,6 @@ def test_run_lifecycle_and_inbox(tmp_db):
     assert all(r['schedule_name'] == 'a' for r in inbox)
     assert tmp_db.mark_run_read(r2)
     assert [r['id'] for r in tmp_db.list_run_inbox()] == [r1, r2]  # 已读沉底
-    # unread_only 过滤：r2 已读后仅剩 r1 未读
-    assert [r['id'] for r in tmp_db.list_run_inbox(unread_only=True)] == [r1]
 
 
 def test_mark_run_read_idempotent(tmp_db):

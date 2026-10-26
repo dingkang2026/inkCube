@@ -15,6 +15,13 @@
   margin-bottom: 20px;
 }
 
+/* 头部统计（PhaseBoard.headMeta 同款，2026-10-25 样式对齐） */
+.headMeta {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 .primaryBtn {
   display: inline-flex;
   align-items: center;
@@ -46,18 +53,24 @@
   gap: 8px;
 }
 
+/* 实例卡：左缘 3px 状态色带对齐 PhaseBoard 行口径（§6.3），hover 背景同款 */
 .formCard {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
-  transition: border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.formCard:hover { border-color: var(--text-muted); }
+.formCard:hover { background: var(--bg-hover); }
+
+.formCardActive { border-left-color: var(--accent); }
+.formCardDone { border-left-color: var(--success); }
+.formCardFailed { border-left-color: var(--error); }
 
 .formIcon {
   color: var(--text-muted);

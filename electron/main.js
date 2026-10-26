@@ -52,6 +52,22 @@ const isDev = process.env.NODE_ENV === 'development'
 let mainWindow = null
 const pythonManager = new PythonManager()
 
+// 单实例锁（打包/卸载复盘 2026-10-25）：多开会产生两个 Python 后端抢写
+// SQLite 与端口，卸载/升级时文件锁面翻倍；secondary 实例直接退出，
+// primary 聚焦已有窗口。Windows 下 dev 与打包版 userData 同为
+// %APPDATA%/InkCube（大小写不敏感），两者同样互斥。
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
 logElectron('INFO', 'InkCube starting...')
 
 // ── Boot stage machine（窗口先行，2026-10-24）──
@@ -63,7 +79,7 @@ logElectron('INFO', 'InkCube starting...')
 // 通道名全小写连字符：orphan_channel_audit 的 pushToRenderer 采集正则（CH）
 // 只认小写，大写通道会被漏采（app:osNotifyClick 形态即审计盲区）。
 const BOOT_TOTAL_START = Date.now()
-const boot = { stage: 'tools', message: null, stageStartedAt: Date.now() }
+const boot = { stage: 'tools', message: null, stageStartedAt: Date.now(), progress: null }
 
 function setBootStage(stage, extra = {}) {
   const elapsedMs = Date.now() - boot.stageStartedAt
@@ -73,9 +89,20 @@ function setBootStage(stage, extra = {}) {
   }
   boot.stage = stage
   boot.message = extra.message ?? null
+  // 阶段切换即清进度：进度只属于当前阶段（python 阶段不应残留 tools 进度）
+  boot.progress = extra.progress ?? null
   boot.stageStartedAt = Date.now()
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('app:boot-stage', { stage, message: boot.message, elapsedMs })
+    mainWindow.webContents.send('app:boot-stage', { stage, message: boot.message, elapsedMs, progress: boot.progress })
+  }
+}
+
+// 阶段内进度更新（首装工具链复制，2026-10-25）：不重置阶段计时，只把
+// progress 附在当前阶段事件上推给 renderer（BootGate 进度行）。
+function setBootProgress(progress) {
+  boot.progress = progress
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app:boot-stage', { stage: boot.stage, message: boot.message, elapsedMs: 0, progress })
   }
 }
 
@@ -287,6 +314,10 @@ ipcMain.on('menu:action', (_event, action) => {
 // Knowledge base IPC handlers are registered in ipc-handlers.js via registerIpcHandlers()
 // using dynamic pythonManager.getBaseUrl() for correct port resolution.
 
+// 启动链仅 primary 实例执行：app.quit() 是异步的，secondary 实例上 whenReady
+// 仍会 resolve（2026-10-25 双实例实测：quit 生效前已建窗口、跑 tool-initializer、
+// spawn Python），单实例锁失败必须显式跳过全部启动链注册。
+if (gotTheLock) {
 app.whenReady().then(async () => {
   // Handle inkcube:// protocol → serve local files (whitelisted)
   protocol.handle('inkcube', (request) => {
@@ -342,6 +373,7 @@ app.whenReady().then(async () => {
     stage: boot.stage,
     message: boot.message,
     elapsedMs: Date.now() - boot.stageStartedAt,
+    progress: boot.progress,
   }))
   ipcMain.handle('app:relaunch', () => {
     logElectron('INFO', '[boot] relaunch requested from boot gate')
@@ -358,7 +390,12 @@ app.whenReady().then(async () => {
     // Ensure bundled tools are initialized (first run / version update)
     setBootStage('tools')
     const cdpStart = Date.now()
-    await ensureToolsInitialized((msg) => logElectron('INFO', `[tool-init] ${msg}`))
+    // 进度载荷为结构化对象（{ phase, copied?, total? }）：日志直接序列化，
+    // UI 侧由 BootGate 经 i18n 渲染（tool-initializer 不硬编码文案）
+    await ensureToolsInitialized((progress) => {
+      logElectron('INFO', `[tool-init] ${JSON.stringify(progress)}`)
+      setBootProgress(progress)
+    })
     const cdpPort = await readCdpPort()
     logElectron('INFO', `[boot] tools ready, cdp probe took ${Date.now() - cdpStart}ms`)
 
@@ -398,5 +435,6 @@ app.on('activate', async () => {
     await createWindow()
   }
 })
+} // end of single-instance primary guard
 
 } // end of non-renderer branch

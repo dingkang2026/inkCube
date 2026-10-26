@@ -67,6 +67,7 @@ export function FormsTab({ projectId }: { projectId: string }) {
   // 填表实例列表分页（0.1dev-guide 统一约定）：50/页「加载更多」；projectId 变化自动重拉
   const {
     items: fills,
+    total: fillsTotal,
     hasMore: hasMoreFills,
     loadingMore: loadingMoreFills,
     loading,
@@ -309,6 +310,10 @@ export function FormsTab({ projectId }: { projectId: string }) {
   }
 
   // ── list 视图（默认）──
+  // 头部统计（PhaseBoard headMeta 同款）：共 N 份 · 进行中 M 份（有活跃才带后缀）
+  // 计数取服务端 total 全量口径（分页下不随已加载量漂移，review Major 2026-10-25）；
+  // active 为前端派生值仅计已载入条目（进行中实例按 created_at 倒序落在首页，可接受）
+  const activeFillCount = fills.filter((f) => f.status === 'pending' || f.status === 'filling').length
   return (
     <div className={s.container}>
       <div className={s.header}>
@@ -318,6 +323,13 @@ export function FormsTab({ projectId }: { projectId: string }) {
         >
           <Plus size={16} /> {t('project.forms.newForm')}
         </button>
+        {fills.length > 0 && (
+          <span className={s.headMeta}>
+            {activeFillCount > 0
+              ? t('project.forms.headCountActive', { count: fillsTotal ?? fills.length, active: activeFillCount })
+              : t('project.forms.headCount', { count: fillsTotal ?? fills.length })}
+          </span>
+        )}
       </div>
 
       {loading ? (
@@ -329,7 +341,10 @@ export function FormsTab({ projectId }: { projectId: string }) {
           {fills.map((fill) => {
             const active = fill.status === 'pending' || fill.status === 'filling'
             return (
-              <div key={fill.id} className={s.formCard}>
+              <div key={fill.id} className={`${s.formCard} ${
+                fill.status === 'pending' || fill.status === 'filling' ? s.formCardActive :
+                fill.status === 'success' ? s.formCardDone : s.formCardFailed}`}>
+                {/* 状态左缘色对齐 PhaseBoard 行口径（§6.3）：进行中 accent / 成功 success / 失败 error */}
                 <div className={s.formIcon}><Table size={18} /></div>
                 <div className={s.formInfo}>
                   <div className={s.formTitle}>{fill.title}</div>

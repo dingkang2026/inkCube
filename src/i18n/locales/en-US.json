@@ -10,6 +10,7 @@
       "connect": "Connecting to data service"
     },
     "elapsed": "{{seconds}}s elapsed",
+    "toolProgress": "Initializing Python runtime ({{copied}}/{{total}} files)",
     "errorTitle": "Startup failed",
     "errorHint": "The local service failed to start. Retry, or quit and check the logs",
     "retry": "Retry",
@@ -94,6 +95,9 @@
     "navMissingTitle": "Required setup incomplete — click to configure",
     "general": "General",
     "language": "Language",
+    "identity": "Persona",
+    "identityUnset": "Not set",
+    "identityUnsetHint": "Pick your primary focus — task templates and subscription suggestions are prioritized accordingly. Change anytime",
     "notification": {
       "title": "Notifications",
       "osEnabled": "System notifications",
@@ -429,7 +433,8 @@
     "ctFigure": "Figure",
     "ctCaption": "Caption",
     "ctList": "List",
-    "dropZoneCompact": "Upload files",
+    "dropZoneCompact": "Click to upload, or drop files anywhere",
+    "dropOverlay": "Release to upload to this project",
     "chatBtnLabel": "AI Chat",
     "tabChat": "AI Chat",
     "recentChunks": "{{count}} Recent Chunks",
@@ -526,11 +531,11 @@
       "runNotFound": "Run not found",
       "runRunning": "Run is in progress; delete after it finishes or fails",
       "invalidScope": "Invalid subscription type",
-      "rollupTargetForbidden": "Portfolio digests do not archive — clear the destination first",
-      "rollupPromptNeedsSection": "Portfolio digest prompt must contain the {sections} placeholder",
-      "rollupDigestIdsForbidden": "Only portfolio digests can configure the aggregation scope",
+      "rollupTargetForbidden": "Aggregated digests do not archive — clear the destination first",
+      "rollupPromptNeedsSection": "Aggregated digest prompt must contain the {sections} placeholder",
+      "rollupDigestIdsForbidden": "Only aggregated digests can configure the aggregation scope",
       "digestTargetNotFound": "Aggregation scope references a missing subscription",
-      "rollupDigestRecursive": "Aggregation scope cannot include portfolio digests (recursion guard)",
+      "rollupDigestRecursive": "Aggregation scope cannot include aggregated digests (recursion guard)",
       "fileDuplicate": "File already exists",
       "manuallyArchived": "Manually archived",
       "projectHasActiveWork": "The project still has active work (parsing/report/form-fill/Wiki compile/image description); archive or delete after it settles",
@@ -662,15 +667,15 @@
       },
       "sentiment": {
         "title": "Company News Scan",
-        "desc": "30 days of coverage in one sweep, positive vs negative at a glance",
+        "desc": "What others say about it: a 30-day positive/negative coverage list with risk alerts",
         "out": "Positive/negative/neutral lists for the last 30 days, each with date, summary, and source link\nOne-line impact note on every negative item (business / scale / credibility)\nSummary: overall volume and tilt, the top concern, trend note",
         "prompt": "Scan public sentiment coverage of \"{company}\" from the last 30 days, grouped as positive/negative/neutral. Anchor on today's date and look back 30 days; anything outside the window is out of scope.\n\n[Search Requirements]\n- Coverage must come from live retrieval — the last 30 days are absent from any model's knowledge; answering from memory is a task failure. Start from news outlets, trade media, regulatory announcements, and public social discussions, but you are not limited to these;\n- When a repost and the original coexist, trace to the first publication.\n\n[Output Format] Save a Markdown report to the task workspace and output it in full in the conversation:\n# \"{company}\" Sentiment Scan (YYYY-MM-DD ~ YYYY-MM-DD)\n## 1. Positive\nEach: date | title/one-line summary | source link.\n## 2. Negative\nSame format, plus a one-line impact note (which business / scale / credibility).\n## 3. Neutral\nSame format.\n## 4. Summary\nOverall volume and tilt, the single most concerning negative item, trend note.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- Classify conservatively: uncertain items go to Neutral — never pad a category to fill the structure;\n- If a category is empty, state \"None found this period\" explicitly — never fabricate or exaggerate."
       },
       "competitor": {
-        "title": "Competitor Watch",
-        "desc": "Track a competitor's product, market, funding, and risk moves",
-        "out": "30-day moves timeline tagged Product / Market / Funding / Org / Partnership / Risk\n2-3 sentence summary + accessible source per entry\nTakeaways: the most important move and what it hints for the landscape",
-        "prompt": "Summarize \"{competitor/product}\" moves from the past month: product launches, market moves, and funding news. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Moves must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from product launch channels, trade media, funding databases, and official announcements (website/official account), but you are not limited to these.\n\n[Output Format] Save to the task workspace and output in full in the conversation:\n# \"{competitor/product}\" Moves (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first, one subsection per item:\n### MM-DD | [Product] / [Market] / [Funding] / [Org] / [Partnership] / [Risk] (pick one; Partnership = channel/ecosystem/JV moves, Risk = litigation/penalties/operational trouble)\n- Summary: 2-3 sentences on what happened;\n- Source: an accessible link.\n\n## Takeaways\nUp to 3 lines: the single most important move, and what it hints for the competitive landscape.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- When official statements and media interpretation conflict, follow the official announcement and note the difference;\n- If nothing public this period, say \"No public moves found\" honestly — never pad with old news."
+        "title": "Company Moves Tracker",
+        "desc": "What it did: a timeline of product / market / funding / partnership / risk moves",
+        "out": "30-day company moves timeline tagged Product / Market / Funding / Org / Partnership / Risk\n2-3 sentence summary + accessible source per entry\nTakeaways: the most important move and what to watch next",
+        "prompt": "Track \"{company}\"'s moves from the past month: product launches, market moves, and funding news. Anchor on today's date and look back 30 days.\n\n[Search Requirements]\n- Moves must come from live retrieval — the last month is absent from any model's knowledge; answering from memory is a task failure. Start from product launch channels, trade media, funding databases, and official announcements (website/official account), but you are not limited to these.\n\n[Output Format] Save to the task workspace and output in full in the conversation:\n# \"{company}\" Moves (YYYY-MM-DD ~ YYYY-MM-DD)\nList newest first, one subsection per item:\n### MM-DD | [Product] / [Market] / [Funding] / [Org] / [Partnership] / [Risk] (pick one; Partnership = channel/ecosystem/JV moves, Risk = litigation/penalties/operational trouble)\n- Summary: 2-3 sentences on what happened;\n- Source: an accessible link.\n\n## Takeaways\nUp to 3 lines: the single most important move, and what to watch next for the company.\n\n[Discipline]\n- Every entry must carry an accessible source link; drop entries without one;\n- When official statements and media interpretation conflict, follow the official announcement and note the difference;\n- If nothing public this period, say \"No public moves found\" honestly — never pad with old news."
       },
       "industrySentiment": {
         "title": "Industry News Scan",
@@ -878,12 +883,12 @@
     "hintCreate": "Create a subscription — intelligence delivered on schedule",
     "summaryLine": "{{n}} subscriptions · {{unread}} new · {{abnormal}} abnormal",
     "newSubscription": "New Subscription",
-    "newRollup": "New Portfolio Digest",
+    "newRollup": "New Aggregated Digest",
     "badge": {
       "unread": "Unread intel"
     },
     "empty": "No subscriptions yet — click \"New Subscription\" to create one",
-    "emptyRollup": "No portfolio digests yet — click \"New Portfolio Digest\" to create one",
+    "emptyRollup": "No aggregated digests yet — click \"New Aggregated Digest\" to create one",
     "checkRow": "Select {{name}}",
     "tab": {
       "all": "All",
@@ -899,7 +904,7 @@
     "typeFilter": "Type",
     "typeAll": "All types",
     "typeIntel": "Intel subscription",
-    "typeRollup": "Portfolio Digest",
+    "typeRollup": "Aggregated Digest",
     "searchPlaceholder": "Search subscriptions…",
     "checkedCount": "{{n}} selected",
     "batchPause": "Pause",
@@ -965,7 +970,7 @@
     "batchPartialFailed": "{{failed}} of {{total}} items failed, please retry",
     "form": {
       "newTitle": "New Subscription",
-      "newRollupTitle": "New Portfolio Digest",
+      "newRollupTitle": "New Aggregated Digest",
       "editTitle": "Edit Subscription",
       "fromTemplate": "From templates",
       "outPreviewTitle": "What you'll get",
@@ -976,7 +981,7 @@
       "prev": "Back",
       "stepPeriod": "Schedule",
       "stepTarget": "Name & destination",
-      "stepTargetRollup": "Name & digest skeleton",
+      "stepTargetRollup": "Name & additional requirements",
       "nameLabel": "Subscription name",
       "namePlaceholder": "Leave empty to auto-name from the prompt",
       "categoryLabel": "Category",
@@ -994,12 +999,14 @@
       "saveFailed": "Failed to save",
       "targetSectionLabel": "Output destination (archive)",
       "targetSectionHint": "Archiving = each issue is auto-filed into the chosen container (project / base library) for long-term retrieval",
-      "rollupNoTarget": "Portfolio digests don't archive: each report is visible only in Inbox and Home, never written to projects / base libraries",
-      "rollupSkeletonLabel": "Digest skeleton ({sections} marks where per-subscription material is inserted)",
-      "rollupSkeletonHint": "Each issue replaces {sections} with recent outputs of the selected subscriptions; adjust the digest requirements above as needed",
+      "rollupNoTarget": "Aggregated digests don't archive: each report is visible only in Inbox and Home, never written to projects / base libraries",
+      "rollupBaseHint": "Each issue automatically aggregates recent outputs of the selected subscriptions: merges duplicated signals by topic, flags contradictions, and ends with an upcoming watchlist; additional requirements below are merged into the digest instruction",
+      "rollupExtrasLabel": "Additional requirements (optional)",
+      "rollupExtrasPlaceholder": "e.g. focus on funding and personnel changes; add a risk-alert section at the end",
+      "rollupExtrasPrefix": "Additionally, the user specifically requires:",
       "rollupScopeLabel": "Aggregation scope",
-      "rollupScopeHint": "Leave unchecked to aggregate all enabled subscriptions (excluding portfolio digests themselves)",
-      "rollupPromptTemplate": "Below are recent intel issues from the selected subscriptions:\n{sections}\n\nSummarize them into one portfolio digest:\n1. Merge duplicated signals by topic, noting the source subscription;\n2. Point out contradictory information explicitly;\n3. End with a list of things worth watching next week."
+      "rollupScopeHint": "Leave unchecked to aggregate all enabled subscriptions (excluding aggregated digests themselves)",
+      "rollupPromptTemplate": "Below are recent intel issues from the selected subscriptions:\n{sections}\n\nSummarize them into one aggregated digest:\n1. Merge duplicated signals by topic, noting the source subscription;\n2. Point out contradictory information explicitly;\n3. End with a list of things worth watching going forward."
     },
     "read": {
       "loading": "Loading…",
@@ -1024,8 +1031,6 @@
       "archivedUnit": " · Archive",
       "archivedJumpHint": "View \"{{name}} · Archive\" in the target container's Materials tab",
       "openReplay": "View Replay",
-      "trackFollow": "Track as Task",
-      "trackFollowPrompt": "Please draft a follow-up plan based on the intel above",
       "settings": "Subscription Settings"
     },
     "replay": {
@@ -1035,20 +1040,25 @@
     "digest": {
       "viewAll": "View all",
       "empty": "No outputs yet"
+    },
+    "createSub": {
+      "label": "Also create a Company Moves subscription (daily 09:00, editable)",
+      "hint": "Subscription issues will be filed into this project automatically",
+      "needCompany": "Available once the company name is filled — a subscription needs its tracking target",
+      "name": "{{name}} Company Moves Tracker",
+      "failed": "Project created, but the subscription failed; create it manually in Intel."
     }
   },
   "intel": {
     "title": "Intel Center",
     "summaryLoadFailed": "Failed to load subscription data",
-    "feedLoadFailed": "Failed to load intel feed",
     "tab": {
-      "feed": "Feed",
       "leads": "Leads",
       "admin": "Subscriptions"
     },
     "lead": {
       "empty": "No leads yet — save one from an intel issue",
-      "emptyGoFeed": "Browse Intel Feed",
+      "emptyGoAdmin": "Browse Subscriptions",
       "addManual": "Add manually",
       "manualTitle": "New Lead",
       "nameLabel": "Lead name",
@@ -1056,6 +1066,7 @@
       "noteLabel": "Note",
       "notePlaceholder": "Add a note…",
       "sourceManual": "Manual",
+      "sourceRun": "Schedule run",
       "statusLabel": "Move status",
       "status": {
         "new": "New",
@@ -1068,11 +1079,18 @@
       "convert": {
         "action": "To project",
         "title": "Convert to project",
+        "extracting": "Extracting project info from the source report…",
         "nameLabel": "Project name",
+        "descLabel": "Description",
+        "descPlaceholder": "One-line summary of the company's core business or opportunity (optional)",
         "typeLabel": "Project type",
         "typeRecruit": "Recruiting project",
         "typeInvest": "Investment project",
         "typeGeneral": "General project",
+        "companyLabel": "Company full name",
+        "companyPlaceholder": "Full company/institution name from the report (optional)",
+        "creditLabel": "Unified social credit code",
+        "creditPlaceholder": "Fill in when explicitly stated in the report (optional)",
         "confirm": "Create project",
         "converting": "Creating…",
         "success": "Converted — see it on the Projects page",
@@ -1080,14 +1098,10 @@
       },
       "viewProject": "View project",
       "upgrade": "Upgrade to subscription",
-      "upgradePrompt": "Track the lead \"{{name}}\" continuously: latest public updates, bids & tenders, and policy signals. Each issue: 1) new updates 2) actionable signals 3) recommended follow-ups. Report new information only; mark historical items with dates.",
       "manualAdded": "Lead saved",
       "opFailed": "Operation failed. Please retry.",
       "loadFailed": "Failed to load lead pool",
       "deleteLabel": "Delete lead",
-      "saveLead": "Save as lead",
-      "saveLeadHint": "Save to lead pool (source: {{name}}); rename if needed",
-      "added": "Saved to lead pool",
       "goLeads": "View lead pool",
       "extractLead": "Extract leads",
       "extractTitle": "Extract leads",
@@ -1113,8 +1127,7 @@
       "unread": "Unread first",
       "latest": "Latest"
     },
-    "emptyNoSubs": "No subscriptions yet — create one to get intel delivered automatically",
-    "emptyNoOutputs": "No intel yet — outputs from your subscriptions will appear here"
+    "emptyNoSubs": "No subscriptions yet — create one to get intel delivered automatically"
   },
   "chat": {
     "copy": "Copy",
@@ -1194,11 +1207,7 @@
     "typeGeneralDesc": "A free combination of materials and tasks",
     "step2": "Name the project",
     "namePlaceholder": "e.g. East China Smart Manufacturing Recruitment",
-    "create": "Create Project",
-    "step3": "Next up",
-    "afterWiki": "Upload your first materials",
-    "afterMaterials": "Launch your first task",
-    "afterAsk": "Ask the project assistant"
+    "create": "Create Project"
   },
   "homeTodo": {
     "title": "Today",
@@ -1287,6 +1296,7 @@
       "schedule": "Subscription \"{{title}}\" running",
       "model_download": "{{title}} downloading {{progress}}%",
       "ledger_parse": "{{project}}: parsing ledger",
+      "profile_extract": "{{project}}: extracting industry profile",
       "form_template": "Form template \"{{title}}\" {{status}}",
       "formAnalyzing": "analyzing",
       "formPending": "queued",
@@ -2272,14 +2282,14 @@
     },
     "forms": {
       "newForm": "New Form Fill",
-      "myForms": "My Forms",
+      "headCount": "{{count}} fills",
+      "headCountActive": "{{count}} fills · {{active}} in progress",
       "emptyForms": "No form fills yet. Click \"New Fill\" at the top right to start",
       "completed": "Completed",
       "filling": "In Progress",
       "statusPending": "Queued",
       "statusFailed": "Failed",
       "open": "Open",
-      "export": "Export",
       "download": "Download",
       "delete": "Delete",
       "back": "Back",
@@ -2298,7 +2308,6 @@
       "deleteFailed": "Failed to delete",
       "downloadSuccess": "Saved to {{path}}",
       "downloadFailed": "Download failed",
-      "progressLabel": "Progress",
       "errorLabel": "Failure reason",
       "retryFill": "Fill Again",
       "badgeFilled": "{{count}} filled",
@@ -2357,7 +2366,6 @@
         "deleteSuccess": "Template deleted",
         "deleteFailed": "Failed to delete template",
         "detailLoadFailed": "Failed to load template details",
-        "confidence": "Confidence",
         "confHigh": "High",
         "confMedium": "Medium",
         "confLow": "Low",
@@ -2380,6 +2388,26 @@
     "editSaving": "Saving…",
     "editSaved": "Project updated",
     "editProjectFailed": "Failed to update project",
+    "profile": {
+      "label": "Industry Profile",
+      "emptyHint": "Extracted automatically after Wiki compilation",
+      "noneFound": "No industry chain identified yet",
+      "extracting": "Extracting industry profile…",
+      "watch": "Watch",
+      "watchTitle": "Subscribe to {{industry}} industry updates",
+      "removeTitle": "Remove this entry",
+      "add": "Add",
+      "addTitle": "Add an industry chain entry manually",
+      "chainPh": "Chain, e.g. Embodied AI",
+      "segmentPh": "Segment, e.g. Quadruped robots",
+      "confirmAdd": "Confirm",
+      "reExtract": "Re-extract",
+      "reExtractTitle": "Discard manual edits and re-extract from Wiki",
+      "manualSaved": "Profile updated; compilation auto-overwrite is now off (use Re-extract to restore)",
+      "editFailed": "Failed to update profile",
+      "extractRunning": "Profile extraction already in progress",
+      "extractFailed": "Failed to start profile extraction"
+    },
     "chat": {
       "title": "Knowledge Q&A",
       "placeholder": "Ask a question based on project knowledge...",

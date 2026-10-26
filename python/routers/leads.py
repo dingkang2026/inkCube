@@ -24,9 +24,13 @@ _SOURCE_TYPES = ("run", "manual")
 
 # 提取 prompt（LLM 指令，非 UI 文案；要求纯 JSON 数组便于解析）：
 # 候选零自动入池（0.6 §6.3-10）——本端点只产出候选，入池由前端勾选确认。
-_EXTRACT_PROMPT = """你是招商/投资经理的线索提取助手。下面是一份订阅盯梢报告全文。
-请从报告中提取值得跟进的「线索」（企业/机构/项目/园区机会），每条包含：
-- name: 线索名称（企业/机构/项目名，尽量具体）
+# name 收窄（0.6 §3.3，2026-10-25 用户裁决）：线索 = 经营主体本身，
+# name 是未来立项的项目名称候选，园区/区域/行业等抽象对象不占 name 槽位。
+_EXTRACT_PROMPT = """你是招商/投资经理的线索提取助手。下面是一份订阅跟踪报告全文。
+请从报告中提取值得跟进的「线索」。线索必须是明确的经营主体（企业/机构）或具名项目，
+name 一律填企业名称或其规范简称——禁止填产业园区、区域、行业、政策或事件等
+非主体名词（此类信息写入 signal）。每条包含：
+- name: 企业/机构名称（或其规范简称，作为未来立项的项目名称候选）
 - signal: 信号摘要（一句话说明为什么值得跟进）
 - evidence: 原文依据（报告中最能支撑该线索的原句，截取即可）
 
@@ -53,6 +57,10 @@ class LeadUpdateBody(BaseModel):
 
 class LeadExtractBody(BaseModel):
     runId: str
+
+
+class LeadConvertExtractBody(BaseModel):
+    leadId: str
 
 
 def _err(status: int, message: str, code: str) -> JSONResponse:
@@ -119,14 +127,20 @@ async def delete_lead(lead_id: str):
     return {"ok": True}
 
 
-def _parse_candidates(content: str) -> list[dict]:
-    """LLM 输出 → 候选清单：剥 markdown 围栏 → JSON 数组 → 字段规整
-    （name 必填非空；signal/evidence 缺失补空串）。解析不出抛 ValueError。"""
+def _strip_fences(content: str) -> str:
+    """剥 markdown 围栏（数组/对象两类解析共用）。"""
     text = (content or "").strip()
     if text.startswith("```"):
         # ```json ... ``` 围栏：取首尾围栏之间
         text = text.split("\n", 1)[1] if "\n" in text else text
         text = text.rsplit("```", 1)[0]
+    return text
+
+
+def _parse_candidates(content: str) -> list[dict]:
+    """LLM 输出 → 候选清单：剥 markdown 围栏 → JSON 数组 → 字段规整
+    （name 必填非空；signal/evidence 缺失补空串）。解析不出抛 ValueError。"""
+    text = _strip_fences(content)
     start, end = text.find("["), text.rfind("]")
     if start < 0 or end <= start:
         raise ValueError("no JSON array in LLM output")
@@ -152,44 +166,68 @@ def _parse_candidates(content: str) -> list[dict]:
     return candidates
 
 
+def _parse_field_object(content: str) -> dict:
+    """LLM 输出 → 字段对象（convert-extract 用）：剥围栏 → JSON 对象 →
+    全字段 strip、缺失补空串。解析不出抛 ValueError。"""
+    text = _strip_fences(content)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("no JSON object in LLM output")
+    parsed = json.loads(text[start:end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM output is not an object")
+    return {k: str(v or "").strip() for k, v in parsed.items()}
+
+
+async def _run_report_content(run_id: str):
+    """run 校验 + 报告路径白名单校验 + 读全文（extract/convert-extract 共用）。
+    返回 (run, content)；校验失败时 run 为 None、content 为 _err JSONResponse。"""
+    run = deps.db.get_run(run_id)
+    if not run:
+        return None, _err(404, "期次不存在", "RUN_NOT_FOUND")
+    if run["status"] == "running":
+        return None, _err(409, "期次执行中，完成后才能提取", "RUN_RUNNING")
+    if not run["report_path"]:
+        return None, _err(404, "本期无报告，不可提取", "REPORT_NOT_READY")
+    base = (Path(get_data_dir()) / "schedules").resolve()
+    target = Path(run["report_path"]).resolve()
+    if not str(target).startswith(str(base) + os.sep):
+        return None, _err(403, "报告路径越界", "REPORT_PATH_OUTSIDE")
+    if not target.is_file():
+        return None, _err(404, "报告副本文件缺失", "REPORT_FILE_MISSING")
+    return run, target.read_text(encoding="utf-8")
+
+
+async def _llm_chat(messages: list[dict], entity_id: str) -> dict:
+    """提取端点共用 LLM 调用链：延迟 import（forms.py 同模式，避免模块导入期
+    LLM 依赖）+ 档位路由（CodeReview Blocker 2026-10-24：get_settings 白名单
+    只有 standard/high 槽位、无 model 键，缺路由 → 空串请求被网关拒；线索
+    提取轻量 JSON 输出走标准档）+ 用量环境（2.10 §4.3：source=lead /
+    purpose=extract）。"""
+    from llm.usage import UsageContext, push_context
+    llm_settings = deps.db.get_settings()
+    from llm.routing import resolve_model
+    llm_settings["model"] = resolve_model(llm_settings, "standard")
+    from llm.client import LLMClient
+    llm_client = LLMClient(llm_settings)
+    with push_context(UsageContext(
+            source="lead", purpose="extract", entity_id=entity_id)):
+        return await llm_client.chat_full(messages)
+
+
 @router.post("/leads/extract")
 async def extract_leads(body: LeadExtractBody):
     """LLM 候选提取（run_id → 候选清单，0.6 §3.2）：同步 invoke + 前端按钮
     loading（不进活动注册表——单次对话级耗时）；候选零自动入池（§6.3-10，
     入池由用户勾选确认走 create）。提取源零成本（报告本就是 OUTPUT_CONTRACT
     结构化文本）；running 期次无报告不可提取。"""
-    db = deps.db
-    run = db.get_run(body.runId)
-    if not run:
-        return _err(404, "期次不存在", "RUN_NOT_FOUND")
-    if run["status"] == "running":
-        return _err(409, "期次执行中，完成后才能提取", "RUN_RUNNING")
-    if not run["report_path"]:
-        return _err(404, "本期无报告，不可提取", "REPORT_NOT_READY")
-    base = (Path(get_data_dir()) / "schedules").resolve()
-    target = Path(run["report_path"]).resolve()
-    if not str(target).startswith(str(base) + os.sep):
-        return _err(403, "报告路径越界", "REPORT_PATH_OUTSIDE")
-    if not target.is_file():
-        return _err(404, "报告副本文件缺失", "REPORT_FILE_MISSING")
-    content = target.read_text(encoding="utf-8")
+    run, content = await _run_report_content(body.runId)
+    if run is None:
+        return content
     try:
-        # 延迟 import（forms.py 同模式，避免模块导入期 LLM 依赖）；
-        # 2.10 §4.3 用量环境：source=lead / purpose=extract / entity_id=run_id
-        from llm.usage import UsageContext, push_context
-        llm_settings = db.get_settings()
-        # 档位路由（CodeReview Blocker 2026-10-24）：get_settings 白名单只有
-        # standard/high 槽位、无 model 键，LLMClient 缺键 → 空串请求被网关拒
-        # （原 refine-prompt 同教训实证）；线索提取轻量 JSON 输出走标准档
-        from llm.routing import resolve_model
-        llm_settings["model"] = resolve_model(llm_settings, "standard")
-        from llm.client import LLMClient
-        llm_client = LLMClient(llm_settings)
-        with push_context(UsageContext(
-                source="lead", purpose="extract", entity_id=body.runId)):
-            result = await llm_client.chat_full([
-                {"role": "user", "content": _EXTRACT_PROMPT + content},
-            ])
+        result = await _llm_chat(
+            [{"role": "user", "content": _EXTRACT_PROMPT + content}],
+            entity_id=body.runId)
     except Exception as e:
         from errors import actionable
         msg = actionable(e)
@@ -202,3 +240,65 @@ async def extract_leads(body: LeadExtractBody):
         return _err(500, "提取结果解析失败，请重试", "EXTRACT_PARSE_FAILED")
     logger.info("Lead extract run=%s: %d candidates", body.runId, len(candidates))
     return {"candidates": candidates}
+
+
+_CONVERT_EXTRACT_PROMPT = """你是招商/投资项目的立项助理。下面是一份订阅跟踪报告全文，
+它是某条线索的来源期次报告。请按项目基础信息字段语义提取立项预填值：
+- name: 项目名称（企业名称或其规范简称；禁止填产业园区、区域、行业等非主体名词）
+- description: 一句话项目描述（该主体的核心业务/本期关键动态，60 字内）
+- companyName: 公司名称（报告中有明确企业/机构全称时填，否则留空）
+- creditCode: 统一社会信用代码（报告中明确出现时填，否则留空）
+- suggestedType: 项目类型，只能是 recruitment / investment / general 之一
+  （招商落地机会→recruitment，投资标的机会→investment，无法判断→general；
+  值域与前端 ProjectType 完全对位，零映射直填）
+
+只输出 JSON 对象，不要任何其他文字、解释或 markdown 围栏：
+{"name": "...", "description": "...", "companyName": "", "creditCode": "", "suggestedType": "general"}
+
+报告全文：
+"""
+
+
+@router.post("/leads/convert-extract")
+async def convert_extract(body: LeadConvertExtractBody):
+    """立项字段提取（0.6 §3.3，2026-10-25）：从线索来源期次报告按项目基础
+    信息五字段语义提取，预填立项弹窗（AI 预提取、人确认/修改，§6.3-15）——
+    同时根修 LeadPool→App 立项参数错位（原 onConvertProject(name, type) 第二参
+    错落 description 形参，type 恒 general 致三联动全错）。手动录入线索无来源
+    报告 400；同步 invoke 不进活动注册表。"""
+    lead = deps.db.get_lead(body.leadId)
+    if not lead:
+        return _err(404, "线索不存在", "LEAD_NOT_FOUND")
+    if not lead.get("source_run_id"):
+        return _err(400, "该线索无来源报告，请手动填写", "LEAD_NO_SOURCE")
+    run, content = await _run_report_content(lead["source_run_id"])
+    if run is None:
+        return content
+    try:
+        result = await _llm_chat(
+            [{"role": "user", "content": _CONVERT_EXTRACT_PROMPT + content}],
+            entity_id=body.leadId)
+    except Exception as e:
+        from errors import actionable
+        logger.exception("Lead convert-extract failed for %s: %s", body.leadId, e)
+        return _err(500, actionable(e), "EXTRACT_FAILED")
+    try:
+        fields = _parse_field_object(result.get("content"))
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.warning("Lead convert-extract parse failed for %s: %s",
+                       body.leadId, e)
+        return _err(500, "提取结果解析失败，请重试", "EXTRACT_PARSE_FAILED")
+    stype = fields.get("suggestedType", "")
+    extracted = {
+        "name": fields.get("name", ""),
+        "description": fields.get("description", ""),
+        "companyName": fields.get("companyName", ""),
+        "creditCode": fields.get("creditCode", ""),
+        # 值域外归 general（LLM 输出漂移不阻断动线，立项弹窗仍可手选；
+        # 值域与前端 ProjectType 对位：recruitment/investment/general）
+        "suggestedType": stype if stype in ("recruitment", "investment",
+                                            "general") else "general",
+    }
+    logger.info("Lead convert-extract lead=%s: type=%s",
+                body.leadId, extracted["suggestedType"])
+    return {"fields": extracted}

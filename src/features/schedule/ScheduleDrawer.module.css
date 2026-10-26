@@ -1,0 +1,45 @@
+/* ScheduleDrawer.module.css — 期次三态右侧抽屉（0.6 §3.2 第二步 2026-10-25）。
+   形态对齐 TaskDrawer（3.0 §6.1.7）：遮罩 + 右侧全高面板 + 左缘拖宽手柄。
+   抽屉打开期间宿主页（IntelPage/首页）保持原位被遮罩覆盖。 */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  /* 模态面板（0.3 §5.2 阶梯第二级；对齐 TaskDrawer 归位档：高于 TitleBar 1000
+     与普通弹层 200 同层 Toast，低于 ConfirmDialog 3000） */
+  z-index: 2000;
+}
+
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  /* 上限：JS 随视口夹紧（防拖过头后回拖死区），CSS 保留作兜底；下限 JS 夹（MIN_W） */
+  max-width: 92vw;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border-color);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+}
+
+.dragHandle {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.dragHandle:hover {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* 内容宿主：ReadView/RunReplay/ArchiveView 自带 .page（flex:1 + min-width:0 +
+   内边距 + 滚动），此处只做横向骨架不叠加内边距 */
+.body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}

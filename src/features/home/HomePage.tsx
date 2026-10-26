@@ -26,6 +26,7 @@ const ONGOING_ICONS = {
   task: Wrench,
   model_download: Download,
   ledger_parse: BookOpen,
+  profile_extract: BookOpen,
   form_template: FileText,
   form_fill: Table,
   project_export: FolderOutput,
@@ -166,11 +167,13 @@ export function HomePage({
     } else if (item.entity_type === 'ppt' && item.container === 'templates') {
       window.dispatchEvent(new CustomEvent('app:navigate-template-management', { detail: { section: 'ppt' } }))
     } else if (item.project_id) {
-      // ledger_parse 是编译下游(台账解析),点击同样归 wiki Tab(3.0 四期);填表实例归 forms Tab(2.4);
+      // ledger_parse / profile_extract 是编译下游(台账解析/画像提取),点击同样归 wiki Tab
+      // (3.0 四期 / 2.6 §4.8);填表实例归 forms Tab(2.4);
       // 导出/导入(2.9)主体是项目数据资料,归 materials Tab
       const tab = item.entity_type === 'file'
         || item.entity_type === 'project_export' || item.entity_type === 'project_import' ? 'materials'
-        : item.entity_type === 'wiki_compile' || item.entity_type === 'ledger_parse' ? 'wiki'
+        : item.entity_type === 'wiki_compile' || item.entity_type === 'ledger_parse'
+          || item.entity_type === 'profile_extract' ? 'wiki'
         : item.entity_type === 'form_fill' ? 'forms' : 'reports'
       window.dispatchEvent(new CustomEvent('app:navigate-project-tab', {
         detail: { projectId: item.project_id, tab, container: item.container ?? 'project' },
@@ -200,6 +203,8 @@ export function HomePage({
         return t('activity.ongoing.schedule', { title: item.entity_title })
       case 'ledger_parse':
         return t('activity.ongoing.ledger_parse', { project: item.project_name })
+      case 'profile_extract':
+        return t('activity.ongoing.profile_extract', { project: item.project_name })
       case 'form_template':
         return t('activity.ongoing.form_template', {
           title: item.entity_title,

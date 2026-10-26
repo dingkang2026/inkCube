@@ -2,8 +2,8 @@
  *  只读：复用 TaskMessageList（isGenerating=false），无输入区/暂停/操作菜单——
  *  档案语义（规则 6），workspace 保留期清理后消息流仍可回看。
  *  标题「{订阅名} · M/D 执行回放（只读）」（订阅名/期次经 readReport 取）。
- *  头部动作条（2026-10-22）：返回（回宿主页：管理台恢复选中 / 首页）+
- *  查看报告（切 ReadView——修复期次历史进回放后无报告入口的不对称）。
+ *  头部动作条（2026-10-22）：返回（关闭期次抽屉，第二步三态统一 2026-10-25）+
+ *  查看报告（抽屉内切 ReadView——修复期次历史进回放后无报告入口的不对称）。
  *  传给 TaskMessageList 的 props 必须引用稳定：字面量每次渲染新引用会
  *  触发其自动滚 effect（isGenerating=false 本无流式变化）空转拉底。 */
 import { useEffect, useState } from 'react'
@@ -15,9 +15,9 @@ import s from './RunReplay.module.css'
 interface RunReplayProps {
   runId: string
   taskId: string
-  /** 返回宿主页（App 分发：管理台恢复选中订阅 / 首页） */
+  /** 关闭期次抽屉（ScheduleDrawer 收口，同 Esc/点遮罩） */
   onBack: () => void
-  /** 查看报告：App 切 scheduleView read 态（同 runId，来路沿用） */
+  /** 查看报告：抽屉内切 read 态（同 runId，抽屉保持打开） */
   onOpenReport: () => void
 }
 

@@ -2,6 +2,16 @@ import { useTranslation } from 'react-i18next'
 import type { LLMSettings } from '../../types'
 import styles from './GeneralSettings.module.css'
 
+// persona 值域白名单（review S1 守卫）：后端 schemas.py 为裸 str 无枚举校验，
+// DB 脏值（手工改库等异常前提）不得漏进 UI——否则动态 i18n key 渲染裸 key、
+// select 匹配不到 option 呈空白态。选项列表由本常量派生，本文件内单源
+const PERSONA_KEYS = ['business_attraction', 'investment', 'both', 'other'] as const
+
+/** 白名单外（含未设置 ''）一律归一为未设置，hint 与 select value 共用同一归一值 */
+function normalizePersona(raw: string | undefined): string {
+  return (PERSONA_KEYS as readonly string[]).includes(raw ?? '') ? (raw as string) : ''
+}
+
 interface GeneralSettingsProps {
   settings?: LLMSettings
   onUpdate?: <K extends keyof LLMSettings>(key: K, value: LLMSettings[K]) => void
@@ -9,6 +19,7 @@ interface GeneralSettingsProps {
 
 export function GeneralSettings({ settings, onUpdate }: GeneralSettingsProps) {
   const { t, i18n } = useTranslation()
+  const persona = normalizePersona(settings?.persona)
 
   const handleLanguageChange = (lng: string) => {
     i18n.changeLanguage(lng)
@@ -27,6 +38,28 @@ export function GeneralSettings({ settings, onUpdate }: GeneralSettingsProps) {
         <option value="zh-CN">中文</option>
         <option value="en-US">English</option>
       </select>
+
+      {/* 身份（0.6 §3.8 设置页身份入口，2026-10-25 触发落地）：首启 PersonaPicker
+          选定后的修改入口，读改 settings.persona 走自动保存链即时生效（模板/
+          订阅排序实时重排，promptTemplate.sortTemplatesByPersona），零新通道。
+          hint 动态消费 onboarding.persona.*.desc——选中态解释当前身份，
+          未设置态说明驱动面（§2.10 既有信息必须消费到决策点） */}
+      <label className={styles.label}>{t('settings.identity')}</label>
+      <select
+        className={styles.select}
+        value={persona}
+        onChange={(e) => onUpdate?.('persona', e.target.value as LLMSettings['persona'])}
+      >
+        <option value="">{t('settings.identityUnset')}</option>
+        {PERSONA_KEYS.map((key) => (
+          <option key={key} value={key}>{t(`onboarding.persona.${key}.label`)}</option>
+        ))}
+      </select>
+      <p className={styles.hint}>
+        {persona
+          ? t(`onboarding.persona.${persona}.desc`)
+          : t('settings.identityUnsetHint')}
+      </p>
 
       {/* Notification (2.11 §6.1)：OS 通知开关即时生效（SettingsPage 保存后广播
           app:settings-changed，ActivityMonitor 重读） */}

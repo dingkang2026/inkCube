@@ -16,40 +16,6 @@
   flex-wrap: wrap;
 }
 
-/* ── 时期进度条(仅展示,点击切换在详情页 stage pills) ── */
-.phaseBar {
-  display: inline-flex;
-  gap: 0;
-}
-
-.phaseSeg {
-  padding: 3px 14px;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  background: var(--bg-muted);
-  border: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.phaseSeg:first-child {
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-}
-
-.phaseSeg:last-child {
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-}
-
-.phaseSeg + .phaseSeg {
-  border-left: none;
-}
-
-.phaseSegActive {
-  color: var(--text-inverse);
-  background: var(--accent);
-  border-color: var(--accent);
-  font-weight: 600;
-}
-
 /* 头部计数(§6.1.3:当前期 N 项 · M 项本周到期) */
 .headMeta {
   font-size: var(--text-sm);

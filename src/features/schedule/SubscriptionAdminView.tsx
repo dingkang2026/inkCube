@@ -1,8 +1,9 @@
 /** src/features/schedule/SubscriptionAdminView.tsx — 定时订阅全宽管理台
- *  （2.11 §8.1，E3 T7）。左列 350px = 新建按钮 + 分类页签 + 状态筛选 + 搜索
- *  （防抖 300ms 服务端 q）+ 批量条 + 订阅行（名称·周期·状态点·未读点）；
- *  右列 = 未选中收件箱（未读优先时间流）/ 选中订阅详情 + 期次历史。
- *  刷新纪律：挂载拉一次 + 写操作后 refresh，零轮询（§9.2 规则 10）。 */
+ *  （2.11 §8.1，E3 T7）。左列 350px = 新建双按钮 + 分类页签 + 状态/类型筛选 +
+ *  搜索（防抖 300ms 服务端 q）+ 批量条 + 订阅行（名称·周期·状态点·未读点）；
+ *  右列 = 未选中收件箱（跨订阅期次流：排序切换 + 分类联动，情报流退役后唯一
+ *  消费面，V2 收敛 2026-10-25）/ 选中订阅详情 + 期次历史。
+ *  刷新纪律：挂载拉取 + 写操作后 refresh + 订阅期次终态边沿重拉，零轮询（§9.2 规则 10）。 */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Plus, Search, Play, Pencil, Trash2, ArchiveRestore, ChevronLeft } from 'lucide-react'
@@ -13,6 +14,8 @@ import { ScheduleFormModal, parseInterval, WEEKDAYS } from './ScheduleFormModal'
 import type { ScheduleKind } from './ScheduleFormModal'
 import { RunRow } from './RunRow'
 import { usePagedList } from '../../hooks/usePagedList'
+import { useActivity } from '../activity/ActivityContext'
+import { useEdgeRefetch } from '../../hooks/useEdgeRefetch'
 import type { ScheduleRow, ScheduleRunRow } from './useSchedules'
 import s from './SubscriptionAdminView.module.css'
 
@@ -38,30 +41,24 @@ function periodText(row: ScheduleRow, t: (k: string, p?: Record<string, unknown>
 }
 
 interface SubscriptionAdminViewProps {
-  /** 期次行点击（收件箱/期次历史统一进报告页，2.11 §9.1）：App 切 read 态，
-   *  携带 run 对象（schedule_id 供返回宿主页时恢复选中） */
+  /** 期次行点击（收件箱/期次历史统一进报告页，2.11 §9.1）：App 开期次阅读抽屉
+   *  （第二步三态统一 2026-10-25，宿主页不卸载无需恢复锚） */
   onOpenRead: (run: ScheduleRunRow) => void
-  /** 查看档案（2026-10-23 产品主张校准）：切档案阅读页（ArchiveView，应用内
+  /** 查看档案（2026-10-23 产品主张校准）：开档案抽屉（ArchiveView，应用内
    *  渲染）——不再 file:openOriginal 系统打开（系统打开仅限用户上传文件：
    *  素材列表 / Wiki 来源） */
   onOpenArchive: (row: ScheduleRow) => void
-  /** read/replay/archive 返回宿主页时回传的选中订阅 id：重挂载时恢复右列详情视图
-   *  （未传或空 = 收件箱默认视图；仅挂载时消费） */
-  restoreScheduleId?: string
-  /** 外部「新建订阅」信号（0.6 §3.2 V2-E1a：IntelPage 页头主钮直达）：
-   *  >0 打开新建弹层；消费后回调归零（ProjectList createSignal 同款） */
-  createSignal?: number
-  onCreateSignalConsumed?: () => void
 }
 
 export function SubscriptionAdminView({
-  onOpenRead, onOpenArchive, restoreScheduleId, createSignal, onCreateSignalConsumed,
+  onOpenRead, onOpenArchive,
 }: SubscriptionAdminViewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
 
-  const [selectedId, setSelectedId] = useState<string | null>(() => restoreScheduleId ?? null)
+  // 选中订阅（抽屉化后管理台不卸载，选中天然保持，无恢复锚）；默认不选中 = 右列收件箱
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [category, setCategory] = useState<Category>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -79,14 +76,6 @@ export function SubscriptionAdminView({
   }>({ category: 'all', statusFilter: 'all', typeFilter: 'all', q: '' })
 
   const errCode = (err: unknown) => (err as { errorCode?: string })?.errorCode
-
-  // 外部新建信号（IntelPage 页头主钮直达，0.6 §3.2）：打开弹层并归零
-  useEffect(() => {
-    if (createSignal && createSignal > 0) {
-      setFormOpen(true)
-      onCreateSignalConsumed?.()
-    }
-  }, [createSignal, onCreateSignalConsumed])
 
   // 列表：筛选变化防抖 300ms 后下沉服务端（0.1dev-guide 统一约定：50/页 + 加载更多）
   useEffect(() => {
@@ -126,12 +115,19 @@ export function SubscriptionAdminView({
     return scheduleRows
   }, [scheduleRows, debouncedFilters.statusFilter])
 
-  // 收件箱（未读优先时间流）：原 limit=100 一次性拉取改 50/页「加载更多」
+  // 收件箱（跨订阅期次流，情报流退役后唯一消费面）：排序切换 + 左列分类页签
+  // 联动（服务端 sort/category 直读过滤，V2 收敛 2026-10-25）；50/页「加载更多」
+  const [inboxSort, setInboxSort] = useState<'unread' | 'latest'>('unread')
+  const inboxParams = useMemo(() => {
+    const p: Record<string, unknown> = { sort: inboxSort }
+    if (debouncedFilters.category !== 'all') p.category = debouncedFilters.category
+    return p
+  }, [inboxSort, debouncedFilters.category])
   const {
     items: inbox, hasMore: hasMoreInbox, loadingMore: loadingMoreInbox,
     error: inboxError,
     reload: reloadInbox, loadMore: loadMoreInbox,
-  } = usePagedList<ScheduleRunRow>({ channel: 'schedules:inbox', itemsKey: 'runs' })
+  } = usePagedList<ScheduleRunRow>({ channel: 'schedules:inbox', itemsKey: 'runs', params: inboxParams })
 
   // 期次历史：50/页（默认页长）；未选中不拉（enabled 门控），取消选中后右列切收件箱不渲染旧 items
   const {
@@ -155,9 +151,18 @@ export function SubscriptionAdminView({
     if (selectedId) void reloadRuns()
   }, [reloadSchedules, reloadInbox, reloadRuns, selectedId])
 
-  // 行未读点：收件箱中该订阅存在未读 run
+  // 行未读点：收件箱中该订阅存在未读 run（随当前分类筛选视野；本就是已加载
+  // 窗口的局部视图，非全量承诺）
   const unreadScheduleIds = new Set(
     inbox.filter((r) => r.status === 'done' && !r.read_at).map((r) => r.schedule_id))
+
+  // 订阅期次终态边沿重拉（'schedule' 活动源——影子任务终态注册在 schedule 源
+  // 而非 task 源；零新增轮询）：新产出上屏收件箱，选中订阅期次历史同步
+  const { isActive: scheduleActive } = useActivity('schedule')
+  useEdgeRefetch(scheduleActive, () => {
+    void reloadInbox()
+    if (selectedId) void reloadRuns()
+  })
 
   const toggleChecked = (id: string, on: boolean) => {
     setChecked((prev) => {
@@ -366,7 +371,7 @@ export function SubscriptionAdminView({
     <div className={s.page}>
       {/* ── 左列：筛选 + 订阅列表 ── */}
       <div className={s.left}>
-        {/* 双入口（2.11 §12 收敛）：情报订阅/组合周报是两类订阅，
+        {/* 双入口（2.11 §12 收敛）：情报订阅/聚合简报是两类订阅，
             类型由入口给定，向导内不再二次选择 */}
         <div className={s.newBtnRow}>
           <button className={s.newBtn} onClick={() => { setEditing(null); setCreateKind('intel'); setFormOpen(true) }}>
@@ -444,7 +449,7 @@ export function SubscriptionAdminView({
               />
               <button
                 className={`${s.schedMain} ${!row.enabled ? s.rowPaused : ''}`}
-                onClick={() => setSelectedId(row.id)}
+                onClick={() => setSelectedId(selectedId === row.id ? null : row.id)}
               >
                 {/* 状态点互斥：运行呼吸 > 失败红（含熔断，需行动不淡显）> 手动暂停淡 > 默认灰 */}
                 <span className={`${s.stateDot} ${
@@ -492,7 +497,20 @@ export function SubscriptionAdminView({
       <div className={s.right}>
         {!selected ? (
           <>
-            <div className={s.paneTitle}>{t('schedule.inboxTitle')}</div>
+            <div className={s.paneTitleRow}>
+              <span className={s.paneTitle}>{t('schedule.inboxTitle')}</span>
+              {/* 排序切换（0.6 §6.3-3 排序独立于类别筛选；情报流退役后迁入收件箱） */}
+              <span className={s.sortChips}>
+                {(['unread', 'latest'] as const).map((sv) => (
+                  <button key={sv} type="button"
+                    className={`${s.sortChip} ${inboxSort === sv ? s.sortChipActive : ''}`}
+                    onClick={() => setInboxSort(sv)}
+                  >
+                    {t(`intel.sort.${sv}`)}
+                  </button>
+                ))}
+              </span>
+            </div>
             <div className={s.runList}>
               {inbox.length === 0 ? (
                 <div className={s.empty}>{t('schedule.inboxEmpty')}</div>

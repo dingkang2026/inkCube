@@ -5,6 +5,10 @@
  * 从安装包 resources/tools/python-build-standalone/ 复制到 %APPDATA%/InkCube/python/
  *
  * 通过 tool-versions.json 判断是否需要重新解压（版本变化时触发）。
+ *
+ * onProgress 载荷为结构化对象，不携带文案（文案由 renderer 经 i18n 渲染）：
+ *   { phase: 'copy-tools' }                              — 顶层工具二进制复制开始
+ *   { phase: 'copy-python', copied, total }              — Python 运行时复制进度
  */
 const fs = require('fs')
 const path = require('path')
@@ -45,22 +49,41 @@ async function writeJson(filePath, data) {
 }
 
 /**
+ * 递归统计目录下文件总数（进度分母；与 copyDir 同量级 IO，libuv 线程池）
+ */
+async function countFiles(dir) {
+  let count = 0
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      count += await countFiles(path.join(dir, entry.name))
+    } else {
+      count += 1
+    }
+  }
+  return count
+}
+
+/**
  * 递归复制目录（异步 — L4）
  *
  * All IO goes through fs.promises so first-run copying of hundreds of MB
  * runs on the libuv thread pool instead of blocking the Electron main
  * loop — the window stays responsive during initialization.
+ *
+ * @param {function} [onFile] - 每复制完一个文件回调一次（进度计数用）
  */
-async function copyDir(src, dest) {
+async function copyDir(src, dest, onFile) {
   await fs.promises.mkdir(dest, { recursive: true })
   const entries = await fs.promises.readdir(src, { withFileTypes: true })
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name)
     const destPath = path.join(dest, entry.name)
     if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath)
+      await copyDir(srcPath, destPath, onFile)
     } else {
       await fs.promises.copyFile(srcPath, destPath)
+      if (onFile) onFile()
     }
   }
 }
@@ -138,7 +161,7 @@ async function initializeTools(onProgress) {
   // during startup.
 
   // 1. 复制工具二进制
-  if (onProgress) onProgress('正在初始化工具链...')
+  if (onProgress) onProgress({ phase: 'copy-tools' })
   logElectron('INFO', 'Tool initializer: copying tools to ' + targetToolsDir)
 
   await fs.promises.mkdir(targetToolsDir, { recursive: true })
@@ -157,15 +180,25 @@ async function initializeTools(onProgress) {
   // 2. 复制 python-build-standalone
   const sourcePythonDir = path.join(sourceToolsDir, 'python-build-standalone')
   if (fs.existsSync(sourcePythonDir)) {
-    if (onProgress) onProgress('正在初始化 Python 运行环境...')
     logElectron('INFO', 'Tool initializer: copying python-build-standalone to ' + targetPythonDir)
 
     // 如果已存在先删除（避免残留）
     if (fs.existsSync(targetPythonDir)) {
       await fs.promises.rm(targetPythonDir, { recursive: true, force: true })
     }
-    await copyDir(sourcePythonDir, targetPythonDir)
-    logElectron('INFO', 'Tool initializer: python-build-standalone copied')
+    // 进度节流：数千文件逐个推送会洪泛 IPC，每 25 个上报一次 + 收尾一次
+    const total = await countFiles(sourcePythonDir)
+    if (onProgress) onProgress({ phase: 'copy-python', copied: 0, total })
+    let copied = 0
+    const reportPythonProgress = () => {
+      copied += 1
+      if (onProgress && (copied % 25 === 0)) {
+        onProgress({ phase: 'copy-python', copied, total })
+      }
+    }
+    await copyDir(sourcePythonDir, targetPythonDir, reportPythonProgress)
+    if (onProgress) onProgress({ phase: 'copy-python', copied, total })
+    logElectron('INFO', `Tool initializer: python-build-standalone copied (${copied} files)`)
   }
 
   // 3. 写入版本信息

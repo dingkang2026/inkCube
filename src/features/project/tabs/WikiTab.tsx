@@ -146,6 +146,12 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [showRecompileConfirm])
+
+  // 沉浸模式仅图谱视图（2026-10-25 裁决）：空间收益集中在图谱，其余视图不设入口；
+  // 展开中切离图谱自动收起，防其它视图滞留宽区态
+  useEffect(() => {
+    if (expanded && viewMode !== 'graph') onExpandChange?.(false)
+  }, [expanded, viewMode, onExpandChange])
   const [graphHighlightNode, setGraphHighlightNode] = useState<string | undefined>(undefined)
   const [previewPageKey, setPreviewPageKey] = useState<string | null>(null)
   const [isEditing, setIsEditing] = useState(false)
@@ -776,8 +782,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           </div>
         )}
 
-        {/* Expand / collapse button for immersive reading */}
-        {onExpandChange && (
+        {/* Expand / collapse button for immersive reading — 仅图谱视图（2026-10-25 裁决，
+            其余视图空间收益低不设入口；切离图谱由上方 effect 自动收起） */}
+        {onExpandChange && viewMode === 'graph' && (
           <button
             className={s.expandBtn}
             onClick={() => onExpandChange(!expanded)}
