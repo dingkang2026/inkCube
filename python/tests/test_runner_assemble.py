@@ -14,10 +14,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from report_generator.runner import ReportRunner  # noqa: E402
 
 
-def _make_runner(sections: list[dict], outputs: dict[str, str]) -> ReportRunner:
-    """跳过 __init__（LLM/检索依赖），仅装配组装所需字段。"""
+def _make_runner(outline: list[dict], outputs: dict[str, str]) -> ReportRunner:
+    """跳过 __init__（LLM/检索依赖），仅装配组装所需字段。
+
+    _assemble_full_text（2026-10-27 一级目录修复）遍历 self.outline
+    （章级结构）+ self.outputs，不再消费扁平 self.sections。
+    """
     r = ReportRunner.__new__(ReportRunner)
-    r.sections = sections
+    r.outline = outline
     r.outputs = outputs
     return r
 
@@ -26,8 +30,8 @@ class TestAssembleFullTextNumbering:
     def test_sections_numbered_in_order(self):
         """standard 节按执行顺序编号 1..N。"""
         runner = _make_runner(
-            sections=[{"section_id": "a", "title": "基本信息"},
-                      {"section_id": "b", "title": "财务分析"}],
+            outline=[{"section_id": "a", "title": "基本信息"},
+                     {"section_id": "b", "title": "财务分析"}],
             outputs={"a": "内容A", "b": "内容B"},
         )
         out = runner._assemble_full_text()
@@ -37,7 +41,7 @@ class TestAssembleFullTextNumbering:
     def test_post_body_front_numbered_first(self):
         """post_body front 前置节拿 1 号，standard 顺延。"""
         runner = _make_runner(
-            sections=[
+            outline=[
                 {"section_id": "sum", "title": "尽调摘要",
                  "compose_mode": "post_body", "position": "front"},
                 {"section_id": "a", "title": "基本信息"},
@@ -50,7 +54,7 @@ class TestAssembleFullTextNumbering:
     def test_post_body_end_numbered_last(self):
         """post_body end 后置节编号最后。"""
         runner = _make_runner(
-            sections=[
+            outline=[
                 {"section_id": "a", "title": "基本信息"},
                 {"section_id": "ref", "title": "附录",
                  "compose_mode": "post_body", "position": "end"},
@@ -63,8 +67,8 @@ class TestAssembleFullTextNumbering:
     def test_empty_output_section_skipped_without_consuming_number(self):
         """无产出章节跳过且不占号。"""
         runner = _make_runner(
-            sections=[{"section_id": "a", "title": "甲"},
-                      {"section_id": "b", "title": "乙"}],
+            outline=[{"section_id": "a", "title": "甲"},
+                     {"section_id": "b", "title": "乙"}],
             outputs={"a": "内容A"},  # b 无产出
         )
         out = runner._assemble_full_text()
@@ -75,7 +79,7 @@ class TestAssembleFullTextNumbering:
     def test_mixed_full_order_numbering(self):
         """front + standard ×2 + end 完整顺序编号 1-4。"""
         runner = _make_runner(
-            sections=[
+            outline=[
                 {"section_id": "sum", "title": "摘要",
                  "compose_mode": "post_body", "position": "front"},
                 {"section_id": "a", "title": "甲"},
@@ -92,10 +96,31 @@ class TestAssembleFullTextNumbering:
     def test_section_separator_preserved(self):
         """编号注入不破坏节间 --- 分隔符结构。"""
         runner = _make_runner(
-            sections=[{"section_id": "a", "title": "甲"},
-                      {"section_id": "b", "title": "乙"}],
+            outline=[{"section_id": "a", "title": "甲"},
+                     {"section_id": "b", "title": "乙"}],
             outputs={"a": "A", "b": "B"},
         )
         out = runner._assemble_full_text()
         assert "\n\n---\n\n" in out
         assert not re.search(r"^---#", out, flags=re.M)
+
+
+class TestRunnerConfigStorage:
+    """构造参数存储（include_project_kb，§1.2）：run() 的 data_sources 组装
+    与检索透传均读该属性（范围 gating 实现在 retrieval 层，见 test_retrieval）。"""
+
+    @staticmethod
+    def _make(**kw) -> ReportRunner:
+        from unittest.mock import MagicMock
+        return ReportRunner(
+            template={"outline": []}, variables={}, project_id="p1",
+            search_tool=MagicMock(), llm_client=MagicMock(),
+            llm_settings={}, output_dir="data/reports/test",
+            **kw,
+        )
+
+    def test_include_project_kb_default_true(self):
+        assert self._make().include_project_kb is True
+
+    def test_include_project_kb_false_stored(self):
+        assert self._make(include_project_kb=False).include_project_kb is False

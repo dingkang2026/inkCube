@@ -1,7 +1,8 @@
 /** tests/useSchedules.test.ts — 定时订阅摘要数据 hook（2.11 E3 T6）
  *  覆盖：挂载拉 schedules:summary；task 活动 isActive true→false 终态边沿
  *  补拉恰一次（0.4 §6.3，影子任务完成 → 未读计数上屏）；invoke 失败降级
- *  零值不抛（侧栏不阻塞）；refresh 手动重拉供写操作后调用。
+ *  零值不抛（侧栏不阻塞）；refresh 手动重拉供写操作后调用；
+ *  app:schedules-changed 已读边沿补拉（ReadView markRead 广播，2026-10-26）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
@@ -51,6 +52,20 @@ describe('useSchedules', () => {
     const { result } = renderHook(() => useSchedules())
     await waitFor(() => expect(invokeMock).toHaveBeenCalled())
     expect(result.current.totals).toEqual({ n: 0, total: 0, abnormal: 0 })
+  })
+
+  it("refetches summary on app:schedules-changed edge (ReadView markRead broadcast, E3b ③)", async () => {
+    const { result } = renderHook(() => useSchedules())
+    await waitFor(() => expect(result.current.totals).toEqual(TOTALS))
+    invokeMock.mockClear()
+    invokeMock.mockResolvedValue({ totals: { n: 3, total: 0, abnormal: 0 } })
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:schedules-changed'))
+    })
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(1))
+    expect(invokeMock).toHaveBeenCalledWith('schedules:summary')
+    // 徽章/首页速览即时归零（读完当下可见，不等下一个终态边沿）
+    expect(result.current.totals).toEqual({ n: 3, total: 0, abnormal: 0 })
   })
 
   it('manual refresh re-pulls summary', async () => {

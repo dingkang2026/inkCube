@@ -29,7 +29,6 @@ export interface ScheduleRow {
   scope: 'rollup' | null
   /** rollup 聚合圈选（订阅 id 数组；null = 全部启用订阅） */
   digest_schedule_ids: string[] | null
-  auto_import: number | boolean
   enabled: number | boolean
   next_run_at: string | null
   last_run_at: string | null
@@ -70,7 +69,7 @@ const ZERO_TOTALS: ScheduleTotals = { n: 0, total: 0, abnormal: 0 }
 /** 摘要拉取三态（页面遍历 review M1-1 2026-10-24）：失败必须区别于真实零订阅，
  *  引导类消费端（管理台收件箱 / IntelCardZone 空态）不得在失败时渲染「零订阅」
  *  建订阅引导（误导创建重复订阅）；纯数字展示类消费端（NavTabs 徽章/
- *  MorningHero/ScheduleSideSummary）失败回退 0 不触发动作、可接受 */
+ *  MorningHero）失败回退 0 不触发动作、可接受 */
 export type SchedulesStatus = 'loading' | 'loaded' | 'failed'
 
 export function useSchedules() {
@@ -101,6 +100,15 @@ export function useSchedules() {
   useEdgeRefetch(isActive, () => {
     void refresh()
   })
+
+  // 标记已读边沿（app:schedules-changed，2.11 §4.2）：ReadView 打开即 markRead
+  // 成功后广播（app:tasks-changed 同惯例）——抽屉化后读动作与各消费面脱离
+  // 组件关系，徽章/首页速览计数靠此即时归零（E3b ③「同步消失」），零新增轮询
+  useEffect(() => {
+    const onChanged = () => { void refresh() }
+    window.addEventListener('app:schedules-changed', onChanged)
+    return () => window.removeEventListener('app:schedules-changed', onChanged)
+  }, [refresh])
 
   return { totals, status, refresh }
 }

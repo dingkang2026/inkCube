@@ -1,18 +1,16 @@
-/** tests/WikiLintView.test.tsx — lint 一键修复（真实修复）回归（2.6 §12.3.5）
+/** tests/WikiLintView.test.tsx — lint 一键修复 + 治理工作台回归（2.6 §12.3.5）
  *  契约：broken-link finding 的 title 携带 [[dead_key]]，description 携带
  *  「PAGES: 源页」与「建议链接到: [[target]]」（lint.py pages 字段经 router 落库）。
- *  点击一键修复 → getPage 读源页 → [[dead]]/[[dead|别名]] 替换为 [[target]] →
- *  editPage 写回 → resolveReview(action='fixed') → toast 成功 → 刷新发现项。
+ *  点击一键修复 → wiki:fixWikilink 服务端正则替换（E3-2026-10：不经 editPage 写回，
+ *  不置 user_edited）→ resolveReview(action='fixed') → toast 成功 → 刷新发现项。
  *  发现项缺少 PAGES 行（旧数据）→ warning 提示，不产生任何写操作。
- *  E2-2026-10 追加：无 [severity] 前缀的发现项按类型回落默认级别（§5.4），
- *  避免摄入管线产出整列「信息」致级别筛选失效。
- *  E2-2026-10 §5.5 治理工作台：分型统计 chips（点击筛选）、矛盾两栏裁决卡
- *  （adjudicateReview 成功/部分失配）、存量矛盾降级提示、死链分型徽章
- *  （src_/结构页/异名）、缺口补料上传（knowledge:uploadFile）。
- *  3.0 一期最终 review 修复轮追加：lint 失败路径仍刷新（结构层已落库）、
- *  处置动作 onFindingsChanged 回调（计数回流链内环）、快切项目 latestPidRef 守卫。
- *  2026-10-16 review 修复轮：dedupDetect 快切项目守卫（晚到分组不填充面板，
- *  防对新项目误合并）、合并进行中禁用重复检测（防检测重拉致索引错位）。
+ *  E2-2026-10：无 [severity] 前缀按类型回落默认级别；治理工作台分型 chips、
+ *  矛盾两栏裁决卡、存量矛盾降级提示、死链分型徽章、缺口补料上传。
+ *  E3-2026-10：裁决部分失配不再笼统 toast——逐侧四态明细 + vanished 终态卡
+ *  （标记解决 / 打开页面核对）；重复检测自动化（编译终态落库 wiki_dedup_groups），
+ *  面板挂载 wiki:listDedupGroups 只读消费 + 组忽略 + 多选批量合并单确认框；
+ *  清扫审查改编译终态自动治理链（§12.2.16），手动按钮与通道已删。
+ *  3.0 一期：lint 失败路径仍刷新、onFindingsChanged 回调、快切项目 latestPidRef 守卫。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -70,15 +68,6 @@ beforeEach(() => {
   invokeMock.mockReset()
   invokeMock.mockImplementation(async (channel: string) => {
     if (channel === 'wiki:listReviews') return { reviews: [brokenFinding] }
-    if (channel === 'wiki:getPage') {
-      return {
-        page: {
-          page_key: 'src_report',
-          title: 'Report',
-          content: '见 [[dead_link]] 与 [[dead_link|别名]]。',
-        },
-      }
-    }
     return {}
   })
   ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke: invokeMock }
@@ -90,20 +79,22 @@ afterEach(() => {
 })
 
 describe('WikiLintView one-click broken-link fix (P2-2)', () => {
-  it('replaces the dead link in the source page and resolves the finding', async () => {
+  it('fixes the dead link via the server-side write path and resolves the finding', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [brokenFinding] }
+      if (channel === 'wiki:fixWikilink') return { success: true, page_key: 'src_report', replaced_count: 2 }
+      return {}
+    })
     const { getByText } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
     await flush()
 
     fireEvent.click(getByText('一键修复'))
     await flush()
 
-    expect(invokeMock).toHaveBeenCalledWith('wiki:getPage', { projectId: 'p1', pageKey: 'src_report' })
-    // [[dead]] 与 [[dead|别名]] 两种形式均替换，别名保留
-    expect(invokeMock).toHaveBeenCalledWith('wiki:editPage', {
-      projectId: 'p1',
-      pageKey: 'src_report',
-      content: '见 [[target_page]] 与 [[target_page|别名]]。',
-      title: 'Report',
+    // E3-2026-10：服务端正则替换（不置 user_edited + 快照 + link_fixed），
+    // 不再 getPage/editPage 写回
+    expect(invokeMock).toHaveBeenCalledWith('wiki:fixWikilink', {
+      projectId: 'p1', pageKey: 'src_report', deadKey: 'dead_link', targetKey: 'target_page',
     })
     expect(invokeMock).toHaveBeenCalledWith('wiki:resolveReview', {
       projectId: 'p1', reviewId: 'r1', action: 'fixed',
@@ -129,7 +120,7 @@ describe('WikiLintView one-click broken-link fix (P2-2)', () => {
     fireEvent.click(getByText('一键修复'))
     await flush()
 
-    expect(invokeMock).not.toHaveBeenCalledWith('wiki:editPage', expect.anything())
+    expect(invokeMock).not.toHaveBeenCalledWith('wiki:fixWikilink', expect.anything())
     expect(invokeMock).not.toHaveBeenCalledWith('wiki:resolveReview', expect.anything())
     expect(toastMock).toHaveBeenLastCalledWith('无法定位源页面或死链，请手动处理', 'warning')
   })
@@ -249,23 +240,103 @@ describe('WikiLintView governance workbench (E2-2026-10 §5.5)', () => {
     expect(toastMock).toHaveBeenLastCalledWith('已按选定说法更新相关页面', 'success')
   })
 
-  it('warns and keeps the finding when adjudication partially fails', async () => {
+  it('renders per-side details and the vanished terminal card on partial failure', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'wiki:listReviews') return { reviews: [contraWithEvidence] }
       if (channel === 'wiki:adjudicateReview') {
-        return { success: false, reason: 'partial_or_failed', details: [] }
+        return {
+          success: false,
+          reason: 'partial_or_failed',
+          details: [
+            { page_key: 'p_cert', success: true, status: 'replaced' },
+            { page_key: 'p_bp', success: false, status: 'vanished' },
+          ],
+        }
       }
       return {}
     })
-    const { getAllByText } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    const onNavigate = vi.fn()
+    const { getAllByText, getByText, container } = render(
+      <WikiLintView projectId="p1" onNavigateToPage={onNavigate} />,
+    )
     await flush()
 
     fireEvent.click(getAllByText('以此为准')[0])
     await flush()
 
-    expect(toastMock).toHaveBeenLastCalledWith(
-      '部分页面内容已变化，未能自动替换，请手动处理', 'warning',
+    // 逐侧明细替代笼统 toast（免培训：每侧发生了什么）
+    expect(container.textContent).toContain('[[p_cert]] 已更新为选定说法')
+    expect(container.textContent).toContain('[[p_bp]] 中已找不到原来的说法')
+    expect(container.textContent).toContain('矛盾很可能已随编辑消除')
+
+    // vanished 终态卡：打开页面核对 → 直达该页
+    expect(getByText('矛盾已消除，标记解决')).toBeTruthy()
+    fireEvent.click(getByText('打开页面核对'))
+    expect(onNavigate).toHaveBeenCalledWith('p_bp')
+  })
+
+  it('resolves the finding via dismiss from the vanished terminal card', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [contraWithEvidence] }
+      if (channel === 'wiki:adjudicateReview') {
+        return {
+          success: false,
+          reason: 'partial_or_failed',
+          details: [{ page_key: 'p_bp', success: false, status: 'vanished' }],
+        }
+      }
+      return {}
+    })
+    const onFindingsChanged = vi.fn()
+    const { getAllByText, getByText } = render(
+      <WikiLintView projectId="p1" onNavigateToPage={() => {}} onFindingsChanged={onFindingsChanged} />,
     )
+    await flush()
+
+    fireEvent.click(getAllByText('以此为准')[0])
+    await flush()
+    fireEvent.click(getByText('矛盾已消除，标记解决'))
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('wiki:resolveReview', {
+      projectId: 'p1', reviewId: 'rc1', action: 'dismiss',
+    })
+    expect(onFindingsChanged).toHaveBeenCalled()
+  })
+
+  it('hides the vanished resolve shortcut and points to the manual page when one remains (review m-4)', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [contraWithEvidence] }
+      if (channel === 'wiki:adjudicateReview') {
+        return {
+          success: false,
+          reason: 'partial_or_failed',
+          details: [
+            { page_key: 'p_cert', success: true, status: 'replaced' },
+            { page_key: 'p_bp', success: false, status: 'vanished' },
+            { page_key: 'p_c', success: false, status: 'manual_needed', reason: 'invalid_evidence' },
+          ],
+        }
+      }
+      return {}
+    })
+    const onNavigate = vi.fn()
+    const { getAllByText, getByText, queryByText } = render(
+      <WikiLintView projectId="p1" onNavigateToPage={onNavigate} />,
+    )
+    await flush()
+
+    fireEvent.click(getAllByText('以此为准')[0])
+    await flush()
+
+    // 仍有 manual_needed 侧时「矛盾已消除」不成立 → 一键归档隐藏，
+    // 改出「未更新」引导，按钮指向未更新页而非 vanished 页
+    expect(queryByText('矛盾已消除，标记解决')).toBeNull()
+    expect(getByText(
+      '部分原说法已消失，但仍有页面未能自动更新——请打开处理，完成后可忽略本条',
+    )).toBeTruthy()
+    fireEvent.click(getByText('打开未更新页面'))
+    expect(onNavigate).toHaveBeenCalledWith('p_c')
   })
 
   it('shows legacy hint for contradiction without structured evidence', async () => {
@@ -473,81 +544,45 @@ describe('WikiLintView 快切项目守卫(re-review 建议)', () => {
   })
 })
 
-describe('WikiLintView 清扫审查 + 重复检测（本轮孤儿通道接线 §5.3/§12.2.10）', () => {
-  it('sweep resolves findings via two-stage backend and refreshes counts', async () => {
-    invokeMock.mockImplementation(async (channel: string) => {
-      if (channel === 'wiki:listReviews') return { reviews: [makeFinding('r1', 'gap-A')] }
-      if (channel === 'wiki:sweepReviews') {
-        return { success: true, stage1_resolved: 2, stage2_resolved: 1, remaining: 3 }
-      }
-      return {}
-    })
-    const onFindingsChanged = vi.fn()
-    const { getByText } = render(
-      <WikiLintView projectId="p1" onNavigateToPage={() => {}} onFindingsChanged={onFindingsChanged} />,
-    )
-    await flush()
-
-    fireEvent.click(getByText('清扫审查'))
-    await flush()
-
-    expect(invokeMock).toHaveBeenCalledWith('wiki:sweepReviews', { projectId: 'p1' })
-    expect(toastMock).toHaveBeenLastCalledWith(
-      '已自动核销 2 项（确定替换）、1 项（智能匹配），剩余 3 项',
-      'success',
-    )
-    // 结果刷新链：findings 重拉 + 父级脉搏带计数回流
-    const reloads = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
-    expect(reloads).toBeGreaterThanOrEqual(2)
-    expect(onFindingsChanged).toHaveBeenCalled()
+describe('WikiLintView 重复页治理面板（E3-2026-10：检测自动化落库，挂载消费 + 批量合并）', () => {
+  const makeGroup = (id: string, slugs: string[], confidence = 'high') => ({
+    id, slugs, reason: '同一公司主页', confidence,
   })
 
-  it('sweep with nothing to resolve shows the clean toast', async () => {
+  it('loads persisted dedup groups on mount and renders group cards', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'wiki:listReviews') return { reviews: [] }
-      if (channel === 'wiki:sweepReviews') {
-        return { success: true, stage1_resolved: 0, stage2_resolved: 0, remaining: 1 }
-      }
+      if (channel === 'wiki:listDedupGroups') return { groups: [makeGroup('g1', ['corp_a', 'corp_b'])] }
       return {}
     })
-    const { getByText } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    const { container, getByText } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
     await flush()
 
-    fireEvent.click(getByText('清扫审查'))
-    await flush()
-
-    expect(toastMock).toHaveBeenLastCalledWith('没有可清扫的审查项', 'success')
+    expect(invokeMock).toHaveBeenCalledWith('wiki:listDedupGroups', { projectId: 'p1' })
+    expect(container.textContent).toContain('同一公司主页')
+    expect(container.querySelector('.dedupGroup')).toBeTruthy()
+    expect(getByText('[[corp_a]]')).toBeTruthy()
+    // 默认首个 slug 为 canonical
+    expect((container.querySelector('input[type="radio"]') as HTMLInputElement).checked).toBe(true)
   })
 
-  it('dedup detect with no groups toasts clean and renders the empty panel', async () => {
+  it('renders no panel when there are no pending groups', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'wiki:listReviews') return { reviews: [] }
-      if (channel === 'wiki:dedupDetect') return { groups: [], summaries_count: 5 }
+      if (channel === 'wiki:listDedupGroups') return { groups: [] }
       return {}
     })
-    const { getByText, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    const { container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
     await flush()
 
-    fireEvent.click(getByText('重复检测'))
-    await flush()
-
-    expect(invokeMock).toHaveBeenCalledWith('wiki:dedupDetect', { projectId: 'p1' })
-    expect(toastMock).toHaveBeenLastCalledWith('未发现内容重复的页面', 'success')
-    expect(container.textContent).toContain('未发现内容重复的页面')
+    expect(container.querySelector('.dedupPanel')).toBeNull()
   })
 
-  it('detects groups, lets the user pick canonical, confirms and merges', async () => {
+  it('merges a single group after confirmation with groupId', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'wiki:listReviews') return { reviews: [] }
-      if (channel === 'wiki:dedupDetect') {
-        return {
-          groups: [{ slugs: ['corp_a', 'corp_b'], reason: '同一公司主页', confidence: 'high' }],
-          summaries_count: 5,
-        }
-      }
-      if (channel === 'wiki:dedupMerge') {
-        return { merged: 2, canonical: 'corp_b', rewritten_links: 5, failed: [], truncated: [] }
-      }
+      if (channel === 'wiki:listDedupGroups') return { groups: [makeGroup('g1', ['corp_a', 'corp_b'])] }
+      if (channel === 'wiki:dedupMerge') return { merged: 1, rewritten_links: 5, failed: [], truncated: [] }
       return {}
     })
     const onFindingsChanged = vi.fn()
@@ -556,124 +591,187 @@ describe('WikiLintView 清扫审查 + 重复检测（本轮孤儿通道接线 §
     )
     await flush()
 
-    fireEvent.click(getByText('重复检测'))
-    await flush()
-
-    // 面板出现：组标题 + 置信徽章 + 理由 + slug 单选（默认首个为 canonical）
-    expect(container.textContent).toContain('同一公司主页')
-    expect(container.querySelector('.dedupGroup')).toBeTruthy()
-    expect(getByText('[[corp_a]]')).toBeTruthy()
-
-    // 改选 corp_b 为 canonical
+    // 改选 corp_b 为保留页
     const radios = container.querySelectorAll('input[type="radio"]') as NodeListOf<HTMLInputElement>
-    expect(radios.length).toBe(2)
     fireEvent.click(radios[1])
 
-    // 合并 → 确认框 → 确认
     fireEvent.click(getByText('合并（2 → 1）'))
     expect(container.querySelector('.confirmOverlay')).toBeTruthy()
+    expect(container.textContent).toContain('将把其余 1 个重复页面合并进「corp_b」后删除')
     fireEvent.click(container.querySelector('.confirmDangerBtn')!)
     await flush()
 
     expect(invokeMock).toHaveBeenCalledWith('wiki:dedupMerge', {
-      projectId: 'p1', canonicalKey: 'corp_b', duplicateKeys: ['corp_a'],
+      projectId: 'p1', canonicalKey: 'corp_b', duplicateKeys: ['corp_a'], groupId: 'g1',
     })
-    expect(toastMock).toHaveBeenLastCalledWith('已合并 2 个页面，重写 5 处链接', 'success')
-    // 合并后分组移除，findings 与父级计数同步刷新
+    expect(toastMock).toHaveBeenLastCalledWith('已合并 1 组重复页面，重写 5 处链接', 'success')
     expect(container.querySelector('.dedupGroup')).toBeNull()
     expect(onFindingsChanged).toHaveBeenCalled()
   })
 
-  it('surfaces a partial-merge warning when some pages fail', async () => {
+  it('batch-merges selected groups with one confirmation', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'wiki:listReviews') return { reviews: [] }
-      if (channel === 'wiki:dedupDetect') {
-        return {
-          groups: [{ slugs: ['corp_a', 'corp_b'], reason: '同一公司主页', confidence: 'medium' }],
-          summaries_count: 5,
-        }
+      if (channel === 'wiki:listDedupGroups') {
+        return { groups: [makeGroup('g1', ['corp_a', 'corp_b']), makeGroup('g2', ['team_x', 'team_y'], 'medium')] }
       }
+      if (channel === 'wiki:dedupMerge') return { merged: 1, rewritten_links: 3, failed: [], truncated: [] }
+      return {}
+    })
+    const { getByText, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    await flush()
+
+    const checkboxes = container.querySelectorAll('input[type="checkbox"]') as NodeListOf<HTMLInputElement>
+    fireEvent.click(checkboxes[0])
+    fireEvent.click(checkboxes[1])
+    expect(container.textContent).toContain('已选 2 组')
+
+    fireEvent.click(getByText('合并所选（2 组）'))
+    expect(container.textContent).toContain('将把所选 2 组重复页面各合并为 1 页')
+    fireEvent.click(container.querySelector('.confirmDangerBtn')!)
+    await flush()
+
+    // 逐组顺序执行，均携 groupId（后端回写 status=merged）
+    const mergeCalls = invokeMock.mock.calls.filter((c) => c[0] === 'wiki:dedupMerge')
+    expect(mergeCalls.length).toBe(2)
+    expect(mergeCalls[0][1]).toMatchObject({ groupId: 'g1', canonicalKey: 'corp_a' })
+    expect(mergeCalls[1][1]).toMatchObject({ groupId: 'g2', canonicalKey: 'team_x' })
+    expect(toastMock).toHaveBeenLastCalledWith('已合并 2 组重复页面，重写 6 处链接', 'success')
+    expect(container.querySelector('.dedupGroup')).toBeNull()
+  })
+
+  it('keeps failed groups in the panel and warns after a partial merge', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:listDedupGroups') return { groups: [makeGroup('g1', ['corp_a', 'corp_b'])] }
       if (channel === 'wiki:dedupMerge') {
-        return { merged: 1, canonical: 'corp_a', rewritten_links: 2, failed: [{ page_key: 'corp_b', reason: 'boom' }], truncated: [] }
+        return { merged: 0, rewritten_links: 0, failed: [{ page_key: 'corp_b', reason: 'boom' }], truncated: [] }
       }
       return {}
     })
     const { getByText, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
     await flush()
 
-    fireEvent.click(getByText('重复检测'))
-    await flush()
     fireEvent.click(getByText('合并（2 → 1）'))
     fireEvent.click(container.querySelector('.confirmDangerBtn')!)
     await flush()
 
     expect(toastMock).toHaveBeenLastCalledWith(
-      '部分合并：1 个页面失败、0 个页面内容过长被截断，已保留待处理',
+      '已合并 0 组；1 组存在失败页面，已保留可重试或忽略',
       'warning',
     )
+    // 失败组保留在面板供重试或忽略（内容不丢）
+    expect(container.querySelector('.dedupGroup')).toBeTruthy()
   })
 
-  it('drops stale dedup groups from a previous project after switching', async () => {
-    let resolveStale: (v: unknown) => void = () => {}
-    const stale = new Promise((res) => { resolveStale = res })
-    invokeMock.mockImplementation(async (channel: string, args: { projectId?: string }) => {
-      if (channel === 'wiki:listReviews') return { reviews: [makeFinding('r1', `gap-${args?.projectId}`)] }
-      if (channel === 'wiki:dedupDetect' && args?.projectId === 'p1') return stale
-      return {}
-    })
-    const { rerender, getByText, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
-    await flush()
-
-    fireEvent.click(getByText('重复检测'))
-    await flush()
-
-    // 快切到 p2 后 p1 的分组结果晚到：latestPidRef 守卫丢弃，不得填充面板
-    // ——否则 slug 同名会对新项目误合并
-    rerender(<WikiLintView projectId="p2" onNavigateToPage={() => {}} />)
-    await flush()
-    resolveStale({
-      groups: [{ slugs: ['corp_a', 'corp_b'], reason: '旧项目分组', confidence: 'high' }],
-      summaries_count: 5,
-    })
-    await flush()
-
-    expect(container.querySelector('.dedupPanel')).toBeNull()
-    expect(container.textContent).not.toContain('旧项目分组')
-  })
-
-  it('disables the dedup-detect button while a merge is in flight', async () => {
-    let resolveMerge: (v: unknown) => void = () => {}
-    const pendingMerge = new Promise((res) => { resolveMerge = res })
+  it('removes truncated groups from the panel and hints instead of faking retry (review m-3)', async () => {
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'wiki:listReviews') return { reviews: [] }
-      if (channel === 'wiki:dedupDetect') {
-        return {
-          groups: [{ slugs: ['corp_a', 'corp_b'], reason: '同一公司主页', confidence: 'high' }],
-          summaries_count: 5,
-        }
-      }
-      if (channel === 'wiki:dedupMerge') return pendingMerge
+      if (channel === 'wiki:listDedupGroups') return { groups: [makeGroup('g1', ['corp_a', 'corp_b'])] }
+      if (channel === 'wiki:dedupMerge') return { merged: 1, rewritten_links: 5, failed: [], truncated: ['corp_b'] }
       return {}
     })
     const { getByText, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
     await flush()
 
-    fireEvent.click(getByText('重复检测'))
-    await flush()
-    const detectBtn = getByText('重复检测').closest('button') as HTMLButtonElement
-    expect(detectBtn.disabled).toBe(false)
-
-    // 合并确认后 dedupMerge 在飞：重复检测必须禁用——合并回调按索引移除分组，
-    // 检测重拉会令索引指向未合并组
     fireEvent.click(getByText('合并（2 → 1）'))
     fireEvent.click(container.querySelector('.confirmDangerBtn')!)
-    expect(detectBtn.disabled).toBe(true)
-
-    // merge 返回后解锁，分组移除
-    resolveMerge({ merged: 2, canonical: 'corp_a', rewritten_links: 5, failed: [], truncated: [] })
     await flush()
-    expect(detectBtn.disabled).toBe(false)
+
+    // truncated 页合并本身已成功（后端已置 merged）→ 组照常移除，不伪装「可重试」
     expect(container.querySelector('.dedupGroup')).toBeNull()
+    expect(toastMock).toHaveBeenCalledWith('已合并 1 组重复页面，重写 5 处链接', 'success')
+    expect(toastMock).toHaveBeenLastCalledWith(
+      '其中 1 组含内容超长页面，仅部分正文并入，建议打开保留页核对',
+      'info',
+    )
+  })
+
+  it('dismisses a group so it disappears from the panel', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:listDedupGroups') return { groups: [makeGroup('g1', ['corp_a', 'corp_b'])] }
+      if (channel === 'wiki:dismissDedupGroup') return { success: true }
+      return {}
+    })
+    const { getByText, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    await flush()
+
+    fireEvent.click(getByText('忽略'))
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('wiki:dismissDedupGroup', { projectId: 'p1', groupId: 'g1' })
+    expect(container.querySelector('.dedupGroup')).toBeNull()
+  })
+
+  it('drops stale cross-project groups arriving after a project switch', async () => {
+    let resolveStale: (v: unknown) => void = () => {}
+    const stale = new Promise((res) => { resolveStale = res })
+    invokeMock.mockImplementation(async (channel: string, args: { projectId?: string }) => {
+      if (channel === 'wiki:listReviews') return { reviews: [makeFinding('r1', `gap-${args?.projectId}`)] }
+      if (channel === 'wiki:listDedupGroups' && args?.projectId === 'p1') return stale
+      if (channel === 'wiki:listDedupGroups') return { groups: [] }
+      return {}
+    })
+    const { rerender, container } = render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    await flush()
+
+    rerender(<WikiLintView projectId="p2" onNavigateToPage={() => {}} />)
+    await flush()
+    // p1 晚到的旧项目分组：latestPidRef 守卫丢弃——slug 同名会对新项目误合并
+    resolveStale({ groups: [makeGroup('g-old', ['corp_a', 'corp_b'])] })
+    await flush()
+
+    expect(container.querySelector('.dedupPanel')).toBeNull()
+    expect(container.textContent).not.toContain('同一公司主页')
+  })
+})
+
+describe('WikiLintView 治理完成信号刷新(review M-2)', () => {
+  it('reloads findings and dedup groups when app:governance-done arrives', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:listDedupGroups') return { groups: [] }
+      return {}
+    })
+    render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    await flush()
+
+    const reviewCalls = () => invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
+    const dedupCalls = () => invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listDedupGroups').length
+    const beforeR = reviewCalls()
+    const beforeD = dedupCalls()
+
+    // 治理完成通知到达（ActivityMonitor 广播）→ 已打开的体检视图自动重载
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:governance-done', { detail: { projectId: 'p1' } }))
+      await Promise.resolve()
+    })
+    await flush()
+
+    expect(reviewCalls()).toBe(beforeR + 1)
+    expect(dedupCalls()).toBe(beforeD + 1)
+  })
+
+  it('ignores governance-done signals from other projects', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:listReviews') return { reviews: [] }
+      if (channel === 'wiki:listDedupGroups') return { groups: [] }
+      return {}
+    })
+    render(<WikiLintView projectId="p1" onNavigateToPage={() => {}} />)
+    await flush()
+
+    const reviewCalls = () => invokeMock.mock.calls.filter((c) => c[0] === 'wiki:listReviews').length
+    const beforeR = reviewCalls()
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:governance-done', { detail: { projectId: 'p2' } }))
+      await Promise.resolve()
+    })
+    await flush()
+
+    expect(reviewCalls()).toBe(beforeR)
   })
 })
 

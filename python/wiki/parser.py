@@ -30,26 +30,28 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Regex patterns for block parsing
+# Regex patterns for block parsing.
+# 冒号全半角容忍 [:：]（2026-10-26 实证）：中文 LLM 常输出全角冒号
+# （---PAGE： key---），半角-only 正则全盘漏析 → 0 页静默成功。
 _REVIEW_PATTERN = re.compile(
-    r"---REVIEW:\s*(.+?)\s*\|\s*(.+?)---\s*\n(.*?)---END REVIEW---",
+    r"---REVIEW[:：]\s*(.+?)\s*\|\s*(.+?)---\s*\n(.*?)---END REVIEW---",
     re.DOTALL,
 )
 
 # EVIDENCE line inside REVIEW body (§4.3, E2-2026-10): contradiction evidence,
 # one line per side: EVIDENCE: [[page_key]] 「quote」 (中英引号容错)
 _EVIDENCE_PATTERN = re.compile(
-    r"^EVIDENCE:\s*\[\[(.+?)\]\]\s*[「『\"']?(.+?)[」』\"']?\s*$",
+    r"^EVIDENCE[:：]\s*\[\[(.+?)\]\]\s*[「『\"']?(.+?)[」』\"']?\s*$",
     re.MULTILINE,
 )
 
 # RESOLVES block (§4.3 gap closure, E2-2026-10): ---RESOLVES: 1--- or
 # ---RESOLVES: 1, 3--- (LLM 格式漂移容忍：逗号并列与多余空白)
-_RESOLVES_PATTERN = re.compile(r"---RESOLVES:\s*(.+?)---")
+_RESOLVES_PATTERN = re.compile(r"---RESOLVES[:：]\s*(.+?)---")
 
 # LINT block format (per §12.2.9): ---LINT: type | severity | title---
 _LINT_PATTERN = re.compile(
-    r"---LINT:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)---\s*\n(.*?)---END LINT---",
+    r"---LINT[:：]\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)---\s*\n(.*?)---END LINT---",
     re.DOTALL,
 )
 
@@ -155,11 +157,11 @@ def parse_lint_blocks(llm_output: str) -> list[dict]:
 
         # Extract PAGES: line if present
         pages = []
-        pages_match = re.search(r"^PAGES:\s*(.+)$", body, re.MULTILINE)
+        pages_match = re.search(r"^PAGES[:：]\s*(.+)$", body, re.MULTILINE)
         if pages_match:
             pages = [p.strip() for p in pages_match.group(1).split(",") if p.strip()]
             # Remove PAGES line from description
-            body = re.sub(r"^PAGES:\s*.+$", "", body, flags=re.MULTILINE).strip()
+            body = re.sub(r"^PAGES[:：]\s*.+$", "", body, flags=re.MULTILINE).strip()
 
         if title:
             results.append({
@@ -176,12 +178,12 @@ def parse_lint_blocks(llm_output: str) -> list[dict]:
 
 # V2 PAGE block: captures metadata lines + body
 _PAGE_V2_PATTERN = re.compile(
-    r"---PAGE:\s*(.+?)---\s*\n(.*?)---END PAGE---",
+    r"---PAGE[:：]\s*(.+?)---\s*\n(.*?)---END PAGE---",
     re.DOTALL,
 )
 
 # Metadata lines at top of PAGE block: key: value
-_META_LINE_PATTERN = re.compile(r"^(type|title|refs|tags)\s*:\s*(.+)$", re.MULTILINE)
+_META_LINE_PATTERN = re.compile(r"^(type|title|refs|tags)\s*[:：]\s*(.+)$", re.MULTILINE)
 
 # OVERVIEW block
 _OVERVIEW_PATTERN = re.compile(

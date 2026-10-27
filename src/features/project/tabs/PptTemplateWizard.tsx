@@ -9,11 +9,15 @@ import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2, Plus, X } from 'lucide-react'
 import s from './TemplateManagement.module.css'
+import { useDrawerWidth } from '../../../hooks/useDrawerWidth'
 import { useToast } from '../../knowledge/Toast'
 import { apiErrorText } from '../../../i18n/errorCodes'
 
 const KINDS = ['brand', 'style', 'layout', 'deck'] as const
 type Kind = (typeof KINDS)[number]
+
+/** 抽屉宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth；与 CSS min-width 兜底同值） */
+const DRAWER_MIN_DETAIL = 460
 
 /** 显示名 → slug：小写化、空白转连字符、剔除路径非法字符（中文保留，索引 key 允许） */
 function slugify(name: string): string {
@@ -41,6 +45,8 @@ export function PptTemplateWizard({ onCreated, onClose }: PptTemplateWizardProps
   const [refPaths, setRefPaths] = useState<string[]>([])
   const [notes, setNotes] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // 抽屉宽度/拖宽/防误关守卫统一契约（2026-10-26 由 CSS 固定 46% 不可拖改统一契约）
+  const dr = useDrawerWidth({ min: DRAWER_MIN_DETAIL })
 
   const handleNameChange = (v: string) => {
     setName(v)
@@ -90,8 +96,12 @@ export function PptTemplateWizard({ onCreated, onClose }: PptTemplateWizardProps
 
   return (
     <>
-      <div className={s.drawerBackdrop} onClick={onClose} />
-      <div className={s.drawer}>
+      <div className={s.drawerBackdrop} onClick={() => { if (!dr.suppressClick.current) onClose() }} />
+      <div className={s.drawer} style={{ width: dr.width }} onMouseDown={dr.onPanelMouseDown}>
+        <div
+          className={`${s.dragHandle} ${dr.dragging ? s.dragHandleActive : ''}`}
+          onMouseDown={dr.onHandleMouseDown}
+        />
         <div className={s.drawerHeader}>
           <h4>{t('project.pptTpl.wizard.title')}</h4>
           <button className={s.closeBtn} onClick={onClose} title={t('common.close')}>×</button>

@@ -1,10 +1,15 @@
-/** src/features/project/tabs/WikiHomePage.tsx — Wiki home = index.md: purpose + overview + categorized page index */
-import { useState, useEffect, useMemo } from 'react'
+/** src/features/project/tabs/WikiHomePage.tsx — Wiki 首页（2026-10-26 二次收敛：「页面」视图并入）：
+ *  目录态 = 引导卡（首次使用）/ 全局摘要 / 成册进度轻量条 / 目录分组 / 统计（置尾）；
+ *  搜索态 = 防抖全文搜索 + 图扩展结果 + 故障错误态。
+ *  收敛谱系：目录分组自旧 WikiHomePage「内容索引」→ WikiPagesView → 本组件；
+ *  搜索态自 WikiSearchView → WikiPagesView → 本组件——逻辑迁移非重写，不存两份。
+ *  「Wiki 目标」区块迁知识框架视图（WikiSchemaManager）——目标属于框架定义层 */
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  Target, FileText, Clock, Edit3, Check, X, Loader2,
-  BookOpen, Users, Lightbulb, Layers, FolderOpen,
-  Play, HelpCircle, AlertTriangle, ListChecks,
+  FileText, Edit3, Check, X, Loader2, Search, Link2, Play,
+  HelpCircle, ListChecks, ChevronRight,
+  BookOpen, Users, Lightbulb, Layers, FolderOpen, Clock,
 } from 'lucide-react'
 import { Markdown } from '../../../components/Markdown'
 import { useToast } from '../../knowledge/Toast'
@@ -18,54 +23,43 @@ interface WikiPage {
   status: string
 }
 
-/** 台账条目(wiki:listLedgerEntries 返回行,3.0 四期 T7) */
-export interface LedgerEntry {
+interface SearchResult {
   id: string
   page_key: string
-  entry_date: string | null
-  entry_type: string
-  content: string
+  title: string
+  content: string | null
+  page_type: string
+  _score: number
+  _source: string
+  graph_related_to?: string[]
 }
 
 interface WikiHomePageProps {
   projectId: string
-  purpose: string
   overview: string
-  pages: WikiPage[]
+  /** 来源文件数（isFirstTime 判定 + 统计条） */
   sourcePageCount: number
-  pendingCount: number
-  onNavigate: (view: 'changelog') => void
-  onNavigateToPage: (pageKey: string) => void
-  onCompile: () => void
-  /** purpose/overview 保存成功后回调父级刷新（避免保存后界面回显旧值） */
+  /** overview 保存成功后回调父级刷新（避免保存后界面回显旧值） */
   onMetaSaved?: () => void
-  /** 三型审查计数（矛盾/缺口/死链），父级 WikiTab 从 reviews 派生；信任信号行消费前两型
-   *  +pendingCount（V2 E3 死链撤离封面，体检面板分型保留） */
-  reviewCounts?: { contradiction: number; gap: number }
-  /** 「去处理」直达治理视图（lint） */
-  onOpenLint?: () => void
-  /** 「待汇编」chip 直达汇编视图（V2 E3 信任信号行） */
-  onOpenCompile?: () => void
-  /** 结构页定义清单（父级 wiki:getSchemas 拉取，含 is_ledger 台账标记），用于完成度区块
-   *  与目录台账组置顶判定；空/缺省隐藏（3.0 一期 Task 6；is_ledger 为 V2 E3 新增消费） */
+  /** 已加载页面（目录分组数据源）+ 待汇编计数（空态「开始汇编」入口） */
+  pages: WikiPage[]
+  pendingCount: number
+  /** 结构页定义清单（wiki:getSchemas）+ 缺失清单（listPages.missing_pages，全量口径）：
+   *  成册进度轻量条 + 目录台账组置顶判定数据源；空/缺省整条隐藏 */
   schemas?: Array<{ page_key: string; title: string; is_ledger?: boolean }>
-  /** 结构页缺失清单（wiki:listPages.missing_pages，后端基于全量 page_key 集：
-   *  完成度消费它而非分页后的 pages 复算，大项目不再低估，2026-10-22） */
   missingPages?: Array<{ page_key: string; title: string }>
-  /** 台账条目时间轴（3.0 四期：父级 wiki:listLedgerEntries 拉取）；空/undefined 整卡不渲染 */
-  ledgerEntries?: LedgerEntry[]
-  /** 台账解析进行中（心跳 ledger_parse 含本项目）：卡头灰字提示，旧条目照常可读 */
-  ledgerParsing?: boolean
-  /** 页面总数（wiki:listPages 响应 total）：分页后 pages.length 只是已加载数，计数显示优先用 total */
+  /** 页面总数（wiki:listPages total）：isFirstTime 判定 + 统计条 + 目录计数（全量口径优先于已加载数） */
   pagesTotal?: number | null
-  /** pages 是否还有更多（has_more）+ 加载更多回调/进行中态（0.1dev-guide 统一约定） */
+  /** 目录分页「加载更多」契约（0.1dev-guide §16） */
   hasMorePages?: boolean
   pagesLoadingMore?: boolean
   onLoadMorePages?: () => void
-  /** 台账时间轴是否还有更多 + 加载更多回调/进行中态 */
-  hasMoreLedger?: boolean
-  ledgerLoadingMore?: boolean
-  onLoadMoreLedger?: () => void
+  onNavigateToPage: (pageKey: string) => void
+  /** 空态「开始汇编(N)」入口（经父级 startCompileMaybe，空闲即启动、活跃忽略） */
+  onCompile: () => void
+  compiling: boolean
+  /** 成册进度轻量条点击 → 知识框架视图（框架页定义管理） */
+  onOpenSchema?: () => void
 }
 
 /** Page type config: icon, label/desc i18n keys, order */
@@ -90,45 +84,29 @@ function extractSummary(content: string | null, maxLen = 80): string {
   return ''
 }
 
-/** 成册进度环周长（r=20,viewBox 48,V2 E3 §3.5） */
-const RING_RADIUS = 20
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+/** Truncate content for search preview */
+function truncateContent(content: string | null, maxLen = 200): string {
+  if (!content) return ''
+  if (content.length <= maxLen) return content
+  return content.slice(0, maxLen) + '…'
+}
 
 export function WikiHomePage({
-  projectId, purpose, overview, pages, sourcePageCount, pendingCount,
-  onNavigate, onNavigateToPage, onCompile, onMetaSaved, reviewCounts, onOpenLint, onOpenCompile, schemas, missingPages,
-  ledgerEntries, ledgerParsing, pagesTotal,
+  projectId, overview, sourcePageCount, onMetaSaved,
+  pages, pendingCount, schemas, missingPages, pagesTotal,
   hasMorePages, pagesLoadingMore, onLoadMorePages,
-  hasMoreLedger, ledgerLoadingMore, onLoadMoreLedger,
+  onNavigateToPage, onCompile, compiling, onOpenSchema,
 }: WikiHomePageProps) {
   const { t } = useTranslation()
   const showToast = useToast()
-  const [editingPurpose, setEditingPurpose] = useState(false)
+
+  // ── 概况编辑态 ──
   const [editingOverview, setEditingOverview] = useState(false)
-  const [draftPurpose, setDraftPurpose] = useState(purpose)
   const [draftOverview, setDraftOverview] = useState(overview)
   const [saving, setSaving] = useState(false)
   const [overviewExpanded, setOverviewExpanded] = useState(false)
 
-  useEffect(() => { setDraftPurpose(purpose) }, [purpose])
   useEffect(() => { setDraftOverview(overview) }, [overview])
-
-  const handleSavePurpose = async () => {
-    setSaving(true)
-    try {
-      await window.electronAPI.invoke('wiki:updatePurpose', { projectId, purpose: draftPurpose })
-      setEditingPurpose(false)
-      onMetaSaved?.() // 父级刷新 purpose → props 回流，避免保存后仍显示旧值
-    } catch (err) {
-      console.error('Failed to save purpose:', err)
-      showToast(t('project.wiki.saveMetaFailed', {
-        reason: err instanceof Error ? err.message : String(err),
-        defaultValue: `保存失败: ${err instanceof Error ? err.message : String(err)}`,
-      }), 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   const handleSaveOverview = async () => {
     setSaving(true)
@@ -147,6 +125,64 @@ export function WikiHomePage({
     }
   }
 
+  // ── 搜索态（输入即切换，清空回目录）──
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<SearchResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searched, setSearched] = useState(false)
+  const [searchFailed, setSearchFailed] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const doSearch = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setResults([])
+      setSearched(false)
+      setSearchFailed(false)
+      return
+    }
+    setSearching(true)
+    try {
+      const result: any = await window.electronAPI.invoke('wiki:search', {
+        projectId,
+        query: q.trim(),
+        topK: 20,
+      })
+      setResults(result.results || [])
+      setSearchFailed(false)
+      setSearched(true)
+    } catch (err) {
+      console.error('Wiki search failed:', err)
+      setResults([])
+      // 故障与「无结果」是两种语义：错误态单独提示（后端 raise_on_error 透出）
+      setSearchFailed(true)
+      setSearched(true)
+    } finally {
+      setSearching(false)
+    }
+  }, [projectId])
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value
+    setQuery(val)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => doSearch(val), 300)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      doSearch(query)
+    }
+  }
+
+  // Cleanup debounce on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [])
+
+  // ── 目录分组 ──
   // V2 E3 目录语义分组：台账页单列置顶组（is_ledger 为唯一判定，0.6 §6.3-5——
   // 分组只改呈现不改 page_type 语义），其余仍按 page_type 分组
   const ledgerKeys = useMemo(
@@ -154,7 +190,6 @@ export function WikiHomePage({
     [schemas],
   )
 
-  // Group pages by page_type（台账页除外，单列置顶）
   const groupedPages = useMemo(() => {
     const groups: Record<string, WikiPage[]> = {}
     for (const page of pages) {
@@ -190,8 +225,7 @@ export function WikiHomePage({
   )
 
   // 结构页完成度：消费后端 listPages.missing_pages（基于全量 page_key 集计算，
-  // 不受 pages 分页影响——2026-10-22 修复：原用已加载分页 pages 复算 pageKeys，
-  // 页面超单页量时完成度被低估）；total=0 整块隐藏
+  // 不受 pages 分页影响——2026-10-22 修复）；total=0 整条隐藏
   const completion = useMemo(() => {
     if (!schemas || schemas.length === 0) return null
     const missingKeys = new Set((missingPages ?? []).map((m) => m.page_key))
@@ -199,22 +233,10 @@ export function WikiHomePage({
     return { total: schemas.length, generated, missingKeys }
   }, [schemas, missingPages])
 
-  // 台账时间轴分组（3.0 四期 T7）：按 entry_date 归并（后端已倒序,NULL 组自然置尾）;组内保持倒序
-  const ledgerGroups = useMemo(() => {
-    if (!ledgerEntries || ledgerEntries.length === 0) return null
-    const groups: Record<string, LedgerEntry[]> = {}
-    for (const e of ledgerEntries) {
-      const key = e.entry_date ?? '—'
-      ;(groups[key] ??= []).push(e)
-    }
-    return Object.entries(groups)
-  }, [ledgerEntries])
-  /** 条目行标题:pages 中按 page_key 找页标题,找不到显示 page_key 本身(计划 T7 实现要点) */
-  const ledgerPageTitle = (key: string) => pages.find((p) => p.page_key === key)?.title || key
+  // 首次使用：无页面且无来源文件（pagesTotal 全量口径替代原已加载数判定）
+  const isFirstTime = (pagesTotal ?? 0) === 0 && sourcePageCount === 0
 
-  const isFirstTime = pages.length === 0 && sourcePageCount === 0
-
-  /** 目录组渲染（V2 E3）：已生成页可点 + 缺失页置灰行（「待汇编」小标不可点）；
+  /** 目录组渲染：已生成页可点 + 缺失页置灰行（「待汇编」小标不可点）；
    *  台账组经 header 参数覆盖组名/图标，其余用 PAGE_TYPE_CONFIG */
   const renderIndexGroup = (
     type: string,
@@ -256,322 +278,236 @@ export function WikiHomePage({
     )
   }
 
+  const searching_ = query.trim().length > 0
+
   return (
-    <div className={s.homePage}>
-      {/* ── First-time onboarding ── */}
-      {isFirstTime && (
-        <section className={s.onboardingCard}>
-          <div className={s.onboardingHeader}>
-            <HelpCircle size={18} className={s.onboardingIcon} />
-            <h3 className={s.onboardingTitle}>{t('project.wiki.homePage.onboardTitle')}</h3>
-          </div>
-          <p className={s.onboardingDesc}>
-            {t('project.wiki.homePage.onboardDesc')}
-          </p>
-          <div className={s.onboardingSteps}>
-            <div className={s.onboardingStep}>
-              <span className={s.onboardingStepNum}>1</span>
-              <div className={s.onboardingStepContent}>
-                <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step1Title')}</span>
-                <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step1Hint')}</span>
-              </div>
+    <div className={s.searchView}>
+      {/* 搜索框：输入即切换全文搜索态，清空回概况+目录（2026-10-26 二次收敛并入首页） */}
+      <div className={s.searchHeader}>
+        <div className={s.searchInputWrap}>
+          <Search size={16} className={s.searchIcon} />
+          <input
+            type="text"
+            className={s.searchInput}
+            placeholder={t('project.wiki.searchPlaceholder', { defaultValue: '搜索 Wiki 页面...' })}
+            value={query}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+          />
+          {searching && <Loader2 size={14} className={s.spin} />}
+        </div>
+      </div>
+
+      {searching_ ? (
+        /* ── 搜索结果态 ── */
+        <div className={s.searchResults}>
+          {!searched && !searching && (
+            <div className={s.searchHint}>
+              <Search size={20} className={s.searchHintIcon} />
+              <p>{t('project.wiki.searchHint', { defaultValue: '输入关键词搜索 Wiki 页面' })}</p>
             </div>
-            <div className={s.onboardingStep}>
-              <span className={s.onboardingStepNum}>2</span>
-              <div className={s.onboardingStepContent}>
-                <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step2Title')}</span>
-                <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step2Hint')}</span>
-              </div>
-            </div>
-            <div className={s.onboardingStep}>
-              <span className={s.onboardingStepNum}>3</span>
-              <div className={s.onboardingStepContent}>
-                <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step3Title')}</span>
-                <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step3Hint')}</span>
-              </div>
-            </div>
-          </div>
-          {pendingCount > 0 && (
-            <button
-              className={s.onboardingAction}
-              onClick={onCompile}
-            >
-              <Play size={14} />
-              {t('project.wiki.homePage.startCompile', { count: pendingCount })}
-            </button>
           )}
-        </section>
-      )}
 
-      {/* ── 信任信号行（V2 E3 §3.5）：矛盾/缺口/待汇编三项，全 0 不渲染。
-          死链撤离封面（裁决：低危工程信号，体检面板分型与脉搏带合并口径保留）；
-          chip 可点直达整理层；仅待汇编时头部「去处理」不渲染（chip 即入口）── */}
-      {reviewCounts && (reviewCounts.contradiction > 0 || reviewCounts.gap > 0 || pendingCount > 0) && (
-        <section className={s.healthCard}>
-          <div className={s.healthHeader}>
-            <AlertTriangle size={15} className={s.healthIcon} />
-            <h3 className={s.healthTitle}>{t('project.wiki.homePage.healthTitle')}</h3>
-            {(reviewCounts.contradiction > 0 || reviewCounts.gap > 0) && (
-              <button className={s.healthGo} onClick={onOpenLint}>
-                {t('project.wiki.homePage.healthGo')}
-              </button>
-            )}
-          </div>
-          <div className={s.healthChips}>
-            {reviewCounts.contradiction > 0 && (
-              <button className={s.healthChipErr} onClick={onOpenLint}>
-                {t('project.wiki.homePage.healthContradiction')} {reviewCounts.contradiction}
-              </button>
-            )}
-            {reviewCounts.gap > 0 && (
-              <button className={s.healthChipWarn} onClick={onOpenLint}>
-                {t('project.wiki.homePage.healthGap')} {reviewCounts.gap}
-              </button>
-            )}
-            {pendingCount > 0 && (
-              <button className={s.healthChipWarn} onClick={onOpenCompile}>
-                {t('project.wiki.homePage.healthPending')} {pendingCount}
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* ── Ledger timeline card (3.0 四期 T7)：台账条目按日期分组,点击行直达台账页;空不渲染 ── */}
-      {ledgerGroups && (
-        <section className={s.homeSection}>
-          <div className={s.homeSectionHeader}>
-            <div className={s.homeSectionTitle}>
-              <Clock size={15} className={s.homeSectionIcon} />
-              <h3>{t('project.wiki.timeline.title')}</h3>
-              {ledgerParsing && (
-                <span className={s.homeToggleHint}>{t('project.wiki.timeline.parsing')}</span>
-              )}
+          {searched && results.length === 0 && !searching && (
+            <div className={s.searchHint}>
+              <p>
+                {searchFailed
+                  ? t('project.wiki.searchFailed', { defaultValue: '搜索失败，请稍后重试' })
+                  : t('project.wiki.noResults', { defaultValue: '未找到相关页面' })}
+              </p>
             </div>
-          </div>
-          <div className={s.homeSectionContent}>
-            <div className={s.timelineWrap}>
-              {ledgerGroups.map(([date, items]) => (
-                <div key={date} className={s.timelineGroup}>
-                  <div className={s.timelineDate}>{date}</div>
-                  <div className={s.timelineList}>
-                    {items.map((e) => (
-                      <button key={e.id} className={s.timelineItem}
-                        onClick={() => onNavigateToPage(e.page_key)}>
-                        <span className={s.timelinePageTitle}>{ledgerPageTitle(e.page_key)}</span>
-                        <span className={s.timelineContent}>{e.content}</span>
-                      </button>
-                    ))}
+          )}
+
+          {results.map((r) => (
+            <div
+              key={r.page_key}
+              className={s.searchResultItem}
+              onClick={() => onNavigateToPage(r.page_key)}
+            >
+              <div className={s.searchResultHeader}>
+                <FileText size={14} className={s.searchResultIcon} />
+                <span className={s.searchResultTitle}>{r.title || r.page_key}</span>
+                <span className={s.searchResultScore}>
+                  {(r._score || 0).toFixed(1)}
+                </span>
+              </div>
+              <p className={s.searchResultContent}>
+                {truncateContent(r.content)}
+              </p>
+              <div className={s.searchResultMeta}>
+                <span className={s.searchResultKey}>{r.page_key}</span>
+                {r._source === 'graph' && r.graph_related_to && r.graph_related_to.length > 0 && (
+                  <span className={s.searchResultGraph}>
+                    <Link2 size={11} />
+                    {t('project.wiki.graphRelated', { defaultValue: '图谱关联' })}: {r.graph_related_to.join(', ')}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* ── 目录态：概况 → 成册进度 → 目录 → 统计（2026-10-26 二次收敛裁决顺序，统计置尾） ── */
+        <div className={s.homePage}>
+          {/* First-time onboarding */}
+          {isFirstTime && (
+            <section className={s.onboardingCard}>
+              <div className={s.onboardingHeader}>
+                <HelpCircle size={18} className={s.onboardingIcon} />
+                <h3 className={s.onboardingTitle}>{t('project.wiki.homePage.onboardTitle')}</h3>
+              </div>
+              <p className={s.onboardingDesc}>
+                {t('project.wiki.homePage.onboardDesc')}
+              </p>
+              <div className={s.onboardingSteps}>
+                <div className={s.onboardingStep}>
+                  <span className={s.onboardingStepNum}>1</span>
+                  <div className={s.onboardingStepContent}>
+                    <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step1Title')}</span>
+                    <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step1Hint')}</span>
                   </div>
                 </div>
-              ))}
-              {hasMoreLedger && (
+                <div className={s.onboardingStep}>
+                  <span className={s.onboardingStepNum}>2</span>
+                  <div className={s.onboardingStepContent}>
+                    <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step2Title')}</span>
+                    <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step2Hint')}</span>
+                  </div>
+                </div>
+                <div className={s.onboardingStep}>
+                  <span className={s.onboardingStepNum}>3</span>
+                  <div className={s.onboardingStepContent}>
+                    <span className={s.onboardingStepTitle}>{t('project.wiki.homePage.step3Title')}</span>
+                    <span className={s.onboardingStepHint}>{t('project.wiki.homePage.step3Hint')}</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* Overview (collapsible) */}
+          <section className={s.homeSection}>
+            <div className={s.homeSectionHeader}>
+              <div className={s.homeSectionTitle} style={{ cursor: 'pointer' }} onClick={() => setOverviewExpanded(!overviewExpanded)}>
+                <FileText size={15} className={s.homeSectionIcon} />
+                <h3>{t('project.wiki.overview')}</h3>
+                {overview && (
+                  <span className={s.homeToggleHint}>{overviewExpanded ? t('project.wiki.homePage.collapse') : t('project.wiki.homePage.expand')}</span>
+                )}
+              </div>
+              {!editingOverview && (
                 <button
-                  className={s.loadMoreBtn}
-                  onClick={onLoadMoreLedger}
-                  disabled={ledgerLoadingMore}
+                  className={s.editBtn}
+                  onClick={() => {
+                    if (overviewExpanded) {
+                      setEditingOverview(true)
+                    } else {
+                      setOverviewExpanded(true)
+                    }
+                  }}
                 >
-                  {ledgerLoadingMore ? t('common.loading') : t('common.loadMore')}
+                  <Edit3 size={12} /> {t('project.wiki.edit')}
                 </button>
               )}
             </div>
-          </div>
-        </section>
-      )}
+            <p className={s.sectionHint}>{t('project.wiki.homePage.overviewHint')}</p>
+            {editingOverview ? (
+              <div className={s.editBlock}>
+                <textarea
+                  className={s.editTextarea}
+                  value={draftOverview}
+                  onChange={(e) => setDraftOverview(e.target.value)}
+                  placeholder={t('project.wiki.editOverviewPlaceholder')}
+                  rows={8}
+                />
+                <div className={s.editActions}>
+                  <button className={s.editSaveBtn} onClick={handleSaveOverview} disabled={saving}>
+                    {saving ? <Loader2 size={12} className={s.spin} /> : <Check size={12} />}
+                    {t('project.wiki.save')}
+                  </button>
+                  <button className={s.editCancelBtn} onClick={() => { setEditingOverview(false); setDraftOverview(overview) }}>
+                    <X size={12} /> {t('project.wiki.cancel')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className={s.homeSectionContent}>
+                {overview ? (
+                  overviewExpanded ? (
+                    <Markdown content={overview} />
+                  ) : (
+                    <div className={s.homeOverviewPreview}>{overview.split('\n').slice(0, 3).join('\n')}</div>
+                  )
+                ) : (
+                  <p className={s.homePlaceholder}>
+                    {t('project.wiki.homePage.overviewGenerated')}
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
 
-      {/* ── 成册进度环（V2 E3 §3.5）：进度条升级为环形，generated/total + 已生成/骨架 chips ── */}
-      {completion && (
-        <section className={s.homeSection}>
-          <div className={s.homeSectionHeader}>
-            <div className={s.homeSectionTitle}>
-              <ListChecks size={15} className={s.homeSectionIcon} />
-              <h3>{t('project.wiki.homePage.completionTitle')}</h3>
-              <span className={s.homeIndexCount}>
+          {/* ── 成册进度轻量条：原 SVG 进度环压缩为一行——迷你进度条 + generated/total，
+              整条可点直达知识框架视图（定义管理/逐页状态在那里） ── */}
+          {completion && (
+            <button
+              className={s.progressLite}
+              onClick={onOpenSchema}
+              title={t('project.wiki.homePage.progressLiteTip')}
+            >
+              <ListChecks size={14} className={s.progressLiteIcon} />
+              <span className={s.progressLiteTitle}>{t('project.wiki.homePage.completionTitle')}</span>
+              <span className={s.progressLiteTrack}>
+                <span
+                  className={s.progressLiteFill}
+                  style={{ width: `${Math.round((completion.generated / completion.total) * 100)}%` }}
+                />
+              </span>
+              <span className={s.progressLiteCount}>
                 {t('project.wiki.homePage.completionGenerated')} {completion.generated}/{completion.total}
               </span>
-            </div>
-          </div>
-          <div className={s.completionBody}>
-            <svg
-              className={s.completionRing}
-              viewBox="0 0 48 48"
-              role="img"
-              aria-label={`${t('project.wiki.homePage.completionTitle')} ${completion.generated}/${completion.total}`}
-            >
-              <circle className={s.completionRingTrack} cx="24" cy="24" r="20" />
-              <circle
-                className={s.completionRingFill}
-                cx="24" cy="24" r="20"
-                strokeDasharray={`${RING_CIRCUMFERENCE}`}
-                strokeDashoffset={RING_CIRCUMFERENCE * (1 - completion.generated / completion.total)}
-                transform="rotate(-90 24 24)"
-              />
-            </svg>
-            <div className={s.completionChips}>
-              {schemas?.map((sc) =>
-                !completion.missingKeys.has(sc.page_key) ? (
-                  <span key={sc.page_key} className={s.completionChipDone}>
-                    <Check size={11} /> {sc.title}
-                  </span>
-                ) : (
-                  <span key={sc.page_key} className={s.completionChipMissing}>{sc.title}</span>
-                ),
-              )}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* ── Wiki Purpose ── */}
-      <section className={s.homeSection}>
-        <div className={s.homeSectionHeader}>
-          <div className={s.homeSectionTitle}>
-            <Target size={15} className={s.homeSectionIcon} />
-            <h3>{t('project.wiki.purpose')}</h3>
-          </div>
-          {!editingPurpose && (
-            <button
-              className={s.editBtn}
-              onClick={() => setEditingPurpose(true)}
-            >
-              <Edit3 size={12} /> {t('project.wiki.edit')}
+              <ChevronRight size={13} className={s.progressLiteGo} />
             </button>
           )}
-        </div>
-        <p className={s.sectionHint}>{t('project.wiki.homePage.purposeHint')}</p>
-        {editingPurpose ? (
-          <div className={s.editBlock}>
-            <textarea
-              className={s.editTextarea}
-              value={draftPurpose}
-              onChange={(e) => setDraftPurpose(e.target.value)}
-              placeholder={t('project.wiki.homePage.purposePlaceholder')}
-              rows={4}
-            />
-            <div className={s.editActions}>
-              <button className={s.editSaveBtn} onClick={handleSavePurpose} disabled={saving}>
-                {saving ? <Loader2 size={12} className={s.spin} /> : <Check size={12} />}
-                {t('project.wiki.save')}
-              </button>
-              <button className={s.editCancelBtn} onClick={() => { setEditingPurpose(false); setDraftPurpose(purpose) }}>
-                <X size={12} /> {t('project.wiki.cancel')}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className={s.homeSectionContent}>
-            {purpose ? (
-              <Markdown content={purpose} />
-            ) : (
-              <p className={s.homePlaceholder}>
-                {t('project.wiki.noPurpose')}
-              </p>
-            )}
-          </div>
-        )}
-      </section>
 
-      {/* ── Wiki Overview (collapsible) ── */}
-      <section className={s.homeSection}>
-        <div className={s.homeSectionHeader}>
-          <div className={s.homeSectionTitle} style={{ cursor: 'pointer' }} onClick={() => setOverviewExpanded(!overviewExpanded)}>
-            <FileText size={15} className={s.homeSectionIcon} />
-            <h3>{t('project.wiki.overview')}</h3>
-            {overview && (
-              <span className={s.homeToggleHint}>{overviewExpanded ? t('project.wiki.homePage.collapse') : t('project.wiki.homePage.expand')}</span>
-            )}
-          </div>
-          {!editingOverview && (
-            <button
-              className={s.editBtn}
-              onClick={() => {
-                if (overviewExpanded) {
-                  setEditingOverview(true)
-                } else {
-                  setOverviewExpanded(true)
-                }
-              }}
-            >
-              <Edit3 size={12} /> {t('project.wiki.edit')}
-            </button>
-          )}
-        </div>
-        <p className={s.sectionHint}>{t('project.wiki.homePage.overviewHint')}</p>
-        {editingOverview ? (
-          <div className={s.editBlock}>
-            <textarea
-              className={s.editTextarea}
-              value={draftOverview}
-              onChange={(e) => setDraftOverview(e.target.value)}
-              placeholder={t('project.wiki.editOverviewPlaceholder')}
-              rows={8}
-            />
-            <div className={s.editActions}>
-              <button className={s.editSaveBtn} onClick={handleSaveOverview} disabled={saving}>
-                {saving ? <Loader2 size={12} className={s.spin} /> : <Check size={12} />}
-                {t('project.wiki.save')}
-              </button>
-              <button className={s.editCancelBtn} onClick={() => { setEditingOverview(false); setDraftOverview(overview) }}>
-                <X size={12} /> {t('project.wiki.cancel')}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className={s.homeSectionContent}>
-            {overview ? (
-              overviewExpanded ? (
-                <Markdown content={overview} />
-              ) : (
-                <div className={s.homeOverviewPreview}>{overview.split('\n').slice(0, 3).join('\n')}</div>
-              )
-            ) : (
-              <p className={s.homePlaceholder}>
-                {t('project.wiki.homePage.overviewGenerated')}
-              </p>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* ── Page Index (index.md) ── */}
-      <section className={s.homeSection}>
-        <div className={s.homeSectionHeader}>
-          <div className={s.homeSectionTitle}>
-            <BookOpen size={15} className={s.homeSectionIcon} />
-            <h3>{t('project.wiki.homePage.indexTitle')}</h3>
-            {(pagesTotal ?? pages.length) > 0 && (
-              <span className={s.homeIndexCount}>{t('project.wiki.homePage.pagesCount', { count: pagesTotal ?? pages.length })}</span>
-            )}
-          </div>
-          {pages.length > 0 && (
-            <button className={s.editBtn} onClick={() => onNavigate('changelog')}>
-              <Clock size={12} /> {t('project.wiki.changeLog')}
-            </button>
-          )}
-        </div>
-        <p className={s.sectionHint}>{t('project.wiki.homePage.indexHint')}</p>
-
-        {pages.length === 0 && !isFirstTime ? (
-          <div className={s.homeSectionContent}>
-            <p className={s.homePlaceholder}>
-              {pendingCount > 0
-                ? t('project.wiki.homePage.pendingCta', { count: pendingCount })
-                : t('project.wiki.homePage.emptyIndex')}
-            </p>
-          </div>
-        ) : pages.length > 0 ? (
+          {/* 目录（原页面视图主体）：空态三态 / 分组 / 加载更多 / 计数行 */}
           <div className={s.homeIndex}>
-            {/* 跟踪台账组置顶（V2 E3）：is_ledger 命中页 + 缺失台账页置灰 */}
-            {(ledgerPages.length > 0 || ledgerMissing.length > 0) && renderIndexGroup(
-              'ledger', ledgerPages, ledgerMissing,
-              { Icon: Clock, labelKey: 'project.wiki.homePage.indexGroupLedger', descKey: 'project.wiki.homePage.indexGroupLedgerDesc' },
+            {pages.length === 0 && pendingCount === 0 ? (
+              <p className={s.homePlaceholder}>
+                {t('project.wiki.homePage.emptyIndex')}
+              </p>
+            ) : pages.length === 0 && pendingCount > 0 ? (
+              /* 空态承接原汇编视图空态职责：待汇编即启动入口（IA 收敛 2026-10-26） */
+              <div className={s.pagesEmptyCta}>
+                <p className={s.homePlaceholder}>
+                  {t('project.wiki.homePage.pendingCta', { count: pendingCount })}
+                </p>
+                <button
+                  className={s.retryBtn}
+                  onClick={onCompile}
+                  disabled={compiling}
+                >
+                  <Play size={13} />
+                  {compiling
+                    ? t('project.wiki.homePage.compiling', { defaultValue: '汇编中…' })
+                    : t('project.wiki.homePage.startCompile', { count: pendingCount })}
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* 跟踪台账组置顶（V2 E3）：is_ledger 命中页 + 缺失台账页置灰 */}
+                {(ledgerPages.length > 0 || ledgerMissing.length > 0) && renderIndexGroup(
+                  'ledger', ledgerPages, ledgerMissing,
+                  { Icon: Clock, labelKey: 'project.wiki.homePage.indexGroupLedger', descKey: 'project.wiki.homePage.indexGroupLedgerDesc' },
+                )}
+                {groupedPages.map(([type, typePages]) =>
+                  renderIndexGroup(type, typePages, type === 'structure' ? structureMissing : []))}
+                {/* 知识框架组全缺（无已生成结构页）但仍有缺失定义：仅置灰行的组 */}
+                {!groupedPages.some(([type]) => type === 'structure') && structureMissing.length > 0 &&
+                  renderIndexGroup('structure', [], structureMissing)}
+              </>
             )}
-            {groupedPages.map(([type, typePages]) =>
-              renderIndexGroup(type, typePages, type === 'structure' ? structureMissing : []))}
-            {/* 知识框架组全缺（无已生成结构页）但仍有缺失定义：仅置灰行的组 */}
-            {!groupedPages.some(([type]) => type === 'structure') && structureMissing.length > 0 &&
-              renderIndexGroup('structure', [], structureMissing)}
-            {hasMorePages && (
+            {pages.length > 0 && hasMorePages && (
               <button
                 className={s.loadMoreBtn}
                 onClick={onLoadMorePages}
@@ -580,21 +516,26 @@ export function WikiHomePage({
                 {pagesLoadingMore ? t('common.loading') : t('common.loadMore')}
               </button>
             )}
+            {(pagesTotal ?? pages.length) > 0 && (
+              <div className={s.pagesCountLine}>
+                {t('project.wiki.homePage.pagesCount', { count: pagesTotal ?? pages.length })}
+              </div>
+            )}
           </div>
-        ) : null}
-      </section>
 
-      {/* ── Stats bar ── */}
-      {(pages.length > 0 || sourcePageCount > 0) && (
-        <div className={s.homeStats}>
-          <div className={s.homeStatItem} title={t('project.wiki.homePage.statPagesTip')}>
-            <span className={s.homeStatValue}>{pagesTotal ?? pages.length}</span>
-            <span className={s.homeStatLabel}>{t('project.wiki.wikiPages')}</span>
-          </div>
-          <div className={s.homeStatItem} title={t('project.wiki.homePage.statFilesTip')}>
-            <span className={s.homeStatValue}>{sourcePageCount}</span>
-            <span className={s.homeStatLabel}>{t('project.wiki.sourceFiles')}</span>
-          </div>
+          {/* Stats bar（置尾，2026-10-26 二次收敛裁决） */}
+          {((pagesTotal ?? 0) > 0 || sourcePageCount > 0) && (
+            <div className={s.homeStats}>
+              <div className={s.homeStatItem} title={t('project.wiki.homePage.statPagesTip')}>
+                <span className={s.homeStatValue}>{pagesTotal ?? 0}</span>
+                <span className={s.homeStatLabel}>{t('project.wiki.wikiPages')}</span>
+              </div>
+              <div className={s.homeStatItem} title={t('project.wiki.homePage.statFilesTip')}>
+                <span className={s.homeStatValue}>{sourcePageCount}</span>
+                <span className={s.homeStatLabel}>{t('project.wiki.sourceFiles')}</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

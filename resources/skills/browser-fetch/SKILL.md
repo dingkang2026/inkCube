@@ -23,9 +23,11 @@ description: 用内置浏览器进行 LLM 驱动的多步网页操作（action �
 
 操作型 action 返回 `{action, url, title, page:{text(≤3000字符), truncated}, elements:[≤80条 {role, name, selector, href?}], scroll:{y, height, remaining}, needs_login}`。`elements` 的 `selector` 与 `name`（可见文本）跨调用稳定且**保证页面唯一**（生成时经唯一性验证）——**直接用它们定位，不要猜选择器**；链接类元素带 `href`，**导航目标明确时直接 `open <href>` 比 click 更稳**；`remaining>0` 表示还有更多元素，先 scroll 再看；`scroll.remaining` 是视口下方剩余像素（0 = 视觉到底），懒加载页面 `height` 持续增长说明内容还没加载完。`--wait-for` 超时会返回当前快照 + `warning`（元素未出现 ≠ 页面不可用），按实况决定重试还是改道。
 
-## needs_login
+## needs_login（硬墙 / 软墙两种形态）
 
-返回 `{error, needs_login: true, domain}` 时：**告知用户**在对话卡片点「立即登录」或到 设置 → 网页登录态 完成登录，用户回复后再继续发 action（登录态自动生效）。不要自己重试。
+**硬墙**：返回 `{error, needs_login: true, domain}`（无数据落盘）——整页被登录拦截。**告知用户**在对话卡片点「立即登录」或到 设置 → 网页登录态 完成登录，用户回复后再继续发 action（登录态自动生效）。不要自己重试。
+
+**软墙**（返回体带 `login_gated: true`，数据已照常落盘）：页面公开内容完整、仅部分字段被登录遮蔽（如 `181****登录查看`、`登录后查看更多信息`）。**必须明确告知用户**：本次已抓到公开部分，但页面存在需登录才能查看的字段（从提取内容中指出具体是哪些），请到浏览器面板登录后告知，再重新 `scroll --to bottom` + `extract` 覆盖落盘。**禁止**静默跳过遮蔽字段、或仅在回复文字标注「此字段需登录」就收尾。
 
 ## 使用建议
 

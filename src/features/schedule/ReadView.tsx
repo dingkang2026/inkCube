@@ -74,7 +74,16 @@ export function ReadView({ runId, onBack, onReplay }: ReadViewProps) {
         // 仅 done——running/failed 无未读语义，running 提前标已读会吞掉
         // 终态后的未读点与新产出计数（2026-10-23）
         if (res.run.status === 'done') {
-          void window.electronAPI.invoke('schedules:markRead', runId).catch(() => {})
+          void window.electronAPI.invoke('schedules:markRead', runId)
+            .then(() => {
+              // 已读边沿广播（app:schedules-changed，app:tasks-changed 同惯例）：
+              // 抽屉化（2026-10-25）后读动作发生点（App 级 ScheduleDrawer）与各
+              // 红点消费面（NavTabs 徽章/收件箱/首页卡区）脱离组件关系，靠此
+              // 事件即时收敛——兑现「打开报告即已读、红点/徽章计数同步消失」
+              // （2.11 §10 E3b ③）；失败静默，下次边沿自然对齐
+              window.dispatchEvent(new CustomEvent('app:schedules-changed'))
+            })
+            .catch(() => {})
         }
       } catch {
         if (!cancelled) setLoadFailed(true)

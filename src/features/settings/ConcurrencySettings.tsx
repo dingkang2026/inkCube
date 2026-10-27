@@ -1,6 +1,8 @@
 import { useTranslation } from 'react-i18next'
 import type { LLMSettings } from '../../types'
 import styles from './routingFields.module.css'
+// toggle 行样式复用 GeneralSettings 基座（toggleRow/toggle/toggleSlider 单源，不复制 CSS）
+import toggleStyles from './GeneralSettings.module.css'
 
 interface ConcurrencySettingsProps {
   form: LLMSettings
@@ -52,6 +54,23 @@ export function ConcurrencySettings({ form, onUpdate }: ConcurrencySettingsProps
           />
           <p className={styles.hint}>{t('settings.concurrency.compileHint')}</p>
         </div>
+      </div>
+
+      {/* 事件驱动自动汇编（2.6 §4.1 路径 A）：解析完成即自动点火；hint 承担
+          决策点解释（触发时机/LLM 消耗/停止冷却，§2.10 免培训） */}
+      <div className={toggleStyles.toggleRow}>
+        <div className={toggleStyles.toggleLabel}>
+          <span className={styles.label}>{t('settings.concurrency.autoCompile')}</span>
+          <p className={toggleStyles.hint}>{t('settings.concurrency.autoCompileHint')}</p>
+        </div>
+        <label className={toggleStyles.toggle}>
+          <input
+            type="checkbox"
+            checked={form.auto_wiki_compile ?? true}
+            onChange={(e) => onUpdate('auto_wiki_compile', e.target.checked)}
+          />
+          <span className={toggleStyles.toggleSlider}></span>
+        </label>
       </div>
     </section>
   )

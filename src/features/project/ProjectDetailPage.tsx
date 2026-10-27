@@ -231,6 +231,18 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
     return () => window.removeEventListener('app:tasks-changed', h)
   }, [loadPulseData])
 
+  // 治理完成刷新编译快照（review M-2 补口 2026-10-27）：治理 summary 在编译终态
+  // 之后才落库，而 #4 轮询在终态即停（enabled=活跃||面板展开）——编译明细面板的
+  // 治理摘要行靠该信号补拉一次（与体检视图 app:governance-done 重载同源同刻）
+  useEffect(() => {
+    const h = (e: Event) => {
+      if ((e as CustomEvent<{ projectId?: string }>).detail?.projectId !== project.id) return
+      void checkWikiCompileStatus()
+    }
+    window.addEventListener('app:governance-done', h)
+    return () => window.removeEventListener('app:governance-done', h)
+  }, [project.id, checkWikiCompileStatus])
+
   // 台账解析终态边沿（3.0 四期）：ledger_parse 活动从有到无 → 通知 App 刷新 projects
   // （新 AI 状态句从 projects 行浮现，3.1 §4.3）；建议/条目随 onProjectDataChanged →
   // loadProjects → project prop 更新自然刷新
@@ -411,8 +423,29 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
           </div>
           <div className={s.headerActions}>
             {/* 用量徽章（2.10 §6.1/线框 5）：hover 出 by_source 分拆，点击跳统计页筛本项目；
-              编辑基础信息已前移至名称后（名称/描述/企业字段），type 走右侧下拉、stage 走脉搏带 */}
+              编辑基础信息已前移至名称后（名称/描述/企业字段）；类型下拉与阶段切换同行（2026-10-26） */}
             <ProjectUsageBadge projectId={project.id} />
+            {/* Stage pills — inline, clickable, bidirectional；自独立 stageRow 移入头部
+              actions（2026-10-26 用户裁决：与类型下拉同行，下拉左侧）；包一层 group
+              保住 :first-child/:last-child 连体圆角与 border-left 合并逻辑 */}
+            {STAGE_MAP[projectType].length > 0 && (
+              <span className={s.stagePillGroup}>
+                {STAGE_MAP[projectType].map((stage, index) => {
+                  const isActive = stage.key === currentStage
+                  const isCompleted = index < STAGE_MAP[projectType].findIndex(s => s.key === currentStage)
+                  return (
+                    <button
+                      key={stage.key}
+                      className={`${s.stagePill} ${isActive ? s.stagePillActive : ''} ${isCompleted ? s.stagePillCompleted : ''}`}
+                      onClick={() => handleStageClick(stage.key)}
+                    >
+                      <span className={s.stageDot} />
+                      <span>{t(stage.labelKey)}</span>
+                    </button>
+                  )
+                })}
+              </span>
+            )}
             {/* Type selector */}
             <select
               className={s.typeSelect}
@@ -426,25 +459,6 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
           </div>
         </div>
 
-        {/* Stage pills — inline, clickable, bidirectional */}
-        {STAGE_MAP[projectType].length > 0 && (
-          <div className={s.stageRow}>
-            {STAGE_MAP[projectType].map((stage, index) => {
-              const isActive = stage.key === currentStage
-              const isCompleted = index < STAGE_MAP[projectType].findIndex(s => s.key === currentStage)
-              return (
-                <button
-                  key={stage.key}
-                  className={`${s.stagePill} ${isActive ? s.stagePillActive : ''} ${isCompleted ? s.stagePillCompleted : ''}`}
-                  onClick={() => handleStageClick(stage.key)}
-                >
-                  <span className={s.stageDot} />
-                  <span>{t(stage.labelKey)}</span>
-                </button>
-              )
-            })}
-          </div>
-        )}
       </div>
 
       {/* 脉搏带（3.0 §2）：状态感知层；矛盾/缺口 chip 点击直达知识治理视图 */}

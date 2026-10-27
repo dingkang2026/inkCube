@@ -307,3 +307,62 @@ class TestPendingCompileCountRealtime:
         cols = [r["name"] for r in db2.conn.execute("PRAGMA table_info(projects)").fetchall()]
         assert "pending_compile_count" not in cols
         db2.conn.close()
+
+
+class TestZeroPageNotIngested:
+    """解析 0 页纵深（2026-10-26 全角冒号事故）：摄入未完成不得伪装成功。
+
+    事故形态：LLM 输出 ---PAGE： key---（全角冒号），旧 parser 全盘漏析 →
+    0 页仍被标 ingested，skip-if-unchanged 使重试/增量永不可达。
+    处置：① 不写 wiki_source_pages（文件保持待编译，重试/下轮增量可达）；
+    ② summary 带 error（复用失败契约：CompilePanel 失败计数/详情、
+    「重试失败」、终态 warning toast 全自动生效）。"""
+
+    def test_zero_page_returns_error_and_stays_pending(self, db, project_id, monkeypatch, wiki_data_dir):
+        """0 页：返回 error、不写 source_page、文件仍在待编译集合。"""
+
+        async def fake_chat(self, messages, settings, task_id, stage, project_id=None):
+            if stage == "stage1":
+                return _STAGE1_OUTPUT
+            # 真实事故形态：全角冒号分隔符（修复后 parser 已能解析，这里
+            # 用不可解析的垃圾输出模拟 0 页——纵深防御与 parser 修复独立验证）
+            return "这是一段没有任何结构化块的模型输出。"
+
+        monkeypatch.setattr(WikiIngestor, "_chat_with_retry", fake_chat)
+        ingestor = WikiIngestor(db, wiki_data_dir, None, {})
+        file_id = _add_done_file(db, project_id)
+        _add_text_chunk(db, project_id, file_id)
+
+        result = _run(ingestor.ingest_file(project_id, file_id, "task_z"))
+
+        assert result["skipped"] is False
+        assert "0 页" in result["error"]
+        assert result["pages_created"] == 0
+        # 不写 source_page → 文件保持待编译（修复前此处为 ingested 脏行）
+        assert db.get_source_page(project_id, file_id) is None
+        assert file_id in [f["id"] for f in db.get_pending_wiki_files(project_id)]
+
+    def test_fullwidth_output_fully_recovered(self, db, project_id, monkeypatch, wiki_data_dir):
+        """根因修复端到端：全角冒号输出经新 parser 正常产出页面并标 ingested。"""
+
+        async def fake_chat(self, messages, settings, task_id, stage, project_id=None):
+            if stage == "stage1":
+                return _STAGE1_OUTPUT
+            return _STAGE2_OUTPUT.replace("---PAGE:", "---PAGE：")
+
+        monkeypatch.setattr(WikiIngestor, "_chat_with_retry", fake_chat)
+        ingestor = WikiIngestor(db, wiki_data_dir, None, {})
+        file_id = _add_done_file(db, project_id)
+        _add_text_chunk(db, project_id, file_id)
+
+        result = _run(ingestor.ingest_file(project_id, file_id, "task_f"))
+
+        # 成功路径无 error 键（失败契约：有 error 键即失败）
+        assert result.get("error") is None
+        assert result["pages_created"] == 1
+        pages = db.list_wiki_pages(project_id)
+        assert len(pages) == 1
+        assert pages[0]["page_key"] == "src_cert_scan"
+        sp = db.get_source_page(project_id, file_id)
+        assert sp is not None
+        assert sp["status"] == "ingested"

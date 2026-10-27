@@ -35,6 +35,41 @@
   border: 1px solid var(--border);
 }
 
+/* 单行截断态（2026-10-26 用户裁决）：>3 条默认收为一行——flex:1 占满剩余空间
+   + nowrap + 溢出隐藏（chip 整体不压缩断字，超出部分被裁切，展开看全量） */
+.profileChipsClamped {
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.profileChipsClamped .profileChip {
+  flex-shrink: 0;
+}
+
+/* 展开/收起 toggle（>3 条时出现） */
+.profileToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.profileToggle:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.profileToggleUp {
+  transform: rotate(180deg);
+}
+
 .profileChipText {
   display: inline-flex;
   align-items: center;

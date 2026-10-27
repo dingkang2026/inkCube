@@ -293,7 +293,7 @@
   color: color-mix(in srgb, var(--text-inverse) 85%, transparent);
 }
 
-/* ── Empty chat (hint + template panel) & typing indicator ── */
+/* ── Empty chat (hint) & typing indicator ── */
 .emptyChat {
   display: flex;
   flex-direction: column;
@@ -349,48 +349,6 @@
 
 .input:focus {
   border-color: var(--accent);
-}
-
-/* ── Placeholder form (0.5 §4.4:变量按名去重,填一次全量替换) ── */
-.phForm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  padding: 10px 16px 0;
-  flex-shrink: 0;
-}
-
-.phItem {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.phName {
-  font-size: var(--text-xs);
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-.phInput {
-  width: 140px;
-  padding: 3px 8px;
-  font-size: var(--text-xs);
-  color: var(--text-primary);
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  outline: none;
-}
-
-.phInput:focus {
-  border-color: var(--accent);
-}
-
-.phHint {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
 }
 
 .sendBtn {

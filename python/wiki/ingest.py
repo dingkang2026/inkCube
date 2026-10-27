@@ -198,6 +198,33 @@ class WikiIngestor:
 
         pages, reviews, overview_update = parse_compile_output_v2(generation_output)
 
+        # 解析 0 页 = 摄入未完成，不得伪装成功（2026-10-26 实证：LLM 全角冒号
+        # 格式漂移致 PAGE/REVIEW 块全漏析，文件静默 0 产出仍被标 ingested，
+        # skip-if-unchanged 使重试/增量永不可达）。处置：① 不写
+        # wiki_source_pages——文件保持待编译，「重试失败」/下轮增量可达；
+        # ② summary 带 error——复用既有失败契约（CompilePanel 失败计数/详情、
+        # 状态条「重试失败」、终态 warning toast 全自动生效）。
+        # 解析出的 reviews 一并不落库：重试会重新生成，且 review_id 幂等。
+        if not pages:
+            err_msg = (
+                f"解析 LLM 输出得到 0 页（reviews={len(reviews)}，"
+                f"输出 {len(generation_output)} 字符），疑似格式漂移（如全角冒号），详见应用日志"
+            )
+            logger.error("Ingest [%s]: %s", task_id, err_msg)
+            return {
+                "skipped": False,
+                "error": err_msg,
+                "pages_created": 0,
+                "pages_updated": 0,
+                "pages_failed": 0,
+                "reviews_count": 0,
+                "gaps_resolved": 0,
+                "pages_touched": [],
+                "source_page_key": source_page_key,
+                "filename": filename,
+                "file_id": file_id,
+            }
+
         pages_created = 0
         pages_updated = 0
         pages_failed = 0

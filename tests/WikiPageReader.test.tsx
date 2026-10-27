@@ -167,6 +167,25 @@ describe('WikiPageReader enrich wikilinks (§7.2.4)', () => {
     expect(toastMock).toHaveBeenLastCalledWith('未发现可补全的链接', 'info')
     expect(onRefresh).not.toHaveBeenCalled()
   })
+
+  it('warns and refreshes when the write is rejected by content CAS (复审 Major 2026-10-27)', async () => {
+    // 读-改-写窗口内他方已写：后端拒绝整页覆盖（reason=content_changed）——
+    // 前端警示 + 刷新父级让用户看到现行内容后再试，绝不静默假装成功
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'wiki:getBacklinks') return { backlinks: [] }
+      if (channel === 'wiki:enrichWikilinks') return { success: false, reason: 'content_changed', links_added: 0 }
+      return {}
+    })
+    const { onRefresh, getByText } = setup()
+    await flush()
+
+    fireEvent.click(getByText('补全链接'))
+    await flush()
+
+    expect(toastMock).toHaveBeenLastCalledWith(
+      '页面内容刚被其他操作修改，已放弃本次补全，请刷新后重试', 'warning')
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('WikiPageReader version history (§7.1)', () => {

@@ -390,9 +390,8 @@ describe('LeadPool', () => {
         category: 'corporate',   // mon→corporate 静态映射
         intervalType: 'daily',
         intervalValue: '09:00',
-        targetType: 'project',   // 去向绑新项目，autoImport 期次产出自动沉淀
+        targetType: 'project',   // 去向绑新项目，期次产出自动沉淀
         targetId: 'proj_new',
-        autoImport: true,
         scope: null,
         digestScheduleIds: null,
       })

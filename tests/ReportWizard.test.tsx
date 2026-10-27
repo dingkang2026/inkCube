@@ -1,10 +1,11 @@
-/** tests/ReportWizard.test.tsx — 向导大纲分层渲染回归（2.5 §前端交互）
- *  修复前：大纲被拍平为跨章连续序号（1. 2. 3...），章标题被丢弃，
- *  与模板管理的树形结构不一致；post_body 节被隐藏（设计语义是
- *  「不检索、无开关」而非「不显示」）。
- *  修复后：与后端 get_execution_sections 镜像——有 children 的章显示
- *  组头 + 章内编号节行；无 children 的章自身即节；post_body 节展示
- *  标签替代互联网开关。
+/** tests/ReportWizard.test.tsx — 向导大纲分层渲染 + 知识源动态拼接回归
+ *  大纲（2.5 §前端交互）修复前：大纲被拍平为跨章连续序号（1. 2. 3...），
+ *  章标题被丢弃，与模板管理的树形结构不一致；post_body 节被隐藏（设计
+ *  语义是「不检索、无开关」而非「不显示」）。修复后：与后端
+ *  get_execution_sections 镜像——有 children 的章显示组头 + 章内编号节行；
+ *  无 children 的章自身即节；post_body 节展示标签替代互联网开关。
+ *  知识源（2.7 §3.1 / §5.5，2.9 D3 收敛后随自定义库重建恢复）：静态三源
+ *  + 动态自定义库拼接；预勾以关联集为准；勾选提交回写 baseProjectIds。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -225,5 +226,166 @@ describe('ReportWizard internet toggle submission (stale closure regression)', (
     expect(submitted).toBeTruthy()
     expect(submitted!.internetEnabled).toBe(false)
     expect(submitted!.sectionInternet).toEqual({})
+  })
+})
+
+/** 打开向导并注入自定义库与关联集（2.7 §3.1 知识源拼接用例入口） */
+async function openWizardWithSources(
+  customLibs: Array<{ id: string; name: string; lib_type: string | null }>,
+  linkedIds: string[],
+) {
+  invokeMock.mockImplementation(async (channel: string) => {
+    if (channel === 'reports:listTemplates') {
+      return {
+        templates: [{
+          template_id: 'dd', template_name: '尽职调查报告', version: '2.0',
+          project_types: ['investment'], stage: 'during', output_format: 'docx',
+          report_depth: 'deep', chapter_count: OUTLINE_FLAT.length, is_custom: false,
+        }],
+      }
+    }
+    if (channel === 'reports:getTemplate') {
+      return { template: { outline: OUTLINE_FLAT, variables: [], template_id: 'dd', template_name: '尽职调查报告' } }
+    }
+    if (channel === 'baseLib:list') return { base_libs: customLibs }
+    if (channel === 'project:getBaseLibs') {
+      return { base_libs: linkedIds.map((id) => ({ id })) }
+    }
+    return {}
+  })
+  render(
+    <ReportWizard projectId="p1" projectType="investment" onComplete={() => {}} onCancel={() => {}} />,
+  )
+  await flush()
+  fireEvent.click(screen.getByText('尽职调查报告'))
+  await flush()
+}
+
+describe('知识源动态拼接（2.7 §3.1，自定义库恢复）', () => {
+  it('自定义库出现为动态条目；预置库不重复出现（仅静态条目）', async () => {
+    await openWizardWithSources([
+      { id: 'bl-c1', name: '半导体产业情报', lib_type: 'custom' },
+      { id: 'bl-recruitment', name: '招商基础库', lib_type: 'preset_recruitment' },
+    ], [])
+
+    // 动态条目直用库名；预置库走静态 i18n key（过滤后的预置行不再以库名出现）
+    expect(screen.getByText('半导体产业情报')).toBeTruthy()
+    expect(screen.getByText('project.report.wizard.recruitmentLib')).toBeTruthy()
+    expect(screen.queryByText('招商基础库')).toBeNull()
+  })
+
+  it('关联集命中的自定义库预勾，未关联的不预勾；项目库恒选', async () => {
+    await openWizardWithSources([
+      { id: 'bl-c1', name: '半导体产业情报', lib_type: 'custom' },
+      { id: 'bl-c2', name: '另一库', lib_type: 'custom' },
+    ], ['bl-c1'])
+
+    const checkedRow = screen.getByText('半导体产业情报').closest('label')!
+    expect((checkedRow.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true)
+    const uncheckedRow = screen.getByText('另一库').closest('label')!
+    expect((uncheckedRow.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('勾选自定义库生成 → baseProjectIds 携带库 id（检索与关联回写同源）', async () => {
+    await openWizardWithSources([
+      { id: 'bl-c1', name: '半导体产业情报', lib_type: 'custom' },
+    ], ['bl-c1'])
+
+    let submitted: Record<string, unknown> | undefined
+    invokeMock.mockImplementation(async (channel: string, args?: unknown) => {
+      if (channel === 'reports:generateReport') {
+        submitted = args as Record<string, unknown>
+        return { report_id: 'r-new' }
+      }
+      if (channel === 'project:getBaseLibs') return { base_libs: [{ id: 'bl-c1' }] }
+      return {}
+    })
+
+    fireEvent.click(screen.getByText('project.report.wizard.startGenerate').closest('button')!)
+    await flush()
+
+    expect(submitted).toBeTruthy()
+    expect(submitted!.baseProjectIds).toEqual(['bl-c1'])
+  })
+
+  it('baseLib:list 失败只降级自定义库条目：关联集命中的预置库仍预勾（M-3 拆分）', async () => {
+    invokeMock.mockImplementation(async (channel: string) => {
+      if (channel === 'reports:listTemplates') {
+        return { templates: [{
+          template_id: 'dd', template_name: '尽职调查报告', version: '2.0',
+          project_types: ['investment'], stage: 'during', output_format: 'docx',
+          report_depth: 'deep', chapter_count: OUTLINE_FLAT.length, is_custom: false,
+        }] }
+      }
+      if (channel === 'reports:getTemplate') {
+        return { template: { outline: OUTLINE_FLAT, variables: [], template_id: 'dd', template_name: '尽职调查报告' } }
+      }
+      if (channel === 'baseLib:list') throw new Error('service down')
+      if (channel === 'project:getBaseLibs') return { base_libs: [{ id: 'bl-investment' }] }
+      return {}
+    })
+    render(
+      <ReportWizard projectId="p1" projectType="investment" onComplete={() => {}} onCancel={() => {}} />,
+    )
+    await flush()
+    fireEvent.click(screen.getByText('尽职调查报告'))
+    await flush()
+
+    // 静态条目仍在，动态区为空，不影响生成入口
+    expect(screen.getByText('project.report.wizard.projectKb')).toBeTruthy()
+    expect(screen.getByText('project.report.wizard.startGenerate').closest('button')!
+      .hasAttribute('disabled')).toBe(false)
+    // 拆分修复（M-3）：展示性请求失败不连坐关联预勾
+    const row = screen.getByText('project.report.wizard.investmentLib').closest('label')!
+    expect((row.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('关联集加载失败：生成照常，但不回写关联（防降级勾选清空存量，M-3）', async () => {
+    let submitted: Record<string, unknown> | undefined
+    invokeMock.mockImplementation(async (channel: string, args?: unknown) => {
+      if (channel === 'reports:listTemplates') {
+        return { templates: [{
+          template_id: 'dd', template_name: '尽职调查报告', version: '2.0',
+          project_types: ['investment'], stage: 'during', output_format: 'docx',
+          report_depth: 'deep', chapter_count: OUTLINE_FLAT.length, is_custom: false,
+        }] }
+      }
+      if (channel === 'reports:getTemplate') {
+        return { template: { outline: OUTLINE_FLAT, variables: [], template_id: 'dd', template_name: '尽职调查报告' } }
+      }
+      if (channel === 'baseLib:list') return { base_libs: [{ id: 'bl-c1', name: '半导体产业情报', lib_type: 'custom' }] }
+      if (channel === 'project:getBaseLibs') throw new Error('assoc down')
+      if (channel === 'reports:generateReport') {
+        submitted = args as Record<string, unknown>
+        return { report_id: 'r-new' }
+      }
+      return {}
+    })
+    render(
+      <ReportWizard projectId="p1" projectType="investment" onComplete={() => {}} onCancel={() => {}} />,
+    )
+    await flush()
+    fireEvent.click(screen.getByText('尽职调查报告'))
+    await flush()
+
+    // list 成功 → 动态条目照常展示；关联集失败 → 仅放弃预勾（降级互补语义）
+    const libRow = screen.getByText('半导体产业情报').closest('label')!
+    expect((libRow.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false)
+
+    fireEvent.click(screen.getByText('project.report.wizard.startGenerate').closest('button')!)
+    await flush()
+
+    // 生成照常（降级勾选：仅项目库 → baseProjectIds 为空）
+    expect(submitted).toBeTruthy()
+    expect(submitted!.baseProjectIds).toEqual([])
+    // 不回写关联（sourcesLoaded=false 跳过 sync，存量关联不动）
+    const syncCalls = invokeMock.mock.calls.filter(
+      ([c]) => c === 'project:linkBaseLib' || c === 'project:unlinkBaseLib',
+    )
+    expect(syncCalls).toHaveLength(0)
+    // 守卫锁力：getBaseLibs 仅被 loadSources 调用 1 次——守卫被删时 sync 会
+    // 二次调用该通道（sync 第一步即 getBaseLibs），本断言变红
+    const assocCalls = invokeMock.mock.calls.filter(([c]) => c === 'project:getBaseLibs')
+    expect(assocCalls).toHaveLength(1)
   })
 })

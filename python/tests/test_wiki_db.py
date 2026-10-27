@@ -259,3 +259,65 @@ class TestWikiSourcePages:
         assert db.delete_source_page(project_id, file_id) is True
         assert db.get_source_page(project_id, file_id) is None
         assert db.delete_source_page(project_id, file_id) is False
+
+
+class TestZeroPageRollbackMigration:
+    """零页脏行回退迁移（2026-10-26 全角冒号事故）：ingested 且 pages_touched 空 →
+    启动时删除行回退待编译（pending 口径 = done 文件减去 ingested/skipped）。
+    幂等：重跑无行可删；正常 ingested 行（有触碰页）不回退。"""
+
+    def test_dirty_rows_rolled_back_on_initialize(self, tmp_path):
+        """脏行（ingested + pages_touched='[]'）启动迁移后回退：文件重回待编译集合。
+
+        用文件库模拟真实升级（:memory: 每次重开得空库，对齐
+        TestLegacyConfirmMigration 模式）。"""
+        db_path = str(tmp_path / "dirty.db")
+        db = Database(db_path)
+        db.initialize()
+        pid = db.create_project(name="P", project_type="general")["id"]
+        f_dirty = db.create_file(pid, "dirty.pdf", ".pdf", 1, "h_dirty")
+        db.update_file_status(f_dirty["id"], "done")
+        f_ok = db.create_file(pid, "ok.pdf", ".pdf", 1, "h_ok")
+        db.update_file_status(f_ok["id"], "done")
+        # 事故形态：0 页仍标 ingested（pages_touched 空）；正常行对照
+        db.create_or_update_source_page(
+            pid, f_dirty["id"], status="ingested", pages_touched=[])
+        db.create_or_update_source_page(
+            pid, f_ok["id"], status="ingested", pages_touched=["some_page"])
+        db.conn.close()
+
+        # 模拟应用重启：新版本代码 initialize()（重开连接 + 执行迁移段）
+        db2 = Database(db_path)
+        db2.initialize()
+
+        # 脏行删除 → 文件重回待编译；正常行保留 → 不重回
+        pending_ids = [f["id"] for f in db2.get_pending_wiki_files(pid)]
+        assert f_dirty["id"] in pending_ids
+        assert f_ok["id"] not in pending_ids
+        assert db2.get_source_page(pid, f_dirty["id"]) is None
+        assert db2.get_source_page(pid, f_ok["id"]) is not None
+        db2.conn.close()
+
+    def test_migration_idempotent(self, tmp_path):
+        """迁移幂等：多次重启后结果稳定，无行可删时静默。"""
+        db_path = str(tmp_path / "idem.db")
+        db = Database(db_path)
+        db.initialize()
+        pid = db.create_project(name="P", project_type="general")["id"]
+        f = db.create_file(pid, "d.pdf", ".pdf", 1, "h_d")
+        db.update_file_status(f["id"], "done")
+        db.create_or_update_source_page(
+            pid, f["id"], status="ingested", pages_touched=[])
+        db.conn.close()
+
+        for _ in range(3):
+            dup = Database(db_path)
+            dup.initialize()
+            assert dup.get_source_page(pid, f["id"]) is None
+            dup.conn.close()
+
+        # 回退后文件保持待编译（不被任何后续启动误标）
+        final = Database(db_path)
+        final.initialize()
+        assert f["id"] in [x["id"] for x in final.get_pending_wiki_files(pid)]
+        final.conn.close()

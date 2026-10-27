@@ -5,6 +5,7 @@
   "version": "1.0",
   "project_types": ["recruitment"],
   "stage": "during",
+  "subject_anchored": false,
   "output_format": "docx",
   "role_hint": "招商顾问/产业分析师，偏推介视角，突出区域优势和发展潜力",
   "audience": "政府招商部门或目标企业决策层",

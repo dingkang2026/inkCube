@@ -183,7 +183,7 @@ export function ActivityMonitor() {
 
     const dispatchToasts = (rawItems: NotificationItem[]) => {
       // R4（2.11 §5.5）：订阅完成默认 silent——不弹 Toast/OS 通知（通知中心
-      // 仍可见，静默已读）；管理台红点/摘要行计数是完成态的消费入口。
+      // 仍可见，静默已读）；管理台红点/徽章计数是完成态的消费入口。
       // schedule_notify 开启后解除静默（review P2-7 提前落地，设置保存经
       // app:settings-changed 即时生效）。
       // failed/paused 照常弹（失败/熔断必达）。
@@ -197,6 +197,18 @@ export function ActivityMonitor() {
       )
       if (silent.length > 0) void markRead(silent.map((n) => n.id))
       if (items.length === 0) return
+      // 治理完成实时刷新（review M-2 2026-10-27）：广播给已打开的 Wiki 体检
+      // 视图重载发现项与重复分组，编译详情面板同信号补拉治理摘要行——治理在
+      // 编译 toast 之后才完成，下降沿刷新是兑底不是根因；通知点击导航只是
+      // 第二路径。先于批量分支派发：batch 提前 return 不发逐条 Toast，但治理
+      // 信号不依赖 Toast（复审补口 2026-10-27，原本批量时广播被跳过）
+      for (const n of items) {
+        if (n.entity_type === 'wiki_compile' && n.kind === 'governance' && n.project_id) {
+          window.dispatchEvent(new CustomEvent('app:governance-done', {
+            detail: { projectId: n.project_id },
+          }))
+        }
+      }
       if (items.length > BATCH_LIMIT) {
         const batchTitle = t('activity.batch', { count: items.length })
         showToast(batchTitle, 'info')

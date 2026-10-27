@@ -1,11 +1,14 @@
 """python/tests/test_finalizer.py — 全局收尾单测（§3.7）。
 
 回归覆盖：
-  - B3：_build_toc 必须按装配后正文的 ## 标题出现顺序生成目录，
+  - B3：_build_toc 必须按装配后正文的 ##/### 标题出现顺序生成两级目录
+    （章条目 + 缩进子节条目，2026-10-27 两级装配），
     而非大纲原序（post_body(front) 前置重排后目录 ≡ 正文顺序）。
   - B4：_smooth_transitions 不得破坏“## 标题独立成行”不变量——
     节尾 --- 分隔符与下一节标题粘连（---## xxx）会导致目录
     只剩首节且 Markdown 渲染破坏。
+  - 原规则 2（节首重复标题剥离）已上移至装配层 _assemble_full_text，
+    行为用例见 test_assemble_two_level.py。
 """
 import os
 import re
@@ -42,14 +45,30 @@ class TestBuildToc:
         toc = _build_toc(text)
         assert toc.index("摘要") < toc.index("第一章")
 
-    def test_toc_ignores_non_h2(self):
-        """仅 ## 计入目录，# 与 ### 不计入。"""
-        text = "# 大标题\n\n## 章节A\n\n### 小节\n\n## 章节B\n"
+    def test_toc_h1_excluded_h3_as_indented_subsections(self):
+        """# 不计入目录；### 计入为章条目下的缩进子节条目（两级目录，2026-10-27）。"""
+        text = "# 大标题\n\n## 1 章节A\n\n### 1.1 小节\n\n## 2 章节B\n"
         toc = _build_toc(text)
         assert "1. 章节A" in toc
         assert "2. 章节B" in toc
         assert "大标题" not in toc
-        assert "小节" not in toc
+        assert "   - 1.1 小节" in toc
+
+    def test_toc_two_levels_subsections_indented(self):
+        """两级目录：章条目有序列表，子节缩进 - n.m 挂靠，顺序与正文一致。"""
+        text = (
+            "## 1 行业概述\n\n### 1.1 行业定义\n\n正文\n\n### 1.2 产业链\n\n正文\n\n"
+            "## 2 市场规模\n\n正文\n"
+        )
+        toc = _build_toc(text)
+        lines = [ln for ln in toc.split("\n") if ln.strip()]
+        assert lines == [
+            "## 目录",
+            "1. 行业概述",
+            "   - 1.1 行业定义",
+            "   - 1.2 产业链",
+            "2. 市场规模",
+        ]
 
     def test_toc_empty_body(self):
         """无 ## 标题时仅返回目录头。"""
@@ -101,9 +120,28 @@ class TestConvertSubheads:
         text = "## 1 章\n\n正文提到 ◆ 符号不在行首不影响"
         assert _convert_subheads(text) == text
 
+    def test_subheads_under_subsection_context_become_h4(self):
+        """子节上下文（### n.m）中的 ◆ 转 H4，编号 n.m.k 不与子节号冲突。"""
+        text = "## 2 章\n\n### 2.1 节甲\n\n◆ 要点一\n\n内容\n\n◆ 要点二"
+        out = _convert_subheads(text)
+        assert "#### 2.1.1 要点一" in out
+        assert "#### 2.1.2 要点二" in out
+        assert "### 2.1 节甲" in out  # 子节标题本身原样保留
+
+    def test_sub_counter_resets_on_new_subsection(self):
+        """遇新子节（### n.m）H4 小节号重置、前缀随子节更新。"""
+        text = "## 2 章\n\n### 2.1 节甲\n\n◆ 甲点\n\n### 2.2 节乙\n\n◆ 乙点"
+        out = _convert_subheads(text)
+        assert "#### 2.1.1 甲点" in out
+        assert "#### 2.2.1 乙点" in out
+
 
 class TestSmoothTransitions:
-    """回归：_smooth_transitions 不得破坏“## 标题独立成行”不变量。"""
+    """回归：_smooth_transitions 不得破坏“## 标题独立成行”不变量。
+
+    原规则 2（节首重复标题剥离）已上移至装配层，用例见
+    test_assemble_two_level.py 的 TestStripLeadingDuplicate 类。
+    """
 
     def test_separator_not_glued_to_next_heading(self):
         """节尾 --- 分隔符不得与下一节标题粘连成 ---## xxx。"""
@@ -131,36 +169,6 @@ class TestSmoothTransitions:
         assert "细节。" in out
         assert not re.search(r"如下：\s*$", out, flags=re.M)
         assert not re.search(r"^---#", out, flags=re.M)
-
-    def test_leading_duplicate_plain_title_removed(self):
-        """规则2：节首纯文本重复章节标题被清除。"""
-        text = "## 基本信息\n\n基本信息\n\n正文内容"
-        out = _smooth_transitions(text)
-        assert out.count("## 基本信息") == 1
-        assert not re.search(r"^基本信息$", out, flags=re.M)
-
-    def test_leading_duplicate_numbered_title_removed(self):
-        """规则2 回归（L1 修复）：标题带组装序号（## 1 X）时节首裸重复行仍须清除。
-
-        修复前 prev_title 不剥号（"1 基本信息"）与裸行（"基本信息"）
-        永不相等，规则对带编号标题从不生效。
-        """
-        text = "## 1 基本信息\n\n基本信息\n\n正文内容\n\n---\n\n## 2 风险\n\n正文B"
-        out = _smooth_transitions(text)
-        assert not re.search(r"^基本信息$", out, flags=re.M)
-        assert out.count("## 1 基本信息") == 1
-
-    def test_leading_duplicate_strips_numbers_on_both_sides(self):
-        """规则2 双向剥号对称：节首行带编号而标题无编号时同样清除。"""
-        text = "## 基本信息\n\n1 基本信息\n\n正文内容"
-        out = _smooth_transitions(text)
-        assert not re.search(r"^1 基本信息$", out, flags=re.M)
-
-    def test_leading_line_different_from_title_kept(self):
-        """规则2 不误伤：节首行剥号后仍与标题不同 → 保留。"""
-        text = "## 1 基本信息\n\n公司概况说明\n\n正文内容"
-        out = _smooth_transitions(text)
-        assert "公司概况说明" in out
 
 
 class TestFinalizeReportE2E:

@@ -36,7 +36,7 @@ export function StageLaneView({ projects, nextDueByProject, onSelect, onCreatePr
         {/* 盘子全空 → 引导新建项目（§3.7 空态规格；回调缺省时仅文案，与卡片墙空态同款） */}
         {onCreateProject && (
           <button type="button" className={s.emptyCta} onClick={() => onCreateProject()}>
-            {t('home.quick.newProject')}
+            {t('home.newProjectCta')}
           </button>
         )}
       </div>

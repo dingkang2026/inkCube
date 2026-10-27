@@ -27,6 +27,7 @@ POOL_TITLE = "inkcube-fetch-pool"       # 池窗口标题（可视化用，§6.2
 POOL_MARK_JS = "() => window.__INKCUBE_POOL__ === true"
 LOCK_STALE_SECONDS = 60                  # 持锁超过此时长视为僵死，可接管（§3.3）
 LOGIN_TEXT_SPARSE = 500                  # 登录墙「正文稀疏」阈值（§5.4）
+LOGIN_GATING_MIN_HITS = 3                # 软墙（字段级遮蔽）命中次数阈值（§5.4）
 SNAPSHOT_TEXT_LIMIT = 3000               # 快照正文截断（§5.2）
 SNAPSHOT_ELEMENTS_LIMIT = 80             # 快照可交互元素上限（§5.2）
 SNAPSHOT_NAME_LIMIT = 40                 # 元素 name 截断（§5.2）
@@ -230,6 +231,26 @@ def detect_login_wall(
     if _LOGIN_TITLE_RE.search(title or "") and sparse:
         return True
     return False
+
+
+# 软墙（字段级遮蔽，§5.4 第 5 信号）：页面公开内容完整、仅敏感字段被登录
+# 遮蔽（「181****登录查看」「登录后查看更多信息」），四信号按整页硬墙建模
+# 不命中（2026-10-26 天眼查任务实证）。频次阈值避开导航栏「登录/注册」
+# 级噪音；短语为中英通用措辞，非站点特判。
+_GATING_TEXT_RE = re.compile(
+    r"登录查看|登录后查看|log\s*in\s*to\s*view|sign\s*in\s*to\s*view"
+    r"|sign\s*up\s*to\s*see",
+    re.IGNORECASE)
+
+
+def count_gating_hits(visible_text: str) -> int:
+    """统计正文中登录遮蔽短语出现次数（软墙判定依据）。"""
+    return len(_GATING_TEXT_RE.findall(visible_text or ""))
+
+
+def detect_login_gating(visible_text: str) -> bool:
+    """软墙判定：遮蔽短语出现 ≥ LOGIN_GATING_MIN_HITS 次。"""
+    return count_gating_hits(visible_text) >= LOGIN_GATING_MIN_HITS
 
 
 # ── HTML → Markdown（html2text 优先，正则降级）──

@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS: LLMSettings = {
   max_concurrent_image_description: 2,
   // Wiki compile settings
   max_compile_concurrency: 2,
+  auto_wiki_compile: true,  // 2.6 §4.1 路径 A：解析完成即自动汇编（默认开）
   // LLM timeout settings
   llm_connect_timeout: 30,
   llm_read_timeout: 300,

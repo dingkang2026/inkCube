@@ -354,10 +354,27 @@ class TestRecoverOrphans:
         PptService().recover_orphans(db)
         assert db.get_ppt(ppt["id"])["status"] == "awaiting_input"
 
-    def test_running_without_artifacts_paused(self, db, tmp_path):
+    def test_running_without_artifacts_paused(self, db, tmp_path, monkeypatch):
         ppt, _ = _mk_ppt(db, tmp_path)
+        shutdowns = []
+        monkeypatch.setattr(ppt_service, "_shutdown_confirm_ui",
+                            lambda vp, proj: shutdowns.append(proj))
         PptService().recover_orphans(db)
         assert db.get_ppt(ppt["id"])["status"] == "paused"
+        # 落位 paused 时同步关停 confirm_ui（P2-2：泵随进程消失后无人执行
+        # agent 的 --shutdown 指令，不关则 daemon 跨会话泄漏端口）
+        assert len(shutdowns) == 1
+
+    def test_pending_gate_awaiting_keeps_confirm_ui(self, db, tmp_path, monkeypatch):
+        """转 awaiting 的行保留 daemon：用户还要在确认页操作（P2-2 口径）。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        _w(proj / "confirm_ui" / "recommendations.stage1.json", {})
+        shutdowns = []
+        monkeypatch.setattr(ppt_service, "_shutdown_confirm_ui",
+                            lambda vp, proj_: shutdowns.append(proj_))
+        PptService().recover_orphans(db)
+        assert db.get_ppt(ppt["id"])["status"] == "awaiting_input"
+        assert shutdowns == []
 
     def test_terminal_untouched(self, db, tmp_path):
         ppt, proj = _mk_ppt(db, tmp_path, status="cancelled")
@@ -496,6 +513,14 @@ class TestTemplateRefs:
         with pytest.raises(TemplateRefError, match="不存在或已删除"):
             _resolve_template_refs("style:ghost")
 
+    def test_path_traversal_rejected(self, _tpl_env):
+        r"""路径穿越终检（P3-3 回归）：id 段 [^:\s]+ 放行 ../与分隔符，
+        越界解析会让库外目录作为 explicit root 进 agent 首条消息。"""
+        for bad in ("style:../x", "style:a/b", "style:a\\b", "style:..",
+                    "style:.", "style:sub/../custom_b"):
+            with pytest.raises(TemplateRefError, match="id 非法"):
+                _resolve_template_refs(bad)
+
     def test_duplicate_kind_rejected(self, _tpl_env):
         """同 kind 重复（ppt-master 每类至多一个约束）→ TemplateRefError。"""
         with pytest.raises(TemplateRefError, match="重复"):
@@ -628,14 +653,14 @@ class TestAutoResume:
 class TestFinalize:
     def test_receipt_before_round_end_resumes(self, db, tmp_path, monkeypatch):
         """回执早于回合收尾落盘（M1）：pending 已清空，sync_progress 不置位——
-        finalize 补置 awaiting + 通知后立即续跑（原实现在此直接 return，
-        状态卡 running 且泵已死，详情页连确认页都不渲染）。"""
+        finalize 补置 awaiting + 通知，续跑由 _finalize_or_fail 在收尾落盘后
+        补触发（_finalize 线程池执行后 _start_drive 的事件循环亲和调用已移出）。"""
         ppt, proj = _mk_ppt(db, tmp_path)
         _w(proj / "confirm_ui" / "result.json", {"stage": "stage1"})
         calls = []
         monkeypatch.setattr(
             PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
-        PptService()._finalize(db, ppt["id"])
+        asyncio.run(PptService()._finalize_or_fail(db, ppt["id"]))
         assert db.get_ppt(ppt["id"])["status"] == "awaiting_input"
         assert len(calls) == 1
         assert "Stage 1" in calls[0]
@@ -683,11 +708,55 @@ class TestInteractions:
         assert PptService().answer(db, ppt["id"])["code"] == "TASK_LIMIT_REACHED"
 
     def test_answer_rejected_when_finished(self, db, tmp_path):
-        """终态（completed/failed/cancelled）拒绝 answer/resume（m1 回归）。"""
-        for status in ("completed", "failed", "cancelled"):
+        """终态（completed/cancelled）拒绝 answer/resume（m1 回归）；
+        failed 不在拒绝清单（P2-4：失败可重试，见下用例）。"""
+        for status in ("completed", "cancelled"):
             ppt, _ = _mk_ppt(db, tmp_path)
             db.update_ppt_status(ppt["id"], status)
             assert PptService().answer(db, ppt["id"])["code"] == "PPT_FINISHED"
+
+    def test_start_drive_clears_stale_error(self, db, tmp_path, monkeypatch):
+        """failed→重试推进清残留 error（P3-1 回归）：update_ppt_status 仅
+        error 非 None 才写列，置 running 须显式传空串，否则重试成功的交付物
+        在详情页仍挂着上一轮失败原因的错误框。"""
+        import deps as deps_mod
+        # 本地构造（_mk_ppt 的假 task_id 过不了 save_task_message 外键）
+        task = db.create_task(title="t", data_dir=str(tmp_path),
+                              origin="ppt", mode="coding")
+        ws = tmp_path / "ws" / "ppt_project"
+        ws.mkdir(parents=True)
+        ppt = db.create_ppt(project_id="", task_id=task["id"], title="演示文稿",
+                            workspace_path=str(ws))
+        db.update_ppt_status(ppt["id"], "failed", error="旧错误")
+
+        async def _noop_pump(self_, *a, **k):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(PptService, "_pump", _noop_pump)
+        monkeypatch.setattr(deps_mod, "task_agent", SimpleNamespace(
+            try_acquire_task=lambda tid: True,
+            _running_task_ids=set(),
+        ), raising=False)
+
+        async def _drive():
+            PptService()._start_drive(db, ppt, "msg")
+
+        asyncio.run(_drive())
+        cur = db.get_ppt(ppt["id"])
+        assert cur["status"] == "running"
+        assert cur["error"] == ""
+
+    def test_answer_allows_failed_retry(self, db, tmp_path, monkeypatch):
+        """failed 可重试（P2-4 回归）：原实现拒绝 failed 致详情页
+        「继续」成死按钮；续跑从 DB 历史重建上下文，瞬时错误可自愈。"""
+        ppt, _ = _mk_ppt(db, tmp_path)
+        db.update_ppt_status(ppt["id"], "failed")
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        assert PptService().answer(db, ppt["id"]) == {"ok": True}
+        assert len(calls) == 1
 
     def test_cancel_terminal_idempotent(self, db, tmp_path):
         """终态重复 cancel 幂等成功，不触碰任务系统。"""
@@ -740,6 +809,253 @@ class TestInteractions:
             is_task_running=lambda tid: False))
         monkeypatch.setattr(deps_mod, "db", SimpleNamespace(delete_task=lambda tid: None))
         assert asyncio.run(PptService().delete(db, "nope"))["code"] == "PPT_NOT_FOUND"
+
+
+# ── answer 门禁感知（review P1-2/P2-1 回归）──
+
+class TestAnswerGateAware:
+    """手动继续与自动续跑同源：deck 回执在场复用 _resume_message（附回执
+    文件指引），template 空应答仅在标记在场时注入「已确认」。
+
+    旧实现：deck 分支恒发中性弱消息——用户确认内容只存在于 confirm_ui/*.json、
+    从未进入对话历史，agent 曾凭旧提案推进而不读回执；template 分支无条件
+    注入「已确认」——brief 未提案/回合中断时构成虚假前提。
+    """
+
+    def test_deck_uses_resume_message_on_receipt(self, db, tmp_path, monkeypatch):
+        ppt, proj = _mk_ppt(db, tmp_path)
+        db.update_ppt_status(ppt["id"], "awaiting_input")
+        _w(proj / "confirm_ui" / "result.json", {"stage": "stage1"})
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        assert PptService().answer(db, ppt["id"]) == {"ok": True}
+        assert len(calls) == 1
+        assert "Stage 1" in calls[0]
+
+    def test_deck_final_receipt_resumes_final_even_paused(self, db, tmp_path, monkeypatch):
+        """重启恢复 paused + final 回执：手动继续同样拿到回执指引（原弱消息
+        曾让 agent 在无确认内容的情况下自行推进）。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        db.update_ppt_status(ppt["id"], "paused")
+        _w(proj / "confirm_ui" / "result.json", {"stage": "final"})
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        PptService().answer(db, ppt["id"])
+        assert "Stage 2 最终确认" in calls[0]
+
+    def test_deck_note_appended_after_resume_message(self, db, tmp_path, monkeypatch):
+        ppt, proj = _mk_ppt(db, tmp_path)
+        db.update_ppt_status(ppt["id"], "awaiting_input")
+        _w(proj / "confirm_ui" / "result.json", {"stage": "stage1"})
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        PptService().answer(db, ppt["id"], "模板换成深色")
+        assert "Stage 1" in calls[0]
+        assert "用户补充意见：模板换成深色" in calls[0]
+
+    def test_deck_neutral_without_receipt(self, db, tmp_path, monkeypatch):
+        """无回执（门禁 pending 未提交/迭代耗尽）：保持中性消息，不假设进度。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        db.update_ppt_status(ppt["id"], "awaiting_input")
+        _w(proj / "confirm_ui" / "recommendations.stage1.json", {})
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        PptService().answer(db, ppt["id"])
+        assert "用户请求继续执行 PPT 任务" in calls[0]
+        assert "Stage 1" not in calls[0]
+
+    def _mk_template_job(self, db, tmp_path, tid: str):
+        # task_messages 对 tasks 表有外键约束：先建真实 task 行
+        task = db.create_task(title="[PPT模板] 品牌模板", data_dir=str(tmp_path),
+                              origin="ppt", mode="coding")
+        return db.create_ppt(
+            project_id="", task_id=task["id"], title="品牌模板",
+            kind="template", workspace_path=str(tmp_path / f"proj_{tid}"),
+            template_kind="brand", template_id=tid,
+        )
+
+    def test_template_confirm_requires_marker(self, db, tmp_path, monkeypatch):
+        """无确认标记时空应答不得注入「已确认」虚假前提。"""
+        ppt = self._mk_template_job(db, tmp_path, "b1")
+        db.save_task_message(ppt["task_id"], "assistant", "你好，我是创建助手。")
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        PptService().answer(db, ppt["id"])
+        assert "已确认模板 brief" not in calls[0]
+        assert "TEMPLATE_BRIEF_CONFIRMED" in calls[0]
+
+    def test_template_confirm_with_marker(self, db, tmp_path, monkeypatch):
+        ppt = self._mk_template_job(db, tmp_path, "b2")
+        db.save_task_message(
+            ppt["task_id"], "assistant",
+            "以下是最终 brief……\n[TEMPLATE_BRIEF_CONFIRMED]")
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        calls = []
+        monkeypatch.setattr(
+            PptService, "_start_drive", lambda self_, d, p, m: calls.append(m))
+        PptService().answer(db, ppt["id"])
+        assert "已确认模板 brief" in calls[0]
+
+
+# ── 收尾防护（review P2-2 回归：_finalize 异常不留 running 僵尸）──
+
+class TestFinalizeOrFail:
+    def test_finalize_exception_marks_failed(self, db, tmp_path, monkeypatch):
+        """泵收尾异常 → failed 带原因 + fail 通知（原实现仅 warning，
+        行停留 running：活动中心假报运行中且无后续驱动者）；failed 行同步
+        关停 confirm_ui（P2-2：两条 failed 路径上 agent 都无法再执行
+        --shutdown 指令，不关则 daemon 跨会话泄漏）。"""
+        ppt, _ = _mk_ppt(db, tmp_path)
+        monkeypatch.setattr(
+            PptService, "_finalize",
+            lambda self_, d, pid: (_ for _ in ()).throw(RuntimeError("boom")))
+        shutdowns = []
+        monkeypatch.setattr(ppt_service, "_shutdown_confirm_ui",
+                            lambda vp, proj: shutdowns.append(proj))
+        asyncio.run(PptService()._finalize_or_fail(db, ppt["id"]))
+        cur = db.get_ppt(ppt["id"])
+        assert cur["status"] == "failed"
+        assert "收尾失败" in cur["error"] and "boom" in cur["error"]
+        assert any(
+            n["entity_id"] == ppt["id"] and n["kind"] == "failed"
+            for n in db.list_unread_notifications()
+        )
+        assert len(shutdowns) == 1
+
+    def test_fallback_write_failure_never_raises(self, db, tmp_path, monkeypatch):
+        """兜底写库也失败（DB 全局故障）：不外抛（泵 finally 内），仅留日志。"""
+        ppt, _ = _mk_ppt(db, tmp_path)
+        monkeypatch.setattr(
+            PptService, "_finalize",
+            lambda self_, d, pid: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(
+            db, "update_ppt_status",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")))
+        asyncio.run(PptService()._finalize_or_fail(db, ppt["id"]))  # 不抛即过
+
+
+# ── 终态写让位（二轮 review P1-1 回归：_finalize 线程池化并发防护）──
+
+class TestSuperseded:
+    """_finalize 线程池化后事件循环可并发推进行状态（answer/auto_resume 开
+    新泵、轮询落门禁态），同步版「读快照→判定→写终态」的单线程原子性消失
+    ——每个终态写点前必须让位判定，防过期快照覆盖新驱动者的状态
+    （awaiting→paused 回退、running→awaiting/completed 回退）。"""
+
+    def test_row_missing_yields(self, db):
+        assert PptService()._superseded(db, "gone") is True
+
+    def test_status_advanced_yields(self, db, tmp_path, monkeypatch):
+        ppt, _ = _mk_ppt(db, tmp_path, status="running")
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        db.update_ppt_status(ppt["id"], "awaiting_input")  # 轮询已推进
+        assert PptService()._superseded(db, ppt["id"], "running") is True
+
+    def test_new_pump_yields(self, db, tmp_path, monkeypatch):
+        ppt, _ = _mk_ppt(db, tmp_path, status="running")
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: True)
+        assert PptService()._superseded(db, ppt["id"], "running") is True
+
+    def test_quiet_writes(self, db, tmp_path, monkeypatch):
+        ppt, _ = _mk_ppt(db, tmp_path, status="running")
+        monkeypatch.setattr(ppt_service, "_task_running", lambda tid: False)
+        assert PptService()._superseded(db, ppt["id"], "running") is False
+
+    def test_finalize_yields_all_terminals(self, db, tmp_path, monkeypatch):
+        """让位命中 → _finalize 任何分支不得写终态/发通知（回执在场也不
+        例外——过期快照写 awaiting 会把新泵的 running 打回）。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        _w(proj / "confirm_ui" / "result.json", {"stage": "stage1"})
+        monkeypatch.setattr(PptService, "_superseded",
+                            lambda self_, d, pid, snap=None: True)
+        fired = []
+        monkeypatch.setattr(ppt_service.activity_events, "gate_ppt",
+                            lambda d, pid, detail=None: fired.append(pid))
+        PptService()._finalize(db, ppt["id"])
+        assert db.get_ppt(ppt["id"])["status"] == "running"
+        assert fired == []
+
+    def test_finalize_template_yields_after_collect(self, db, tmp_path, monkeypatch):
+        """模板收录 30s+ 窗口内 answer 开新泵 → 收录成果保留（包已入库），
+        终态不写（completed 曾覆盖 running：行完成而 agent 仍在烧 token）。"""
+        task = db.create_task(title="[PPT模板] b_x", data_dir=str(tmp_path),
+                              origin="ppt", mode="coding")
+        ppt = db.create_ppt(project_id="", task_id=task["id"], title="品牌模板",
+                            kind="template", workspace_path=str(tmp_path / "proj"),
+                            template_kind="brand", template_id="b_x")
+        monkeypatch.setattr(ppt_service, "_template_package_valid", lambda p: True)
+        monkeypatch.setattr(ppt_service, "_collect_template", lambda p: (True, ""))
+        monkeypatch.setattr(PptService, "_superseded",
+                            lambda self_, d, pid, snap=None: True)
+        PptService()._finalize(db, ppt["id"])
+        assert db.get_ppt(ppt["id"])["status"] == "running"
+
+
+class TestMergeRescanIndex:
+    """rescan 锁内合并（P2-1 回归）：扫描在锁外，仅护写入护不住「扫描→写」对
+    ——收录在扫描完与拿锁之间完成时，其条目不在扫描快照里，整体覆盖写曾把
+    「目录在、索引丢」重新引入。"""
+
+    def test_preserves_concurrently_collected_entry(self, tmp_path):
+        base = tmp_path / "brands"
+        (base / "new_kit").mkdir(parents=True)  # 扫描窗口内新收录（目录在、快照缺）
+        # "gone" 只存在于索引（目录已删的漂移条目）
+        _w(base / "brands_index.json", {
+            "new_kit": {"name": "新模板"}, "gone": {"name": "已删"}})
+        scanned = {"kept": {"name": "扫描到的"}}
+        merged = ppt_service._merge_rescan_index(base, "brands_index.json", scanned)
+        assert merged["kept"] == {"name": "扫描到的"}   # 快照权威（目录树）
+        assert merged["new_kit"] == {"name": "新模板"}  # 新收录不被快照吞
+        assert "gone" not in merged                      # 目录消失 → 幂等清漂移
+
+    def test_corrupt_index_starts_fresh(self, tmp_path):
+        base = tmp_path / "brands"
+        base.mkdir(parents=True)
+        _w(base / "brands_index.json", "{not json")
+        merged = ppt_service._merge_rescan_index(base, "brands_index.json", {"a": {}})
+        assert merged == {"a": {}}
+
+
+# ── 收录切名失败回滚（二轮 review P2-2 回归）──
+
+class TestCollectRollback:
+    def test_rename_failure_rolls_back_index(self, tmp_path, monkeypatch):
+        """切名失败（Windows 文件锁/杀软占用）：锁内先删旧 dest 再 rename，
+        rename 失败曾留「索引有条目、包 404」悬空态——except 回滚条目，
+        重试收录可恢复（工作区包仍在）。"""
+        import paths
+        kind, tid = "brand", "brand_x"
+        data = tmp_path / "data"
+        monkeypatch.setattr(paths, "get_data_dir", lambda: str(data))
+        proj = tmp_path / "proj"
+        _w(proj / "templates" / f"design_spec.{kind}.{tid}.md",
+           "---\nname: 测试模板\nsummary: 回滚\n---\n\n正文\n")
+        ppt = {"id": "p1", "kind": "template", "workspace_path": str(proj),
+               "template_kind": kind, "template_id": tid}
+
+        def _boom(self_, target):
+            raise OSError("rename blocked")
+
+        monkeypatch.setattr(Path, "rename", _boom)
+        ok, reason = ppt_service._collect_template(ppt)
+        assert not ok and "收录失败" in reason
+        index_path = (data / "ppt-library" / "templates" / "brands"
+                      / "brands_index.json")
+        assert index_path.is_file()
+        assert tid not in json.loads(
+            index_path.read_text(encoding="utf-8"))  # 悬空条目已回滚
+        assert not (data / "ppt-library" / "templates" / ".collecting"
+                    / f"{kind}_{tid}").exists()  # 暂存已清
 
 
 # ── 创建回滚（review 二轮回归：create 两段式异常路径不留僵尸行）──

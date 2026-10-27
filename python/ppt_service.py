@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import activity_events
@@ -240,6 +241,10 @@ def _resolve_template_refs(refs: str) -> list[dict]:
         if not m:
             raise TemplateRefError(f"模板选择格式非法：{token}")
         kind, tid = m.group(1), m.group(2)
+        # 路径穿越终检（与模板工坊删除/详情同域口径）：id 段 [^:\s]+ 放行
+        # ../、分隔符，越界解析会让库外目录作为 explicit root 进 agent 消息
+        if tid in (".", "..") or Path(tid).name != tid:
+            raise TemplateRefError(f"模板选择 id 非法：{token}")
         if kind in seen_kinds:
             raise TemplateRefError(f"模板选择重复类型：{kind}（每类至多一个）")
         candidates = [
@@ -343,6 +348,13 @@ def _user_template_library_root() -> Path:
     return Path(get_data_dir()) / "ppt-library" / "templates"
 
 
+# 模板库索引互斥（P3-4）：收录的读-改-写、rescan 全量重建、delete 删条目
+# 都是「读快照→整体覆盖写」，_atomic_write_json 只保证单次原子不保证并发
+# 合并——并发时收录刚写入的条目会被旧快照覆盖（目录在、索引丢）。三类写方
+# 统一持此锁；收录的目录切名同锁段（目录出现与索引条目原子对齐）。
+_TEMPLATE_LIB_LOCK = threading.Lock()
+
+
 def _atomic_write_json(path: Path, data: dict) -> None:
     """索引原子写（tmp + os.replace）：收录/rescan/删除共用，防半写状态。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -422,8 +434,15 @@ def _collect_template(ppt: dict) -> tuple[bool, str]:
     - 包结构归一：project 形态 spec（design_spec.<kind>.<id>.md）→ 库形态
       design_spec.md（与内置/随包包同构，spec/预览端点按库形态读取）；
       templates/ 整目录 + images/ icons/ exports/（存在才拷）。
+    - 半包隔离（P3-4 深层）：先拷入库根 .collecting/ 暂存（不在任何 kind_dir
+      下，rescan/spec/预览/list 读取端按 kind_dir 定位、天然不可见）再整体
+      切名——拷贝中断不留半包在正式名下（rescan 以 spec 存在判完整，中断
+      半包曾被误收录成缺图包）。同名覆盖为删除重建（幂等重收录语义，
+      手工改动被覆盖留日志）；切名失败回滚索引条目防悬空（P2-2，旧包
+      已随覆盖删除时重试收录即可恢复——工作区包仍在）。
     - 索引条目：从 spec frontmatter 按 kind 提取（KIND_CONFIG 字段），缺字段
-      不写入（展示层已有 '—' 兑底）。
+      不写入（展示层已有 '—' 兑底）；读-改-写持库锁（与 rescan/delete 互斥
+      防丢更新），目录切名同锁段（目录出现与索引条目原子对齐）。
     - 异常返回 (False, 原因) 由调用方置 failed——包已产出但收录不成时
       用户无法自助推进，禁静默降级。
     """
@@ -432,37 +451,93 @@ def _collect_template(ppt: dict) -> tuple[bool, str]:
         return False, "工作区模板包不完整（缺 design_spec 或页面原型）"
     project = Path(ppt["workspace_path"])
     dest = _user_template_library_root() / _TEMPLATE_KIND_DIRS[kind] / tid
+    staging = (dest.parent.parent / ".collecting" / f"{kind}_{tid}")
     try:
-        # 拷贝（幂等：先清残留再拷，重复收录不累积脏文件）
-        if dest.exists():
-            shutil.rmtree(dest)
-        dest.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(project / "templates", dest / "templates")
+        # 拷贝到暂存（幂等：先清残留再拷，重复收录不累积脏文件）
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        shutil.copytree(project / "templates", staging / "templates")
         spec_src = project / "templates" / f"design_spec.{kind}.{tid}.md"
-        os.replace(dest / "templates" / spec_src.name, dest / "templates" / "design_spec.md")
+        os.replace(staging / "templates" / spec_src.name,
+                   staging / "templates" / "design_spec.md")
         for sub in ("images", "icons", "exports"):
             if (project / sub).is_dir():
-                shutil.copytree(project / sub, dest / sub)
-        # 索引条目（frontmatter 按 kind 提取；损坏索引按空重建，收录条目是权威新增）
-        fm = _parse_spec_frontmatter(spec_src.read_text(encoding="utf-8"))
-        entry = {k: fm.get(k) for k in _TEMPLATE_INDEX_FIELDS[kind]
-                 if fm.get(k) not in (None, "")}
-        index_path = dest.parent / f"{kind}s_index.json"
-        index: dict = {}
-        if index_path.is_file():
-            try:
-                loaded = json.loads(index_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    index = loaded
-            except ValueError:
-                index = {}
-        index[tid] = entry
-        _atomic_write_json(index_path, index)
+                shutil.copytree(project / sub, staging / sub)
+        with _TEMPLATE_LIB_LOCK:
+            # 索引条目（frontmatter 按 kind 提取；损坏索引按空重建，收录条目是权威新增）
+            fm = _parse_spec_frontmatter(spec_src.read_text(encoding="utf-8"))
+            entry = {k: fm.get(k) for k in _TEMPLATE_INDEX_FIELDS[kind]
+                     if fm.get(k) not in (None, "")}
+            index_path = dest.parent / f"{kind}s_index.json"
+            index: dict = {}
+            if index_path.is_file():
+                try:
+                    loaded = json.loads(index_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        index = loaded
+                except ValueError:
+                    index = {}
+            index[tid] = entry
+            _atomic_write_json(index_path, index)
+            if dest.exists():
+                # 覆盖明示（前轮 P3-3）：收录是幂等重建，用户库同名包的手工
+                # 改动会被工作区产物覆盖——留日志可追溯，避免静默丢失
+                logger.info(
+                    "Template collect overwrites existing package: "
+                    "kind=%s id=%s（手工改动将被工作区产物覆盖）", kind, tid)
+                shutil.rmtree(dest)
+            staging.rename(dest)
         logger.info("Template collected to user library: kind=%s id=%s", kind, tid)
         return True, ""
     except Exception as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        # 切名失败时 dest 可能已被覆盖删除而索引条目已写（锁内先删后 rename）
+        # ——回滚悬空条目防「列表有条目、包 404」（P2-2）；dest 在 = 旧包
+        # 完好，条目有效不回滚
+        try:
+            with _TEMPLATE_LIB_LOCK:
+                if not dest.exists():
+                    rollback_path = dest.parent / f"{kind}s_index.json"
+                    rollback: dict = {}
+                    if rollback_path.is_file():
+                        try:
+                            loaded = json.loads(
+                                rollback_path.read_text(encoding="utf-8"))
+                            if isinstance(loaded, dict):
+                                rollback = loaded
+                        except ValueError:
+                            rollback = {}
+                    if tid in rollback:
+                        rollback.pop(tid)
+                        _atomic_write_json(rollback_path, rollback)
+        except Exception:
+            logger.warning("Template collect rollback failed: kind=%s id=%s",
+                           kind, tid, exc_info=True)
         logger.error("Template collect failed: kind=%s id=%s", kind, tid, exc_info=True)
         return False, f"收录失败: {e}"
+
+
+def _merge_rescan_index(base: Path, index_name: str, scanned: dict) -> dict:
+    """rescan 索引合并（P2-1）：扫描在锁外构建快照，仅护写入动作护不住
+    「扫描→写」对——收录若在扫描完与拿锁之间完成，其条目不在快照里，
+    整体覆盖写会把「目录在、索引丢」重新引入。必须在库锁内调用（与收录/
+    delete 互斥）：重读现存索引后合并——扫描快照优先（目录树权威，手工
+    改动/损坏修复生效）；快照缺失但目录仍存在的现存条目保留（= 扫描窗口
+    内新收录或既有有效包）；目录已消失的条目丢弃（幂等清漂移）。"""
+    existing: dict = {}
+    path = base / index_name
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (OSError, ValueError):
+            existing = {}
+    for tid, entry in existing.items():
+        if tid not in scanned and (base / tid).is_dir():
+            scanned[tid] = entry
+    return scanned
 
 
 def _template_collected(ppt: dict) -> bool:
@@ -1021,7 +1096,10 @@ class PptService:
         # 「running 行无泵」僵尸（launch 失败回滚据此统一处置 failed）
         try:
             db.save_task_message(task_id, "user", message)
-            db.update_ppt_status(ppt["id"], "running")
+            # error="" 显式清残留：failed→重试推进必须带走旧错误，否则重试
+            # 成功后详情页错误框永久挂着上一轮失败原因（update_ppt_status
+            # 仅 error 非 None 才写列，不传不清）
+            db.update_ppt_status(ppt["id"], "running", error="")
             pump = asyncio.create_task(
                 self._pump(db, ppt["id"], task_id, message))
             self._pumps[ppt["id"]] = pump
@@ -1050,10 +1128,67 @@ class PptService:
         finally:
             progress.cancel()
             self._pumps.pop(ppt_id, None)
+            # shield：收尾 await 点上再收 cancel（pump 未 done 时可被二次取消）
+            # 不打断后置动作——failed 行关停 confirm_ui / awaiting 补续跑仍执行；
+            # 外层取消使本 finally 抛 CancelledError 终止 pump，内层收尾独立跑完
+            await asyncio.shield(self._finalize_or_fail(db, ppt_id))
+
+    async def _finalize_or_fail(self, db, ppt_id: str) -> None:
+        """收尾防护：_finalize 异常时不得留 running 僵尸行——活动中心假报
+        运行中、前端按钮错乱，且泵已退出后无任何后续驱动者，唯一恢复靠重启。
+        置 failed 显式暴露（P2-4 后 failed 可经 answer/resume 重试，有出路）。
+
+        _finalize 含模板收录（工作区包拷贝可达 30s+）/产物扫描等文件 IO，
+        放线程池执行——_pump 是协程，同步直调曾冻结事件循环（心跳/轮询/SSE
+        全部停摆）。两个后置动作依赖收尾结果：
+        - failed 行关停 confirm_ui（P2-2 泄漏封堵）：泵异常直接置 failed 与
+          收尾兜底置 failed 两条路径上，agent 都无法再执行首条消息里的
+          --shutdown 指令，daemon 进程会跨会话泄漏 5050 段端口；
+        - awaiting 的 deck 行补触发回执续跑（_start_drive 需事件循环线程，
+          原内联在 _finalize 的线程段内不可行，移出至此）。"""
+        try:
+            await asyncio.to_thread(self._finalize, db, ppt_id)
+        except Exception as e:
+            logger.error("PPT finalize failed: ppt=%s", ppt_id, exc_info=True)
             try:
-                self._finalize(db, ppt_id)
+                db.update_ppt_status(ppt_id, "failed", error=f"收尾失败，可重试: {e}")
+                activity_events.fail_ppt(db, ppt_id, f"收尾失败: {e}")
             except Exception:
-                logger.warning("PPT finalize failed: ppt=%s", ppt_id, exc_info=True)
+                logger.warning(
+                    "PPT finalize fallback failed: ppt=%s", ppt_id, exc_info=True)
+        try:
+            cur = db.get_ppt(ppt_id)
+        except Exception:
+            # 后置读行失败不外抛（finally 内）：与兜底写库同级防护
+            logger.warning("PPT post-finalize read failed: ppt=%s",
+                           ppt_id, exc_info=True)
+            return
+        if not cur:
+            return
+        if cur["status"] == "failed":
+            await self._shutdown_confirm_ui_safe(db, cur)
+        elif cur["status"] == "awaiting_input" \
+                and cur.get("kind") not in ("template", "enhanced"):
+            try:
+                self.auto_resume_if_receipt(db, cur)
+            except Exception:
+                # finally 内不外抛：续跑失败由详情页 3s 轮询接棒重试
+                logger.warning("PPT post-finalize auto-resume failed: ppt=%s",
+                               ppt_id, exc_info=True)
+
+    async def _shutdown_confirm_ui_safe(self, db, ppt: dict) -> None:
+        """best-effort 关停 confirm_ui daemon（P2-2 泄漏封堵）：仅 deck 行持有
+        确认页进程（template/enhanced 无 confirm_ui）；_shutdown_confirm_ui
+        幂等且自吞异常，此处仅防行字段缺失等意外，不阻断主流程。"""
+        if ppt.get("kind") in ("template", "enhanced"):
+            return
+        try:
+            await asyncio.to_thread(
+                _shutdown_confirm_ui,
+                self._venv_python(db, ppt), Path(ppt["workspace_path"]))
+        except Exception:
+            logger.warning("PPT confirm_ui shutdown failed: ppt=%s",
+                           ppt["id"], exc_info=True)
 
     async def _progress_loop(self, db, ppt_id: str) -> None:
         while True:
@@ -1108,8 +1243,28 @@ class PptService:
             "写 handoff → 产出 recommendations.stage2.json（完整方案 + 生产机制）后立即结束回合等待用户确认。"
         )
 
+    def _superseded(self, db, ppt_id: str,
+                    snap_status: str | None = None) -> bool:
+        """终态写让位判定（P1-1：_finalize 线程池化后事件循环并发推进行状态）。
+
+        同步版「读快照→判定→写终态」单线程原子；线程池化后 answer/auto_resume
+        可在收尾期间（模板收录 30s+）启动新泵置 running，轮询也可能先落
+        awaiting/paused。行已删、状态偏离快照（他人已推进）或新泵在飞
+        （_task_running）时返回 True——本线程不得再用过期快照覆盖，让位给
+        新驱动者，其回合结束时自会重新收尾。"""
+        cur = db.get_ppt(ppt_id)
+        if not cur:
+            return True
+        if snap_status is not None and cur["status"] != snap_status:
+            return True
+        return _task_running(cur["task_id"])
+
     def _finalize(self, db, ppt_id: str) -> None:
-        """回合结束终态判定：completed / awaiting（自动续跑已接手）/ paused。"""
+        """回合结束终态判定：completed / awaiting（自动续跑已接手）/ paused。
+
+        线程池执行（调用方 _finalize_or_fail）：纯文件 IO + DB 写，不得包含
+        事件循环亲和调用（_start_drive/create_task）；回执续跑由调用方在
+        收尾落盘后补触发。"""
         import deps
         ppt = db.get_ppt(ppt_id)
         if not ppt or ppt["status"] in ("completed", "failed", "cancelled"):
@@ -1127,6 +1282,8 @@ class PptService:
         exports = sorted((project / "exports").glob("*.pptx"), key=os.path.getmtime) \
             if (project / "exports").is_dir() else []
         if exports:
+            if self._superseded(db, ppt_id):
+                return  # 收尾期间新泵已接棒（answer/auto_resume），终态归其收尾
             rel = str(exports[-1].relative_to(project)).replace("\\", "/")
             db.update_ppt_status(ppt_id, "completed", export_path=rel)
             activity_events.complete_ppt(db, ppt_id, rel)
@@ -1140,12 +1297,16 @@ class PptService:
             return  # 用户主动暂停已声明（弹出即读后重复声明会成第二条噪音）
         if gate["receipt_stage1"] or gate["confirmed_final"]:
             # 回执早于回合收尾落盘（pending 已清空，sync_progress 不置位）：
-            # 补置 awaiting + 通知后立即续跑；并发满时留给轮询重试
+            # 补置 awaiting + 通知；续跑由 _finalize_or_fail 在收尾后补触发
+            # （本方法在线程池执行，_start_drive 需事件循环线程）
+            if self._superseded(db, ppt_id, cur["status"]):
+                return  # 快照后 answer/轮询已并发推进（P1-1），让位防状态回退
             db.update_ppt_status(ppt_id, "awaiting_input")
             activity_events.gate_ppt(db, ppt_id, "检测到确认回执，继续执行")
-            self.auto_resume_if_receipt(db, cur)
             return
         # 迭代耗尽 / agent 正常收尾但未导出：可恢复暂停态
+        if self._superseded(db, ppt_id, cur["status"]):
+            return  # 状态已被轮询推进（如 pending 门禁置 awaiting），让位
         db.update_ppt_status(ppt_id, "paused")
         activity_events.pause_ppt(
             db, ppt_id, "本回合已结束但尚未导出，可在详情页继续")
@@ -1162,6 +1323,10 @@ class PptService:
         ppt_id = ppt["id"]
         if _template_package_valid(ppt):
             ok, reason = _collect_template(ppt)
+            # 收录 30s+ 期间 answer 可启动新泵（P1-1）：让位——包已入库
+            # （收录失败时新泵重导出可再收），终态归新泵收尾落
+            if self._superseded(db, ppt_id, ppt["status"]):
+                return
             if ok:
                 db.update_ppt_status(ppt_id, "completed")
                 activity_events.complete_ppt(db, ppt_id, ppt.get("template_id") or "")
@@ -1170,6 +1335,8 @@ class PptService:
                 db.update_ppt_status(ppt_id, "failed", error=reason)
                 activity_events.fail_ppt(db, ppt_id, reason)
             return
+        if self._superseded(db, ppt_id, ppt["status"]):
+            return  # brief 门等待期间新泵/轮询已推进（P1-1），让位
         last = _last_assistant_text(db, ppt["task_id"])
         if last and _BRIEF_CONFIRMED_MARKER in last:
             db.update_ppt_progress(ppt_id, stage="strategy")
@@ -1184,6 +1351,9 @@ class PptService:
         """增强任务回合结束终态：completed（exports 产物）/ awaiting（两处确认门）
         / paused。产物状态机判定（_enhance_gate），不依赖 agent 消息标记。"""
         ppt_id = ppt["id"]
+        # 终态写前统一让位（P1-1）：收尾窗口内新泵接棒则终态归其收尾
+        if self._superseded(db, ppt_id, ppt["status"]):
+            return
         project = Path(ppt["workspace_path"])
         exports = _enhance_exports(project)
         if exports:
@@ -1213,8 +1383,10 @@ class PptService:
         ppt = db.get_ppt(ppt_id)
         if not ppt:
             return {"error": "PPT 不存在", "code": "PPT_NOT_FOUND"}
-        if ppt["status"] in ("completed", "failed", "cancelled"):
+        if ppt["status"] in ("completed", "cancelled"):
             return {"error": "PPT 已结束，无法继续", "code": "PPT_FINISHED"}
+        # failed 可重试：泵异常/收尾失败多为瞬时错误，续跑从 DB 历史重建上下文
+        # （原实现拒绝 failed 致详情页「继续」成死按钮，用户唯一出路是删除重跑）
         if _task_running(ppt["task_id"]):
             return {"error": "任务正在执行中", "code": "TASK_RUNNING"}
         if ppt.get("kind") == "template":
@@ -1225,11 +1397,23 @@ class PptService:
                              "并在其后另起一行发出 [TEMPLATE_BRIEF_CONFIRMED]）后"
                              "再次结束回合等待确认。")
             else:
-                message = ("[系统] 用户已确认模板 brief。请继续执行 Step 4 及后续步骤："
-                           "子工作流 → Step 5 校验（svg_quality_checker.py "
-                           "<项目目录>/templates --template-mode）→ Review PPTX"
-                           "（多 Master 必做）；禁止注册全局索引，校验通过后"
-                           "报告模板包位置并结束回合，系统会负责收录。")
+                # 确认语义前置校验：仅当最后一条 assistant 消息带确认标记才注入
+                # 「已确认」——否则（brief 未提案/回合中断，如重启恢复 paused）
+                # 虚假前提曾致 agent 跳过 Step 3 直接执行
+                last = _last_assistant_text(db, ppt["task_id"])
+                if last and _BRIEF_CONFIRMED_MARKER in last:
+                    message = ("[系统] 用户已确认模板 brief。请继续执行 Step 4 及后续步骤："
+                               "子工作流 → Step 5 校验（svg_quality_checker.py "
+                               "<项目目录>/templates --template-mode）→ Review PPTX"
+                               "（多 Master 必做）；禁止注册全局索引，校验通过后"
+                               "报告模板包位置并结束回合，系统会负责收录。")
+                else:
+                    message = ("[系统] 用户请求继续执行模板创建任务。若 Step 3 brief 提案"
+                               "尚未完成，请先完成提案并按契约发出 "
+                               "[TEMPLATE_BRIEF_CONFIRMED] 标记后结束回合等待确认；"
+                               "提案已完成的，请继续 Step 4 及后续步骤"
+                               "（禁止注册全局索引，校验通过后报告模板包位置，"
+                               "系统会负责收录）。")
         elif ppt.get("kind") == "enhanced":
             # 产物状态机应答（native-enhance-pptx.md §5/§7 门禁契约）：
             # 空文本 = 确认推进；非空 = 修改意见（agent 更新提案再等确认）
@@ -1260,9 +1444,20 @@ class PptService:
                 if text:
                     message += f"用户补充意见：{text}"
         else:
-            message = "[系统] 用户请求继续执行 PPT 任务。"
-            if text:
-                message += f"用户补充意见：{text}"
+            # deck 门禁感知续跑：回执在场时复用 _resume_message（与自动续跑同源，
+            # 附回执文件指引）——用户确认内容只存在于 confirm_ui/*.json 文件、
+            # 从未进入对话历史，中性弱消息曾致 agent 凭旧提案推进而不读回执；
+            # 无回执时保持中性消息（不假设进度）
+            gate = (_gate_state(Path(ppt["workspace_path"]))
+                    if ppt.get("workspace_path") else None)
+            if gate and (gate["receipt_stage1"] or gate["confirmed_final"]):
+                message = self._resume_message(ppt, gate)
+                if text:
+                    message += f"\n[系统] 用户补充意见：{text}"
+            else:
+                message = "[系统] 用户请求继续执行 PPT 任务。"
+                if text:
+                    message += f"用户补充意见：{text}"
         try:
             self._start_drive(db, ppt, message)
         except RuntimeError as e:
@@ -1271,6 +1466,28 @@ class PptService:
                 return {"error": "任务正在执行中", "code": "TASK_RUNNING"}
             return {"error": "已达到最大并发任务数限制", "code": "TASK_LIMIT_REACHED"}
         return {"ok": True}
+
+    def retry_collect(self, db, ppt_id: str) -> dict:
+        """模板收录重试（P2-3）：包已产出但收录失败（IO/索引写坏）的行，
+        收录是幂等纯本地操作——重试不跑 agent、不耗模型。"""
+        ppt = db.get_ppt(ppt_id)
+        if not ppt:
+            return {"error": "PPT 不存在", "code": "PPT_NOT_FOUND"}
+        if ppt.get("kind") != "template":
+            return {"error": "仅模板任务支持重试收录", "code": "NOT_TEMPLATE_JOB"}
+        if ppt["status"] != "failed":
+            return {"error": "仅失败任务可重试收录", "code": "TEMPLATE_JOB_NOT_FAILED"}
+        if not _template_package_valid(ppt):
+            return {"error": "工作区模板包不完整，无法收录", "code": "TEMPLATE_PACKAGE_INCOMPLETE"}
+        logger.info("Retrying template collect: ppt=%s", ppt_id)
+        ok, reason = _collect_template(ppt)
+        if ok:
+            db.update_ppt_status(ppt_id, "completed")
+            activity_events.complete_ppt(db, ppt_id, ppt.get("template_id") or "")
+            return {"ok": True}
+        db.update_ppt_status(ppt_id, "failed", error=reason)
+        activity_events.fail_ppt(db, ppt_id, reason)
+        return {"error": reason, "code": "TEMPLATE_COLLECT_FAILED"}
 
     def pause(self, db, ppt_id: str) -> dict:
         """手动暂停（复用任务暂停状态机，2.3 §3.4）。"""
@@ -1399,15 +1616,20 @@ class PptService:
                 rel = str(exports[-1].relative_to(project)).replace("\\", "/")
                 db.update_ppt_status(ppt["id"], "completed", export_path=rel)
                 activity_events.complete_ppt(db, ppt["id"], rel)
+                # 确认页会话随行落位关闭（P2-2 泄漏封堵）：进程态与行态一致；
+                # _shutdown_confirm_ui 幂等且自吞异常（recover_orphans 由
+                # main.py lifespan 放线程池执行，同步调用不阻塞事件循环）
+                _shutdown_confirm_ui(self._venv_python(db, ppt), project)
                 continue
             gate = _gate_state(project)
             if gate["pending"] and not gate["receipt_stage1"] and not gate["confirmed_final"]:
                 db.update_ppt_status(ppt["id"], "awaiting_input")
                 activity_events.gate_ppt(db, ppt["id"], "应用重启，请继续完成确认")
-                continue
+                continue  # awaiting 行保留 daemon——用户还要在确认页操作
             if ppt["status"] == "running":
                 db.update_ppt_status(ppt["id"], "paused")
                 activity_events.pause_ppt(db, ppt["id"], "应用重启，可在详情页继续")
+                _shutdown_confirm_ui(self._venv_python(db, ppt), project)
 
     # -- 活动注册表 source（0.4 §2.2）--
 

@@ -1,5 +1,5 @@
 /** src/features/project/tabs/ReportWizard.tsx — 2-step report creation wizard (real templates) */
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, Search, ChevronRight, Loader2, Globe } from 'lucide-react'
 import type { ProjectType } from '../types'
@@ -63,12 +63,34 @@ interface OutlineNode {
   children?: OutlineNode[]
 }
 
-/** Static knowledge source entries (project KB + preset libs) */
-const STATIC_SOURCE_ENTRIES = [
-  { id: 'ks-project', nameKey: 'project.report.wizard.projectKb', alwaysChecked: true, autoMatched: false },
-  { id: 'ks-recruitment', nameKey: 'project.report.wizard.recruitmentLib', alwaysChecked: false, autoMatched: true, matchType: 'recruitment' as ProjectType, baseLibId: 'bl-recruitment' },
-  { id: 'ks-investment', nameKey: 'project.report.wizard.investmentLib', alwaysChecked: false, autoMatched: true, matchType: 'investment' as ProjectType, baseLibId: 'bl-investment' },
+/** 知识源条目：静态（项目库 + 预置库，nameKey 走 i18n）+ 动态（自定义库，直用 name） */
+interface KnowledgeSourceEntry {
+  id: string
+  /** 静态条目的 i18n 键；动态自定义库条目为 null（用 name） */
+  nameKey: string | null
+  /** 动态条目显示名（自定义库名快照）；静态条目无 */
+  name?: string
+  autoMatched: boolean
+  matchType?: ProjectType
+  baseLibId?: string
+}
+
+/** Static knowledge source entries (project KB + preset libs)。
+ * 项目库默认勾选可取消（§1.2 include_project_kb，2026-10-27）；
+ * 取消后章节检索与变量抽值均排除本项目知识库（仅勾选的基础库）。 */
+const STATIC_SOURCE_ENTRIES: KnowledgeSourceEntry[] = [
+  { id: 'ks-project', nameKey: 'project.report.wizard.projectKb', autoMatched: false },
+  { id: 'ks-recruitment', nameKey: 'project.report.wizard.recruitmentLib', autoMatched: true, matchType: 'recruitment' as ProjectType, baseLibId: 'bl-recruitment' },
+  { id: 'ks-investment', nameKey: 'project.report.wizard.investmentLib', autoMatched: true, matchType: 'investment' as ProjectType, baseLibId: 'bl-investment' },
 ]
+
+/** 预置库判定（与后端 is_preset_base_lib 同口径）：lib_type 以 preset_ 开头 */
+function isPresetLib(libType: string | null | undefined): boolean {
+  return !!libType && libType.startsWith('preset_')
+}
+
+/** 动态自定义库条目的知识源 id 前缀 */
+const CUSTOM_KS_PREFIX = 'ks-'
 
 /**
  * Persist the wizard's checked sources back to project_base_libs (2.7 §5.5):
@@ -76,7 +98,9 @@ const STATIC_SOURCE_ENTRIES = [
  * run pre-checks the same sources. Auto-created links are refined by user
  * choices (unchecking an auto-linked lib unlinks it). Failures are
  * non-fatal — generation has already started; the wizard just falls back
- * to the current associations next time.
+ * to the current associations next time. Caller must skip this when the
+ * association set failed to load (sourcesLoadedRef) — writing back a
+ * degraded selection would wipe existing associations.
  */
 async function syncBaseLibAssociations(projectId: string, targetLibIds: Set<string>) {
   try {
@@ -129,6 +153,11 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
   const [internetEnabled, setInternetEnabled] = useState(false)
   const [sectionInternet, setSectionInternet] = useState<Record<string, boolean>>({})
   const [generating, setGenerating] = useState(false)
+  // 自定义基础库（baseLib:list 全量、滤预置）：知识源动态拼接（2.7 §3.1）
+  const [customLibs, setCustomLibs] = useState<Array<{ id: string; name: string }>>([])
+  // loadSources 是否成功拿到关联集：失败时生成不回写关联（fail-safe，防降级
+  // 勾选集经 syncBaseLibAssociations 反向清空存量关联——CodeReview M-3 2026-10-26）
+  const sourcesLoadedRef = useRef(false)
 
   // Load templates from backend
   useEffect(() => {
@@ -155,33 +184,69 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
   // associations (2.7 §5.5): links may have been auto-created at project
   // creation or edited by the user since — a projectType hard-match would
   // check the wrong boxes and never pre-check linked custom libs.
+  // 自定义库恢复后同 effect 顺带拉取 baseLib:list（全量、滤预置，串行 await
+  // 与关联集分离失败域）：动态条目预勾同样以关联集为准（预置收敛期 2.9 D3
+  // 曾仅静态三源，2.7 §7 核销）
   useEffect(() => {
     let cancelled = false
-    async function loadAssociations() {
+    sourcesLoadedRef.current = false
+    async function loadSources() {
       const initial = new Set<string>()
       initial.add('ks-project')
+      // 决策性数据（关联集）与展示性数据（全量库列表）分离拉取（M-3）：
+      // baseLib:list 失败只降级自定义库条目展示，不连坐预勾；关联集失败
+      // 放弃预勾（仅静态源）并保持 sourcesLoaded=false，生成时不回写关联
+      let linkedIds = new Set<string>()
+      let assocLoaded = false
+      let customs: Array<{ id: string; name: string }> = []
       try {
-        const result: any = await window.electronAPI.invoke('project:getBaseLibs', projectId)
-        const linkedIds = new Set<string>(
-          (result?.base_libs || []).map((lib: any) => lib.id),
+        const assoc: any = await window.electronAPI.invoke('project:getBaseLibs', projectId)
+        linkedIds = new Set<string>(
+          ((assoc as any)?.base_libs || []).map((lib: any) => lib.id),
         )
+        assocLoaded = true
+      } catch (err) {
+        console.error('Failed to load project base-lib associations:', err)
+      }
+      try {
+        const libsRes: any = await window.electronAPI.invoke('baseLib:list', { limit: 0 })
+        customs = (((libsRes as any)?.base_libs || []) as Array<{ id: string; name: string; lib_type: string | null }>)
+          .filter(lib => !isPresetLib(lib.lib_type))
+          .map(lib => ({ id: lib.id, name: lib.name }))
+      } catch (err) {
+        console.error('Failed to load custom base libs:', err)
+      }
+      if (cancelled) return
+      setCustomLibs(customs)
+      if (assocLoaded) {
         STATIC_SOURCE_ENTRIES.forEach(ks => {
           if (ks.baseLibId && linkedIds.has(ks.baseLibId)) {
             initial.add(ks.id)
           }
         })
-      } catch (err) {
-        console.error('Failed to load project base-lib associations:', err)
-        // Fallback: only the project KB stays checked
+        customs.forEach(lib => {
+          if (linkedIds.has(lib.id)) initial.add(`${CUSTOM_KS_PREFIX}${lib.id}`)
+        })
       }
-      if (!cancelled) setCheckedSources(initial)
+      sourcesLoadedRef.current = assocLoaded
+      setCheckedSources(initial)
     }
-    loadAssociations()
+    loadSources()
     return () => { cancelled = true }
   }, [projectId])
 
-  // 基础库收敛后仅剩预置静态源（2.9 D3），无自定义库可拼接
-  const knowledgeSources = STATIC_SOURCE_ENTRIES
+  // 静态三源 + 动态自定义库拼接（2.7 §3.1）：自定义库 id 与预勾/回写一致
+  // （`ks-${lib.id}`），targetLibIds 收集逻辑对两类条目通用
+  const knowledgeSources = useMemo<KnowledgeSourceEntry[]>(() => [
+    ...STATIC_SOURCE_ENTRIES,
+    ...customLibs.map(lib => ({
+      id: `${CUSTOM_KS_PREFIX}${lib.id}`,
+      nameKey: null,
+      name: lib.name,
+      autoMatched: false,
+      baseLibId: lib.id,
+    })),
+  ], [customLibs])
 
   // User-sourced variables that require manual input in the wizard
   const userVariables = useMemo<TemplateVariable[]>(
@@ -250,6 +315,9 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
       if (ks.baseLibId) targetLibIds.add(ks.baseLibId)
     }
     const baseProjectIds: string[] = [...targetLibIds]
+    // 项目知识库纳入开关（§1.2）：取消勾选后后端章节检索与变量抽值
+    // 均排除本项目知识库；undefined 由 IPC 层归一 true（默认纳入）
+    const includeProjectKb = checkedSources.has('ks-project')
 
     try {
       const result: any = await window.electronAPI.invoke('reports:generateReport', {
@@ -258,6 +326,7 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
         title: selectedTemplate.template_name,
         variables: variableValues,
         baseProjectIds,
+        includeProjectKb,
         supplementaryNotes,
         sectionInternet,
         internetEnabled,
@@ -267,8 +336,9 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
         // Generation started in background — return to kanban
         onComplete()
         // Persist the wizard selection as project base-lib associations so
-        // the next run pre-checks the same sources (2.7 §5.5)
-        void syncBaseLibAssociations(projectId, targetLibIds)
+        // the next run pre-checks the same sources (2.7 §5.5)。关联集加载
+        // 失败时跳过：目标集只是降级勾选，回写会反向清空存量关联
+        if (sourcesLoadedRef.current) void syncBaseLibAssociations(projectId, targetLibIds)
       } else {
         setGenerating(false)
       }
@@ -486,13 +556,11 @@ export function ReportWizard({ projectId, projectType, onComplete, onCancel }: R
                       type="checkbox"
                       checked={checkedSources.has(ks.id)}
                       onChange={() => toggleSource(ks.id)}
-                      disabled={ks.alwaysChecked}
                     />
                     <span className={s.checkboxLabel}>
-                      {t(ks.nameKey)}
+                      {ks.nameKey ? t(ks.nameKey) : ks.name}
                     </span>
-                    {ks.alwaysChecked && <span className={s.autoTag}>{t('project.report.wizard.autoIncluded')}</span>}
-                    {ks.autoMatched && ks.matchType === projectType && !ks.alwaysChecked && (
+                    {ks.autoMatched && ks.matchType === projectType && (
                       <span className={s.matchTag}>{t('project.report.wizard.autoMatched')}</span>
                     )}
                   </label>

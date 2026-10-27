@@ -249,6 +249,18 @@ function SanitizedSvg({ source }: { source: string }) {
 
 const INLINE_HTML_TOKEN_RE = /<\s*(\/?)\s*(span|b|strong|i|em|code|mark|u|sub|sup|br)\b([^>]*)>/gi
 
+// 引用上标占位符协议（2026-10-27，视觉尾注 §2.5report-design §3.7）：
+// ReportPreview 转换器把正文 [n] 注入为 <sup>[n]</sup>，但 sup 标签会把
+// markdown 加粗/斜体区间切开——renderInlineMarkdown 的 ** 配对要求在
+// 同一文本 token 内，跨标签即失败（字面星号）。行进入 token 管线前先把
+// <sup>[n]</sup> 编码为私有区占位符（U+E000 + 引用号 + U+E001，正文不会
+// 出现），** 配对不受影响；文本渲染处（renderInlineMarkdown / decodeCitationSup）
+// 解码还原为 <sup>。仅本组件认识该协议，chat/wiki 无占位符输入不受影响。
+const CITATION_SUP_TAG_RE = /<sup>\[(\d{1,3})\]<\/sup>/g
+const CITATION_SUP_PLACEHOLDER_RE = /\uE000(\d{1,3})\uE001/g
+const encodeCitationSup = (line: string): string =>
+  line.replace(CITATION_SUP_TAG_RE, '\uE000$1\uE001')
+
 interface InlineToken {
   kind: 'open' | 'close' | 'text'
   tag?: string
@@ -314,6 +326,17 @@ function parseSafeStyle(attrs: string): React.CSSProperties {
   return style as React.CSSProperties
 }
 
+/** 占位符 → <sup>[n]</sup>（引用上标协议，见 encodeCitationSup）。
+ * split 单捕获组保证奇数索引恒为引用号段；无占位符时退化为 [text]。 */
+function decodeCitationSup(text: string, keyBase: string): React.ReactNode[] {
+  if (!text.includes('\uE000')) return [text]
+  return text.split(CITATION_SUP_PLACEHOLDER_RE).map((seg, j) =>
+    j % 2 === 1
+      ? <sup key={`${keyBase}-s${j}`}>[{seg}]</sup>
+      : (seg || null)
+  )
+}
+
 /** Minimal inline markdown (bold / italic / code / strikethrough / link) for
  * text inside HTML-tagged lines — full block markdown still goes to
  * ReactMarkdown, only these tagged lines need a lightweight pass. */
@@ -323,20 +346,23 @@ function renderInlineMarkdown(text: string, keyBase: string): React.ReactNode[] 
   return parts.map((part, i) => {
     const key = `${keyBase}-${i}`
     if (!part) return null
-    if (part.startsWith('**') && part.endsWith('**')) return <strong key={key}>{part.slice(2, -2)}</strong>
-    if (part.startsWith('~~') && part.endsWith('~~')) return <del key={key}>{part.slice(2, -2)}</del>
-    if (part.startsWith('`') && part.endsWith('`')) return <code key={key}>{part.slice(1, -1)}</code>
-    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) return <em key={key}>{part.slice(1, -1)}</em>
+    if (part.startsWith('**') && part.endsWith('**')) return <strong key={key}>{decodeCitationSup(part.slice(2, -2), `${key}-b`)}</strong>
+    if (part.startsWith('~~') && part.endsWith('~~')) return <del key={key}>{decodeCitationSup(part.slice(2, -2), `${key}-d`)}</del>
+    if (part.startsWith('`') && part.endsWith('`')) {
+      // 代码内容不渲染上标，占位符还原为字面 [n]
+      return <code key={key}>{part.slice(1, -1).replace(CITATION_SUP_PLACEHOLDER_RE, '[$1]')}</code>
+    }
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) return <em key={key}>{decodeCitationSup(part.slice(1, -1), `${key}-i`)}</em>
     const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(part)
     if (link) {
       return (
         <a key={key} href={link[2]} target="_blank" rel="noopener noreferrer"
           onClick={(e) => { e.preventDefault(); window.open(link[2], '_blank', 'noopener,noreferrer') }}>
-          {link[1]}
+          {decodeCitationSup(link[1], `${key}-a`)}
         </a>
       )
     }
-    return part // plain text stays a bare string node (no wrapper span)
+    return decodeCitationSup(part, key) // plain text（无占位符时仍是裸字符串节点）
   })
 }
 
@@ -408,11 +434,15 @@ function lineHasInlineHtml(line: string): boolean {
 }
 
 function InlineHtmlLine({ line, lineKey }: { line: string; lineKey: string }) {
-  const tokens = tokenizeInline(line)
-  if (!tokens) return null // caller checks first — defensive
-  const prefixMatch = /^(#{1,6})\s+|^(?:[-*]\s+|^\d+[.)]\s+|^>\s?)/.exec(line)
+  // 引用上标先编码为占位符（协议见 encodeCitationSup），避免 sup 标签切开加粗区间
+  const encoded = encodeCitationSup(line)
+  // 行内唯一 HTML 是引用上标 sup 时，编码后已无标签 → tokenize 判 null：
+  // 降级为单 text token，仍走下方同一条 prefix/段落分支——不得返回 null
+  // （整行丢失）、不得回退 ReactMarkdown（sup 被剥）、不得无条件包 p（丢标题语义）
+  const tokens = tokenizeInline(encoded) || [{ kind: 'text', text: encoded }]
+  const prefixMatch = /^(#{1,6})\s+|^(?:[-*]\s+|^\d+[.)]\s+|^>\s?)/.exec(encoded)
   if (prefixMatch) {
-    const rest = line.slice(prefixMatch[0].length)
+    const rest = encoded.slice(prefixMatch[0].length)
     const restTokens = tokenizeInline(rest) || [{ kind: 'text', text: rest }]
     const inner = renderInlineTokens(restTokens, `${lineKey}-inner`)
     if (prefixMatch[1]) {
@@ -423,7 +453,10 @@ function InlineHtmlLine({ line, lineKey }: { line: string; lineKey: string }) {
     if (/^[-*]\s/.test(prefixMatch[0])) return <ul key={lineKey}><li>{inner}</li></ul>
     return <blockquote key={lineKey}>{inner}</blockquote>
   }
-  return <>{renderInlineTokens(tokens, lineKey)}</>
+  // 纯段落行包 <p>：保证段落语义与间距（.markdown p）、useMarkdownBlockFind
+  // 叶子块（FIND_BLOCK_SELECTOR 含 p）可命中——裸 fragment 会使引用段落
+  // 粘连成段且对文档内查找不可见（2026-10-27 review 修复，chat/wiki 同惠）
+  return <p key={lineKey}>{renderInlineTokens(tokens, lineKey)}</p>
 }
 
 interface LineChunk {

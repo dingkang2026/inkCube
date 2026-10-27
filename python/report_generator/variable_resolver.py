@@ -92,6 +92,7 @@ async def resolve_variables(
     base_project_ids: Optional[list[str]] = None,
     web_search_cfg: dict | None = None,
     internet_enabled: bool = True,
+    include_project_kb: bool = True,
 ) -> tuple[dict, dict, dict]:
     """解析模板全部变量（隐式 + user + derived），返回可实例化的变量表。
 
@@ -115,6 +116,8 @@ async def resolve_variables(
         base_project_ids: 关联基础库项目 ID 列表
         web_search_cfg: 网络搜索配置 {"provider","key","engine"}（internet 通道，web_search_cfg_from_settings 归一产物）
         internet_enabled: 报告级互联网总开关（§1.1）；False 时强制派生变量仅走 knowledge，无视 data_sources
+        include_project_kb: 项目知识库纳入开关（§1.2，2026-10-27）；False 时抽值
+            检索同样排除本项目知识库（仅基础库），与章节检索语义一致
 
     Returns:
         (resolved_variables, resolution_evidence, usage)
@@ -220,6 +223,7 @@ async def resolve_variables(
                 base_project_ids=base_project_ids,
                 db=db,
                 data_sources=var_sources,
+                include_project_kb=include_project_kb,
                 report_depth=report_depth,
             )
             _add_usage(r_usage)

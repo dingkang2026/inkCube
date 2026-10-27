@@ -46,6 +46,9 @@ interface TemplateData {
   role_hint?: string
   audience?: string
   report_depth?: string
+  /** 主体锚定（§2.1.2，2026-10-27）：false 时 System Prompt 不注入【报告主体】段，
+   * 行业 / 区域 / 企业池类研究以模板变量为锚点；缺省 true */
+  subject_anchored?: boolean
   global_requirements: string[]
   variables?: TemplateVariable[]
   outline: OutlineNode[]
@@ -487,6 +490,8 @@ export function TemplateEditor({ initialData, onSave, initialTab, initialError }
   const [roleHint, setRoleHint] = useState(initialData.role_hint || '')
   const [audience, setAudience] = useState(initialData.audience || '')
   const [reportDepth, setReportDepth] = useState(initialData.report_depth || 'full')
+  // 缺省 true（schema default）：显式 false 才视为不锚定，undefined 归一勾选
+  const [subjectAnchored, setSubjectAnchored] = useState(initialData.subject_anchored !== false)
   const [projectTypes, setProjectTypes] = useState<string[]>(initialData.project_types || ['general'])
   const [stage, setStage] = useState<string | null>(initialData.stage || null)
   const [outputFormat, setOutputFormat] = useState(initialData.output_format || 'docx')
@@ -517,6 +522,7 @@ export function TemplateEditor({ initialData, onSave, initialTab, initialError }
       role_hint: roleHint.trim(),
       audience: audience.trim(),
       report_depth: reportDepth,
+      subject_anchored: subjectAnchored,
       global_requirements: globalRequirements.filter(r => r.trim()),
       outline,
       schema_version: CURRENT_SCHEMA_VERSION,
@@ -525,7 +531,7 @@ export function TemplateEditor({ initialData, onSave, initialTab, initialError }
     if (cleanedVars.length) tpl.variables = cleanedVars
     if (initialData.template_id) tpl.template_id = initialData.template_id
     return tpl
-  }, [templateName, version, projectTypes, stage, outputFormat, roleHint, audience, reportDepth, globalRequirements, variables, outline, initialData.template_id])
+  }, [templateName, version, projectTypes, stage, outputFormat, roleHint, audience, reportDepth, subjectAnchored, globalRequirements, variables, outline, initialData.template_id])
 
   // ── Apply a parsed template object back into structured state ──
   const applyTemplate = (tpl: any) => {
@@ -534,6 +540,7 @@ export function TemplateEditor({ initialData, onSave, initialTab, initialError }
     setRoleHint(tpl.role_hint || '')
     setAudience(tpl.audience || '')
     setReportDepth(tpl.report_depth || 'full')
+    setSubjectAnchored(tpl.subject_anchored !== false)
     setProjectTypes(tpl.project_types || ['general'])
     setStage(tpl.stage ?? null)
     setOutputFormat(tpl.output_format || 'docx')
@@ -722,6 +729,19 @@ export function TemplateEditor({ initialData, onSave, initialTab, initialError }
                 <option value="after">{t('project.stage.after')}</option>
               </select>
             </div>
+            <div className={s.fieldRow}>
+              <label>{t('project.template.editor.subjectAnchored')}</label>
+              <div className={s.checkboxGroup}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={subjectAnchored}
+                    onChange={e => setSubjectAnchored(e.target.checked)}
+                  /> {t('project.template.editor.subjectAnchoredChecked')}
+                </label>
+              </div>
+            </div>
+            <p className={s.sectionHint}>{t('project.template.editor.subjectAnchoredHint')}</p>
           </div>
 
           {/* Variables (user + derived) */}

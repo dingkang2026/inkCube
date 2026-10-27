@@ -4,7 +4,7 @@
  * 企业动态跟踪订阅」的共享实现——payload 契约单一来源（2.11 §8.1「从立项/
  * 新建项目勾选」来源行）：复用线索升级同款模板（LEAD_UPGRADE_TPL_ID）固化
  * prompt（占位符名语言无关提取，i18n 键从常量派生同 App handleLeadUpgrade）、
- * daily 09:00 可改、去向绑项目 + autoImport（期次产出汇入项目知识，「情报是
+ * daily 09:00 可改、去向绑项目（期次产出自动沉淀进项目知识，「情报是
  * 项目的输入」价值链闭环）。
  * 失败上抛由调用方 toast——部分失败语义：项目已建成不阻断（同 patchFailed）。
  */
@@ -29,7 +29,6 @@ export async function quickCreateTrackingSub(
     intervalValue: '09:00',
     targetType: 'project',
     targetId: projectId,
-    autoImport: true,
     scope: null,
     digestScheduleIds: null,
   })

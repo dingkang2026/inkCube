@@ -423,3 +423,61 @@ class TestOpenWaitForTimeout:
         body = self._open(calls, wall_snap)
         assert body.get("needs_login") is True
         assert "warning" not in body
+
+
+class TestExtractSoftWall:
+    """extract 软墙返回体（§5.4 第 5 信号，2026-10-26 天眼查任务实证）。
+
+    页面公开内容完整、仅敏感字段被登录遮蔽（「181****登录查看」），硬墙
+    四信号全部不命中——LLM 拿到「数据看似完整」的返回体后不引导登录。
+    修复：extract 返回体附 needs_login+login_gated+domain（数据照常落盘）：
+    needs_login+domain 复用前端登录横幅（§8.3），login_gated 供 SKILL.md
+    指引 LLM 提示登录后重采。FakePage 只实现 extract 消费的
+    evaluate(js, sel)/title/url 面；INKCUBE_DATA_DIR 锚 tmp_path，
+    落盘断言不污染真实 data 目录。
+    """
+
+    _GATED_TEXT = (
+        "旦迪通信科技有限公司\n联系电话：181****登录查看\n"
+        "邮箱：登录后查看更多信息\n股东信息：登录查看\n"
+        "More: Sign In to View\n年报：公开可见的经营数据")
+
+    @staticmethod
+    def _page(text: str):
+        class FakePage:
+            url = "https://www.tianyancha.com/company/xxx"
+
+            async def evaluate(self, _js, _sel=None):
+                return {"html": "<p>body</p>", "text": text,
+                        "hasPassword": False}
+
+            async def title(self):
+                return "旦迪通信 - 天眼查"
+
+        return FakePage()
+
+    @staticmethod
+    def _extract(text: str, tmp_path, monkeypatch) -> dict:
+        import asyncio
+        import _actions
+        monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path))
+        return asyncio.run(_actions._execute(
+            TestExtractSoftWall._page(text), "extract", {}, ""))
+
+    def test_gated_body_flags(self, tmp_path, monkeypatch):
+        body = self._extract(self._GATED_TEXT, tmp_path, monkeypatch)
+        assert body.get("error") is None        # 软墙不是错误：数据照常
+        assert body["needs_login"] is True
+        assert body["login_gated"] is True
+        assert body["domain"] == "www.tianyancha.com"
+        assert body["length"] > 0 and body["path"]
+        # 产物照常落盘且锚 data_dir/fetched（B7 锚定语义随测验证）
+        out = Path(body["path"])
+        assert out.exists() and out.parent == tmp_path / "fetched"
+
+    def test_clean_body_no_gating(self, tmp_path, monkeypatch):
+        body = self._extract("公开年报数据完整，无遮蔽字段。", tmp_path, monkeypatch)
+        assert body.get("error") is None
+        assert body["needs_login"] is False
+        assert "login_gated" not in body
+        assert "domain" not in body

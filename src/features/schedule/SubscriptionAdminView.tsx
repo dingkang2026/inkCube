@@ -164,6 +164,18 @@ export function SubscriptionAdminView({
     if (selectedId) void reloadRuns()
   })
 
+  // 标记已读边沿（app:schedules-changed，ReadView 抽屉内 markRead 成功广播）：
+  // 收件箱未读点即时消失 + 未读优先排序即时沉底，选中订阅期次历史同步
+  // （2026-10-26 补抽屉化后反馈链，E3b ③「红点/徽章计数同步消失」）
+  useEffect(() => {
+    const onChanged = () => {
+      void reloadInbox()
+      if (selectedId) void reloadRuns()
+    }
+    window.addEventListener('app:schedules-changed', onChanged)
+    return () => window.removeEventListener('app:schedules-changed', onChanged)
+  }, [reloadInbox, reloadRuns, selectedId])
+
   const toggleChecked = (id: string, on: boolean) => {
     setChecked((prev) => {
       const next = new Set(prev)

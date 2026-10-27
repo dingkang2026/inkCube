@@ -103,11 +103,9 @@ class TestWikiGateways:
         with pytest.raises(LLMNotConfigured):
             _run(wiki.trigger_lint("p1", wiki.LintRequest(mode=mode)))
 
-    def test_dedup_detect(self, no_llm):
-        with pytest.raises(LLMNotConfigured):
-            _run(wiki.detect_duplicate_pages("p1"))
-
     def test_dedup_merge(self, no_llm):
+        # dedup 检测已自动化（编译终态治理链内执行，无独立端点，
+        # E3-2026-10 删 detect 门测试）；merge 仍是用户显式操作，保留门
         req = wiki.DedupMergeRequest(canonical_key="a", duplicate_keys=["b"])
         with pytest.raises(LLMNotConfigured):
             _run(wiki.merge_duplicate_pages("p1", req))

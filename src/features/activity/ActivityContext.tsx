@@ -65,7 +65,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     }
     const now = new Date().toISOString()
     setFeed((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: now })))
-    // 徽章数据源同步归零（review m-1）：NavTabs unreadCount 读的是
+    // 徽章数据源同步归零（review m-1）：TitleBar 铃铛 unreadCount 读的是
     // status.notifications.unread，仅清 feed 要等下一轮心跳才归零
     setStatus((prev) => (prev
       ? { ...prev, notifications: { ...prev.notifications, unread: [] } }

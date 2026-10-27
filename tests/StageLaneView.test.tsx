@@ -93,7 +93,7 @@ describe('StageLaneView (V2-E4 §3.7)', () => {
     const onCreateProject = vi.fn()
     const { getByText } = render(
       <StageLaneView projects={[]} onSelect={vi.fn()} onCreateProject={onCreateProject} />)
-    fireEvent.click(getByText('home.quick.newProject'))
+    fireEvent.click(getByText('home.newProjectCta'))
     expect(onCreateProject).toHaveBeenCalledTimes(1)
   })
 })

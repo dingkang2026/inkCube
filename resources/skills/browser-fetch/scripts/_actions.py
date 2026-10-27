@@ -392,7 +392,11 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
             path = os.path.join(fetched_dir, filename)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"# {title}\n\n> 来源: {url}\n\n{markdown}")
-            return {
+            # 软墙检测只挂 extract（§5.4 第 5 信号）：这里才拿得到完整
+            # innerText——快照文本经 SNAPSHOT_TEXT_LIMIT 截断，遮蔽短语多在
+            # 中后部（2026-10-26 天眼查实证：截断区内仅 1 处，全文 12 处）
+            gated = core.detect_login_gating(extracted["text"])
+            body = {
                 "url": url,
                 "title": title,
                 # 绝对路径（/ 分隔）：锚 data_dir 后相对工作区是 ../ 深链，
@@ -401,8 +405,15 @@ async def _execute(page, action: str, opts: dict, final_url: str) -> dict:
                 "length": len(markdown),
                 "outline": core.extract_outline(markdown),
                 "preview": extracted["text"][:EXTRACT_TEXT_HINT],
-                "needs_login": False,
+                "needs_login": gated,
             }
+            if gated:
+                # 数据照常返回（落盘/摘要不缺）；needs_login+domain 复用前端
+                # 登录横幅（§8.3），login_gated 供 LLM 按 SKILL.md 提示用户
+                # 登录后重新采集，禁止静默跳过遮蔽字段收尾
+                body["login_gated"] = True
+                body["domain"] = domain
+            return body
 
         if action == "close":
             # 归位待命页（data: URL，拦截器放行）；状态复位、锁随 finally 释放

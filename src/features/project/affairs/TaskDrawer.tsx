@@ -1,21 +1,23 @@
 /** src/features/project/affairs/TaskDrawer.tsx — 执行抽屉(3.0 §6.1.7)
- *  右侧滑出面板,复用 WikiTab 预览面板模式:拖宽 260-720px、遮罩点击收起;
+ *  右侧滑出面板,复用 WikiTab 预览面板模式:左缘拖宽 + 遮罩点击收起;
+ *  宽度契约统一走 useDrawerWidth(默认 60vw 随视口,下限 260,上限 92vw 随视口;
+ *  2026-10-26 由固定 420px 改比例,六处抽屉收编);
  *  与 Chat 互斥由父级 onPanelOpenChange 处理(§6.4-7)。
  *  动作:完成/跳过/恢复/编辑/删除(useConfirm danger)/发起报告(report 类,裁决 7);
  *  material 类 v1 显示上传引导文案(裁决 9 延伸:闭环挂解析终态,不内置上传);
  *  关联文件名不显示(裁决 9);完成规则文案含 auto_done 来源标注。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, SkipForward, RotateCcw, Pencil, Trash2, FileText } from 'lucide-react'
 import { useConfirm } from '../../../components/ConfirmDialog'
+import { useDrawerWidth } from '../../../hooks/useDrawerWidth'
 import { daysOverdue, isOverdue } from './types'
 import type { PhaseTask } from './types'
 import s from './TaskDrawer.module.css'
 
+/** 宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth） */
 const MIN_W = 260
-const MAX_W = 720
-const DEFAULT_W = 420
 
 export interface TaskDrawerProps {
   task: PhaseTask
@@ -29,55 +31,10 @@ export interface TaskDrawerProps {
 export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpenReports }: TaskDrawerProps) {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
-  const [width, setWidth] = useState(DEFAULT_W)
+  // 宽度/拖宽/防误关守卫统一契约（抽屉六处收编，2026-10-26）
+  const dr = useDrawerWidth({ min: MIN_W })
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState(false)
-  const dragging = useRef(false)
-  const startX = useRef(0)
-  const startW = useRef(DEFAULT_W)
-  // mousedown 起于 panel 内而 mouseup 落于遮罩时，浏览器把 click 合成到两者公共
-  // 祖先(即 overlay,绕过 panel 的 stopPropagation)——手柄拖宽、文本选字后
-  // 拖出松手均属此类非用户意图 click;松手后一个 tick 内吞掉,防误关抽屉
-  const suppressClick = useRef(false)
-  const mouseDownInPanel = useRef(false)
-
-  const onDragDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    dragging.current = true
-    startX.current = e.clientX
-    startW.current = width
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-  }, [width])
-
-  useEffect(() => {
-    const move = (e: MouseEvent) => {
-      if (!dragging.current) return
-      const delta = startX.current - e.clientX
-      setWidth(Math.min(MAX_W, Math.max(MIN_W, startW.current + delta)))
-    }
-    const up = () => {
-      if (dragging.current) {
-        dragging.current = false
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-      }
-      if (!mouseDownInPanel.current) return
-      mouseDownInPanel.current = false
-      // click 同步派发于 mouseup 之后、本定时器之前，此窗口内吞掉合成 click
-      suppressClick.current = true
-      setTimeout(() => { suppressClick.current = false }, 0)
-    }
-    document.addEventListener('mousemove', move)
-    document.addEventListener('mouseup', up)
-    return () => {
-      document.removeEventListener('mousemove', move)
-      document.removeEventListener('mouseup', up)
-      // 拖宽中途卸载(如任务被清理自动关抽屉)也复位 body 样式,防游标/选区卡死
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-  }, [])
 
   // Esc 关闭抽屉（模态面板语义 0.3 §5.2；busy 在途不可关，与点蒙板同语义）
   useEffect(() => {
@@ -137,15 +94,15 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
   return (
     <div
       className={s.overlay}
-      onClick={() => { if (!busy && !suppressClick.current) onClose() }}
+      onClick={() => { if (!busy && !dr.suppressClick.current) onClose() }}
     >
       <div
         className={s.panel}
-        style={{ width }}
-        onMouseDown={() => { mouseDownInPanel.current = true }}
+        style={{ width: dr.width }}
+        onMouseDown={dr.onPanelMouseDown}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className={s.dragHandle} onMouseDown={onDragDown} />
+        <div className={s.dragHandle} onMouseDown={dr.onHandleMouseDown} />
         <div className={s.body}>
           <div className={s.headRow}>
             <span className={`${s.statusBadge} ${task.status === 'done' ? s.badgeDone

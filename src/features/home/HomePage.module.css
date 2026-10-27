@@ -1,15 +1,16 @@
 /* ── Home page — full-width dashboard grid（V2-E1b 2026-10-24 六原则去框化：
-   页面内边距 24/28px、主/侧列间距 20px、侧列 312px，§3.1 落点表）── */
+   页面内边距 24/28px、主/侧列间距 20px；2026-10-26 侧列 312→360px 收纳
+   今日待办+近期日历（自主列移入，快速开始移除），§3.1 落点表）── */
 .page {
   flex: 1;
   overflow-y: auto;
   padding: 24px 28px 40px;
 }
 
-/* 主列(英雄区/情报区/进行中/今日待办+日历/卡片墙) + 侧列(动态流/快捷动作);窄屏退化单列 */
+/* 主列(英雄区/情报区/进行中/卡片墙) + 侧列(动态流/今日待办+日历);窄屏退化单列 */
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 312px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   gap: 20px;
   align-items: start;
 }

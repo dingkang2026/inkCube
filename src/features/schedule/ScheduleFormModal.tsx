@@ -99,7 +99,6 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
   const [targetType, setTargetType] = useState<'none' | 'project' | 'baselib'>('none')
   const [targetId, setTargetId] = useState<string | null>(null)
   const [targets, setTargets] = useState<{ id: string; name: string }[]>([])
-  const [autoImport, setAutoImport] = useState(true)
   const [saving, setSaving] = useState(false)
 
   // 订阅类型（2.11 §12 收敛）：由入口给定不可切换；rollup 第③步为骨架+汇总范围
@@ -129,7 +128,6 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
       setTime(parsed.time)
       setTargetType(editing.target_type ?? 'none')
       setTargetId(editing.target_id)
-      setAutoImport(!!editing.auto_import)
       // rollup 骨架解析回填（2.11 §12.2 骨架治理）：仅精确识别「骨架+引导语+追加」
       // 拼接形态剥离回填（裸骨架自然落 else 分支、语义不变），其余（手改过/跨语言）
       // 存量全文无损转只读骨架、追加框留空——零猜测、不丢用户数据
@@ -169,7 +167,6 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
     setTime('09:00')
     setTargetType('none')
     setTargetId(null)
-    setAutoImport(true)
     // 新建 rollup 预填默认骨架（i18n rollupPromptTemplate，含 {sections}）：
     // 跳过模板步的补偿——用户不试错即知产出形态；骨架只读，个性化走追加框
     setRollupSkeleton(k === 'rollup' ? t('schedule.form.rollupPromptTemplate') : '')
@@ -269,7 +266,6 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
       digestScheduleIds: isRollup && digestIds.length > 0 ? digestIds : null,
       targetType: isRollup ? null : (targetType === 'none' ? null : targetType),
       targetId: isRollup ? null : (targetType === 'none' ? null : targetId),
-      autoImport: isRollup ? false : (targetType === 'none' ? false : autoImport),
     }
     setSaving(true)
     try {
@@ -560,14 +556,6 @@ export function ScheduleFormModal({ open, editing, createKind, prefill, onClose,
                         {item.name}
                       </button>
                     ))}
-                    <label className={s.autoImportRow}>
-                      <input
-                        type="checkbox"
-                        checked={autoImport}
-                        onChange={(e) => setAutoImport(e.target.checked)}
-                      />
-                      {t('schedule.form.autoImport')}
-                    </label>
                   </div>
                 )}
               </>

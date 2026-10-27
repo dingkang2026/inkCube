@@ -4,7 +4,7 @@
 覆盖：SSRF 校验矩阵（DNS mock 离线）、重定向探测链（httpx.MockTransport
 离线——已验证 follow_redirects=False 下 Mock 仍填充 next_request，与生产
 路径一致）、跨进程抓取锁（获取/互斥/僵死接管/pid 校验释放）、登录墙
-四信号、HTML→Markdown 及工具函数。
+四信号、软墙第 5 信号（遮蔽短语频次）、HTML→Markdown 及工具函数。
 
 模块加载：_fetch_core.py 位于 skill 安装源（非包），用 importlib 直载。
 """
@@ -263,6 +263,36 @@ def test_login_wall_title_signal():
 def test_login_wall_none_status_and_no_signal():
     assert not core.detect_login_wall(None, "https://s/", "https://s/", "Home", _SPARSE, False)
     assert not core.detect_login_wall(200, "https://s/", "https://s/", "Home", _SPARSE, False)
+
+
+# ── 软墙第 5 信号：遮蔽短语频次（§5.4，2026-10-26 天眼查任务实证）──
+
+def test_gating_hits_counts_phrases():
+    """中英短语全部计数（交替分支不重叠：「登录后查看」≠「登录查看」）。"""
+    text = ("电话：181****登录查看\n邮箱：登录后查看更多信息\n"
+            "股东：登录查看\nMore: Sign In to View")
+    assert core.count_gating_hits(text) == 4
+    assert core.detect_login_gating(text) is True
+
+
+def test_gating_below_threshold_not_wall():
+    """频次阈值：导航栏/页脚级噪音（≤2 处）不判软墙——公开页「登录」链接常见。"""
+    text = "公开年报经营数据。" * 100 + "请登录查看 或 登录后查看"
+    assert core.count_gating_hits(text) == 2
+    assert core.detect_login_gating(text) is False
+
+
+def test_gating_english_phrases_case_insensitive():
+    assert core.detect_login_gating(
+        "Phone: 181**** Log In to View / Email: Sign In to View / "
+        "More: Sign Up to See") is True
+
+
+def test_gating_empty_text_safe():
+    """空/None 文本安全（防御上游空 innerText）。"""
+    assert core.count_gating_hits("") == 0
+    assert core.detect_login_gating("") is False
+    assert core.detect_login_gating(None) is False
 
 
 # ── HTML → Markdown（html2text 优先，正则降级）──

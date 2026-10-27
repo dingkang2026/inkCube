@@ -74,6 +74,7 @@ async def retrieve_for_section(
     query_parallelism: int = 4,
     db: Any = None,
     data_sources: Optional[list[str]] = None,
+    include_project_kb: bool = True,
     report_depth: str = "full",
 ) -> tuple[RetrievalResult, dict]:
     """为一个章节执行迭代检索循环（多轮搜索-卡片积累，§3.3）。
@@ -98,6 +99,12 @@ async def retrieve_for_section(
         query_parallelism: 通道内多 query 并行数（默认 4）
         db: 数据库句柄（wiki 通道检索项目已编译 Wiki 页面时使用）
         data_sources: 检索通道子集 {"knowledge","internet","wiki"}（None → ["knowledge"]）
+        include_project_kb: 是否检索本项目内材料（§1.2，2026-10-27）；False 时
+            knowledge 通道仅检索勾选的基础库，wiki 通道由调用方不传入 "wiki"
+            而排除（runner 侧随同一开关门控）。支撑通用行业/区域研究不携带
+            项目主体材料场景。章节路径的 knowledge 剥离由 runner 条件化组装
+            保证；未按约定剥离时（如变量抽值路径直传声明通道），由通道内
+            空范围早返回兜底（0 卡片 → 降级，结果等价）
         report_depth: 报告深度 "full" | "brief"，决定知识库检索量
 
     Returns:
@@ -158,6 +165,7 @@ async def retrieve_for_section(
             web_search_cfg=web_search_cfg,
             search_depth="basic" if round_no == 1 else followup_search_depth,
             section_id=section_id,
+            include_project_kb=include_project_kb,
         )
         _add_usage(round_usage)
         channel_warnings.extend(round_warnings)
@@ -256,6 +264,7 @@ async def _run_retrieval_round(
     web_search_cfg: dict,
     search_depth: str,
     section_id: str = "unknown",
+    include_project_kb: bool = True,
 ) -> tuple[list[dict], dict, list[str], dict]:
     """执行单轮三通道并行检索（§3.3 迭代循环的单轮）。
 
@@ -275,7 +284,7 @@ async def _run_retrieval_round(
         channel_tasks.append(
             _search_knowledge_channel(
                 queries, search_tool, project_id, base_project_ids, top_k,
-                query_parallelism,
+                query_parallelism, include_project_kb,
             )
         )
         task_names.append("knowledge")
@@ -335,14 +344,21 @@ async def _search_knowledge_channel(
     base_project_ids: Optional[list[str]],
     top_k: int,
     query_parallelism: int = 4,
-) -> tuple[list[dict], dict]:
+    include_project_kb: bool = True,
+) -> tuple[list[dict], dict, list[str]]:
     """知识库通道：对每个 query 执行向量 + BM25 检索，RRF 融合去重。
     
     支持多 query 并行执行，通过 semaphore 控制并发数。
+    include_project_kb=False 时检索范围仅含勾选的基础库（§1.2）；
+    空范围（False 且无基础库）早返回空三元组，不发起任何检索。
     """
-    search_project_ids = [project_id]
+    search_project_ids: list[str] = []
+    if include_project_kb and project_id:
+        search_project_ids.append(project_id)
     if base_project_ids:
         search_project_ids.extend(base_project_ids)
+    if not search_project_ids:
+        return [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, []
 
     all_chunks: dict[str, dict] = {}  # chunk_id -> chunk dict
     empty_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}

@@ -4,7 +4,7 @@
  * 不自动弹出（展开经状态条「查看详情」或触发编译；头部点击收起）。逐文件
  * 摘要审阅（2.6 F2）；停止入口在状态条（与暂停机制解耦，0.4 §6.7 修订）。 */
 import { useTranslation } from 'react-i18next'
-import { FileText, CheckCircle, AlertCircle, Loader2, XCircle, SkipForward, ChevronUp } from 'lucide-react'
+import { FileText, CheckCircle, AlertCircle, Loader2, XCircle, SkipForward, ChevronUp, Sparkles } from 'lucide-react'
 import { translateStoredError } from '../../../i18n/errorCodes'
 import s from './WikiTab.module.css'
 
@@ -28,6 +28,8 @@ interface CompilePanelProps {
     pages_completed: number
     pages_failed: number
     error_message: string | null
+    /** 编译终态自动治理链汇总（JSON 文本，review m-2 2026-10-27 接入消费） */
+    governance_summary?: string | null
   } | null
   ingestSummaries: FileSummary[]
   onCollapse: () => void
@@ -58,6 +60,25 @@ export function CompilePanel({
   const successCount = dedupedSummaries.filter(s => !s.skipped && !s.error).length
   const errorCount = dedupedSummaries.filter(s => !!s.error).length
   const skippedCount = dedupedSummaries.filter(s => s.skipped).length
+
+  // 治理汇总（review m-2 2026-10-27）：后台自动治理链在本轮编译后的动作摘要，
+  // 落库于 task 行 governance_summary（JSON）——原先只落不显，docstring 谎称
+  // 「toast 数据源」；损坏/旧格式静默不渲染，不影响面板
+  const governance = (() => {
+    if (!isCompleted || !task.governance_summary) return null
+    try {
+      const parsed = JSON.parse(task.governance_summary) as {
+        swept?: number; link_fixed?: number; dedup_groups?: number
+      }
+      return {
+        swept: parsed.swept ?? 0,
+        linkFixed: parsed.link_fixed ?? 0,
+        dedupGroups: parsed.dedup_groups ?? 0,
+      }
+    } catch {
+      return null
+    }
+  })()
 
   return (
     <div className={s.compilePanel}>
@@ -203,6 +224,23 @@ export function CompilePanel({
         <div className={s.compilePanelComplete}>
           <XCircle size={16} className={s.compilePanelStoppedIcon} />
           <span>{t('project.wiki.compileIngestStopped')}</span>
+        </div>
+      )}
+
+      {/* 治理汇总行（review m-2）：编译完成后自动治理（清扫/修死链/重复检测）的动作摘要 */}
+      {governance && (
+        <div className={s.compilePanelGovernance}>
+          <Sparkles size={13} />
+          <span>
+            {governance.swept + governance.linkFixed + governance.dedupGroups > 0
+              ? t('project.wiki.wikiGovernanceSummary', {
+                  swept: governance.swept,
+                  linkFixed: governance.linkFixed,
+                  dedupGroups: governance.dedupGroups,
+                  defaultValue: `自动整理：核销 ${governance.swept} 条过时问题、修复 ${governance.linkFixed} 条死链、检出 ${governance.dedupGroups} 组疑似重复`,
+                })
+              : t('project.wiki.wikiGovernanceClean', { defaultValue: '自动整理已完成，本轮无需处理' })}
+          </span>
         </div>
       )}
 

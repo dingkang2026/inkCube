@@ -476,3 +476,41 @@ class TestInternetEnabledGating:
                 llm_settings={},
             ))
         assert tracker[0]["data_sources"] == ["knowledge", "internet"]
+
+
+# ── 项目知识库纳入开关透传（§1.2，2026-10-27）────
+
+
+class TestIncludeProjectKbGating:
+    """include_project_kb 透传抽值检索：False 时抽值同样排除本项目知识库，
+    与章节检索语义一致（全局生效，取消一次全链生效）。"""
+
+    _TPL = {"variables": [
+        {"name": "sector", "source": "derived", "depends_on": [],
+         "derive_hint": "判断赛道", "cardinality": "scalar",
+         "data_sources": ["knowledge"]},
+    ]}
+
+    def test_false_passed_to_retrieval(self):
+        tracker = []
+        llm = FakeLLM(default="半导体")
+        with patch("report_generator.variable_resolver.retrieve_for_section",
+                   _fake_retrieve(tracker)):
+            asyncio.run(resolve_variables(
+                self._TPL, {"id": "p1"}, {}, search_tool=MagicMock(), llm_client=llm,
+                llm_settings={}, include_project_kb=False,
+            ))
+        assert len(tracker) == 1
+        assert tracker[0]["include_project_kb"] is False
+
+    def test_default_true(self):
+        """不传时默认 True（向后兼容：存量调用方行为不变）。"""
+        tracker = []
+        llm = FakeLLM(default="半导体")
+        with patch("report_generator.variable_resolver.retrieve_for_section",
+                   _fake_retrieve(tracker)):
+            asyncio.run(resolve_variables(
+                self._TPL, {"id": "p1"}, {}, search_tool=MagicMock(), llm_client=llm,
+                llm_settings={},
+            ))
+        assert tracker[0]["include_project_kb"] is True

@@ -190,7 +190,6 @@ describe('新建项目勾选创建订阅（0.6 §3.3）', () => {
         intervalValue: '09:00',
         targetType: 'project',
         targetId: 'proj_new',
-        autoImport: true,
         scope: null,
         digestScheduleIds: null,
       })

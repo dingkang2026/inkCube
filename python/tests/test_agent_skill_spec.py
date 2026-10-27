@@ -539,6 +539,8 @@ class TestTaskIdInjection:
 
     注入发生在 spawn env 层（一处改动全 skill 受益）：有 task_id 才注入，
     空值保持环境干净——锁 owner 判定不会误把无主执行记到某个 task 名下。
+    另注入 INKCUBE_DATA_DIR（setdefault，B7 dev 锚定）：缺失时补
+    paths.get_data_dir() 解析值，已有值（Electron 注入）不覆盖。
     """
 
     @staticmethod
@@ -591,3 +593,43 @@ class TestTaskIdInjection:
         json.loads(_run(_adapter(mini_skill).execute({"command": "hello"}, ctx)))
 
         assert "INKCUBE_TASK_ID" not in captured["env"]
+
+    def test_data_dir_injected_when_missing(self, mini_skill: Path, monkeypatch):
+        """dev 下后端无 INKCUBE_DATA_DIR → 注入 paths.get_data_dir() 解析值
+        （B7：extract 产物锚 data_dir/fetched，不再落任务工作区）。"""
+        import skills.loader as loader_mod
+        from paths import get_data_dir
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            loader_mod.asyncio, "create_subprocess_exec", self._fake_exec(captured)
+        )
+        monkeypatch.delenv("INKCUBE_DATA_DIR", raising=False)
+        ctx = SkillContext(
+            workspace_path=os.getcwd(),
+            venv_python=sys.executable,
+            task_id="task-abc",
+            settings={},
+        )
+        json.loads(_run(_adapter(mini_skill).execute({"command": "hello"}, ctx)))
+
+        assert captured["env"]["INKCUBE_DATA_DIR"] == get_data_dir()
+
+    def test_data_dir_respects_existing_value(self, mini_skill: Path, monkeypatch):
+        """生产语义：Electron 已注入的 INKCUBE_DATA_DIR 不被覆盖（setdefault）。"""
+        import skills.loader as loader_mod
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            loader_mod.asyncio, "create_subprocess_exec", self._fake_exec(captured)
+        )
+        monkeypatch.setenv("INKCUBE_DATA_DIR", "/custom/data")
+        ctx = SkillContext(
+            workspace_path=os.getcwd(),
+            venv_python=sys.executable,
+            task_id="task-abc",
+            settings={},
+        )
+        json.loads(_run(_adapter(mini_skill).execute({"command": "hello"}, ctx)))
+
+        assert captured["env"]["INKCUBE_DATA_DIR"] == "/custom/data"

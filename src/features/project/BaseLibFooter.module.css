@@ -20,6 +20,66 @@
   color: var(--text-muted);
 }
 
+/* ── 自定义库 CRUD（2.1 §7）：header 新建按钮 + 行内编辑/删除 ── */
+.addBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 2px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.addBtn:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+/* hover/focus-within 显隐：键盘可达（tab 到按钮即出现） */
+.item:hover .rowActions,
+.item:focus-within .rowActions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rowActionBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+
+.rowActionBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.rowActionDanger:hover {
+  color: var(--text-danger, #e5484d);
+  background: rgba(229, 72, 77, 0.1);
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -129,4 +189,161 @@
 .loadMoreBtn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ── CRUD 弹窗（token 对齐 LeadExtractModal 同口径）── */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(440px, calc(100vw - 48px));
+  padding: 16px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.dialogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dialogTitle {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.closeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+}
+
+.closeBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.input,
+.textarea {
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.textarea {
+  min-height: 64px;
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.secondaryBtn {
+  padding: 6px 16px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.secondaryBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.primaryBtn {
+  padding: 6px 16px;
+  font-size: var(--text-sm);
+  color: var(--bg-primary);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.primaryBtn:disabled,
+.secondaryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dangerBtn {
+  color: #fff;
+  background: var(--text-danger, #e5484d);
+  border-color: var(--text-danger, #e5484d);
+}
+
+.deleteBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deleteName {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.deleteImpact {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  color: var(--text-secondary);
 }

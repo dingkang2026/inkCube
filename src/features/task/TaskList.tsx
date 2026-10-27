@@ -57,7 +57,7 @@ export function TaskList({
           className={styles.newBtn}
           onClick={onNew}
           disabled={!canCreateTask || creating}
-          title={creating ? t('task.creating') : canCreateTask ? '' : '已达到最大并发任务数限制'}
+          title={creating ? t('task.creating') : canCreateTask ? '' : t('errors.codes.taskLimitReached')}
         >
           <span className={styles.newIcon}>+</span>
           {creating ? t('task.creating') : t('task.newTask')}

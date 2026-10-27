@@ -233,6 +233,69 @@ class TestCollectTemplate:
         assert "收录失败" in reason and "disk full" in reason
 
 
+# ── 收录重试（review P2-3 回归：failed 行免 agent 自助收录）──
+
+class TestRetryCollect:
+    def test_success_collects_and_completes(self, db, tmp_path):
+        """包完整 + failed → 重收录成功置 completed，不跑 agent（纯本地幂等）。"""
+        ppt = _mk_tpl(db, tmp_path)
+        _author_package(db.get_ppt(ppt["id"]))
+        db.update_ppt_status(ppt["id"], "failed", error="收录失败: disk full")
+        assert ppt_service.service.retry_collect(db, ppt["id"]) == {"ok": True}
+        assert db.get_ppt(ppt["id"])["status"] == "completed"
+        assert (_lib_root(tmp_path) / "brands" / "tpl_a"
+                / "templates" / "design_spec.md").is_file()
+
+    def test_incomplete_package_rejected(self, db, tmp_path):
+        ppt = _mk_tpl(db, tmp_path)
+        db.update_ppt_status(ppt["id"], "failed", error="x")
+        res = ppt_service.service.retry_collect(db, ppt["id"])
+        assert res["code"] == "TEMPLATE_PACKAGE_INCOMPLETE"
+        assert db.get_ppt(ppt["id"])["status"] == "failed"  # 状态不被误动
+
+    def test_non_failed_rejected(self, db, tmp_path):
+        """非 failed（running/paused/completed）不可重试：在跑行与收录
+        重试并发会双写库；已完成行重收录属用户库管理范畴（重扫/删除）。"""
+        ppt = _mk_tpl(db, tmp_path)
+        _author_package(db.get_ppt(ppt["id"]))
+        for status in ("running", "paused", "completed"):
+            db.update_ppt_status(ppt["id"], status)
+            res = ppt_service.service.retry_collect(db, ppt["id"])
+            assert res["code"] == "TEMPLATE_JOB_NOT_FAILED"
+
+    def test_non_template_rejected(self, db, tmp_path):
+        """deck 行不支持收录重试（收录是模板工坊语义）。"""
+        task = db.create_task(
+            title="[PPT] D", data_dir=str(tmp_path / "data"), origin="ppt")
+        ppt = db.create_ppt(
+            project_id="", task_id=task["id"], title="D", kind="deck",
+            workspace_path=str(Path(task["workspace_path"]) / "ppt_project"),
+        )
+        assert ppt_service.service.retry_collect(db, ppt["id"])["code"] == \
+            "NOT_TEMPLATE_JOB"
+
+    def test_not_found(self, db):
+        assert ppt_service.service.retry_collect(db, "nope")["code"] == \
+            "PPT_NOT_FOUND"
+
+    def test_collect_failure_stays_failed(self, db, tmp_path, monkeypatch):
+        """重试仍失败（IO 再坏）：保持 failed 带新原因，fail 通知去重读。"""
+        ppt = _mk_tpl(db, tmp_path)
+        row = db.get_ppt(ppt["id"])
+        _author_package(row)
+        db.update_ppt_status(ppt["id"], "failed", error="old")
+
+        def _boom(*a, **k):
+            raise OSError("disk full again")
+
+        monkeypatch.setattr(ppt_service, "shutil",
+                            SimpleNamespace(rmtree=lambda *a, **k: None,
+                                            copytree=_boom))
+        res = ppt_service.service.retry_collect(db, ppt["id"])
+        assert res["code"] == "TEMPLATE_COLLECT_FAILED"
+        assert "disk full again" in db.get_ppt(ppt["id"])["error"]
+
+
 # ── prepare：行字段 / 素材 / 首条消息 / 回滚 ──
 
 class TestPrepareTemplate:
@@ -412,12 +475,26 @@ class TestAnswerTemplate:
         return ppt, calls
 
     def test_confirm_null_text(self, db, tmp_path, monkeypatch):
+        """空文本 = 确认：前提是 agent 已提案（最后一条 assistant 带标记，
+        P2-1 后无标记的行不再注入「已确认」虚假前提）。"""
         ppt, calls = self._prepare(db, tmp_path, monkeypatch)
+        db.save_task_message(
+            ppt["task_id"], "assistant", "提案如下……\n[TEMPLATE_BRIEF_CONFIRMED]")
         assert PptService().answer(db, ppt["id"], None) == {"ok": True}
         assert "已确认模板 brief" in calls[0]
         assert "svg_quality_checker" in calls[0]
         assert "收录" in calls[0]
         assert "register_template.py" not in calls[0]
+
+    def test_confirm_without_marker_neutral(self, db, tmp_path, monkeypatch):
+        """无标记（brief 未提案/回合中断）：空文本不发「已确认」，
+        改发中性继续消息并要求按契约补提案（P2-1 回归，另见
+        test_ppt_service.py TestAnswerGateAware 全套）。"""
+        ppt, calls = self._prepare(db, tmp_path, monkeypatch)
+        db.save_task_message(ppt["task_id"], "assistant", "你好，我是创建助手。")
+        PptService().answer(db, ppt["id"], None)
+        assert "已确认模板 brief" not in calls[0]
+        assert "TEMPLATE_BRIEF_CONFIRMED" in calls[0]
 
     def test_notes_repropose_loop(self, db, tmp_path, monkeypatch):
         """修改意见：要求重新提案并再次走门（循环至确认）。"""

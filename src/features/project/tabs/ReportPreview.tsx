@@ -1,5 +1,5 @@
 /** src/features/project/tabs/ReportPreview.tsx — Report detail view (rendered markdown + sources + logs) */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Markdown } from '../../../components/Markdown'
 import { FindBar } from '../../../components/FindBar'
@@ -47,11 +47,23 @@ function _loadStoredOrientation(): ExportOrientation {
   }
 }
 
+// 引用上标（视觉尾注，2026-10-27）：content.md 保持语义 [n] 单一事实源，
+// 预览端转 <sup>（导出端 renderer.apply_endnote_superscript 转 pandoc 上标
+// ^[n]^，同契约）。排除：行首 [n]（文末「参考来源」列表条目自身）、[n](
+// 链接形态、[[n]] 嵌套；相邻引用 [40][41] 逐个转换。表格行不受影响
+// （Markdown 组件表格行走纯 Markdown 管线，[n] 保持原样，降级可接受）。
+const CITATION_SUP_RE = /(?<!^)(?<!\[)\[(\d{1,3})\](?!\()(?!\])/gm
+
+function applyCitationSuperscript(content: string): string {
+  return content.replace(CITATION_SUP_RE, '<sup>[$1]</sup>')
+}
+
 export function ReportPreview({ report, onBack }: ReportPreviewProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
   // 面板默认态（§1.3）：正文优先，来源/日志默认收起；生成中日志默认展开供盯进展
+  // （日志新上旧下渲染，最新进展首屏可见；自动滚底已随旧上新下排序一并撤销，2026-10-27）
   const [showSources, setShowSources] = useState(false)
   const [showLogs, setShowLogs] = useState(() => report.status === 'generating')
   const [content, setContent] = useState<ReportContent | null>(null)
@@ -131,13 +143,6 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
     if (!generating) setShowLogs(false)
   }, [generating])
 
-  // 生成中新日志自动滚底（展开瞬间也滚一次；未展开时 ref 为 null 安全跳过）
-  const logsListRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    const el = logsListRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [logs, showLogs])
-
   // 导出面板点外部关闭（面板自身与触发按钮在 ref 内，不触发关闭）
   useEffect(() => {
     if (!showExportPanel) return
@@ -152,10 +157,12 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
 
   // ── 文档内查找（块级定位，公共基座 useMarkdownBlockFind + FindBar）──
   // 正文可见（非 generating/paused/error，与 Markdown 渲染分支同条件）才提供查找
-  const markdownContent = content?.content || t('project.report.preview.noContent')
+  const rawContent = content?.content || t('project.report.preview.noContent')
+  // 渲染用上标转换后的文本；查找仍用 rawContent（sup 只包标签不改可见文本，原文索引最稳）
+  const markdownContent = useMemo(() => applyCitationSuperscript(rawContent), [rawContent])
   const canFind = status !== 'generating' && status !== 'paused' && status !== 'error'
   const contentAreaRef = useRef<HTMLDivElement | null>(null)
-  const find = useMarkdownBlockFind(contentAreaRef, markdownContent, canFind)
+  const find = useMarkdownBlockFind(contentAreaRef, rawContent, canFind)
 
   // Ctrl/Cmd+F 接管：预览视图占满 Tab 内容区，报告即页面主内容（ReportsTab 列表视图与本视图互斥）
   useEffect(() => {
@@ -425,7 +432,7 @@ export function ReportPreview({ report, onBack }: ReportPreviewProps) {
           {showLogs ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         {showLogs && (
-          <div className={s.logsList} ref={logsListRef}>
+          <div className={s.logsList}>
             {logs.length === 0 ? (
               <div className={s.logEmpty}>{t('project.report.preview.noLogs')}</div>
             ) : (

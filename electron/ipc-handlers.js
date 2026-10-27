@@ -962,6 +962,38 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 基础库 CRUD（2.1 §7 / 2.7 §7 重建）：守门 code（400/403/409）经返回值透传
+  // （structuredPythonResponse；throw 型跨进程丢 errorCode，Electron #24427）。
+  // 消费方：BaseLibFooter（判 res.ok 后 apiErrorText(res.code) 映射双语文案）
+  ipcMain.handle('baseLib:create', async (_event, { name, description }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description }),
+    })
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('baseLib:update', async (_event, { libId, projectId, name, description }) => {
+    const id = libId || projectId
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${encodeURIComponent(String(id))}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description }),
+    })
+    return structuredPythonResponse(res)
+  })
+
+  // 大库删除链含全库 rmtree（Windows 文件锁/杀软扫描可拖长）：放宽超时，
+  // 超时后服务端仍继续执行且各步幂等（重试得 404 即已删），同 ppt-template:delete
+  ipcMain.handle('baseLib:delete', async (_event, { libId, projectId }) => {
+    const id = libId || projectId
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/knowledge/base-libs/${encodeURIComponent(String(id))}`, {
+      method: 'DELETE',
+    }, 120000)
+    return structuredPythonResponse(res)
+  })
+
   ipcMain.handle('baseLib:getFiles', async (_event, { libId, projectId, limit, offset, status, fileType, filenameSearch }) => {
     const id = libId || projectId
     const params = new URLSearchParams({ limit: String(limit ?? 20) })
@@ -1776,7 +1808,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   // Phase 3: Report generation (background task + progress polling)
-  ipcMain.handle('reports:generateReport', async (_event, { projectId, templateId, title, variables, baseProjectIds, outputFormat, supplementaryNotes, sectionInternet, internetEnabled }) => {
+  ipcMain.handle('reports:generateReport', async (_event, { projectId, templateId, title, variables, baseProjectIds, outputFormat, supplementaryNotes, sectionInternet, internetEnabled, includeProjectKb }) => {
     // Note: generation runs as a backend background task; the frontend polls report
     // status/logs for progress. This handler returns the report_id for tracking.
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/reports/generate`, {
@@ -1792,6 +1824,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         supplementary_notes: supplementaryNotes || null,
         section_internet: sectionInternet || {},
         internet_enabled: !!internetEnabled,
+        include_project_kb: includeProjectKb !== false,
       }),
     })
     return handlePythonResponse(res)
@@ -1939,7 +1972,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
   })
 
   // imageSelection：{categories, minWidth, pinnedIds}（2.3 §4.1 E2 复合选择，null = 不圈池）
-  ipcMain.handle('ppt:create', async (_event, { projectId, title, sourceReportId, imageSelection, styleRef, notes }) => {
+  // templateRefs：向导模板选择 "kind:id,..."（2.3 §4.1 E2，后端解析为 explicit root 写入任务消息）
+  ipcMain.handle('ppt:create', async (_event, { projectId, title, sourceReportId, imageSelection, templateRefs, styleRef, notes }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/projects/${projectId}/ppts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1953,11 +1987,15 @@ function registerIpcHandlers(ipcMain, pythonManager) {
               pinned_ids: imageSelection.pinnedIds || [],
             }
           : null,
+        template_refs: templateRefs || null,
         style_ref: styleRef || null,
         notes: notes || null,
       }),
     }, 120000) // 素材就位含 mermaid 同步重绘（秒级×块数、单块上限 30s），放宽对齐 form-template:upload
-    return handlePythonResponse(res)
+    // structured 透传错误码（INVALID_TEMPLATE_REF/TASK_LIMIT_REACHED 等）：
+    // throw 型跨进程丢 errorCode（Electron #24427），消费方 PptWizard 检查
+    // result.error + apiErrorText(code) 的分支将永远不命中，en-US 用户见中文原文
+    return structuredPythonResponse(res)
   })
 
   ipcMain.handle('ppt:get', async (_event, pptId) => {
@@ -1992,6 +2030,14 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/resume`, {
       method: 'POST',
     })
+    return handlePythonResponse(res)
+  })
+
+  // 模板收录重试（P2-3）：包已产出但收录失败的任务卡入口，纯本地幂等重收录（不跑 agent）
+  ipcMain.handle('ppt:retryCollect', async (_event, pptId) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/retry-collect`, {
+      method: 'POST',
+    }, 120000) // 收录含工作区包拷贝（images/exports 大文件可能超 30s），放宽对齐 ppt:create
     return handlePythonResponse(res)
   })
 
@@ -2089,7 +2135,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
         notes: notes || null,
       }),
     }, 120000) // prepare 同步拷贝参考素材到任务 staging，放宽对齐 ppt:create
-    return handlePythonResponse(res)
+    // structured 透传错误码（TEMPLATE_ID_EXISTS/TEMPLATE_JOB_ACTIVE 等，同 ppt:create）
+    return structuredPythonResponse(res)
   })
 
   ipcMain.handle('ppt-template:delete', async (_event, { kind, templateId }) => {
@@ -2097,7 +2144,8 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       `${pythonManager.getBaseUrl()}/ppt-templates/${encodeURIComponent(kind)}/${encodeURIComponent(templateId)}`,
       { method: 'DELETE' },
       120000) // 删除链含 N×任务工作区 rmtree + 模板包内大量文件，大工作区可能超 30s；超时后服务端仍继续执行且重试幂等收敛
-    return handlePythonResponse(res)
+    // structured 透传错误码（TEMPLATE_JOB_ACTIVE 等）：消费方按 res.error + code 映射文案
+    return structuredPythonResponse(res)
   })
 
   ipcMain.handle('ppt-template:rescan', async () => {
@@ -2400,6 +2448,16 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
+  // 机械死链修复（2.6 §5.4 link-fix 写路径）：服务端正则替换，不冻结页面
+  ipcMain.handle('wiki:fixWikilink', async (_event, { projectId, pageKey, deadKey, targetKey }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/pages/${encodeURIComponent(pageKey)}/fix-wikilink`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dead_key: deadKey, target_key: targetKey }),
+    })
+    return handlePythonResponse(res)
+  })
+
   ipcMain.handle('wiki:lint', async (_event, { projectId, mode }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/lint`, {
       method: 'POST',
@@ -2468,11 +2526,25 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // Wiki review sweep (two-stage auto-resolution)
-  ipcMain.handle('wiki:sweepReviews', async (_event, { projectId }) => {
-    // LLM 型端点（Stage2 最多 5 批语义判断），放宽默认 15s 超时
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/sweep-reviews`, {
+  // Wiki 重复检测组（§12.2.10；E3-2026-10 起检测由编译终态自动跑，此处仅消费落库结果）
+  ipcMain.handle('wiki:listDedupGroups', async (_event, { projectId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/groups`)
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:dismissDedupGroup', async (_event, { projectId, groupId }) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/groups/${encodeURIComponent(groupId)}/dismiss`, {
       method: 'POST',
+    })
+    return handlePythonResponse(res)
+  })
+
+  ipcMain.handle('wiki:dedupMerge', async (_event, { projectId, canonicalKey, duplicateKeys, groupId }) => {
+    // 每 dup 页串行一次 LLM 内容合并 + 全库链接重写，放宽默认 15s 超时
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canonical_key: canonicalKey, duplicate_keys: duplicateKeys, group_id: groupId || null }),
     }, 180000)
     return handlePythonResponse(res)
   })
@@ -2535,23 +2607,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
 
   ipcMain.handle('wiki:getVersion', async (_event, { projectId, versionId }) => {
     const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/versions/${versionId}`)
-    return handlePythonResponse(res)
-  })
-
-  // Wiki duplicate detection (§12.2.10)
-  ipcMain.handle('wiki:dedupDetect', async (_event, { projectId }) => {
-    // LLM 分组调用（≤100 页摘要一次长上下文请求），放宽默认 15s 超时
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/detect`, {}, 180000)
-    return handlePythonResponse(res)
-  })
-
-  ipcMain.handle('wiki:dedupMerge', async (_event, { projectId, canonicalKey, duplicateKeys }) => {
-    // 每 dup 页串行一次 LLM 内容合并 + 全库链接重写，放宽默认 15s 超时
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/wiki/projects/${projectId}/dedup/merge`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ canonical_key: canonicalKey, duplicate_keys: duplicateKeys }),
-    }, 180000)
     return handlePythonResponse(res)
   })
 

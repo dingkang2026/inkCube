@@ -20,7 +20,6 @@ import { TaskList } from './features/task/TaskList'
 import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
 import { TaskStatusMonitor } from './features/task/TaskStatusMonitor'
-import { ScheduleSideSummary } from './features/schedule/ScheduleSideSummary'
 import { ScheduleDrawer, type ScheduleView } from './features/schedule/ScheduleDrawer'
 import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
@@ -129,7 +128,7 @@ export default function App() {
    *  projectId 可选（2.10 §6.5 线框 5：项目徽章点击 → 统计页自动筛选该项目） */
   const [settingsSectionSignal, setSettingsSectionSignal] = useState<{ name: string; ts: number; projectId?: string } | null>(null)
   const [aboutOpen, setAboutOpen] = useState(false)
-  /** 通知中心开合（2.11 §6.1）：NavTabs 铃铛 / 首页「查看全部」→ open */
+  /** 通知中心开合（2.11 §6.1）：TitleBar 铃铛 / 首页「查看全部」→ open */
   const [notifCenterOpen, setNotifCenterOpen] = useState(false)
   const [logViewerOpen, setLogViewerOpen] = useState(false)
   const [activeNav, setActiveNav] = useState('home')
@@ -600,7 +599,7 @@ export default function App() {
   }, [closeSettings, deselect.reset])
 
   // 情报中心管理台 tab 直达（0.6 §5 V2-E1a：原 admin peer 态入口全部改道）：
-  // 通知点击 / 侧栏摘要行 / 首页快捷卡共用
+  // 通知点击 / 首页快捷卡共用（原任务侧栏摘要行入口 2026-10-26 退役，§9.1）
   const openIntelAdmin = useCallback(() => {
     setActiveNav('intel')
     setIntelTab('admin')
@@ -840,7 +839,7 @@ export default function App() {
     const offOsNotifyClick = window.electronAPI.on('app:osNotifyClick', (nav: unknown) => {
       navigateToNotification(nav as NotificationItem)
     })
-    // 通知中心开合信号（2.11 §6.1）：NavTabs 铃铛 / 首页「查看全部」dispatch
+    // 通知中心开合信号（2.11 §6.1）：TitleBar 铃铛 / 首页「查看全部」dispatch
     const handleOpenNotifications = () => setNotifCenterOpen(true)
     window.addEventListener('app:open-notifications', handleOpenNotifications)
     return () => {
@@ -872,6 +871,7 @@ export default function App() {
         onOpenSettings={handleOpenSettings}
         onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
         onShowAbout={() => setAboutOpen(true)}
+        onOpenNotifications={() => setNotifCenterOpen(true)}
       />
       {/* App 级统一告警区（0.5 §4.2 打样修订）：服务异常红条 + 杀软授权橙条（原
           AntivirusBanner 并入），TitleBar 之下全局可见——未验证加白前 Python 侧阻断一切
@@ -887,11 +887,11 @@ export default function App() {
               activeNav={!peerPageOpen ? activeNav : ''}
               onNavChange={handleNavChange}
               onOpenSettings={handleOpenSettings}
-              onOpenNotifications={() => setNotifCenterOpen(true)}
               footer={
                 <BaseLibFooter
                   selectedBaseLib={selectedBaseLibId}
                   onSelectBaseLib={handleBaseLibSelect}
+                  onBaseLibDeleted={(id) => setSelectedBaseLibId((prev) => (prev === id ? null : prev))}
                   templateManagementActive={showTemplateManagement}
                   onOpenTemplateManagement={() => {
                     closeSettings()
@@ -934,7 +934,11 @@ export default function App() {
                     activeTab={activeTab}
                     loading={tasksLoading}
                     creating={taskCreating}
-                    onSelect={setActiveTaskId}
+                    onSelect={(id) =>
+                      // 0.6 §6.3-16:点已选任务 toggle 取消，回「发送即建任务」欢迎态；
+                      // 任务无自动选中 effect，无需 useExplicitDeselect 守卫位
+                      setActiveTaskId((prev) => (prev === id ? null : id))
+                    }
                     onNew={() => handleCreateTask()}
                     onNewWithDir={handleNewTaskWithDir}
                     onDelete={handleDeleteTask}
@@ -949,8 +953,6 @@ export default function App() {
                     hasMore={activeTab === 'active' ? tasksHasMore.active : tasksHasMore.archived}
                     onLoadMore={() => loadMoreTasks(activeTab)}
                   />
-                  {/* 定时订阅摘要行（2.11 §8.1 规则 10）：侧栏只承载摘要，点击开情报中心管理台 tab */}
-                  <ScheduleSideSummary onOpenAdmin={openIntelAdmin} />
                 </>
               )}
             </Sidebar>
@@ -1009,12 +1011,10 @@ export default function App() {
             onSelectProject={(id) => {
               setSelectedProjectId(id)
             }}
-            onCreateTask={() => handleCreateTask()}
             onCreateProject={() => {
               handleNavChange('projects')
               setProjectCreateSignal((s) => s + 1)
             }}
-            onCreateSchedule={openIntelAdmin}
             dueData={dueData}
             healthByProject={healthByProject}
           />

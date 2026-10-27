@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sqlite3
 import json
@@ -308,6 +309,7 @@ class Database:
                 template_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 output_format TEXT NOT NULL DEFAULT 'docx',
+                include_project_kb INTEGER DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'generating',
                 progress INTEGER DEFAULT 0,
                 content_path TEXT,
@@ -407,6 +409,9 @@ class Database:
         self._migrate_add_column("reports", "base_project_ids", "TEXT")
         self._migrate_add_column("reports", "section_internet", "TEXT")
         self._migrate_add_column("reports", "internet_enabled", "INTEGER DEFAULT 0")
+        # 项目知识库纳入开关（2.5 §1.2，2026-10-27）：默认 1 保持既有行为；
+        # 取消勾选后章节检索与变量抽值均排除本项目知识库
+        self._migrate_add_column("reports", "include_project_kb", "INTEGER DEFAULT 1")
         # 历史行统一 'docx'（历史版本 IPC 曾写 'Word'，与后端/API 默认不一致）
         self.conn.execute(
             "UPDATE reports SET output_format = 'docx' WHERE output_format = 'Word'"
@@ -577,6 +582,9 @@ class Database:
         # Wiki compile tasks — V2 per-file ingest columns
         self._migrate_add_column("wiki_compile_tasks", "ingest_file_summaries", "TEXT")
         self._migrate_add_column("wiki_compile_tasks", "stop_requested", "INTEGER DEFAULT 0")
+        # 编译后自动治理汇总（E3-2026-10）：JSON 文本，编译详情面板治理摘要行
+        # 数据源（完成通知另走 activity_events.governance_wiki，不落此列）
+        self._migrate_add_column("wiki_compile_tasks", "governance_summary", "TEXT")
 
         # Migrate: wiki_reviews evidence（§3.5/§5.5，E2-2026-10）——矛盾证据结构化
         # [{page_key, quote}]，摄入产出的 contradiction 附带，供两栏对比裁决
@@ -599,6 +607,26 @@ class Database:
                 UNIQUE(project_id, file_id)
             );
             CREATE INDEX IF NOT EXISTS idx_wiki_source_pages_project ON wiki_source_pages(project_id);
+        """)
+        self.conn.commit()
+
+        # Wiki dedup groups（§12.2.10，E3-2026-10）：重复页面检测组落库——
+        # 检测已改为编译后自动跑，组结果须持久化供体检视图浮现；fingerprint
+        # （排序 slugs 串接）为重检测幂等 upsert 键，保留用户 merged/dismissed
+        # 裁决不被重检测回滚。新表启动幂等建表，存量库零迁移。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS wiki_dedup_groups (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                fingerprint TEXT NOT NULL,
+                slugs TEXT NOT NULL,
+                reason TEXT DEFAULT '',
+                confidence TEXT DEFAULT 'medium',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dedup_groups_project
+                ON wiki_dedup_groups(project_id, status);
         """)
         self.conn.commit()
 
@@ -825,7 +853,6 @@ class Database:
                 target_id   TEXT,                        -- target_type 非空时必填
                 archive_file_id TEXT,                    -- 档案在目标容器的 file id 锚点（2.11 §6）
                 archive_last_run_id TEXT,                -- 档案已合并到的最近 run id（失败补并锚点）
-                auto_import INTEGER NOT NULL DEFAULT 1,
                 enabled     INTEGER NOT NULL DEFAULT 1,  -- 0 = 已暂停（含连续失败自动暂停）
                 next_run_at TEXT,                        -- ISO；enabled=0 时为 NULL
                 last_run_at TEXT,
@@ -864,6 +891,10 @@ class Database:
         self._migrate_add_column("task_schedules", "scope", "TEXT")
         self._migrate_add_column("task_schedules", "digest_schedule_ids", "TEXT")
         self._migrate_schedule_scope_retire_focus_sweep()
+        self._migrate_drop_schedule_auto_import()
+
+        # Migrate: wiki 摄入 0 页脏行回退（2026-10-26 全角冒号漏析事故）
+        self._migrate_wiki_source_pages_zero_page_rollback()
         self.conn.commit()
 
         # Leads（线索池，0.6 §4.1 V2-E2 唯一新表）：情报→项目蓄水池，薄卡反 CRM。
@@ -975,6 +1006,49 @@ class Database:
                 "Migrated task_schedules: retired focus/sweep scope -> NULL "
                 "x%d", cur.rowcount)
 
+    def _migrate_drop_schedule_auto_import(self):
+        """task_schedules.auto_import 列退役删除（2026-10-26 用户裁决：绑定去向
+        即全自动沉淀）。
+
+        语义漂移复盘：开关源自档案制前「每期产出文件直接入库」构想，档案制
+        收敛后仅剩「档案是否入库」一个门控而 LLM 合并照跑——「已绑定但永不
+        入库」成不可见僵尸态（实证 sch_7d65de1e：期期烧合并 token、应用内无
+        任何入口看工作副本、重建档案无可见效果），与 §6「绑定即沉淀，入库
+        决策发生在绑定时刻」裁决冲突。删除后入库只由 target_id 决定。
+        幂等：PRAGMA 查列不存在即跳过；失败向上抛（schema 与 DDL 漂移，
+        静默继续不可取）。SQLite ≥3.35 支持 DROP COLUMN（本列无索引/
+        触发器引用，可直删）。
+        """
+        cols = [r["name"] for r in self.conn.execute(
+            "PRAGMA table_info(task_schedules)").fetchall()]
+        if "auto_import" not in cols:
+            return
+        self.conn.execute("ALTER TABLE task_schedules DROP COLUMN auto_import")
+        self.conn.commit()
+        logger.info("Migrated task_schedules: dropped legacy auto_import column")
+
+    def _migrate_wiki_source_pages_zero_page_rollback(self):
+        """wiki_source_pages 脏行回退：ingested 但零页面产出（2026-10-26）。
+
+        全角冒号漏析事故（parser 分隔符只认半角冒号，LLM 输出 ---PAGE：）：
+        文件被标 ingested 而 wiki_pages 零写入，skip-if-unchanged 使其永久
+        退出待编译集合——重试/增量/重试失败全部不可达，唯一出路曾是清库。
+        判据：status='ingested' 且 pages_touched 空（正常成功至少触碰 1 页，
+        含 user_edited 跳过路径；页面存储全异常时 pages_failed>0，回退重摄
+        同样正确）。删除行即回退待编译（pending 口径 = done 文件减去
+        ingested/skipped source_page）；幂等：重跑无行可删；失败向上抛
+        （脏行滞留 = 用户重试无门，静默继续不可取）。
+        """
+        cur = self.conn.execute(
+            "DELETE FROM wiki_source_pages "
+            "WHERE status = 'ingested' "
+            "AND (pages_touched IS NULL OR pages_touched IN ('', '[]'))")
+        self.conn.commit()
+        if cur.rowcount:
+            logger.info(
+                "Migrated wiki_source_pages: rolled back %d zero-page "
+                "ingested row(s) to pending", cur.rowcount)
+
     def _migrate_add_column(self, table: str, column: str, col_type: str):
         """Add column to existing table if it doesn't exist yet."""
         try:
@@ -1084,6 +1158,10 @@ class Database:
             # Wiki compile settings（默认 2：并发单位是项目，项目内文件本就串行，
             # 2 = 两个项目并行编译；同项目由 API 层 409 防重保证单一编译任务）
             "max_compile_concurrency": 2,
+            # 事件驱动自动汇编（2.6 §4.1 路径 A）：解析完成即自动点火增量编译。
+            # 默认开（知识复利零操作闭环）；设置页「处理并发」区开关可改；
+            # 手动停止编译写 30 分钟自动点火冷却（进程内存态）
+            "auto_wiki_compile": True,
             # LLM timeout settings
             "llm_connect_timeout": 30,
             "llm_read_timeout": 300,
@@ -1716,6 +1794,12 @@ class Database:
             managed_root = os.path.join(get_data_dir(), "tasks")
             if task_dir.startswith(managed_root + os.sep) and os.path.isdir(task_dir):
                 shutil.rmtree(task_dir, ignore_errors=True)
+                if os.path.isdir(task_dir):
+                    # 静默半删可追溯（Windows 文件锁极端场景）：残留目录已无
+                    # 行引用，启动期存储维护 cleanup_orphan_task_dirs 会清扫
+                    logger.warning(
+                        "Task workspace partially deleted (file lock?): %s "
+                        "— orphan dir left for storage maintenance", task_dir)
         self.conn.execute("DELETE FROM task_messages WHERE task_id = ?", (task_id,))
         self.conn.execute("DELETE FROM task_agent_state WHERE task_id = ?", (task_id,))
         self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -1897,7 +1981,7 @@ class Database:
 
     _SCHEDULE_FIELDS = (
         "name", "prompt", "category", "interval_type", "interval_value",
-        "target_type", "target_id", "auto_import", "archive_file_id",
+        "target_type", "target_id", "archive_file_id",
         "archive_last_run_id", "enabled", "next_run_at",
         "scope", "digest_schedule_ids",
     )
@@ -1906,7 +1990,7 @@ class Database:
                         interval_type: str, interval_value: str,
                         target_type: str | None = None,
                         target_id: str | None = None,
-                        auto_import: int = 1, next_run_at: str | None = None,
+                        next_run_at: str | None = None,
                         enabled: int = 1,
                         scope: str | None = None,
                         digest_schedule_ids: str | None = None) -> dict:
@@ -1915,12 +1999,12 @@ class Database:
         sch_id = f"sch_{uuid.uuid4().hex[:8]}"
         self.conn.execute(
             "INSERT INTO task_schedules (id, name, prompt, mode, category,"
-            " interval_type, interval_value, target_type, target_id, auto_import,"
+            " interval_type, interval_value, target_type, target_id,"
             " enabled, next_run_at, scope, digest_schedule_ids,"
             " created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sch_id, name, prompt, mode, category, interval_type, interval_value,
-             target_type, target_id, int(auto_import), int(enabled),
+             target_type, target_id, int(enabled),
              next_run_at, scope, digest_schedule_ids, now, now))
         self.conn.commit()
         return self.get_schedule(sch_id)
@@ -1932,7 +2016,7 @@ class Database:
             if key not in fields:
                 continue
             value = fields[key]
-            if key in ("auto_import", "enabled"):
+            if key == "enabled":
                 value = int(value)
             elif key == "digest_schedule_ids" and isinstance(value, (list, tuple)):
                 # 入参归一：list 形态（直调方未序列化）落库前转 TEXT(JSON)
@@ -1950,8 +2034,8 @@ class Database:
 
     def clear_schedules_target(self, target_type: str, target_id: str) -> list:
         """目标容器删除联动（验收-P2 对称置空，2.11 §6）：指向该容器的订阅
-        target_type/target_id 置空（auto_import 保留——重新绑定后偏好不变），
-        返回受影响订阅行（id/name）供通知合并。与「删订阅时 tasks.schedule_id
+        target_type/target_id 置空，返回受影响订阅行（id/name）供通知合并。
+        与「删订阅时 tasks.schedule_id
         外键 SET NULL」同构——target_id 无外键，此为手动等价。"""
         rows = self.conn.execute(
             "SELECT id, name FROM task_schedules"
@@ -3003,20 +3087,17 @@ class Database:
         }
 
     def list_report_logs(self, report_id: str, limit: int = 100) -> list[dict]:
-        """获取报告的生成日志（时间正序 = 时间轴视图，取最新 limit 条）。
+        """获取报告的生成日志（最新在上，取最新 limit 条）。
 
-        详情页日志面板直接渲染（旧上新下，生成中配合自动滚底看最新）：
-        SQL 倒序截取最新 N 条（rowid = 插入序作同 created_at 的稳定次级键），
-        Python 侧反转为正序返回。
+        详情页日志面板直接渲染（新上旧下，最新进展首屏可见，无需自动滚底）：
+        rowid = 插入序作同 created_at 的稳定次级键（同刻日志后写在上）。
         """
         cursor = self.conn.execute(
             """SELECT * FROM report_logs WHERE report_id = ?
                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
             (report_id, limit),
         )
-        rows = [dict(row) for row in cursor.fetchall()]
-        rows.reverse()
-        return rows
+        return [dict(row) for row in cursor.fetchall()]
 
     # ── PPTs (2.3 §5.1)：交付物登记簿 ──
 
@@ -3526,6 +3607,67 @@ class Database:
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    @staticmethod
+    def is_preset_base_lib(lib: dict) -> bool:
+        """预置库判定：lib_type 以 preset_ 开头（自定义库为 'custom' / NULL）。"""
+        return bool((lib.get("lib_type") or "").startswith("preset_"))
+
+    def create_base_lib(self, name: str, description: str = "") -> dict:
+        """创建自定义基础库（kind='base_lib'，lib_type='custom'）。
+
+        预置库仅由 ensure_preset_base_libs() 固定 ID 播种，不经此入口。"""
+        now = self._now()
+        lib_id = f"bl-{self._uuid()}"
+        self.conn.execute(
+            "INSERT INTO projects (id, name, description, type, stage, kind, lib_type, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'general', 'none', 'base_lib', 'custom', ?, ?)",
+            (lib_id, name, description, now, now),
+        )
+        self.conn.commit()
+        return {
+            "id": lib_id, "name": name, "description": description,
+            "lib_type": "custom", "created_at": now, "updated_at": now,
+        }
+
+    def update_base_lib(
+        self, lib_id: str,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        """改名/改描述（仅自定义库）。预置库拒绝（返回 False，无写入）；
+        路由层先查存在性与预置态以区分 404/403，本方法为硬闸防绕过。"""
+        lib = self.get_base_lib(lib_id)
+        if not lib or self.is_preset_base_lib(lib):
+            return False
+        updates, params = [], []
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if not updates:
+            return True
+        updates.append("updated_at = ?")
+        params.extend([self._now(), lib_id])
+        self.conn.execute(
+            f"UPDATE projects SET {', '.join(updates)} WHERE id = ?", params)
+        self.conn.commit()
+        return True
+
+    def delete_base_lib(self, lib_id: str) -> bool:
+        """删除基础库（仅自定义库：kind='base_lib' 且非 preset_ 前缀）。
+
+        files/images/project_base_libs 关联行由外键 ON DELETE CASCADE 级联；
+        向量/FTS/磁盘由路由层先行清理（对齐删项目链路）。"""
+        cursor = self.conn.execute(
+            "DELETE FROM projects WHERE id = ? AND kind = 'base_lib' "
+            "AND (lib_type IS NULL OR lib_type NOT LIKE 'preset_%')",
+            (lib_id,),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     # ── Project-BaseLib Association ──
 
@@ -4624,7 +4766,17 @@ class Database:
         sources: list[str] | None = None,
         tags: list[str] | None = None,
         page_type: str | None = None,
+        expected_content: str | None = None,
     ):
+        """整页替换语义的内容更新（调用方给全量 content）。
+
+        expected_content（复审 Major 2026-10-27 补口，enrich 同构读-改-写
+        窗口专用）：传入读取时的原文快照即启用内容级 CAS——读-改-写间内容
+        已被他方修改（用户编辑/治理链/裁决先行写入）则拒绝整页覆盖，返回
+        {"success": False, "reason": "content_changed"} 且零副作用；为 None
+        保持原无条件替换语义（编辑器保存等调用方自带最新全文，无读-改-写
+        窗口，M-1 轮已界定不入 CAS 范围）。
+        """
         now = self._now()
         updates = ["content = ?", "updated_at = ?"]
         params: list = [content, now]
@@ -4654,15 +4806,24 @@ class Database:
             updates.append("page_type = ?")
             params.append(page_type)
         params.append(page_id)
-        self.conn.execute(
-            f"UPDATE wiki_pages SET {', '.join(updates)} WHERE id = ?",
+        where = "WHERE id = ?"
+        if expected_content is not None:
+            where += " AND content = ?"
+            params.append(expected_content)
+        cur = self.conn.execute(
+            f"UPDATE wiki_pages SET {', '.join(updates)} {where}",
             params,
         )
+        if expected_content is not None and cur.rowcount == 0:
+            # CAS 失配：读到的原文已不是库中现行，零副作用拒绝（rowcount=0
+            # 无行变更，不 commit 即无悬挂写入）
+            return {"success": False, "reason": "content_changed"}
         self.conn.commit()
 
         # Auto-save version snapshot
         if compile_version is not None:
             self._save_page_version(page_id, content, title, compile_version)
+        return {"success": True}
 
     def _save_page_version(
         self,
@@ -4706,6 +4867,11 @@ class Database:
         status=user_edited（编译保护，用户裁决的说法不被下轮摄入覆盖）+
         compile_version+1 自动版本快照。任一环节失配返回 success=False
         且不产生写操作，宁可留待人工不误改。
+
+        并发防护（review M-1 2026-10-27）：UPDATE 以读取时的原文作内容级
+        CAS 条件——编译终态后台治理链与用户写路径并存（completed 后治理
+        仍在跑数分钟 LLM 步骤，409 门已放行），读-改-写间若内容已被他方
+        修改则拒绝写入（reason=content_changed），由调用方走重定位/提示。
         """
         page = self.get_wiki_page(project_id, page_key)
         if not page:
@@ -4721,11 +4887,15 @@ class Database:
         new_content = content.replace(old_text, new_text)
         version = (page.get("compile_version") or 0) + 1
         now = self._now()
-        self.conn.execute(
+        cur = self.conn.execute(
             "UPDATE wiki_pages SET content = ?, status = 'user_edited', "
-            "compile_version = ?, last_compiled_at = ?, updated_at = ? WHERE id = ?",
-            (new_content, version, now, now, page["id"]),
+            "compile_version = ?, last_compiled_at = ?, updated_at = ? "
+            "WHERE id = ? AND content = ?",
+            (new_content, version, now, now, page["id"], content),
         )
+        if cur.rowcount == 0:
+            # 读到的原文已不是库中现行（治理链/用户编辑先行写入）：不猜不覆盖
+            return {"success": False, "reason": "content_changed", "page_key": page_key}
         self.conn.commit()
         self._save_page_version(page["id"], new_content, page.get("title"), version, change_summary)
         return {
@@ -4733,6 +4903,64 @@ class Database:
             "page_key": page_key,
             "page_id": page["id"],
             "replaced_count": count,
+            "version": version,
+        }
+
+    def fix_wiki_page_wikilink(
+        self,
+        project_id: str,
+        page_key: str,
+        dead_key: str,
+        target_key: str,
+        change_summary: str = "",
+    ) -> dict:
+        """机械死链修复（§5.4 link-fix 写路径，E3-2026-10）。
+
+        服务端正则替换 [[dead]] 与 [[dead|别名]] → [[target…]]（保留别名），
+        与 adjudicate 的 replace_wiki_page_text 的关键差异：**不置
+        user_edited**——修一条链接不应冻结整页的汇编更新（enrich 同款
+        保留状态语义），仍产生 compile_version+1 版本快照（可回退）+
+        change_log(action='link_fixed') 时间线。无匹配返回 success=False
+        且不产生写操作（发现项已过时的处置交给调用方）。
+
+        并发防护（review M-1 2026-10-27）：与 replace_wiki_page_text 同款
+        内容级 CAS——读-改-写间内容已被他方修改则拒绝写入
+        （reason=content_changed，不核销发现项）。
+        """
+        page = self.get_wiki_page(project_id, page_key)
+        if not page:
+            return {"success": False, "reason": "page_not_found", "page_key": page_key}
+        content = page.get("content") or ""
+        escaped = re.escape(dead_key)
+        new_content, n = re.subn(
+            rf"\[\[{escaped}(\|[^\]]+)?\]\]",
+            lambda m: f"[[{target_key}{m.group(1) or ''}]]",
+            content,
+        )
+        if n == 0:
+            return {"success": False, "reason": "text_not_found", "page_key": page_key}
+        version = (page.get("compile_version") or 0) + 1
+        now = self._now()
+        cur = self.conn.execute(
+            "UPDATE wiki_pages SET content = ?, compile_version = ?, "
+            "last_compiled_at = ?, updated_at = ? WHERE id = ? AND content = ?",
+            (new_content, version, now, now, page["id"], content),
+        )
+        if cur.rowcount == 0:
+            return {"success": False, "reason": "content_changed", "page_key": page_key}
+        self.conn.commit()
+        self._save_page_version(page["id"], new_content, page.get("title"), version, change_summary)
+        self.add_wiki_change_log(
+            project_id=project_id,
+            action="link_fixed",
+            wiki_page_id=page["id"],
+            summary=change_summary or f"修复死链 [[{dead_key}]] → [[{target_key}]]",
+        )
+        return {
+            "success": True,
+            "page_key": page_key,
+            "page_id": page["id"],
+            "replaced_count": n,
             "version": version,
         }
 
@@ -5209,6 +5437,16 @@ class Database:
         except (json.JSONDecodeError, TypeError):
             return []
 
+    def set_compile_governance_summary(self, task_id: str, summary: dict):
+        """编译后自动治理汇总（E3-2026-10）：JSON 落 task 行，随
+        get_wiki_compile_task / compile-status 返回，供前端 CompilePanel
+        编译详情展示（review m-2 2026-10-27 更正——原误写「toast 数据源」）。"""
+        self.conn.execute(
+            "UPDATE wiki_compile_tasks SET governance_summary = ? WHERE id = ?",
+            (json.dumps(summary, ensure_ascii=False), task_id),
+        )
+        self.conn.commit()
+
     def get_pending_wiki_files(self, project_id: str, exclude_file_ids: list[str] | None = None) -> list[dict]:
         """Get files that need Wiki ingestion for a project.
 
@@ -5242,6 +5480,77 @@ class Database:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    # ── Wiki: Dedup Groups（§12.2.10，E3-2026-10 自动检测落库）──
+
+    def replace_dedup_groups(self, project_id: str, groups: list[dict]) -> None:
+        """重复检测组落库（全量替换语义 + 指纹保留状态）。
+
+        以 fingerprint（排序后 slugs 串接）幂等 upsert：本轮检出的组更新
+        reason/confidence 并保留既有 status（用户 merged/dismissed 裁决不因
+        重检测回滚）；本轮未检出的组删除（对应页面已合并/删除，提案失效）。
+        slugs 首项为前端默认 canonical（与 LLM 组内排序约定一致）。
+        """
+        now = self._now()
+        kept_fps: list[str] = []
+        for g in groups or []:
+            slugs = [str(s).strip() for s in (g.get("slugs") or []) if str(s).strip()]
+            if len(slugs) < 2:
+                continue  # 少于两页不成组
+            fp = "|".join(sorted(slugs))
+            kept_fps.append(fp)
+            existing = self.conn.execute(
+                "SELECT id FROM wiki_dedup_groups WHERE project_id = ? AND fingerprint = ?",
+                (project_id, fp),
+            ).fetchone()
+            if existing:
+                self.conn.execute(
+                    "UPDATE wiki_dedup_groups SET reason = ?, confidence = ? WHERE id = ?",
+                    (g.get("reason") or "", g.get("confidence") or "medium", existing["id"]),
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO wiki_dedup_groups
+                       (id, project_id, fingerprint, slugs, reason, confidence, status, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                    (self._uuid(), project_id, fp,
+                     json.dumps(slugs, ensure_ascii=False),
+                     g.get("reason") or "", g.get("confidence") or "medium", now),
+                )
+        if kept_fps:
+            placeholders = ",".join("?" for _ in kept_fps)
+            self.conn.execute(
+                f"DELETE FROM wiki_dedup_groups WHERE project_id = ? "
+                f"AND fingerprint NOT IN ({placeholders})",
+                [project_id] + kept_fps,
+            )
+        else:
+            self.conn.execute(
+                "DELETE FROM wiki_dedup_groups WHERE project_id = ?", (project_id,))
+        self.conn.commit()
+
+    def list_dedup_groups(self, project_id: str) -> list[dict]:
+        """待确认重复组（pending），创建时间倒序；slugs 反序列化为数组。"""
+        cursor = self.conn.execute(
+            "SELECT * FROM wiki_dedup_groups WHERE project_id = ? AND status = 'pending' "
+            "ORDER BY created_at DESC",
+            (project_id,),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            d["slugs"] = self._load_json_list(d.get("slugs")) or []
+            rows.append(d)
+        return rows
+
+    def set_dedup_group_status(self, project_id: str, group_id: str, status: str) -> bool:
+        """组状态流转（merged / dismissed）；project_id 条件纵深防御。"""
+        cursor = self.conn.execute(
+            "UPDATE wiki_dedup_groups SET status = ? WHERE id = ? AND project_id = ?",
+            (status, group_id, project_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     # ── Wiki: Pending Compile Count ──
 

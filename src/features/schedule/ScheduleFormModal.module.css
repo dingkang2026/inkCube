@@ -289,16 +289,6 @@
   overflow-y: auto;
 }
 
-.autoImportRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
 .empty {
   padding: 12px;
   font-size: var(--text-sm);

@@ -6,6 +6,8 @@
  * 派生，父组件负责终态边沿刷新，零新增轮询，0.4 §3.1）。
  *
  * 交互（免培训 §2.10）：
+ * - 默认单行截断（2026-10-26 用户裁决）：条目 >3 时 chips 限一行 + 「展开/收起」
+ *   toggle，头部信息区不再被多行画像撑高；
  * - 每条「链条·细分」标签带「盯产业」钮（dispatch app:open-schedule-wizard，
  *   App 级新建订阅弹层预填产业舆情模板）与删除钮；
  * - 行尾「+」行内表单新增条目；「重新提取」钮（knowledge:extractProfile，
@@ -16,7 +18,7 @@
  */
 import { useMemo, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Factory, Radio, X, Plus, RefreshCw, Loader2, Check } from 'lucide-react'
+import { Factory, Radio, X, Plus, RefreshCw, Loader2, Check, ChevronDown } from 'lucide-react'
 import { useToast } from '../knowledge/Toast'
 import type { Project } from '../knowledge/types'
 import s from './ProjectProfileLine.module.css'
@@ -54,6 +56,9 @@ export function ProjectProfileLine({ project, extracting, onProjectDataChanged }
   const [newChain, setNewChain] = useState('')
   const [newSegment, setNewSegment] = useState('')
   const [saving, setSaving] = useState(false)
+  // 单行折叠（2026-10-26 用户裁决）：>3 条默认收为一行，展开看全量
+  const [expanded, setExpanded] = useState(false)
+  const collapsible = entries.length > 3
   // NULL = 未提取（编译后自动提取）；'[]' = 已提取未识别（解析失败兜底为空数组展示同款提示）
   const neverExtracted = project.industry_profile == null
 
@@ -134,7 +139,7 @@ export function ProjectProfileLine({ project, extracting, onProjectDataChanged }
           {t('project.profile.extracting')}
         </span>
       ) : entries.length > 0 ? (
-        <span className={s.profileChips}>
+        <span className={`${s.profileChips} ${collapsible && !expanded ? s.profileChipsClamped : ''}`}>
           {entries.map((en, i) => (
             <span key={`${en.chain}-${i}`} className={s.profileChip}>
               <span
@@ -167,6 +172,14 @@ export function ProjectProfileLine({ project, extracting, onProjectDataChanged }
         <span className={s.profileEmpty}>
           {neverExtracted ? t('project.profile.emptyHint') : t('project.profile.noneFound')}
         </span>
+      )}
+      {collapsible && (
+        <button className={s.profileToggle} onClick={() => setExpanded(!expanded)}>
+          <ChevronDown size={12} className={expanded ? s.profileToggleUp : undefined} />
+          {expanded
+            ? t('project.profile.collapse')
+            : t('project.profile.expand', { count: entries.length })}
+        </button>
       )}
       {adding ? (
         <span className={s.profileAddForm}>

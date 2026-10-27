@@ -287,9 +287,11 @@ async def lifespan(app: FastAPI):
 
     # ── PPT 交付物：启动恢复（2.3 §6）── 泵随进程消失，active 行按 workspace
     # 产物落位（exports→completed / pending→awaiting / running→paused），不发新泵。
+    # 线程池执行：模板分支含收录拷贝、deck 分支含 confirm_ui 关停子进程，
+    # 同步直调会在启动期冻结事件循环
     try:
         from ppt_service import service as _ppt_service
-        _ppt_service.recover_orphans(deps.db)
+        await asyncio.to_thread(_ppt_service.recover_orphans, deps.db)
     except Exception as e:
         logging.getLogger(__name__).warning("PPT orphan recovery failed: %s", e)
 

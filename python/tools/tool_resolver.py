@@ -130,7 +130,7 @@ def resolve_python() -> str | None:
     1. 环境变量 INKCUBE_PYTHON_PATH（生产环境由 python-manager.js 显式传入）
     2. %APPDATA%/InkCube/python/python.exe（历史路径，与 Electron userData 不一致，仅作兼容）
     3. resources/tools/python-build-standalone/python.exe（开发环境）
-    4. sys.executable（兕底：使用当前 Python）
+    4. sys.executable（兜底：使用当前 Python）
 
     Returns:
         Python 可执行文件的绝对路径

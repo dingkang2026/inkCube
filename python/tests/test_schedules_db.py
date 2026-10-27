@@ -51,12 +51,25 @@ def test_create_and_list_schedule(tmp_db):
     rows = tmp_db.list_schedules()
     assert rows[0]['name'] == '华润舆情'
     assert rows[0]['next_run_at'] == '2026-10-19T09:00:00'
-    assert rows[0]['enabled'] == 1 and rows[0]['auto_import'] == 1
+    assert rows[0]['enabled'] == 1
     assert rows[0]['latest_done'] is None          # 尚无产出
 
 
 def test_get_schedule_missing_returns_none(tmp_db):
     assert tmp_db.get_schedule('sch_nope') is None
+
+
+def test_migrate_drops_legacy_auto_import(tmp_db):
+    """auto_import 列退役（2026-10-26 用户裁决：绑定去向即全自动沉淀）：
+    存量库启动迁移幂等删列。fixture 首次 initialize() 已覆盖「列不存在
+    直接跳过」路径（新库/已迁移库可重入）；此处补存量库删列路径。"""
+    tmp_db.conn.execute(
+        "ALTER TABLE task_schedules ADD COLUMN auto_import INTEGER NOT NULL DEFAULT 1")
+    tmp_db.conn.commit()
+    tmp_db.initialize()                            # 幂等重跑启动迁移
+    cols = [r["name"] for r in tmp_db.conn.execute(
+        "PRAGMA table_info(task_schedules)").fetchall()]
+    assert "auto_import" not in cols
 
 
 def test_update_schedule_whitelist(tmp_db):

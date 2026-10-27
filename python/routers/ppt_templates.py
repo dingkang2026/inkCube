@@ -226,6 +226,10 @@ async def list_template_jobs(
     """模板创建任务列表：活跃段全量（分区轮询进度与门禁不可截断）
     + 终态段 limit/offset（has_more 只看终态段，探测在 db 层完成）。"""
     jobs, has_more = deps.db.list_template_jobs(limit=limit, offset=offset)
+    # 失败任务的收录重试入口判定（免培训：重试收录按钮只在有意义的行上出现）
+    for job in jobs:
+        if job.get("kind") == "template":
+            job["package_ready"] = ppt_service._template_package_valid(job)
     return {"jobs": jobs, "has_more": has_more}
 
 
@@ -266,7 +270,11 @@ async def delete_template(kind: str, template_id: str):
     6b 连带清理：同模板创建任务历史（kind='template' 行）——存在活跃任务
     （running/awaiting_input）时 409 拒绝（防「任务跑完收录重建同名模板」
     与删除竞态，提示先取消）；仅终态 → 逐行 delete_task（消息 + agent 状态 +
-    tasks 行 + 托管工作区）+ delete_ppt，JobCard 不残留指向已删模板的孤儿记录。"""
+    tasks 行 + 托管工作区）+ delete_ppt，JobCard 不残留指向已删模板的孤儿记录。
+    终态判定存在 TOCTOU 窗口（快照检查后 failed/paused 行可被用户 resume）:
+    _do_delete 两阶段重查——先全量确认全部任务仍为可删态（部分清理比整体
+    放弃更糟），再进入删除循环；有激活行则整体放弃返回 409（防删行+删工作
+    区打断在飞 agent）；索引删条目持库锁（与收录/rescan 互斥）。"""
     if kind not in _KIND_DIRS:
         return JSONResponse(status_code=400, content={
             "error": "模板类型非法", "code": "INVALID_TEMPLATE_KIND"})
@@ -297,19 +305,31 @@ async def delete_template(kind: str, template_id: str):
         return JSONResponse(status_code=404, content={
             "error": "模板不存在", "code": "TEMPLATE_NOT_FOUND"})
 
-    def _do_delete() -> None:
+    def _do_delete() -> bool:
+        # 两阶段（P3-1）：先全量重查确认全部仍为可删态再动手——边查边删在
+        # 后面行放弃时前面行已清，409 伴随部分清理不可重试收敛
+        for job in jobs:
+            cur = deps.db.get_ppt(job["id"])
+            if cur and cur["status"] in ("running", "awaiting_input"):
+                return False
         for job in jobs:
             # 终态任务无泵无 agent，db 层直接删（delete_task 含托管工作区 rmtree）
             deps.db.delete_task(job["task_id"])
             deps.db.delete_ppt(job["id"])
         if ws.is_dir():
             shutil.rmtree(ws)
-        if template_id in index:
-            index.pop(template_id)
-            ppt_service._atomic_write_json(root / kind_dir / index_name, index)
+        with ppt_service._TEMPLATE_LIB_LOCK:
+            # 锁内重读索引（主线程快照可能已被并发写更新）：与收录/rescan
+            # 的读-改-写互斥，防删掉的条目被旧快照写回复活
+            cur_index = _read_index(root, kind)
+            if template_id in cur_index:
+                cur_index.pop(template_id)
+                ppt_service._atomic_write_json(
+                    root / kind_dir / index_name, cur_index)
+        return True
 
     try:
-        await asyncio.to_thread(_do_delete)
+        deleted = await asyncio.to_thread(_do_delete)
     except Exception as e:
         # 半清理状态比「删不掉」更糟：任务历史清理失败即整体失败，模板原样保留，
         # 用户重试即可（终态清理是幂等的）
@@ -317,6 +337,12 @@ async def delete_template(kind: str, template_id: str):
                      kind, template_id, exc_info=True)
         return JSONResponse(status_code=500, content={
             "error": f"删除失败: {e}", "code": "TEMPLATE_DELETE_FAILED"})
+    if not deleted:
+        logger.info("PPT template delete aborted (job re-activated): kind=%s id=%s",
+                    kind, template_id)
+        return JSONResponse(status_code=409, content={
+            "error": "该模板存在进行中的创建任务，请先取消或等待完成",
+            "code": "TEMPLATE_JOB_ACTIVE"})
     logger.info("PPT template deleted: kind=%s id=%s jobs_purged=%d",
                 kind, template_id, len(jobs))
     return {"ok": True, "purged_jobs": len(jobs)}
@@ -385,7 +411,14 @@ async def rescan_templates():
                     k: fm[k] for k in ppt_service._TEMPLATE_INDEX_FIELDS[kind]
                     if fm.get(k) not in (None, "")
                 }
-        ppt_service._atomic_write_json(base / index_name, index)
+        # 持库锁内合并重读再写回（P2-1）：仅护写入动作不够——扫描在锁外，
+        # 收录若在「扫描完→拿锁前」完成，其条目不在扫描快照里，整体覆盖
+        # 写会把「目录在、索引丢」重新引入。合并规则：扫描快照优先（目录树
+        # 权威，手工改动/损坏修复生效），快照缺失但目录仍存在的现存条目
+        # 保留（= 扫描窗口内新收录/既有有效包），目录已消失的丢弃
+        with ppt_service._TEMPLATE_LIB_LOCK:
+            index = ppt_service._merge_rescan_index(base, index_name, index)
+            ppt_service._atomic_write_json(base / index_name, index)
         return {"kind": kind, "ok": True, "count": len(index), "skipped": skipped}
 
     results = await asyncio.gather(*[asyncio.to_thread(_scan_kind, k) for k in _KIND_DIRS])

@@ -205,6 +205,61 @@ def test_delete_rejected_with_active_job(client, tmp_path):
     assert len(deps.db.list_ppts_by_template("style", "custom_b")) == 2
 
 
+def test_delete_aborts_when_job_reactivated_after_snapshot(client, tmp_path, monkeypatch):
+    """TOCTOU 重查（P3-2 回归）：快照检查后任务被 resume 激活（failed→running），
+    _do_delete 执行前逐行重查发现非可删态 → 整体放弃 409，模板与历史原样保留
+    （防删行+删工作区打断在飞 agent 的半删状态）。"""
+    import deps
+    data = tmp_path / "data"
+    job = _mk_template_job(deps.db, data, "style", "custom_b", "failed")
+    real_get = deps.db.get_ppt
+
+    def fake_get(pid):
+        row = real_get(pid)
+        if row and row["id"] == job["id"]:
+            row = dict(row)
+            row["status"] = "running"  # 模拟快照检查后用户点了继续
+        return row
+
+    monkeypatch.setattr(deps.db, "get_ppt", fake_get)
+    r = client.delete("/ppt-templates/style/custom_b")
+    assert r.status_code == 409
+    assert r.json()["code"] == "TEMPLATE_JOB_ACTIVE"
+    # 模板目录、索引、任务历史全部原样（半删状态不可接受）
+    lib = data / "ppt-library" / "templates" / "styles"
+    assert (lib / "custom_b").is_dir()
+    assert "custom_b" in json.loads(
+        (lib / "styles_index.json").read_text(encoding="utf-8"))
+    assert len(deps.db.list_ppts_by_template("style", "custom_b")) == 1
+
+
+def test_delete_two_phase_aborts_without_partial_purge(client, tmp_path, monkeypatch):
+    """两阶段重查（P3-1 回归）：多任务历史在重查阶段发现激活行 → 整体放弃 409，
+    不得出现「前面行已删、后面行触发放弃」的部分清理（409 伴随部分清理不可
+    重试收敛——终态行历史已被清，重试无法找回）。"""
+    import deps
+    data = tmp_path / "data"
+    job_a = _mk_template_job(deps.db, data, "style", "custom_b", "completed")
+    job_b = _mk_template_job(deps.db, data, "style", "custom_b", "paused")
+    real_get = deps.db.get_ppt
+
+    def fake_get(pid):
+        row = real_get(pid)
+        if row and row["id"] == job_b["id"]:
+            row = dict(row)
+            row["status"] = "running"  # 第二行在快照检查后被 resume
+        return row
+
+    monkeypatch.setattr(deps.db, "get_ppt", fake_get)
+    r = client.delete("/ppt-templates/style/custom_b")
+    assert r.status_code == 409
+    assert r.json()["code"] == "TEMPLATE_JOB_ACTIVE"
+    # 两行都原样（job_a 未被部分清理，重试可完整收敛）
+    assert deps.db.get_ppt(job_a["id"]) is not None
+    assert deps.db.get_ppt(job_b["id"]) is not None
+    assert len(deps.db.list_ppts_by_template("style", "custom_b")) == 2
+
+
 def test_delete_purges_terminal_job_history(client, tmp_path):
     """6b：仅终态历史 → 模板删除 + 任务历史连带清
     （ppts 登记 / tasks 行 / 消息 / 托管工作区）。"""

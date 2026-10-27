@@ -40,7 +40,11 @@ vi.mock('../src/features/project/ProjectDetailPage', () => ({
   ProjectDetailPage: () => <div data-testid="project-detail" />,
 }))
 vi.mock('../src/features/task/TaskPage', () => ({
-  TaskPage: () => <div data-testid="task-page" />,
+  // 捕获 props：任务行 toggle 用例断言 App 层 taskId/hasActiveTask 流转
+  TaskPage: (props: Record<string, unknown>) => {
+    taskPageState.last = props
+    return <div data-testid="task-page" />
+  },
 }))
 
 // ── 弹层 / 轮询组件桩：本测试不涉向导 / 关于框 / 活动数据 ──
@@ -56,30 +60,39 @@ const tasksState = vi.hoisted(() => ({
     { id: 't1', title: '任务一', status: 'active', mode: 'coding', updated_at: '2026-01-01T08:00:00Z', message_count: 0 },
   ],
 }))
-vi.mock('../src/features/task/useTasks', () => ({
-  useTasks: () => ({
-    tasks: tasksState.tasks,
-    archivedTasks: [],
-    currentTasks: tasksState.tasks,
-    activeTab: 'active',
-    setActiveTab: vi.fn(),
-    activeTaskId: null,
-    setActiveTaskId: vi.fn(),
-    loadTasks: vi.fn(),
-    loadMore: vi.fn(),
-    hasMore: { active: false, archived: false },
-    loading: false,
-    creating: false,
-    handleCreateTask: vi.fn(),
-    handleCreateTaskWithDir: vi.fn(),
-    handleDeleteTask: vi.fn(),
-    handleRenameTask: vi.fn(),
-    handleArchiveTask: vi.fn(),
-    handleUnarchiveTask: vi.fn(),
-    handleExportTask: vi.fn(),
-    handleSetTaskMode: vi.fn(),
-  }),
-}))
+const taskPageState = vi.hoisted(() => ({ last: null as Record<string, unknown> | null }))
+// activeTaskId 用真实 useState 流转（非固定 null 桩）：任务行 toggle 用例需验证
+// 「点已选任务 → 取消选中」全链（0.6 §6.3-16），其余字段保持静态桩
+vi.mock('../src/features/task/useTasks', async () => {
+  const { useState } = await import('react')
+  return {
+    useTasks: () => {
+      const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+      return {
+        tasks: tasksState.tasks,
+        archivedTasks: [],
+        currentTasks: tasksState.tasks,
+        activeTab: 'active',
+        setActiveTab: vi.fn(),
+        activeTaskId,
+        setActiveTaskId,
+        loadTasks: vi.fn(),
+        loadMore: vi.fn(),
+        hasMore: { active: false, archived: false },
+        loading: false,
+        creating: false,
+        handleCreateTask: vi.fn(),
+        handleCreateTaskWithDir: vi.fn(),
+        handleDeleteTask: vi.fn(),
+        handleRenameTask: vi.fn(),
+        handleArchiveTask: vi.fn(),
+        handleUnarchiveTask: vi.fn(),
+        handleExportTask: vi.fn(),
+        handleSetTaskMode: vi.fn(),
+      }
+    },
+  }
+})
 vi.mock('../src/features/task/useTaskChat', () => ({
   useTaskChat: () => ({
     messages: [], isGenerating: false, streamContent: '', streamSteps: [],
@@ -198,6 +211,37 @@ describe('App 同级页面侧边栏清空', () => {
     await flush()
     expect(screen.getByText('任务一')).toBeTruthy()
     expect(screen.queryByTestId('template-management')).toBeNull()
+  })
+
+  it('任务行 toggle 选中（0.6 §6.3-16）：点未选行选中，再点同行取消回欢迎态', async () => {
+    render(
+      <ConfirmProvider>
+        <PromptProvider>
+          <ToastProvider>
+            <App />
+          </ToastProvider>
+        </PromptProvider>
+      </ConfirmProvider>,
+    )
+    await flush()
+    fireEvent.click(screen.getByText('nav.tasks'))
+    await flush()
+    // item 根节点 = title 的祖父（title → itemContent → item）；高亮类 active 由 isActive 派生
+    const row = screen.getByText('任务一').closest('div')!.parentElement!.parentElement as HTMLElement
+    expect(row.className).not.toContain('active')
+    expect(taskPageState.last?.hasActiveTask).toBe(false)
+
+    // 首击：选中
+    fireEvent.click(screen.getByText('任务一'))
+    expect(row.className).toContain('active')
+    expect(taskPageState.last?.taskId).toBe('t1')
+    expect(taskPageState.last?.hasActiveTask).toBe(true)
+
+    // 再击同行：取消选中，回「发送即建任务」欢迎态
+    fireEvent.click(screen.getByText('任务一'))
+    expect(row.className).not.toContain('active')
+    expect(taskPageState.last?.taskId).toBeNull()
+    expect(taskPageState.last?.hasActiveTask).toBe(false)
   })
 
   it('项目列表：打开基础库详情清空，切回 projects 复原', async () => {

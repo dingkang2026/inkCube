@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { usePagedList } from '../../../hooks/usePagedList'
-import type { LedgerEntry } from './WikiHomePage'
+import type { LedgerEntry } from './WikiChangeLog'
 import s from './WikiTab.module.css'
 
 /** entry_type 徽标键（3.1 §4.3 枚举，ledger_service 生成约束）；未知类型回显原值 */

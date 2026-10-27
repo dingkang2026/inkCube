@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -145,6 +146,7 @@ class ReportRunner:
         db=None,
         section_internet: Optional[dict] = None,
         internet_enabled: bool = False,
+        include_project_kb: bool = True,
         pause_check: Optional[Callable[[], bool]] = None,
     ):
         self.template = template
@@ -160,6 +162,9 @@ class ReportRunner:
         self.internet_enabled = internet_enabled
         # 章节级互联网开关 {section_id: bool}（§1.1）；report_depth 贯穿检索/生成/校验
         self.section_internet = section_internet or {}
+        # 项目知识库纳入开关（§1.2，2026-10-27）：False 时 knowledge 检索仅查
+        # 勾选的基础库，与变量抽值语义一致
+        self.include_project_kb = include_project_kb
         self.report_depth = template.get("report_depth", "full")
         # Wiki 通道可用性（_prepare 中按项目已完成 Wiki 页面检测；无则仅知识库/互联网）
         self.wiki_available = False
@@ -257,10 +262,15 @@ class ReportRunner:
                         query_parallelism=self.llm_settings.get("report_channel_parallelism", 4),
                         db=self.db,
                         data_sources=(
-                            ["knowledge"]
-                            + (["wiki"] if self.wiki_available else [])
+                            # 项目内材料通道（knowledge + wiki，§1.2/§3.3）：均源自
+                            # 本项目（文件知识库 / 已编译 Wiki），随 include_project_kb
+                            # 一并门控——取消项目库后仅用基础库 + 互联网；两者皆无时
+                            # knowledge 通道无检索范围，不启用
+                            (["knowledge"] if (self.include_project_kb or self.base_project_ids) else [])
+                            + (["wiki"] if (self.include_project_kb and self.wiki_available) else [])
                             + (["internet"] if (self.internet_enabled and self.section_internet.get(sid)) else [])
                         ),
+                        include_project_kb=self.include_project_kb,
                         report_depth=self.report_depth,
                     )
 
@@ -477,6 +487,7 @@ class ReportRunner:
                     base_project_ids=self.base_project_ids,
                     web_search_cfg=web_search_cfg_from_settings(self.llm_settings),
                     internet_enabled=self.internet_enabled,
+                    include_project_kb=self.include_project_kb,
                 )
             self.resolved_variables = resolved
             self.resolution_evidence = evidence
@@ -499,12 +510,15 @@ class ReportRunner:
         # 报告标题
         self.report_title = tpl.get("template_name", "报告")
 
-        # System Prompt（注入报告主体 + 报告深度）
+        # System Prompt（注入报告主体 + 报告深度）。
+        # subject_anchored=False 的模板（行业/区域/企业池类，§2.1.2）不注入主体段：
+        # 公司锚定会使 LLM 按项目公司重写报告主题并弃用模板变量（§2.6 实证）
         self.system_prompt = build_system_prompt(
             role_hint=tpl.get("role_hint", "资深研究分析师"),
             audience=tpl.get("audience", "机构客户"),
             company_name=self.resolved_variables.get("company_name", ""),
             report_depth=self.report_depth,
+            subject_anchored=bool(tpl.get("subject_anchored", True)),
         )
 
         # 确保输出目录
@@ -796,41 +810,81 @@ class ReportRunner:
         return section_id
 
     def _assemble_full_text(self) -> str:
-        """按执行顺序拼接所有章节内容为完整文本。
+        """按两级大纲结构组装完整文本（2026-10-27 一级目录修复）。
 
-        章节标题按最终呈现顺序（post_body front 前置 → standard →
-        post_body end 后置）注入十进制序号（`## 1 标题`）：序号写进标题
-        文本作为单一事实源——网页端预览（Markdown 原文渲染）、docx 导出、
-        手写目录三方天然一致，无需模板 numPr 或前端 CSS counter（§3.5）。
+        层级契约（§3.5）：H1 文档题（finalizer 注入）/ H2 章 / H3 章内
+        子节 / H4 ◆ 小标题（finalizer 转换）。序号写进标题文本作为单一
+        事实源——网页端预览（Markdown 原文渲染）、docx 导出、手写目录
+        三方天然一致，无需模板 numPr 或前端 CSS counter（§3.5）。
+
+        结构规则：
+          - 有 children 的章：`## n 章题` + 逐子节 `### n.m 节题` + 正文
+          - 无 children 的章：`## n 章题` + 正文（与旧版平铺形态一致）
+          - post_body 节按 position 前置/后置。内置模板均为无 children
+            的独立章；child 形态（仅自定义模板可及）独立成章移动、脱离
+            原章，防止留下只剩标题的空壳章
+          - 呈现顺序：post_body(front) → standard 章 → post_body(end)，
+            章号/子节号按最终呈现顺序注入
+          - 节首重复标题剥离（原 _smooth_transitions 规则 2 上移）：
+            装配层持有节题上下文逐节执行；子节化后章体内含 ### 标题，
+            旧的按章比对规则已失效，此处承接等价职责（LLM 节首复述
+            标题时按剥号比较清除）
         """
-        parts = []
-        post_body_front = []
-        post_body_end = []
+        # 节首行与节题剥号后相等 → 剥除（LLM 复述标题；兼容 n 与 n.m 形态）
+        leading_num_re = re.compile(r"^\d+(?:\.\d+)*[.、\s]\s*")
 
-        for sec in self.sections:
-            sid = sec.get("section_id", "")
-            content = self.outputs.get(sid, "")
-            if not content:
+        def strip_leading_duplicate(content: str, title: str) -> str:
+            lines = content.split("\n")
+            if not lines:
+                return content
+            first = leading_num_re.sub("", lines[0].strip())
+            if first and first == title.strip():
+                return "\n".join(lines[1:]).lstrip("\n")
+            return content
+
+        # 块结构：{"title": 章题, "content": 章直挂正文（无 children 章）,
+        #          "subs": [(子节题, 子节正文)]（有 children 章）}
+        front_blocks: list[dict] = []
+        mid_blocks: list[dict] = []
+        end_blocks: list[dict] = []
+
+        def bucket(sec: dict, content: str) -> None:
+            if sec.get("compose_mode") == "post_body":
+                target = front_blocks if sec.get("position", "end") == "front" else end_blocks
+            else:
+                target = mid_blocks
+            target.append({"title": sec.get("title", ""), "content": content, "subs": []})
+
+        for chapter in self.outline:
+            children = chapter.get("children", [])
+            if not children:
+                content = self.outputs.get(chapter.get("section_id", ""), "")
+                if content:
+                    bucket(chapter, content)
                 continue
 
-            title = sec.get("title", "")
-            if sec.get("compose_mode") == "post_body":
-                position = sec.get("position", "end")
-                section_text = f"## {title}\n\n{content}"
-                if position == "front":
-                    post_body_front.append(section_text)
+            subs: list[tuple[str, str]] = []
+            for sec in children:
+                content = self.outputs.get(sec.get("section_id", ""), "")
+                if not content:
+                    continue
+                if sec.get("compose_mode") == "post_body":
+                    bucket(sec, content)  # 独立成章前后置（罕见形态，见 docstring）
                 else:
-                    post_body_end.append(section_text)
-            else:
-                parts.append(f"## {title}\n\n{content}")
-
-        full_parts = post_body_front + parts + post_body_end
+                    subs.append((sec.get("title", ""), content))
+            if subs:  # 全部子节无内容则不出空壳章
+                mid_blocks.append({"title": chapter.get("title", ""), "content": "", "subs": subs})
 
         numbered = []
-        for section_text in full_parts:
-            nl = section_text.find("\n")
-            title_line = section_text[3:nl] if nl >= 0 else section_text[3:]
-            numbered.append(
-                f"## {len(numbered) + 1} {title_line}{section_text[nl:] if nl >= 0 else ''}"
-            )
+        for i, block in enumerate(front_blocks + mid_blocks + end_blocks):
+            no = i + 1
+            if block["subs"]:
+                body_parts = []
+                for j, (sub_title, sub_content) in enumerate(block["subs"]):
+                    sub_content = strip_leading_duplicate(sub_content, sub_title)
+                    body_parts.append(f"### {no}.{j + 1} {sub_title}\n\n{sub_content}")
+                numbered.append(f"## {no} {block['title']}\n\n" + "\n\n".join(body_parts))
+            else:
+                content = strip_leading_duplicate(block["content"], block["title"])
+                numbered.append(f"## {no} {block['title']}\n\n{content}")
         return "\n\n---\n\n".join(numbered)

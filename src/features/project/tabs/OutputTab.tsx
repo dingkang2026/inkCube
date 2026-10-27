@@ -4,10 +4,12 @@
  * ＝渲染原 ReportsTab / FormsTab（迁移宿主，非重写，组件行为与既有测试不变）；
  * 二级分区按钮带图标（FileText/ClipboardList，2026-10-25 对齐 AffairsTab 视图切换按钮形态）。
  * 头部「模板管理」直达钮 → app:navigate-template-management（按当前分区落对应模板页签）。
+ * 分区条仅列表态显示：子 Tab 经 onViewModeChange 上报视图态，任一侧进入详情/向导
+ * 即隐藏整条分区条，详情占据整个 tab 内容区（2026-10-27 用户裁决）。
  * sectionSignal：跨 Tab 锚点（ProjectDetailPage 旧 tab 值 'forms'/'reports' 兼容映射，
  * 一个版本周期后 E3 清理）。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ClipboardList, FileText, LayoutTemplate } from 'lucide-react'
 import { ReportsTab } from './ReportsTab'
@@ -28,6 +30,9 @@ interface OutputTabProps {
 export function OutputTab({ projectId, projectType, sectionSignal, onSectionConsumed }: OutputTabProps) {
   const { t } = useTranslation()
   const [section, setSection] = useState<OutputSection>('reports')
+  // 子 Tab 视图态（仅 'list' 显示分区条；两侧进入任何详情/向导视图都上报非 list 值）
+  const [childView, setChildView] = useState<string>('list')
+  const handleChildViewChange = useCallback((view: string) => setChildView(view), [])
 
   // 跨 Tab 锚点消费（ProjectDetailPage 旧 tab 值兼容映射）
   useEffect(() => {
@@ -38,6 +43,7 @@ export function OutputTab({ projectId, projectType, sectionSignal, onSectionCons
 
   return (
     <div className={s.wrap} data-testid="output-tab">
+      {childView === 'list' && (
       <div className={s.bar}>
         <div className={s.segs} role="tablist">
           <button
@@ -71,10 +77,11 @@ export function OutputTab({ projectId, projectType, sectionSignal, onSectionCons
           <LayoutTemplate size={14} />{t('project.report.templateManagement')}
         </button>
       </div>
+      )}
       {section === 'reports' ? (
-        <ReportsTab key={projectType} projectId={projectId} projectType={projectType} />
+        <ReportsTab key={projectType} projectId={projectId} projectType={projectType} onViewModeChange={handleChildViewChange} />
       ) : (
-        <FormsTab key={projectId} projectId={projectId} />
+        <FormsTab key={projectId} projectId={projectId} onViewModeChange={handleChildViewChange} />
       )}
     </div>
   )

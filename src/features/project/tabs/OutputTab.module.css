@@ -16,9 +16,11 @@
   align-items: center;
   justify-content: space-between;
   /* 水平 24px 沟槽：wrap 全宽后分区条不贴窗缘，左右对齐下方看板（.container padding 16px 24px）
-     与事务 viewSwitch（AffairsTab.container 内缩）——review Minor 2026-10-25 */
+     与事务 viewSwitch（AffairsTab.container 内缩）——review Minor 2026-10-25。
+     上 16px 对齐全页「Tab 栏 → 内容」节奏（事务/报告/填表 .container padding-top 16px），
+     下 16px 由内容容器 padding 提供、不另设 margin-bottom——2026-10-26 贴边反馈 */
   padding: 0 24px;
-  margin-bottom: 10px;
+  margin: 16px 24px 0;
 }
 
 /* 报告/填表分段控件：形态对齐 AffairsTab viewSwitch（2026-10-25 用户裁决：

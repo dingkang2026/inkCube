@@ -1,7 +1,8 @@
 /** tests/WikiTab.test.tsx — 状态条「查看详情」入口回归（2.6 §10 修订）
  *  编译中 / completed（含无错误）/ failed / stopped 四种状态条均带查看详情，
- *  收起的明细面板经此重新展开；面板默认收起（不自动弹出）；
- *  展开后 onCompileDetailChange 上报 true（父级 #4 轮询据此提频至 2s，0.4 §8.1）。
+ *  同按钮 toggle：点击展开、再点收起（2026-10-26 用户裁决，对齐 Toast 先例）；
+ *  面板默认收起（不自动弹出）；开合时 onCompileDetailChange 上报
+ *  true/false（父级 #4 轮询据此提频至 2s，0.4 §8.1）。
  *  Tab 内容组件全部打桩，仅验证状态条与明细面板接线。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -17,7 +18,7 @@ vi.mock('../src/features/project/tabs/WikiTab.module.css', () => ({
 }))
 
 // 台账解析心跳（3.0 四期 T7）：WikiTab 消费 useActivity('ledger_parse') 派生「解析中」提示；
-// 本文件不测该派生（时间轴 UI 由 WikiHomePage.test 覆盖），空 items 即可
+// 本文件不测该派生（时间轴 UI 由 WikiChangeLog.test 覆盖），空 items 即可
 vi.mock('../src/features/activity/ActivityContext', () => ({
   useActivity: (kind?: string) => ({ kind, items: [] }),
 }))
@@ -34,10 +35,19 @@ vi.mock('../src/features/knowledge/Toast', () => ({
   useToast: () => toastMock,
 }))
 
-// 捕获 props 以观测页面列表（force 重编译失败不清空的断言依据）与预览导航（蒙板用例入口）
-let homePageProps: { pages?: unknown[]; onNavigateToPage?: (key: string) => void } = {}
+// 捕获 props 以观测页面列表（force 重编译失败不清空的断言依据）、预览导航（蒙板/H-2 用例入口）
+// 与首页空态 CTA 契约源 onCompile（二次收敛:「页面」并入首页成默认视图,2026-10-26）
+let homePageProps: {
+  pages?: unknown[]
+  onNavigateToPage?: (key: string) => void
+  onCompile?: () => void
+} = {}
 vi.mock('../src/features/project/tabs/WikiHomePage', () => ({
-  WikiHomePage: (props: { pages?: unknown[]; onNavigateToPage?: (key: string) => void }) => {
+  WikiHomePage: (props: {
+    pages?: unknown[]
+    onNavigateToPage?: (key: string) => void
+    onCompile?: () => void
+  }) => {
     homePageProps = props
     return null
   },
@@ -52,7 +62,6 @@ vi.mock('../src/features/project/tabs/WikiPageReader', () => ({
 }))
 vi.mock('../src/features/project/tabs/WikiPageEditor', () => ({ WikiPageEditor: () => null }))
 vi.mock('../src/features/project/tabs/WikiChangeLog', () => ({ WikiChangeLog: () => null }))
-vi.mock('../src/features/project/tabs/WikiSearchView', () => ({ WikiSearchView: () => null }))
 vi.mock('../src/features/project/tabs/WikiGraphView', () => ({ WikiGraphView: () => null }))
 // 捕获 onFindingsChanged 并渲染触发按钮,驱动「治理动作后计数回流」用例(0.4 §3.1 操作后刷新)
 let lintViewProps: { onFindingsChanged?: () => void } = {}
@@ -129,20 +138,147 @@ describe('WikiTab compile detail entry', () => {
     expect(queryByTestId('compile-panel')).toBeNull()
   })
 
-  it.each(['ingesting', 'completed', 'failed', 'stopped'])(
-    're-opens the collapsed panel from the status bar in %s state',
-    async (status) => {
-      const onDetail = vi.fn()
-      const { getByText, queryByTestId } = renderTab(status, onDetail)
-      await flush()
+  it.each(['ingesting', 'completed', 'failed', 'stopped'])('toggles the detail panel from the same status-bar button in %s state', async (status) => {
+    const onDetail = vi.fn()
+    const { getByText, queryByTestId } = renderTab(status, onDetail)
+    await flush()
 
-      expect(queryByTestId('compile-panel')).toBeNull()
-      fireEvent.click(getByText('查看详情'))
+    expect(queryByTestId('compile-panel')).toBeNull()
+    fireEvent.click(getByText('查看详情'))
 
-      expect(queryByTestId('compile-panel')).toBeTruthy()
-      expect(onDetail).toHaveBeenLastCalledWith(true)
-    },
-  )
+    expect(queryByTestId('compile-panel')).toBeTruthy()
+    expect(onDetail).toHaveBeenLastCalledWith(true)
+
+    // 同按钮 toggle：再点「收起详情」收起（2026-10-26 裁决，Toast 先例同款）
+    fireEvent.click(getByText('收起详情'))
+
+    expect(queryByTestId('compile-panel')).toBeNull()
+    expect(onDetail).toHaveBeenLastCalledWith(false)
+  })
+
+  it('optimistic window keeps the 查看详情 label until the panel actually renders (CodeReview 轻微项)', async () => {
+    // doCompile 置 compiling=true + 本地 compileTask=null：面板渲染条件（compileTask 非空）
+    // 未满足，状态条按钮文案必须仍为「查看详情」——不得宣称可收起尚不存在的面板
+    const { getByText, queryByTestId, queryByText } = renderTab('failed')
+    await flush()
+
+    fireEvent.click(getByText('重试'))
+    await flush()
+
+    expect(queryByTestId('compile-panel')).toBeNull()
+    expect(getByText('查看详情')).toBeTruthy()
+    expect(queryByText('收起详情')).toBeNull()
+  })
+})
+
+describe('WikiTab 首页 CTA 入口契约（startCompileMaybe 空闲即启动,2026-10-26）', () => {
+  it('onCompile from home empty state starts compile when idle', async () => {
+    renderTab('completed')
+    await flush()
+    expect(invokeMock).not.toHaveBeenCalledWith('wiki:compile', expect.anything())
+
+    act(() => { homePageProps.onCompile?.() })
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('wiki:compile', {
+      projectId: 'p1', mode: 'incremental', force: false,
+    })
+  })
+
+  it('onCompile is inert while a compile is already active (防 409)', async () => {
+    renderTab('ingesting')
+    await flush()
+
+    act(() => { homePageProps.onCompile?.() })
+    await flush()
+
+    expect(invokeMock).not.toHaveBeenCalledWith('wiki:compile', expect.anything())
+  })
+})
+
+describe('WikiTab compile completion toast (方案 A 消失过渡,2026-10-26)', () => {
+  const doneSummaries = [
+    { file_id: 'f1', filename: 'a.pdf', pages_created: 3, pages_updated: 0 },
+    { file_id: 'f2', filename: 'b.pdf', pages_created: 1, pages_updated: 2 },
+  ]
+
+  it('toasts success only on the active→completed edge', async () => {
+    const { rerender } = render(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('ingesting'), ingest_summaries: doneSummaries, is_resumed: false }} />,
+    )
+    await flush()
+    expect(toastMock).not.toHaveBeenCalled()
+
+    rerender(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('completed'), ingest_summaries: doneSummaries, is_resumed: false }} />,
+    )
+    await flush()
+    // 产出聚合（免培训 §2.10）：toast 说结果量（页），不再用文件数冒充产出
+    expect(toastMock).toHaveBeenCalledWith('汇编完成：新增 4 页、更新 2 页', 'success')
+  })
+
+  it('toasts a warning with retry hint when completed with per-file errors', async () => {
+    const partialSummaries = [
+      { file_id: 'f1', filename: 'a.pdf' },
+      { file_id: 'f2', filename: 'b.pdf', error: 'LLM timeout' },
+    ]
+    const { rerender } = render(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('ingesting'), ingest_summaries: partialSummaries, is_resumed: false }} />,
+    )
+    await flush()
+    rerender(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('completed'), ingest_summaries: partialSummaries, is_resumed: false }} />,
+    )
+    await flush()
+    expect(toastMock).toHaveBeenCalledWith('汇编完成：1 成功、1 失败，可在状态条重试失败文件', 'warning')
+  })
+
+  it('does not toast when mounting directly on a completed task (防进项目骚扰)', async () => {
+    renderTab('completed')
+    await flush()
+    expect(toastMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('WikiTab 产出导向状态条（免培训 §2.10,2026-10-26）', () => {
+  const outputSummaries = [
+    { file_id: 'f1', filename: 'a.pdf', pages_created: 3, pages_updated: 0 },
+    { file_id: 'f2', filename: 'b.pdf', pages_created: 1, pages_updated: 2 },
+  ]
+
+  it('completed status bar reports page output instead of file count', async () => {
+    const { getByText } = render(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('completed'), ingest_summaries: outputSummaries, is_resumed: false }} />,
+    )
+    await flush()
+    expect(getByText('汇编完成：新增 4 页 · 更新 2 页')).toBeTruthy()
+  })
+
+  it('zero-output completed task explicitly says no pages were produced (历史脏任务)', async () => {
+    // 2026-10-26 全角冒号事故形态：文件标「成功」但 0 页产出——
+    // 旧文案「汇编完成 (1 个文件)」让用户误读为已有产出
+    const { getByText } = render(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('completed'), ingest_summaries: [{ file_id: 'f1', filename: 'a.pdf' }], is_resumed: false }} />,
+    )
+    await flush()
+    expect(getByText('汇编完成 (1 个文件，未产出知识页)')).toBeTruthy()
+  })
+
+  it('active progress counts files, not pages (量词错位修复)', async () => {
+    const { getByText } = render(
+      <WikiTab projectId="p1" projectType="general"
+        compileData={{ task: makeTask('ingesting'), ingest_summaries: [], is_resumed: false }} />,
+    )
+    await flush()
+    // pages_completed/total 实为文件数（task_queue files_processed），量词归位
+    expect(getByText('1/3 文件')).toBeTruthy()
+  })
 })
 
 describe('WikiTab focusSignal compile (3.0 二期 Task 13,裁决 6)', () => {
@@ -220,7 +356,7 @@ describe('WikiTab retry-failed entry (2.6 §13.3)', () => {
     })
   })
 
-  it('failed-count badge re-opens the collapsed detail panel', async () => {
+  it('failed-count badge toggles the detail panel (open ↔ collapse)', async () => {
     const onDetail = vi.fn()
     const { getByText, queryByTestId } = renderTabWithSummaries('completed', withError, onDetail)
     await flush()
@@ -230,6 +366,12 @@ describe('WikiTab retry-failed entry (2.6 §13.3)', () => {
 
     expect(queryByTestId('compile-panel')).toBeTruthy()
     expect(onDetail).toHaveBeenLastCalledWith(true)
+
+    // 再点同一入口收起（toggle 语义覆盖失败计数入口）
+    fireEvent.click(getByText('1 个文件失败'))
+
+    expect(queryByTestId('compile-panel')).toBeNull()
+    expect(onDetail).toHaveBeenLastCalledWith(false)
   })
 
   it('hides the retry entry when completed without errors', async () => {
@@ -370,7 +512,7 @@ describe('WikiTab preview backdrop (知识问答面板同款)', () => {
     // 预览未开时无蒙板
     expect(container.querySelector('[class*="previewBackdrop"]')).toBeNull()
 
-    // 首页点击页面 → 预览面板与蒙板一同出现
+    // 页面视图点击页面 → 预览面板与蒙板一同出现
     act(() => { homePageProps.onNavigateToPage?.('alpha') })
     await flush()
     expect(container.querySelector('[class*="previewPanel"]')).toBeTruthy()

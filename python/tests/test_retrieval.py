@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import report_generator.retrieval as retrieval_mod  # noqa: E402
 from report_generator.retrieval import (  # noqa: E402
+    _search_knowledge_channel,
     _tavily_search,
     _zhipu_search,
     retrieve_for_section,
@@ -119,6 +120,52 @@ class TestChannelAssembly:
         _, _, m = _run(data_sources=["knowledge", "internet"], web_search_cfg=_WS_CFG)
         # _search_internet_channel(queries, web_search_cfg, top_k, query_parallelism)
         assert m["inet"].call_args.args[1] == _WS_CFG
+
+
+# ── knowledge 通道检索范围（include_project_kb，§1.2）──────
+
+
+class TestKnowledgeChannelScope:
+    """include_project_kb=False 时检索范围仅含勾选的基础库；
+    空范围直接返回空三元组（不发任何检索请求）。"""
+
+    @staticmethod
+    def _tool():
+        tool = MagicMock()
+
+        async def search(query, project_id, top_k):
+            return [{"id": f"{project_id}-c1", "content": "c", "_score": 1.0,
+                     "metadata": {"filename": "f.pdf"}}]
+
+        tool.search = AsyncMock(side_effect=search)
+        return tool
+
+    def test_default_includes_project_and_base(self):
+        tool = self._tool()
+        results, _, _ = asyncio.run(_search_knowledge_channel(
+            ["q"], tool, "proj-1", ["base-1"], 5))
+        pids = {c.kwargs["project_id"] for c in tool.search.await_args_list}
+        assert pids == {"proj-1", "base-1"}
+        # 两范围各返回 1 chunk（id 含 pid 不去重）→ 2 条结果
+        assert len(results) == 2
+
+    def test_false_excludes_project_kb(self):
+        """取消项目库（§1.2，2026-10-27）：仅检索勾选的基础库。"""
+        tool = self._tool()
+        asyncio.run(_search_knowledge_channel(
+            ["q"], tool, "proj-1", ["base-1"], 5, include_project_kb=False))
+        pids = {c.kwargs["project_id"] for c in tool.search.await_args_list}
+        assert pids == {"base-1"}
+
+    def test_false_without_base_empty_scope_early_return(self):
+        """取消项目库且未勾基础库 → 空范围早返回空三元组，不发起任何检索。"""
+        tool = self._tool()
+        results, usage, warnings = asyncio.run(_search_knowledge_channel(
+            ["q"], tool, "proj-1", None, 5, include_project_kb=False))
+        assert results == []
+        assert usage == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        assert warnings == []
+        assert tool.search.await_count == 0
 
 
 # ── wiki 通道 ────────────────────────────────────────────────

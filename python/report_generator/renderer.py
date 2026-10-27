@@ -2,6 +2,8 @@
 
 职责：
   - Markdown → docx 导出（经应用内置 pandoc，resolve_tool 统一解析 bundled > PATH）
+  - 引用上标转换（视觉尾注，2026-10-27）：正文 [n] → pandoc 上标 ^[n]^，
+    导出前由报告导出端点调用（预览端 <sup> 转换与之同契约）
   - 图形块 → PNG 预处理（mermaid 块 / 内联 <svg> 块 / 本地 .svg 引用，
     与任务智能体 doc_generator 共用 tools/mermaid_bridge；Electron 不可用
     或渲染失败时降级保留原样导出）
@@ -14,6 +16,7 @@
 """
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -25,6 +28,25 @@ from tools.tool_resolver import resolve_tool
 logger = logging.getLogger(__name__)
 
 _PANDOC_TIMEOUT = 60  # 与 doc_generator 工具链路一致
+
+# 视觉尾注引用上标（2026-10-27）：正文 [n] → pandoc 上标 ^[n]^。
+# 契约：content.md 保持语义 [n] 单一事实源；预览端（ReportPreview）转
+# <sup>[n]</sup>、导出端转 ^[n]^，两端各自按渲染引擎转换、排除规则一致：
+#   - 行首 [n]：文末「参考来源」列表条目自身，不上标
+#   - [n]( ：Markdown 链接形态（[text](url)），非引用
+#   - [[n]] ：嵌套方括号（wiki 链接 key 形态），非引用
+# 已知边界：代码块内 [n] 同样转换（报告正文极少含代码块，接受）；
+# 相邻引用 [40][41] 逐个转换，pandoc 渲染为连续上标。
+_CITE_SUP_RE = re.compile(r"(?<!^)(?<!\[)\[(\d{1,3})\](?!\()(?!\])", re.MULTILINE)
+
+
+def apply_endnote_superscript(markdown_text: str) -> str:
+    """导出前把正文引用标记 [n] 转为 pandoc 原生上标 ^[n]^（视觉尾注）。
+
+    GFM 无上标语法、pandoc docx writer 丢弃内联 HTML <sup>，故两端
+    各按引擎转换；本函数仅用于导出链路，不改写 content.md 本体。
+    """
+    return _CITE_SUP_RE.sub(lambda m: f"^[{m.group(1)}]^", markdown_text)
 
 
 def render_markdown_to_docx(

@@ -27,10 +27,7 @@ SYSTEM_PROMPT_TEMPLATE = """\
 本报告面向：{audience}
 据此调整：深度、用语、结构偏好
 
-【报告主体】
-本报告为：{company_name}
-
-【报告深度】
+{subject_section}【报告深度】
 {depth_instruction}
 
 【角色与文风】
@@ -92,6 +89,7 @@ def build_system_prompt(
     audience: str = "机构客户",
     company_name: str = "",
     report_depth: str = "full",
+    subject_anchored: bool = True,
 ) -> str:
     """构建全文共享的 System Prompt（§3.5）。
 
@@ -100,15 +98,25 @@ def build_system_prompt(
         audience: 报告场景/读者
         company_name: 报告主体（隐式项目变量，来自 project.company_name）
         report_depth: 报告深度 "full" | "brief"，决定 depth_instruction
+        subject_anchored: 主体锚定（§2.1.2，2026-10-27）。False 的模板（行业 /
+            区域 / 企业池类研究）不注入【报告主体】段——公司主体锚定会使 LLM
+            把报告重定向为「项目公司所处行业研究」并在材料冲突时弃用模板变量
+            （实证：超导设备行业变量被项目主体纠正，检索策略正反馈随之锁死）；
+            此时 company_name 被忽略，变量/大纲才是研究锚点
 
     Returns:
         System Prompt 文本
     """
     depth_instruction = _DEPTH_INSTRUCTIONS.get(report_depth, _DEPTH_INSTRUCTIONS["full"])
+    subject_section = (
+        f"【报告主体】\n本报告为：{company_name or '（未指定报告主体）'}\n\n"
+        if subject_anchored
+        else ""
+    )
     return SYSTEM_PROMPT_TEMPLATE.format(
         role_hint=role_hint,
         audience=audience,
-        company_name=company_name or "（未指定报告主体）",
+        subject_section=subject_section,
         depth_instruction=depth_instruction,
     )
 

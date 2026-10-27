@@ -52,7 +52,13 @@ interface PreviewState {
 }
 
 /** FormsTab — 填表 Tab */
-export function FormsTab({ projectId }: { projectId: string }) {
+interface FormsTabProps {
+  projectId: string
+  /** 视图态上报（OutputTab 二级分区条仅在列表态显示，preview 占据全部内容区，2026-10-27） */
+  onViewModeChange?: (mode: 'list' | 'preview') => void
+}
+
+export function FormsTab({ projectId, onViewModeChange }: FormsTabProps) {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const showToast = useToast()
@@ -63,6 +69,11 @@ export function FormsTab({ projectId }: { projectId: string }) {
   const [values, setValues] = useState<FormValues>({})
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // 视图态上报（挂载即报 'list'，切换即随上报；父级据此显隐二级分区条）
+  useEffect(() => {
+    onViewModeChange?.(viewMode)
+  }, [viewMode, onViewModeChange])
 
   // 填表实例列表分页（0.1dev-guide 统一约定）：50/页「加载更多」；projectId 变化自动重拉
   const {

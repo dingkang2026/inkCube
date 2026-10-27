@@ -5,6 +5,7 @@
   "version": "1.0",
   "project_types": ["recruitment"],
   "stage": "before",
+  "subject_anchored": false,
   "output_format": "docx",
   "role_hint": "区域产业研究顾问，立足本区域禀赋盘点家底，客观呈现差距，机会导向",
   "audience": "政府招商部门管理层与产业规划决策者",

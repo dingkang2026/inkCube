@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { Home, Wrench, BookOpen, Radar, Loader2, Bell } from 'lucide-react'
+import { Home, Wrench, BookOpen, Radar, Loader2 } from 'lucide-react'
 import { useActivity } from '../../features/activity/ActivityContext'
 import { useSchedules } from '../../features/schedule/useSchedules'
 import styles from './NavTabs.module.css'
@@ -7,8 +7,6 @@ import styles from './NavTabs.module.css'
 interface NavTabsProps {
   activeNav: string
   onNavChange: (nav: string) => void
-  /** 铃铛点击 → 打开通知中心（2.11 §6.1：动作按钮，非 nav 切换） */
-  onOpenNotifications: () => void
 }
 
 const TABS = [
@@ -22,12 +20,11 @@ const TABS = [
  *  数据统一来自 ActivityContext（替代原 Sidebar props 下传）；
  *  情报 Tab 未读徽章（0.6 §2.1 V2-E1a，数据源复用 useSchedules totals——
  *  与 NavTabs 自含拉取 + 终态边沿重拉同模式，零新增轮询）；
- *  铃铛 + 未读徽章（2.11 §6.1，>99 显示 99+） */
-export function NavTabs({ activeNav, onNavChange, onOpenNotifications }: NavTabsProps) {
+ *  通知铃铛已迁 TitleBar 右上角（2.11 §6.1，2026-10-26） */
+export function NavTabs({ activeNav, onNavChange }: NavTabsProps) {
   const { t } = useTranslation()
-  const { status, summary, activeProjectIds } = useActivity()
+  const { summary, activeProjectIds } = useActivity()
   const { totals } = useSchedules()
-  const unreadCount = status?.notifications.unread.length ?? 0
 
   return (
     <nav className={styles.nav}>
@@ -54,13 +51,6 @@ export function NavTabs({ activeNav, onNavChange, onOpenNotifications }: NavTabs
           )}
         </button>
       ))}
-      <button className={styles.tab} onClick={onOpenNotifications} title={t('nav.notifications')}>
-        <Bell className={styles.icon} size={18} strokeWidth={1.8} />
-        <span className={styles.label}>{t('nav.notifications')}</span>
-        {unreadCount > 0 && (
-          <span className={styles.taskBadge}>{unreadCount > 99 ? '99+' : unreadCount}</span>
-        )}
-      </button>
     </nav>
   )
 }

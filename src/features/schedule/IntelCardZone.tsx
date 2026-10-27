@@ -52,6 +52,15 @@ export function IntelCardZone({ onOpen }: IntelCardZoneProps) {
     void load()
   })
 
+  // 标记已读边沿（app:schedules-changed，ReadView 抽屉内 markRead 成功广播）：
+  // 首页卡区未读点即时消失（2026-10-26 补抽屉化后反馈链，E3b ③；
+  // totals 归零由 useSchedules 内部同事件监听承载）
+  useEffect(() => {
+    const onChanged = () => { void load() }
+    window.addEventListener('app:schedules-changed', onChanged)
+    return () => window.removeEventListener('app:schedules-changed', onChanged)
+  }, [load])
+
   // 空态三分支（M1-1，同管理台收件箱）：summary 失败给错误+重试，loading 中性占位，
   // 仅真实零订阅引导建订阅——首页卡区同样不得误导创建重复订阅
   if (status === 'failed') {

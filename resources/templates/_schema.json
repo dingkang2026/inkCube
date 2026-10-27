@@ -73,6 +73,11 @@
       "items": { "$ref": "#/$defs/variable" },
       "description": "模板声明的变量（user / derived 两类），可选；隐式项目变量（company_name 等）无需声明"
     },
+    "subject_anchored": {
+      "type": "boolean",
+      "default": true,
+      "description": "主体锚定：true 时 System Prompt 注入【报告主体】（company_name）；false 不注入——行业/区域/企业池类研究以模板变量为锚点，不绑定项目公司"
+    },
     "outline": {
       "type": "array",
       "minItems": 1,

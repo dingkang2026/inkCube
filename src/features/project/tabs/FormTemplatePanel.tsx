@@ -15,6 +15,7 @@ import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
 import { useActivity } from '../../activity/ActivityContext'
 import { apiErrorText } from '../../../i18n/errorCodes'
 import type { FormSchema, FormField } from './FormSchemaForm'
+import { useDrawerWidth } from '../../../hooks/useDrawerWidth'
 import s from './FormTemplatePanel.module.css'
 
 interface FormTemplateItem {
@@ -41,6 +42,10 @@ type TplStatus = FormTemplateItem['status']
 
 const STATUS_FILTERS: TplStatus[] = ['pending', 'analyzing', 'success', 'invalid', 'failed']
 const TPL_PAGE_SIZE = 20
+
+/** 查看抽屉宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth；
+ *  2026-10-26 由 CSS 固定 46% 不可拖改统一契约，与 CSS min-width 兜底同值） */
+const DRAWER_MIN_DETAIL = 460
 
 export function FormTemplatePanel() {
   const { t } = useTranslation()
@@ -80,6 +85,8 @@ export function FormTemplatePanel() {
   // 查看抽屉：字段清单 / Schema 原文双 Tab（对齐报告模板详情抽屉形态）
   const [detail, setDetail] = useState<FormTemplateDetail | null>(null)
   const [detailTab, setDetailTab] = useState<'fields' | 'json'>('fields')
+  // 抽屉宽度/拖宽/防误关守卫统一契约（抽屉六处收编，2026-10-26）
+  const dr = useDrawerWidth({ min: DRAWER_MIN_DETAIL })
 
   const loadTemplates = useCallback(async (page?: number) => {
     const p = page ?? tplPageRef.current
@@ -385,8 +392,12 @@ export function FormTemplatePanel() {
       {/* 查看抽屉 */}
       {detail && (
         <>
-          <div className={s.drawerBackdrop} onClick={() => setDetail(null)} />
-          <div className={s.drawer}>
+          <div className={s.drawerBackdrop} onClick={() => { if (!dr.suppressClick.current) setDetail(null) }} />
+          <div className={s.drawer} style={{ width: dr.width }} onMouseDown={dr.onPanelMouseDown}>
+            <div
+              className={`${s.dragHandle} ${dr.dragging ? s.dragHandleActive : ''}`}
+              onMouseDown={dr.onHandleMouseDown}
+            />
             <div className={s.drawerHeader}>
               <h4>{detail.name}</h4>
               <button className={s.closeBtn} onClick={() => setDetail(null)} title={t('common.close')}>×</button>

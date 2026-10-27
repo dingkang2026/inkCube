@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Copy, Eye, Trash2, Upload, Plus, FileText, Loader2, AlertCircle, Edit3, Search, RefreshCw } from 'lucide-react'
 import { useToast } from '../../knowledge/Toast'
 import { TemplateEditor } from './TemplateEditor'
+import { useDrawerWidth } from '../../../hooks/useDrawerWidth'
 import s from './TemplateManagement.module.css'
 import { useConfirm } from '../../../components/ConfirmDialog'
 import { FormTemplatePanel } from './FormTemplatePanel'
@@ -79,6 +80,10 @@ function normalizeForView(tpl: any): any {
 /** Editor mode: null = not editing */
 type EditorMode = 'new-blank' | 'new-from-sample' | 'new-from-copy' | 'edit'
 
+/** 抽屉宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth；与 CSS min-width 兜底同值） */
+const DRAWER_MIN_DETAIL = 460
+const DRAWER_MIN_EDIT = 680
+
 interface TemplateManagementProps {
   projectType?: string  // Optional: global mode doesn't filter by project type
   /** 外部导航初始分区（2.3 §4.2）：通知/首页点击 PPT 模板任务 → 直落 PPT模板 Tab */
@@ -104,6 +109,9 @@ export function TemplateManagement({ projectType, initialSection }: TemplateMana
 
   // Drawer state: 'detail' | 'edit' | null (overlay from right)
   const [drawerMode, setDrawerMode] = useState<'detail' | 'edit' | null>(null)
+  // 抽屉宽度/拖宽/防误关守卫统一契约（2026-10-26 由 CSS 固定 46%/62% 不可拖改统一契约，
+  // 下限对齐原 min-width：detail 460 / edit 680）
+  const dr = useDrawerWidth({ min: drawerMode === 'edit' ? DRAWER_MIN_EDIT : DRAWER_MIN_DETAIL })
   // Detail drawer tab: overview (structured) or json (full source)
   const [detailTab, setDetailTab] = useState<'overview' | 'json'>('overview')
 
@@ -649,8 +657,16 @@ export function TemplateManagement({ projectType, initialSection }: TemplateMana
       {/* Right-side overlay drawer: detail or editor */}
       {drawerMode && (
         <>
-          <div className={s.drawerBackdrop} onClick={handleCloseDrawer} />
-          <div className={drawerMode === 'edit' ? `${s.drawer} ${s.drawerEdit}` : s.drawer}>
+          <div className={s.drawerBackdrop} onClick={() => { if (!dr.suppressClick.current) handleCloseDrawer() }} />
+          <div
+            className={drawerMode === 'edit' ? `${s.drawer} ${s.drawerEdit}` : s.drawer}
+            style={{ width: dr.width }}
+            onMouseDown={dr.onPanelMouseDown}
+          >
+            <div
+              className={`${s.dragHandle} ${dr.dragging ? s.dragHandleActive : ''}`}
+              onMouseDown={dr.onHandleMouseDown}
+            />
             <div className={s.drawerHeader}>
               <h4>
                 {drawerMode === 'detail'

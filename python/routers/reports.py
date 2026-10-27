@@ -463,6 +463,7 @@ class GenerateRequest(BaseModel):
     supplementary_notes: Optional[str] = None  # 用户补充说明，注入 global_requirements
     section_internet: Optional[dict] = None  # 章节级互联网开关 {section_id: bool}
     internet_enabled: bool = False  # 报告级互联网总开关（总闸）
+    include_project_kb: bool = True  # 项目知识库纳入开关（§1.2，False 时章节检索与变量抽值均排除本项目库）
 
 
 @router.post("/generate")
@@ -504,11 +505,12 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
         base_ids_json = json.dumps(req.base_project_ids or [], ensure_ascii=False)
         section_internet = req.section_internet or {}
         internet_enabled = 1 if req.internet_enabled else 0
+        include_project_kb = 1 if req.include_project_kb else 0
         section_internet_json = json.dumps(section_internet, ensure_ascii=False)
         db.conn.execute(
-            "INSERT INTO reports (id, project_id, template_id, title, output_format, status, progress, content_path, variables, base_project_ids, section_internet, internet_enabled, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (report_id, req.project_id, req.template_id, req.title, output_fmt, "generating", 0, report_dir, variables_json, base_ids_json, section_internet_json, internet_enabled, now, now),
+            "INSERT INTO reports (id, project_id, template_id, title, output_format, include_project_kb, status, progress, content_path, variables, base_project_ids, section_internet, internet_enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (report_id, req.project_id, req.template_id, req.title, output_fmt, include_project_kb, "generating", 0, report_dir, variables_json, base_ids_json, section_internet_json, internet_enabled, now, now),
         )
         db.conn.commit()
 
@@ -531,6 +533,7 @@ async def generate_report(req: GenerateRequest, background_tasks: BackgroundTask
             base_project_ids=req.base_project_ids or [],
             section_internet=section_internet,
             internet_enabled=bool(req.internet_enabled),
+            include_project_kb=bool(req.include_project_kb),
         )
 
         return {"report_id": report_id, "status": "generating"}
@@ -597,7 +600,13 @@ async def export_report(report_id: str, req: Optional[ExportReportRequest] = Non
 
         markdown_text = md_path.read_text(encoding="utf-8")
 
-        from report_generator.renderer import render_markdown_to_docx
+        from report_generator.renderer import (
+            apply_endnote_superscript,
+            render_markdown_to_docx,
+        )
+        # 引用上标（视觉尾注，2026-10-27）：[n] → ^[n]^（pandoc superscript），
+        # 与预览端 <sup> 转换同契约；content.md 本体保持语义 [n] 不动
+        markdown_text = apply_endnote_superscript(markdown_text)
         if req.target_path:
             output_path = req.target_path  # 另存为：主进程 showSaveDialog 选定路径
         else:
@@ -766,6 +775,10 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
                 pass
         internet_enabled = bool(report.get("internet_enabled"))
 
+        # 从 DB 恢复项目知识库纳入开关（§1.2）：缺列/NULL 视为默认纳入（存量行为）
+        _kb_raw = report.get("include_project_kb")
+        include_project_kb = True if _kb_raw is None else bool(_kb_raw)
+
         report_dir = report.get("content_path", "")
 
         if mode == "restart":
@@ -804,6 +817,7 @@ async def retry_report(report_id: str, background_tasks: BackgroundTasks, req: O
             base_project_ids=base_project_ids,
             section_internet=section_internet,
             internet_enabled=internet_enabled,
+            include_project_kb=include_project_kb,
         )
 
         return {"report_id": report_id, "status": "generating", "mode": mode}
@@ -934,6 +948,7 @@ async def _run_report_generation(
     base_project_ids: list[str],
     section_internet: dict,
     internet_enabled: bool = False,
+    include_project_kb: bool = True,
 ):
     """Background task: run report generation and update DB progress."""
     from report_generator.runner import ReportRunner
@@ -974,6 +989,7 @@ async def _run_report_generation(
         db=db,
         section_internet=section_internet,
         internet_enabled=internet_enabled,
+        include_project_kb=include_project_kb,
         # 报告级暂停探针（2.5 §3.1 修订）：章节边界轮询 DB 标志
         pause_check=lambda: db.get_report_pause_requested(report_id),
     )

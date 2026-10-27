@@ -25,7 +25,9 @@
  * - 收件箱默认 sort=unread，点「最新」→ sort=latest 下沉服务端；
  * - 分类页签 → 收件箱 category 联动（与订阅列表同参数）；
  * - 订阅行 toggle 选中（再点同行取消，右列回默认收件箱）；
- * - 订阅期次终态边沿（'schedule' 活动源 true→false）→ 收件箱重拉新产出。
+ * - 订阅期次终态边沿（'schedule' 活动源 true→false）→ 收件箱重拉新产出；
+ * - app:schedules-changed 已读边沿（ReadView markRead 广播）→ 收件箱重拉，
+ *   未读点即时消失 + 未读优先排序即时沉底（2026-10-26 补抽屉化后反馈链）。
  *
  * 时序说明：既有筛选类用例含 300ms 真实防抖，用 waitFor（真实计时器）；
  * 返回交互类用例无防抖依赖，用 flush（排空 microtask，更快）。
@@ -64,7 +66,7 @@ vi.mock('../src/features/schedule/ScheduleFormModal', () => ({
 const SCHEDULE = {
   id: 'sch_1', name: '华润舆情', prompt: '扫描并输出报告', category: 'corporate',
   interval_type: 'daily', interval_value: '09:00',
-  target_type: null, target_id: null, auto_import: 1, enabled: 1,
+  target_type: null, target_id: null, enabled: 1,
   scope: null, digest_schedule_ids: null,
   next_run_at: null, last_run_at: null, consecutive_failures: 0,
   archive_last_run_id: null, archive_file_id: null, is_running: false,
@@ -219,6 +221,16 @@ describe('SubscriptionAdminView（2.11 §8.1 管理台）', () => {
           <SubscriptionAdminView onOpenRead={() => {}} onOpenArchive={() => {}} />
         </ConfirmProvider>,
       )
+    })
+    await waitFor(() => expect(inboxCallCount()).toBeGreaterThan(before))
+  })
+
+  it('app:schedules-changed 已读边沿（ReadView markRead 广播）→ 收件箱重拉未读点收敛', async () => {
+    renderView({ onOpenRead: () => {} })
+    await flush()
+    const before = inboxCallCount()
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:schedules-changed'))
     })
     await waitFor(() => expect(inboxCallCount()).toBeGreaterThan(before))
   })

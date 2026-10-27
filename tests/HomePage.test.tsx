@@ -21,7 +21,6 @@ vi.mock('../src/features/home/HomePage.module.css', () => cssMock)
 vi.mock('../src/features/home/TodayTodo.module.css', () => cssMock)
 vi.mock('../src/features/home/UpcomingCalendar.module.css', () => cssMock)
 vi.mock('../src/features/home/MorningHero.module.css', () => cssMock)
-vi.mock('../src/features/home/QuickActions.module.css', () => cssMock)
 vi.mock('../src/features/home/ProjectCardWall.module.css', () => cssMock)
 vi.mock('../src/features/project/affairs/HealthDot.module.css', () => cssMock)
 // 泳道视图打桩(V2-E4 §3.7):只验证切换/记忆装配,泳道内部归 StageLaneView.test.tsx
@@ -50,7 +49,7 @@ const mk = (id: string, due_date: string): DueTask => ({
   created_at: '2026-10-01T00:00:00', project_name: '招聘项目',
 } as DueTask)
 
-const base = { onSelectProject: vi.fn(), onCreateTask: vi.fn(), onCreateProject: vi.fn() }
+const base = { onSelectProject: vi.fn(), onCreateProject: vi.fn() }
 const projects = [{ id: 'p1', name: '招聘项目', description: '', type: 'general', stage: 'before', file_count: 0 }] as any[]
 
 beforeEach(() => {
@@ -67,6 +66,12 @@ describe('HomePage workbench assembly (3.0 三期 Task 5)', () => {
     await flush()
     expect(r1.container.textContent).toContain('homeTodo.title')
     expect(r1.container.textContent).toContain('任务t1')
+    // 2026-10-26 布局重排:侧列 = 最近动态 → 今日待办+近期日历(DOM 顺序);快速开始退场
+    const text = r1.container.textContent!
+    expect(text.indexOf('home.recentFeedTitle')).toBeGreaterThan(-1)
+    expect(text.indexOf('homeTodo.title')).toBeGreaterThan(text.indexOf('home.recentFeedTitle'))
+    expect(text.indexOf('homeTodo.calendarTitle')).toBeGreaterThan(text.indexOf('homeTodo.title'))
+    expect(text).not.toContain('home.quickTitle')
     r1.unmount()
     const r2 = render(<HomePage {...base} projects={projects} />)
     await flush()

@@ -173,23 +173,24 @@ describe('ReportPreview panel defaults (§1.3)', () => {
     expect(screen.queryByText('某研报')).toBeNull()
   })
 
-  it('renders logs in backend order (ascending timeline)', async () => {
-    // 后端已按时间正序返回（旧上新下）；UI 层透传渲染不得反转
+  it('renders logs in backend order (newest-first, no auto-scroll)', async () => {
+    // 后端已按最新在上返回（新上旧下，2026-10-27 用户裁决，自动滚底已撤销）；
+    // UI 层透传渲染不得反转，最新进展首屏可见
     activityState.items = [{ entity_id: 'r1' }]
     invokeMock.mockImplementation(async (channel: string) => {
       if (channel === 'reports:getReportContent') return contentSnapshot
       if (channel === 'reports:getReportLogs') {
         return { logs: [
-          { id: 'l1', message: '第一条：开始生成', level: 'info', created_at: '2026-01-01T00:00:01' },
-          { id: 'l2', message: '第二条：章节完成', level: 'info', created_at: '2026-01-01T00:00:02' },
+          { id: 'l1', message: '第一条：最新进展', level: 'info', created_at: '2026-01-01T00:00:02' },
+          { id: 'l2', message: '第二条：开始生成', level: 'info', created_at: '2026-01-01T00:00:01' },
         ] }
       }
       return {}
     })
     render(<ReportPreview report={genReport} onBack={() => {}} />)
     await flush()
-    const first = screen.getByText('第一条：开始生成')
-    const second = screen.getByText('第二条：章节完成')
+    const first = screen.getByText('第一条：最新进展')
+    const second = screen.getByText('第二条：开始生成')
     expect(
       first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
@@ -311,5 +312,75 @@ describe('ReportPreview find-in-report（块级定位，useInFileFind + FindBar 
     expect(screen.getByPlaceholderText('find.placeholder')).toBeTruthy()
     fireEvent.keyDown(screen.getByPlaceholderText('find.placeholder'), { key: 'Escape' })
     expect(screen.queryByPlaceholderText('find.placeholder')).toBeNull()
+  })
+})
+
+describe('ReportPreview citation superscript（视觉尾注，2026-10-27）', () => {
+  it('renders inline [n] citations as sup while keeping links, nesting and sources list plain', async () => {
+    // 转换契约（与导出端 renderer.apply_endnote_superscript 同规则）：
+    // 正文 [25] → <sup>[25]</sup>；[1](url) 链接、[[9]] 嵌套、行首 [n]（
+    // 参考来源列表条目自身）均排除
+    contentSnapshot = {
+      content: '增速领先的预测[25]，另见[1](https://example.com)与[[9]]页。\n\n[25] 《来源A》: 摘要',
+      registry: {},
+      report: { id: 'r1', title: 'T', status: 'done' },
+    }
+    const { container } = render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    const sups = container.querySelectorAll('sup')
+    expect(sups.length).toBe(1)
+    expect(sups[0].textContent).toBe('[25]')
+    // 链接形态保持原生链接渲染，未被上标转换吞掉
+    expect(container.querySelector('a[href="https://example.com"]')).toBeTruthy()
+    // 参考来源列表条目保持行首纯文本（不上标）
+    expect(screen.getByText(/\[25\] 《来源A》/)).toBeTruthy()
+  })
+
+  it('keeps citation paragraphs as separate <p> leaf blocks', async () => {
+    // review 修复回归（2026-10-27）：含 sup 的段落行经 InlineHtmlLine 渲染后
+    // 必须各自为 p 叶子块（FIND_BLOCK_SELECTOR 含 p）——此前裸 fragment 使
+    // 引用段落粘连成段且对 Ctrl+F 完全不可见
+    contentSnapshot = {
+      content: '第一段引用[5]。\n\n第二段引用[6]。',
+      registry: {},
+      report: { id: 'r1', title: 'T', status: 'done' },
+    }
+    const { container } = render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    const ps = container.querySelectorAll('.markdown p')
+    expect(ps.length).toBe(2)
+    expect(ps[0].querySelector('sup')?.textContent).toBe('[5]')
+    expect(ps[1].querySelector('sup')?.textContent).toBe('[6]')
+  })
+
+  it('matches citation paragraph text via in-file find (leaf block hit)', async () => {
+    // 端到端：引用段落文本可被文档内查找命中（p 叶子块）
+    contentSnapshot = {
+      content: '增速领先的预测[25]，口径二[26]。',
+      registry: {},
+      report: { id: 'r1', title: 'T', status: 'done' },
+    }
+    render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    const input = screen.getByPlaceholderText('find.placeholder')
+    fireEvent.change(input, { target: { value: '增速领先' } })
+    expect(screen.getByText('1/1')).toBeTruthy()
+  })
+
+  it('keeps bold pairing across an embedded citation (no literal asterisks)', async () => {
+    // Minor 2 回归：**核心[5]观点** 转换后 sup 不得切开加粗配对（占位符协议）
+    contentSnapshot = {
+      content: '**核心[5]观点**陈述。',
+      registry: {},
+      report: { id: 'r1', title: 'T', status: 'done' },
+    }
+    const { container } = render(<ReportPreview report={doneReport} onBack={() => {}} />)
+    await flush()
+    const strong = container.querySelector('.markdown strong')
+    expect(strong).toBeTruthy()
+    expect(strong!.textContent).toBe('核心[5]观点')
+    expect(strong!.querySelector('sup')).toBeTruthy()
+    expect(container.textContent).not.toContain('**')
   })
 })

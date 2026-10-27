@@ -588,13 +588,14 @@ class ScheduleScheduler:
             return False
 
     async def _import_archive(self, s: dict, text: str) -> None:
-        """§6 步骤 3：target 绑定且 auto_import=1 → 旧档清数据（cleanup_file_data
-        全链：向量 + FTS + 磁盘）→ _upload_core 重入库（建档链复用，
-        filename={订阅名}·档案.md）→ 回填 archive_file_id；未绑定或
-        auto_import=0 → 只更新工作副本（no-op）。
+        """§6 步骤 3：target 绑定即入库（2026-10-26 auto_import 开关退役，
+        「绑定去向=全自动沉淀」，入库决策发生在绑定时刻）→ 旧档清数据
+        （cleanup_file_data 全链：向量 + FTS + 磁盘）→ _upload_core 重入库
+        （建档链复用，filename={订阅名}·档案.md）→ 回填 archive_file_id；
+        未绑定 → 只更新工作副本（no-op）。
         routers.knowledge 延迟 import：其 readiness → deps → 本模块，
         顶层 import 成环。"""
-        if not s.get("target_id") or not s.get("auto_import"):
+        if not s.get("target_id"):
             return
         from routers.knowledge import FileUpload, _upload_core
         if s.get("archive_file_id"):

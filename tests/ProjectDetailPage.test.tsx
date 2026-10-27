@@ -192,6 +192,26 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     expect(compileStatusCount()).toBe(2)
   })
 
+  it('refetches compile snapshot on app:governance-done for this project only (review M-2 补口)', async () => {
+    // 治理 summary 晚于编译终态落库，而 #4 轮询在终态即停（enabled=活跃||面板
+    // 展开）——编译明细面板的治理摘要行靠该信号补拉一次；他项目的治理不触发
+    render(<ProjectDetailPage project={project} />)
+    await flush()
+    expect(compileStatusCount()).toBe(1)
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:governance-done', { detail: { projectId: 'p1' } }))
+    })
+    await flush()
+    expect(compileStatusCount()).toBe(2)
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:governance-done', { detail: { projectId: 'other' } }))
+    })
+    await flush()
+    expect(compileStatusCount()).toBe(2)
+  })
+
   it('mounts PulseBar and refetches pulse data on compile terminal edge', async () => {
     invokeMock.mockImplementation(async (ch: string) => {
       if (ch === 'wiki:listReviews') {

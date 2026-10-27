@@ -34,7 +34,7 @@ _FIELD_MAP = {
     "name": "name", "prompt": "prompt", "category": "category",
     "intervalType": "interval_type", "intervalValue": "interval_value",
     "targetType": "target_type", "targetId": "target_id",
-    "autoImport": "auto_import", "enabled": "enabled",
+    "enabled": "enabled",
     "digestScheduleIds": "digest_schedule_ids",
     # scope 不入白名单：类型由创建入口给定（情报订阅/聚合简报），PATCH 不改类型
 }
@@ -48,7 +48,6 @@ class ScheduleCreateBody(BaseModel):
     intervalValue: str
     targetType: str | None = None
     targetId: str | None = None
-    autoImport: bool = True
     scope: str | None = None   # 仅接受 'rollup'；None/缺省=情报订阅（2.11 §12 收敛）
     digestScheduleIds: list[str] | None = None
 
@@ -61,7 +60,6 @@ class ScheduleUpdateBody(BaseModel):
     intervalValue: str | None = None
     targetType: str | None = None
     targetId: str | None = None
-    autoImport: bool | None = None
     enabled: bool | None = None
     digestScheduleIds: list[str] | None = None
 
@@ -157,7 +155,7 @@ async def create_schedule(body: ScheduleCreateBody):
         body.prompt.rstrip() + "\n\n" + OUTPUT_CONTRACT,
         "general", body.category, body.intervalType, body.intervalValue,
         target_type=body.targetType, target_id=body.targetId,
-        auto_import=int(body.autoImport), next_run_at=next_run,
+        next_run_at=next_run,
         scope=body.scope,
         digest_schedule_ids=(json.dumps(body.digestScheduleIds,
                                         ensure_ascii=False)

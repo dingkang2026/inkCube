@@ -379,6 +379,19 @@ class KnowledgeWorker:
 
                 # Wiki 待编译数不再事件累加：get_pending_compile_count 实时计算
                 # （解析 done 文件入集合由 SQL 口径自然覆盖，2026-10-22）
+
+                # 2.6 §4.1 路径 A：事件驱动自动汇编——解析 done 边沿点火增量编译
+                # （六重守卫在 try_auto_compile 内：开关/项目门/待编译集/无活跃/
+                #   冷却/就绪；入队失败由 QueueScanner 兜底重入队；触发失败仅告警，
+                #   绝不影响解析主流程）
+                try:
+                    from wiki.auto_compile import try_auto_compile
+                    auto_task = try_auto_compile(self.db, project_id)
+                    if auto_task:
+                        await self.enqueue_compile(auto_task["id"])
+                except Exception as e:
+                    logger.warning("Auto compile trigger failed for %s: %s",
+                                   project_id, e)
             else:
                 logger.error("File %s parse failed: %s", file_id, result.get("error"))
                 self.db.update_file_status(
@@ -689,6 +702,14 @@ class KnowledgeWorker:
                 asyncio.get_running_loop().run_in_executor(
                     None, lambda: on_profile_extract_sync(
                         self.db, project_id, llm_settings))
+                # E3-2026-10:编译完成后直调自动治理链（清扫/死链修复/重复检测）
+                # —— 同款后台化与吞异常语义;LLM 步骤受产出+冷却+就绪三重守卫,
+                # 汇总落 governance_summary（编译详情面板治理摘要行数据源,
+                # 完成通知另走 activity_events.governance_wiki）
+                from wiki.auto_governance import on_compile_complete_sync as on_auto_governance_sync
+                asyncio.get_running_loop().run_in_executor(
+                    None, lambda: on_auto_governance_sync(
+                        self.db, project_id, task_id, llm_settings))
                 return
 
             # Process the next pending file

@@ -24,6 +24,8 @@ export interface LLMSettings {
   max_concurrent_image_description: number
   // Wiki compile settings
   max_compile_concurrency: number
+  // 事件驱动自动汇编（2.6 §4.1 路径 A）：解析完成即自动点火增量编译，默认开
+  auto_wiki_compile: boolean
   // LLM timeout settings
   llm_connect_timeout: number
   llm_read_timeout: number

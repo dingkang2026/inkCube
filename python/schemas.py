@@ -31,6 +31,9 @@ class SettingsModel(BaseModel):
     max_concurrent_image_description: int = 2
     # Wiki compile settings（默认 2 = 两个项目并行编译，项目内文件串行）
     max_compile_concurrency: int = 2
+    # 事件驱动自动汇编（2.6 §4.1 路径 A）：解析完成即自动点火增量编译，默认开；
+    # 有设置页 UI，入全量保存白名单（勿仿 parsing_paused 的 model-exempt）
+    auto_wiki_compile: bool = True
     # LLM timeout settings
     llm_connect_timeout: int = 30
     llm_read_timeout: int = 300

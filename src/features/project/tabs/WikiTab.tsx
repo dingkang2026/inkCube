@@ -3,23 +3,22 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   BookOpen, RefreshCw, AlertCircle, CheckCircle, Clock,
-  AlertTriangle, Loader2, Home, Shield, Search, Share2,
-  Maximize2, Minimize2, Square, ListOrdered, BookMarked, FileDown,
+  AlertTriangle, Loader2, Home, Shield, Share2,
+  Maximize2, Minimize2, Square, ListOrdered, FileDown,
 } from 'lucide-react'
 import type { ProjectType } from '../types'
 import type { UsageSummary } from '../../../types'
 import { UsageText } from '../../usage/UsageText'
-import { WikiHomePage, type LedgerEntry } from './WikiHomePage'
+import { WikiHomePage } from './WikiHomePage'
 import { WikiPageReader } from './WikiPageReader'
 import { WikiPageEditor } from './WikiPageEditor'
-import { WikiChangeLog } from './WikiChangeLog'
-import { WikiSearchView } from './WikiSearchView'
+import { WikiChangeLog, type LedgerEntry } from './WikiChangeLog'
 import { WikiGraphView } from './WikiGraphView'
 import { WikiLintView } from './WikiLintView'
 import { CompilePanel } from './CompilePanel'
-import { WikiCompileView } from './WikiCompileView'
 import { WikiSchemaManager } from './WikiSchemaManager'
 import { usePagedList } from '../../../hooks/usePagedList'
+import { useDrawerWidth } from '../../../hooks/useDrawerWidth'
 import { useEdgeRefetch } from '../../../hooks/useEdgeRefetch'
 import { useActivity } from '../../activity/ActivityContext'
 import { useFeatureGuard } from '../../readiness/useReadiness'
@@ -42,7 +41,7 @@ interface WikiTabProps {
   compileData?: WikiCompileData | null
   /** 编译明细面板展开/收起上报（父组件据此将 #4 轮询降至 2s） */
   onCompileDetailChange?: (open: boolean) => void
-  /** 脉搏带/健康卡直达信号(一期 lint 直达;二期扩 compile 直达编译,裁决 6) */
+  /** 脉搏带直达信号(一期 lint 直达;二期扩 compile 直达编译,裁决 6) */
   focusSignal?: { view: 'lint' | 'compile'; ts: number } | null
   /** 直达信号消费完成回调（consume-once：父级置空信号，防重挂载重复触发/跨项目泄漏） */
   onFocusHandled?: () => void
@@ -89,18 +88,20 @@ interface WikiPage {
 }
 
 /** 分型审查计数（wiki:listReviews 响应 counts，0.1dev-guide「列表分页统一约定」）：
- *  reviews 分页后数组不再完整，徽章/健康卡计数改消费服务端分型计数 */
+ *  reviews 分页后数组不再完整，徽章计数改消费服务端分型计数 */
 interface ReviewCountBucket {
   pending: number
   resolved: number
   total: number
 }
 type ReviewCounts = Record<string, ReviewCountBucket>
-type ViewMode = 'home' | 'read' | 'edit' | 'changelog' | 'search' | 'graph' | 'lint' | 'schema' | 'compile'
+// 五视图平铺（2026-10-26 二次收敛）：'search'/'compile'/'pages' 视图先后删除（搜索并入
+// 首页、汇编不再是导航页面、「页面」并入首页成默认视图）；'read'/'edit' 历史死值一并清除
+type ViewMode = 'home' | 'graph' | 'changelog' | 'lint' | 'schema'
 
-const PREVIEW_DEFAULT_WIDTH = 720
+/** 预览面板宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth；
+ *  2026-10-26 由固定 720px 改比例，抽屉六处收编） */
 const PREVIEW_MIN_WIDTH = 260
-const PREVIEW_MAX_WIDTH = 720
 
 export function WikiTab({ projectId, projectType: _projectType, expanded, onExpandChange, onPreviewOpenChange, closePreviewSignal, compileData, onCompileDetailChange, focusSignal, onFocusHandled, onReviewsChanged }: WikiTabProps) {
   const { t } = useTranslation()
@@ -155,48 +156,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   const [graphHighlightNode, setGraphHighlightNode] = useState<string | undefined>(undefined)
   const [previewPageKey, setPreviewPageKey] = useState<string | null>(null)
   const [isEditing, setIsEditing] = useState(false)
-  const [previewWidth, setPreviewWidth] = useState(PREVIEW_DEFAULT_WIDTH)
-  const [isPreviewDragging, setIsPreviewDragging] = useState(false)
-  const previewDragging = useRef(false)
-  const previewDragStartX = useRef(0)
-  const previewDragStartWidth = useRef(PREVIEW_DEFAULT_WIDTH)
-
-  // ── Preview drag resize ──
-  const handlePreviewDragMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    previewDragging.current = true
-    setIsPreviewDragging(true)
-    previewDragStartX.current = e.clientX
-    previewDragStartWidth.current = previewWidth
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-  }, [previewWidth])
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!previewDragging.current) return
-      const delta = previewDragStartX.current - e.clientX
-      const newWidth = Math.min(PREVIEW_MAX_WIDTH, Math.max(PREVIEW_MIN_WIDTH, previewDragStartWidth.current + delta))
-      setPreviewWidth(newWidth)
-    }
-    const handleMouseUp = () => {
-      if (previewDragging.current) {
-        previewDragging.current = false
-        setIsPreviewDragging(false)
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-      }
-    }
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-      // 拖宽中途卸载(如 Tab 切走)也复位 body 样式,防游标/选区卡死(与 TaskDrawer 同款防护)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-  }, [])
+  // 预览面板宽度/拖宽/防误关守卫统一契约（抽屉六处收编，2026-10-26）
+  const previewDr = useDrawerWidth({ min: PREVIEW_MIN_WIDTH })
 
   // 快切项目防乱序：同类型项目切换时 WikiTab 实例存活（父层 key=projectType 不变），
   // 在途响应晚到会跨项目覆盖 state 且无自愈——捕获 pid，await 后比对不一致即丢弃
@@ -251,7 +212,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     }
   }, [pagesHasMore, pagesLoadingMore, loadPages])
 
-  // 分型审查计数（徽章/健康卡数据源）：分页后 reviews 数组不再完整，
+  // 分型审查计数（徽章数据源）：分页后 reviews 数组不再完整，
   // 改消费响应 counts（服务端全量分型计数，与 limit 无关）；limit=1 最小负载
   const loadReviewCounts = useCallback(async () => {
     const pid = projectId
@@ -320,21 +281,15 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     loadSchemas()
   }, [loadPages, loadReviewCounts, loadSchemas])
 
-  // 直达信号（consume-once）：脉搏带矛盾/缺口 chip 或健康卡「去处理」→ 治理视图（3.0 §6.1.1；
+  // 直达信号（consume-once）：脉搏带矛盾/缺口 chip → 治理视图（3.0 §6.1.1；
   // ts 保证重复点击同型 chip 也能再次触发，语义同 handleGoLint；应用后即回调置空，
   // 防止 Tab 往返重挂载被残留信号反复拉回 lint，以及项目 A 信号泄漏到项目 B）
   useEffect(() => {
     if (!focusSignal?.view) return
     if (focusSignal.view === 'compile') {
-      // V2 E3:直达落汇编视图——空闲则原地触发,进行中则看进度(触发/防重入语义不变)。
-      // 与点「编译」按钮等价(裁决 6);但编译进行中再触发会 409 并闪断状态条——
-      // 与原顶栏按钮 disabled={compiling} 同语义,仅停留不重触发(Task 13 review M2)。
-      // 用父级 props 快照判断(而非本地 compileTask state):consume effect 先于
-      // compileData 同步 effect 执行,重挂载首轮本地态尚为空,props 已就绪
-      setViewMode('compile')
-      const active = compiling
-        || (compileData?.task != null && ['queued', 'ingesting', 'storing'].includes(compileData.task.status))
-      if (!active) handleCompile()
+      // 语义与防重入裁决（V2 E3 裁决 6 / Task 13 review M2 / props 快照）见 startCompileMaybe 定义处；
+      // 2026-10-26 IA 收敛后不再切视图，仅按需启动
+      startCompileMaybe()
     } else {
       setViewMode(focusSignal.view)
     }
@@ -356,10 +311,34 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
   useEffect(() => {
     const status = compileTask?.status ?? null
     if (status === prevCompileStatusRef.current) return
+    const prevStatus = prevCompileStatusRef.current
     prevCompileStatusRef.current = status
     if (status && ['completed', 'failed', 'stopped'].includes(status)) {
       compilingRef.current = false
       setCompiling(false)
+      // 方案 A 消失过渡（2026-10-26）：完成即「开始汇编」入口随 pendingCount 归零蒸发，
+      // 活跃→completed 边沿必须主动可感知；挂载即终态（prevStatus=null）不弹，防每次进项目骚扰
+      if (status === 'completed' && prevStatus != null
+        && ['queued', 'ingesting', 'storing'].includes(prevStatus)) {
+        const okSummaries = ingestSummaries.filter(s => !s.error)
+        const failCount = ingestSummaries.filter(s => s.error).length
+        // 产出聚合（免培训 §2.10，2026-10-26）：toast 说结果量（页），
+        // 修复文件数冒充产出（0 页时曾宣称「N 个文件已整理进知识页」）
+        const created = okSummaries.reduce((n, s) => n + (s.pages_created ?? 0), 0)
+        const updated = okSummaries.reduce((n, s) => n + (s.pages_updated ?? 0), 0)
+        showToast(
+          failCount > 0
+            ? t('project.wiki.compileToastPartial', {
+                success: okSummaries.length, failed: failCount,
+                defaultValue: `汇编完成：${okSummaries.length} 成功、${failCount} 失败，可在状态条重试失败文件`,
+              })
+            : t('project.wiki.compileToastDone', {
+                created, updated,
+                defaultValue: `汇编完成：新增 ${created} 页、更新 ${updated} 页`,
+              }),
+          failCount > 0 ? 'warning' : 'success',
+        )
+      }
       void loadPages()
       void loadReviewCounts()
       void loadSchemas()
@@ -485,11 +464,6 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setViewMode('changelog')
   }, [])
 
-  // Go to search
-  const handleGoSearch = useCallback(() => {
-    setViewMode('search')
-  }, [])
-
   // Go to graph view (optionally highlight a specific node)
   const handleGoGraph = useCallback((highlightPageKey?: string) => {
     setGraphHighlightNode(highlightPageKey)
@@ -501,10 +475,32 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     setViewMode('lint')
   }, [])
 
-  // Go to compile view (V2 E3 整理层主入口)
-  const handleGoCompile = useCallback(() => {
-    setViewMode('compile')
+  // 明细面板统一 toggle：同按钮展开/收起（2026-10-26 用户裁决，对齐 knowledge Toast 先例；
+  // CompilePanel 头部收起钮仍直置 false，两路共用 showDetailPanel 同一状态源）
+  const toggleDetailPanel = useCallback(() => {
+    setShowDetailPanel((v) => !v)
   }, [])
+
+  // 终态产出聚合（免培训 §2.10 产出导向文案，2026-10-26）：完成态条说结果量（页），
+  // 进行中/停止说过程量（文件）——文件数不再冒充产出（0 页时「汇编完成 (N 个文件)」
+  // 曾让用户误读为已有产出，2026-10-26 事故实证）
+  const okSummaries = ingestSummaries.filter((s) => !s.error)
+  const compiledCreated = okSummaries.reduce((n, s) => n + (s.pages_created ?? 0), 0)
+  const compiledUpdated = okSummaries.reduce((n, s) => n + (s.pages_updated ?? 0), 0)
+
+  // 汇编进行中（乐观标志 OR 父级轮询快照）：重挂载首轮本地 compileTask 尚空时 props
+  // 已就绪，focusSignal consume effect 依赖此性质（Task 13 review M2）。收敛原
+  // isCompiling 本地派生为单一语义源（2026-10-26 方案 A）
+  const compileActive = compiling
+    || (compileData?.task != null && ['queued', 'ingesting', 'storing'].includes(compileData.task.status))
+
+  // 统一汇编动作——方案 A 契约「入口即动作」（2026-10-26 IA 收敛更新）：空闲即启动
+  // 增量汇编，进行中仅忽略（重触发会 409 闪断状态条）。不再切换视图：汇编是
+  // 「动作 + 进度」而非页面——进度看顶栏状态条、逐文件明细看「查看详情」、
+  // force 看状态条终态分支。消费方：脉搏带待汇编 chip（经 focusSignal）/ 首页空态
+  const startCompileMaybe = () => {
+    if (!compileActive) handleCompile()
+  }
 
   // 治理动作后：重拉发现项计数 + 上报父级刷新脉搏带（0.4 §3.1「操作后刷新」，3.0 一期最终 review）
   const handleFindingsChanged = useCallback(() => {
@@ -620,12 +616,6 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
     }
   }
 
-  // Derived compile states
-  // isCompiling: true only for active statuses, never for terminal states
-  const isCompiling = compileTask
-    ? ['queued', 'ingesting', 'storing'].includes(compileTask.status)
-    : compiling
-
   // ── Render ──
 
   if (loading) {
@@ -657,7 +647,7 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
 
         {/* 顶栏待编译通知已删(裁决 6):触发编译入口统一为脉搏带待编译 chip,
             经 focusSignal compile 直达;pendingCount 保留(首页 pendingCta/startCompile 消费) */}
-        {isCompiling && (
+        {compileActive && (
           <div className={s.compileStatus}>
             <Loader2 size={14} className={s.spin} />
             <span>
@@ -667,12 +657,18 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             </span>
             {compileTask && compileTask.pages_total > 0 && (
               <span className={s.compileProgress}>
-                {compileTask.pages_completed ?? 0}/{compileTask.pages_total} {t('project.wiki.pages', { defaultValue: '页面' })}
+                {/* pages_completed/total 实为文件数（task_queue files_processed）：
+                    量词归位为「文件」，修复旧文案「页面」错位（免培训 §2.10） */}
+                {compileTask.pages_completed ?? 0}/{compileTask.pages_total} {t('project.wiki.compileFilesUnit', { defaultValue: '文件' })}
               </span>
             )}
-            {/* 查看详情：明细面板收起后经此重新展开（2.6 §10 修订） */}
-            <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
-              {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
+            {/* 查看详情：同按钮 toggle 展开/收起（2026-10-26 裁决，对齐 knowledge Toast 先例）；
+                文案以实际渲染为准——乐观窗口（compiling 回落、compileTask 尚空）无面板可收起，
+                不得显示「收起详情」（CodeReview 轻微项修复） */}
+            <button className={s.retryBtn} onClick={toggleDetailPanel}>
+              {showDetailPanel && compileTask
+                ? t('common.collapseDetails', { defaultValue: '收起详情' })
+                : t('common.viewDetails', { defaultValue: '查看详情' })}
             </button>
             {/* 停止（2.6 §4.3）：任务级协作式停止，当前文件完成后生效 → stopped 终态。
                 wiki 无队列暂停（0.4 §6.7 修订）：停止 + 断点续传已覆盖暂停价值 */}
@@ -699,11 +695,13 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                   success: ingestSummaries.filter(s => !s.error).length,
                   defaultValue: `汇编完成: ${ingestSummaries.filter(s => !s.error).length} 成功`,
                 })}
-                {/* 失败计数即快速定位入口：点击直达逐文件明细（2.6 §13.3） */}
+                {/* 失败计数即快速定位入口：同按钮 toggle 逐文件明细（2.6 §13.3） */}
                 <button
                   className={s.failCountBtn}
-                  onClick={() => setShowDetailPanel(true)}
-                  title={t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
+                  onClick={toggleDetailPanel}
+                  title={showDetailPanel
+                    ? t('common.collapseDetails', { defaultValue: '收起详情' })
+                    : t('common.viewDetails', { defaultValue: '查看详情' })}
                 >
                   {t('project.wiki.compileDoneFailCount', {
                     errors: ingestSummaries.filter(s => s.error).length,
@@ -711,9 +709,20 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                   })}
                 </button>
               </span>
+            ) : compiledCreated + compiledUpdated > 0 ? (
+              <span>
+                {t('project.wiki.compileDoneOutput', {
+                  created: compiledCreated, updated: compiledUpdated,
+                  defaultValue: `汇编完成：新增 ${compiledCreated} 页 · 更新 ${compiledUpdated} 页`,
+                })}
+              </span>
             ) : (
               <span>
-                {t('project.wiki.compileDone', { count: compileTask.pages_completed ?? 0, defaultValue: `汇编完成 (${compileTask.pages_completed ?? 0} 个文件)` })}
+                {/* 零产出（历史脏任务）：明示未产出，不让文件数冒充结果（免培训 §2.10） */}
+                {t('project.wiki.compileDoneNoOutput', {
+                  count: okSummaries.length,
+                  defaultValue: `汇编完成 (${okSummaries.length} 个文件，未产出知识页)`,
+                })}
               </span>
             )}
             {/* 该次编译总消耗（2.10 §6.1/线框 6）：entity=compile_task 端到端全部调用 */}
@@ -731,9 +740,12 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 {t('project.wiki.retryFailed', { count: ingestSummaries.filter(s => s.error).length, defaultValue: `重试失败 (${ingestSummaries.filter(s => s.error).length})` })}
               </button>
             )}
-            {/* 查看详情：终态均保留逐文件摘要回看入口，不再仅限有错误时（2.6 §10 修订） */}
-            <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
-              {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
+            {/* 查看详情：终态均保留逐文件摘要回看入口，不再仅限有错误时（2.6 §10 修订）；
+                同按钮 toggle 展开/收起（2026-10-26 裁决） */}
+            <button className={s.retryBtn} onClick={toggleDetailPanel}>
+              {showDetailPanel
+                ? t('common.collapseDetails', { defaultValue: '收起详情' })
+                : t('common.viewDetails', { defaultValue: '查看详情' })}
             </button>
             <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTip')}>
               <RefreshCw size={13} />
@@ -753,8 +765,10 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
           <div className={s.compileError}>
             <AlertCircle size={14} />
             <span>{t('project.wiki.compileFailed', { error: translateStoredError(compileTask.error_message ?? '', t) })}</span>
-            <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
-              {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
+            <button className={s.retryBtn} onClick={toggleDetailPanel}>
+              {showDetailPanel
+                ? t('common.collapseDetails', { defaultValue: '收起详情' })
+                : t('common.viewDetails', { defaultValue: '查看详情' })}
             </button>
             <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.retry', { defaultValue: '重试' })}</button>
             <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新汇编' })}</button>
@@ -774,8 +788,10 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
                 : t('project.wiki.compileStoppedSimple', { defaultValue: '汇编已停止' })
               }
             </span>
-            <button className={s.retryBtn} onClick={() => setShowDetailPanel(true)}>
-              {t('project.wiki.viewDetails', { defaultValue: '查看详情' })}
+            <button className={s.retryBtn} onClick={toggleDetailPanel}>
+              {showDetailPanel
+                ? t('common.collapseDetails', { defaultValue: '收起详情' })
+                : t('common.viewDetails', { defaultValue: '查看详情' })}
             </button>
             <button className={s.retryBtn} onClick={() => handleCompile()}>{t('project.wiki.resumeCompile', { defaultValue: '继续汇编' })}</button>
             <button className={s.retryBtn} onClick={() => handleCompile(true)} disabled={compiling} title={t('project.wiki.resetTipShort')}>{t('project.wiki.recompile', { defaultValue: '重新汇编' })}</button>
@@ -798,8 +814,8 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       </div>
 
       {/* Compile detail panel（内嵌可折叠，2.6 §10）：逐文件摘要审阅，不遮内容；
-          compile 视图内已内嵌同一面板（复用 showDetailPanel），此处让位防双渲染 */}
-      {showDetailPanel && compileTask && viewMode !== 'compile' && (
+          汇编成册视图删除后（2026-10-26 IA 收敛）本面板是唯一宿主，无需让位 */}
+      {showDetailPanel && compileTask && (
         <CompilePanel
           task={compileTask}
           ingestSummaries={ingestSummaries}
@@ -810,10 +826,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
       <div className={s.mainArea}>
         {/* Left sidebar: navigation + page list */}
         <div className={s.sidebar}>
-          {/* Navigation section */}
-          {/* V2 E3 导航分组：阅读（消费知识）+ 整理（维护知识册），0.6 §3.5 */}
+          {/* Navigation section — 五项平铺（2026-10-26 二次收敛：「页面」并入首页
+              ——待汇编徽标随迁首页项；搜索态在首页内、汇编成册视图已删，0.6 §3.5） */}
           <div className={s.sidebarNav}>
-            <div className={s.navGroupTitle}>{t('project.wiki.navGroupRead', { defaultValue: '阅读' })}</div>
             <div
               className={`${s.navItem} ${viewMode === 'home' ? s.navItemActive : ''}`}
               onClick={handleGoHome}
@@ -821,14 +836,9 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
             >
               <Home size={13} />
               <span>{t('project.wiki.home')}</span>
-            </div>
-            <div
-              className={`${s.navItem} ${viewMode === 'search' ? s.navItemActive : ''}`}
-              onClick={handleGoSearch}
-              title={t('project.wiki.navTipSearch')}
-            >
-              <Search size={13} />
-              <span>{t('project.wiki.search')}</span>
+              {pendingCount > 0 && (
+                <span className={s.navBadge}>{pendingCount}</span>
+              )}
             </div>
             <div
               className={`${s.navItem} ${viewMode === 'graph' ? s.navItemActive : ''}`}
@@ -838,17 +848,13 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               <Share2 size={13} />
               <span>{t('project.wiki.graph')}</span>
             </div>
-            <div className={s.navGroupTitle}>{t('project.wiki.navGroupOrganize', { defaultValue: '整理' })}</div>
             <div
-              className={`${s.navItem} ${viewMode === 'compile' ? s.navItemActive : ''}`}
-              onClick={handleGoCompile}
-              title={t('project.wiki.navTipCompile')}
+              className={`${s.navItem} ${viewMode === 'changelog' ? s.navItemActive : ''}`}
+              onClick={handleGoChangelog}
+              title={t('project.wiki.navTipChangeLog')}
             >
-              <BookMarked size={13} />
-              <span>{t('project.wiki.compileNav')}</span>
-              {pendingCount > 0 && (
-                <span className={s.navBadge}>{pendingCount}</span>
-              )}
+              <Clock size={13} />
+              <span>{t('project.wiki.changeLog')}</span>
             </div>
             <div
               className={`${s.navItem} ${viewMode === 'lint' ? s.navItemActive : ''}`}
@@ -869,14 +875,6 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               <ListOrdered size={13} />
               <span>{t('project.wiki.schemaNav')}</span>
             </div>
-            <div
-              className={`${s.navItem} ${viewMode === 'changelog' ? s.navItemActive : ''}`}
-              onClick={handleGoChangelog}
-              title={t('project.wiki.navTipChangeLog')}
-            >
-              <Clock size={13} />
-              <span>{t('project.wiki.changeLog')}</span>
-            </div>
           </div>
 
         </div>
@@ -884,41 +882,25 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
         {/* Right content area */}
         <div className={s.content}>
           {viewMode === 'home' ? (
-            /* Home page = index.md: purpose + overview + categorized page index */
+            /* 首页（2026-10-26 二次收敛：「页面」并入——概况/成册进度/目录/统计/搜索态合一，
+               默认视图；purpose 已迁知识框架视图） */
             <WikiHomePage
               projectId={projectId}
-              purpose={purpose}
               overview={overview}
-              pages={pages}
               sourcePageCount={sourcePages.length}
-              pendingCount={pendingCount}
-              onNavigate={handleGoChangelog}
-              onNavigateToPage={handleNavigateToPage}
-              onCompile={() => handleCompile()}
               onMetaSaved={() => void loadPages()}
-              reviewCounts={{
-                contradiction: reviewCounts.contradiction?.pending ?? 0,
-                gap: (reviewCounts['data-gap']?.pending ?? 0) + (reviewCounts['missing-page']?.pending ?? 0),
-              }}
-              onOpenLint={() => setViewMode('lint')}
-              onOpenCompile={() => setViewMode('compile')}
+              pages={pages}
+              pendingCount={pendingCount}
               schemas={schemas}
               missingPages={missingPages}
               pagesTotal={pagesTotal}
               hasMorePages={pagesHasMore}
               pagesLoadingMore={pagesLoadingMore}
               onLoadMorePages={() => { void loadMorePages() }}
-              ledgerEntries={ledgerEntries}
-              ledgerParsing={ledgerParsing}
-              hasMoreLedger={hasMoreLedger}
-              ledgerLoadingMore={loadingMoreLedger}
-              onLoadMoreLedger={() => { void loadMoreLedgerEntries() }}
-            />
-          ) : viewMode === 'search' ? (
-            /* Search view */
-            <WikiSearchView
-              projectId={projectId}
               onNavigateToPage={handleNavigateToPage}
+              onCompile={startCompileMaybe}
+              compiling={compileActive}
+              onOpenSchema={() => setViewMode('schema')}
             />
           ) : viewMode === 'graph' ? (
             /* Graph visualization */
@@ -933,28 +915,27 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
               projectId={projectId}
               onNavigateToPage={handleNavigateToPage}
               onFindingsChanged={handleFindingsChanged}
+              compiling={compileActive}
             />
           ) : viewMode === 'schema' ? (
-            /* Schema management (structure pages, 2.6 §3.1) */
-            <WikiSchemaManager projectId={projectId} />
-          ) : viewMode === 'compile' ? (
-            /* 汇编成册视图（V2 E3 整理层）：CTA + CompilePanel 复用 */
-            <WikiCompileView
-              pendingCount={pendingCount}
-              compileTask={compileTask}
-              ingestSummaries={ingestSummaries}
-              compiling={compiling}
-              detailOpen={showDetailPanel}
-              onOpenDetail={() => setShowDetailPanel(true)}
-              onCollapseDetail={() => setShowDetailPanel(false)}
-              onCompile={() => handleCompile()}
-              onForceRecompile={() => handleCompile(true)}
+            /* 知识框架（2026-10-26 二次收敛：Wiki 目标区块随迁至此，2.6 §3.1） */
+            <WikiSchemaManager
+              projectId={projectId}
+              purpose={purpose}
+              onMetaSaved={() => void loadPages()}
             />
           ) : viewMode === 'changelog' ? (
-            /* Changelog timeline */
+            /* 时间线双栏（2026-10-26）：左=变更日志，右=台账动态（原首页台账卡迁入，
+               终结「台账时间线/时间线」撞名） */
             <WikiChangeLog
               projectId={projectId}
               onNavigateToPage={handleNavigateToPage}
+              pages={pages}
+              ledgerEntries={ledgerEntries}
+              ledgerParsing={ledgerParsing}
+              hasMoreLedger={hasMoreLedger}
+              ledgerLoadingMore={loadingMoreLedger}
+              onLoadMoreLedger={() => { void loadMoreLedgerEntries() }}
             />
           ) : (
             <div className={s.noSelection}>
@@ -965,17 +946,18 @@ export function WikiTab({ projectId, projectType: _projectType, expanded, onExpa
         </div>
       </div>
 
-      {/* Preview backdrop — 知识问答面板同款：展开时点击面板外任意处收起（遮罩不透传点击） */}
+      {/* Preview backdrop — 知识问答面板同款：展开时点击面板外任意处收起（遮罩不透传点击；
+          拖宽/选字松手落遮罩的合成 click 由守卫吞掉不误关） */}
       {previewPageKey && pageDetail && (
-        <div className={s.previewBackdrop} onClick={handleClosePreview} />
+        <div className={s.previewBackdrop} onClick={() => { if (!previewDr.suppressClick.current) handleClosePreview() }} />
       )}
 
       {/* Preview panel — slides in from right, full page height, resizable */}
       {previewPageKey && pageDetail && (
-        <div className={s.previewPanel} style={{ width: previewWidth }}>
+        <div className={s.previewPanel} style={{ width: previewDr.width }} onMouseDown={previewDr.onPanelMouseDown}>
           <div
-            className={`${s.previewDragHandle} ${isPreviewDragging ? s.previewDragHandleActive : ''}`}
-            onMouseDown={handlePreviewDragMouseDown}
+            className={`${s.previewDragHandle} ${previewDr.dragging ? s.previewDragHandleActive : ''}`}
+            onMouseDown={previewDr.onHandleMouseDown}
           />
           <div className={s.previewPanelHeader}>
             <button className={s.previewCloseBtn} onClick={handleClosePreview} title={t('common.close')}>

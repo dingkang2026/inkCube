@@ -505,9 +505,70 @@ describe('ActivityMonitor', () => {
     expect(calls[0][1]).toMatchObject({ title: 'activity.batch', body: '', nav: null })
   })
 
+  it('governance notice → 广播 app:governance-done（M-2 信号链）', async () => {
+    // 治理完成通知 → 广播给已打开的 Wiki 体检视图/编译详情面板重载（通知
+    // 点击导航只是第二路径）；此前无用例，与批量补口用例成对锁定两条路径
+    const notice = {
+      id: 21, entity_type: 'wiki_compile', kind: 'governance', entity_title: '知识册',
+      detail: null, project_id: 'p1', container: 'project',
+    }
+    const invoke = wireWithNotice(notice)
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    const events: CustomEvent[] = []
+    vi.spyOn(window, 'dispatchEvent').mockImplementation((e) => {
+      if ((e as CustomEvent).type === 'app:governance-done') events.push(e as CustomEvent)
+      return true
+    })
+    render(<ActivityMonitor />)
+    await flush()
+    await secondRound()
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ projectId: 'p1' })
+  })
+
+  it('批量通知含治理条目 → batch 分支提前 return 仍广播（复审补口 2026-10-27）', async () => {
+    // 回归：治理广播原本挂在逐条 Toast 循环里，>5 条批量时提前 return 被跳过
+    // ——信号不依赖 Toast，必须先于批量分支派发，否则开着体检视图看不到治理结果
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+    const notices = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        id: i + 1, entity_type: 'report', kind: 'completed',
+        entity_title: `R${i + 1}`, detail: null, project_id: 'p1', container: 'project',
+      })),
+      {
+        id: 6, entity_type: 'wiki_compile', kind: 'governance', entity_title: '知识册',
+        detail: null, project_id: 'p9', container: 'project',
+      },
+    ]
+    let call = 0
+    const invoke = vi.fn((channel: string) => {
+      if (channel === 'settings:get') return Promise.resolve({ ok: true })
+      if (channel !== 'activities:getStatus') return Promise.resolve({ ok: true })
+      call += 1
+      return Promise.resolve(
+        call === 1
+          ? IDLE_STATUS
+          : { notifications: { unread: [], recent: notices } } as unknown as ActivityStatus,
+      )
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    const events: CustomEvent[] = []
+    vi.spyOn(window, 'dispatchEvent').mockImplementation((e) => {
+      if ((e as CustomEvent).type === 'app:governance-done') events.push(e as CustomEvent)
+      return true
+    })
+    render(<ActivityMonitor />)
+    await flush()
+    await secondRound(45000)
+    // batch 汇总 Toast 照发；治理广播不缺席（项目 id 透传）
+    expect(sharedMocks.showToast).toHaveBeenCalledWith('activity.batch', 'info')
+    expect(events).toHaveLength(1)
+    expect(events[0].detail).toEqual({ projectId: 'p9' })
+  })
+
   it('R4: schedule_run completed → 静默（不弹 Toast/OS，仅 markRead）', async () => {
     // 2.11 §5.5 R4：订阅完成默认 silent——通知中心仍可见，静默已读；
-    // 管理台/收件箱红点与摘要行计数是完成态的消费入口，不靠 Toast
+    // 管理台/收件箱红点与徽章计数是完成态的消费入口，不靠 Toast
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
     const notice = {
       id: 7, entity_type: 'schedule_run', kind: 'completed',

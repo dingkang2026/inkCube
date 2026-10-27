@@ -128,7 +128,7 @@ def test_decision_tree_empty_without_left_label_unmapped():
     # r0c0 空 + 无左标签 → unmapped（短文本）；r0c1 长文含指令 → doc_section
     assert any(u["target"] == "top0/r0c0" and "空格" in u["reason"] for u in ex.unmapped)
     assert _cand_by_target(ex, "top0/r0c1")["structural_type"] == "doc_section"
-    # r1c1 超过短标签阈值（>12）但不足 doc_section 长度（<20）→ 规则 8 兕底 label 候选
+    # r1c1 超过短标签阈值（>12）但不足 doc_section 长度（<20）→ 规则 8 兜底 label 候选
     assert _cand_by_target(ex, "top0/r1c1")["structural_type"] == "label"
 
 

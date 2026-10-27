@@ -1,10 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Bell } from 'lucide-react'
+import { useActivity } from '../../features/activity/ActivityContext'
 import { buildMenuDef, type MenuItemDef } from './menuDefinition'
 import s from './TitleBar.module.css'
 
-export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout }: { onOpenSettings: () => void; onToggleSidebar: () => void; onShowAbout: () => void }) {
+interface TitleBarProps {
+  onOpenSettings: () => void
+  onToggleSidebar: () => void
+  onShowAbout: () => void
+  /** 铃铛点击 → 打开通知中心（2.11 §6.1：动作按钮，2026-10-26 自 NavTabs 迁入顶栏） */
+  onOpenNotifications: () => void
+}
+
+export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout, onOpenNotifications }: TitleBarProps) {
   const { t } = useTranslation()
+  const { status } = useActivity()
+  const unreadCount = status?.notifications.unread.length ?? 0
   const [openIndex, setOpenIndex] = useState<number | null>(null)
   const [maximized, setMaximized] = useState(false)
   const barRef = useRef<HTMLDivElement>(null)
@@ -135,6 +147,10 @@ export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout }: { onO
         ))}
       </div>
 
+      <div className={s.spacer} />
+
+      {/* 右上角工具区（no-drag）：侧栏开关 + 通知铃铛（2.11 §6.1，未读角标），
+          与窗口控制隔开避免误触；铃铛 2026-10-26 自 NavTabs 迁入 */}
       <div className={s.actions}>
         <button className={s.actionBtn} onClick={onToggleSidebar} title={t('nav.toggleSidebar')}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
@@ -142,9 +158,13 @@ export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout }: { onO
             <line x1="5" y1="2" x2="5" y2="12" />
           </svg>
         </button>
+        <button className={`${s.actionBtn} ${s.notifBtn}`} onClick={onOpenNotifications} title={t('nav.notifications')}>
+          <Bell size={15} strokeWidth={1.8} />
+          {unreadCount > 0 && (
+            <span className={s.notifBadge}>{unreadCount > 99 ? '99+' : unreadCount}</span>
+          )}
+        </button>
       </div>
-
-      <div className={s.spacer} />
 
       <div className={s.windowControls}>
         <button className={s.winBtn} onClick={() => window.electronAPI.invoke('window:minimize')} title={t('window.minimize')}>

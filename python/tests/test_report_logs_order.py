@@ -1,9 +1,9 @@
 """python/tests/test_report_logs_order.py — 进展日志排序单测（§1.3）。
 
 覆盖 Database.list_report_logs：
-  - 时间正序返回（旧上新下，时间轴视图；详情页配合自动滚底看最新）
-  - limit 语义 = 取最新 N 条（非最旧 N 条），再按正序输出
-  - 同 created_at 的多条按插入序稳定排列（轮询重取不抖动）
+  - 最新在上返回（新上旧下，最新进展首屏可见；自动滚底已撤销）
+  - limit 语义 = 取最新 N 条，仍按新上旧下输出
+  - 同 created_at 的多条按插入序倒排稳定（轮询重取不抖动）
   - report_id 隔离
 """
 import os
@@ -53,28 +53,29 @@ def _insert_log(db, report_id, log_id, message, created_at):
 
 
 class TestListReportLogsOrder:
-    def test_returns_ascending_order(self, db, report_id):
-        """时间正序：旧上新下（回归：旧实现 DESC 最新在上，与自动滚底矛盾）。"""
+    def test_returns_descending_order(self, db, report_id):
+        """最新在上：新上旧下，最新进展首屏可见（2026-10-27 用户裁决，
+        撤销旧上新下 + 自动滚底方案）。"""
         for i, ts in enumerate(["2026-01-01T00:00:01", "2026-01-01T00:00:02",
                                 "2026-01-01T00:00:03"], start=1):
             _insert_log(db, report_id, f"l{i}", f"日志{i}", ts)
 
         logs = db.list_report_logs(report_id)
 
-        assert [log["message"] for log in logs] == ["日志1", "日志2", "日志3"]
+        assert [log["message"] for log in logs] == ["日志3", "日志2", "日志1"]
 
     def test_limit_takes_latest_not_oldest(self, db, report_id):
-        """limit = 取最新 N 条再正序输出；不得因 ASC 化退化为取最旧 N 条。"""
+        """limit = 取最新 N 条，新上旧下输出；不得退化为取最旧 N 条。"""
         for i in range(5):
             ts = f"2026-01-01T00:00:0{i + 1}"
             _insert_log(db, report_id, f"l{i + 1}", f"日志{i + 1}", ts)
 
         logs = db.list_report_logs(report_id, limit=3)
 
-        assert [log["message"] for log in logs] == ["日志3", "日志4", "日志5"]
+        assert [log["message"] for log in logs] == ["日志5", "日志4", "日志3"]
 
     def test_same_timestamp_stable_insert_order(self, db, report_id):
-        """同 created_at 的多条按插入序稳定排列（轮询重取间不抖动）。"""
+        """同 created_at 的多条按插入序倒排稳定（后写在上；轮询重取间不抖动）。"""
         same_ts = "2026-01-01T00:00:01.000000"
         _insert_log(db, report_id, "l1", "开始生成", same_ts)
         _insert_log(db, report_id, "l2", "开始生成章节", same_ts)
@@ -82,10 +83,10 @@ class TestListReportLogsOrder:
 
         logs = db.list_report_logs(report_id)
 
-        assert [log["message"] for log in logs] == ["开始生成", "开始生成章节", "章节完成"]
+        assert [log["message"] for log in logs] == ["章节完成", "开始生成章节", "开始生成"]
         # 重取（轮询语义）顺序一致
         assert [log["message"] for log in db.list_report_logs(report_id)] == \
-            ["开始生成", "开始生成章节", "章节完成"]
+            ["章节完成", "开始生成章节", "开始生成"]
 
     def test_report_isolation(self, db, project_id, report_id):
         db.conn.execute(

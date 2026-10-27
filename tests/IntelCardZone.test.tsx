@@ -6,7 +6,8 @@
  * 类别 chip / 订阅名 meta；紧凑行 = 其余：要点首行/订阅名 + 相对时间 + 未读点）；
  * 行点击 → onOpen(runId)；running 点击 → dispatch app:navigate-schedules；
  * 「查看全部」→ dispatch app:navigate-intel；空态「暂无产出」；状态点三态与
- * 暂停行灰显（§8.4 状态-界面映射）。
+ * 暂停行灰显（§8.4 状态-界面映射）；app:schedules-changed 已读边沿 → digest
+ * 重拉（ReadView markRead 广播，首页卡区未读点即时消失，2026-10-26）。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
@@ -166,6 +167,19 @@ describe('IntelCardZone（0.6 §3.2 首页情报卡区）', () => {
     expect(onOpen).not.toHaveBeenCalled()
     expect(nav.events).toHaveLength(1)
     nav.cleanup()
+  })
+
+  it('app:schedules-changed 已读边沿 → digest 重拉（读报告后首页卡区未读点即时消失）', async () => {
+    const invoke = mount()
+    render(<IntelCardZone onOpen={() => {}} />)
+    await flush()
+    const digestCalls = () => invoke.mock.calls.filter((c) => c[0] === 'schedules:digest').length
+    const before = digestCalls()
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('app:schedules-changed'))
+    })
+    await flush()
+    expect(digestCalls()).toBe(before + 1)
   })
 
   it("边沿源订阅 'schedule' 活动源（订阅期次终态注册在 schedule 源；误订 task 源则新产出永不触发重拉）", async () => {

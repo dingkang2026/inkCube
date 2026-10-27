@@ -54,6 +54,23 @@ class TestBuildSystemPrompt:
         assert "资深投资分析师" in out
         assert "投委会" in out
 
+    def test_subject_anchored_default_true(self):
+        """缺省 true（schema default）：老模板（无 subject_anchored 字段）行为不变。"""
+        out = build_system_prompt(company_name="华为技术有限公司")
+        assert "本报告为：华为技术有限公司" in out
+
+    def test_subject_not_anchored_excludes_subject_section(self):
+        """subject_anchored=False（行业/区域/企业池类模板）：不注入【报告主体】段，
+        公司名不进 prompt——超导设备变量被主体锚定纠正实证的根因开关（§2.1.2/§3.5）。"""
+        out = build_system_prompt(company_name="华为技术有限公司", subject_anchored=False)
+        assert "【报告主体】" not in out
+        assert "华为技术有限公司" not in out
+
+    def test_subject_not_anchored_no_placeholder(self):
+        """不锚定时连「（未指定报告主体）」占位也不注入——整段消失而非注空。"""
+        out = build_system_prompt(company_name="", subject_anchored=False)
+        assert "（未指定报告主体）" not in out
+
     def test_no_v1_residue_and_no_unformatted_braces(self):
         out = build_system_prompt(company_name="X", report_depth="full")
         # v1 残留字段已删除

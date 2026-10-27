@@ -1,5 +1,7 @@
-/** tests/WikiHomePage.test.tsx — 知识总览健康卡(3.0 §6.1.2 一期)
- *  三型计数(矛盾/缺口/死链)、全 0 整卡不渲染、零型 chip 隐藏、「去处理」直达治理视图。
+/** tests/WikiHomePage.test.tsx — Wiki 首页（2026-10-26 二次收敛:「页面」视图并入）:
+ *  目录态 = 引导卡/全局摘要/成册进度轻量条/目录分组(台账置顶+缺失置灰)/空态 CTA/统计条;
+ *  搜索态 = 全文搜索(Enter 触发/失败与无结果分义)。
+ *  用例谱系:原 WikiHomePage.test + WikiPagesView.test 合并(组件删除,逻辑迁入首页)。
  *  组件消费共享 WikiTab.module.css(Proxy mock 同仓库惯例);Markdown 打桩避免重依赖。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -13,166 +15,67 @@ vi.mock('../src/features/project/tabs/WikiTab.module.css', () => ({
 vi.mock('../src/features/knowledge/Toast', () => ({ useToast: () => vi.fn() }))
 vi.mock('../src/components/Markdown', () => ({ Markdown: () => null }))
 
-import { render, cleanup, fireEvent } from '@testing-library/react'
+import { render, cleanup, fireEvent, act } from '@testing-library/react'
 import { WikiHomePage } from '../src/features/project/tabs/WikiHomePage'
+
+const invokeMock = vi.fn()
+
+/** 排空 microtask（doSearch 异步拉取） */
+const flush = async () => {
+  for (let i = 0; i < 6; i++) {
+    await act(async () => {
+      await Promise.resolve()
+    })
+  }
+}
 
 const minimal = {
   projectId: 'p1',
-  purpose: '',
   overview: '',
-  pages: [],
   sourcePageCount: 0,
+  pages: [] as never[],
   pendingCount: 0,
-  onNavigate: vi.fn(),
+  pagesTotal: 0,
   onNavigateToPage: vi.fn(),
   onCompile: vi.fn(),
+  compiling: false,
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  invokeMock.mockReset()
+  invokeMock.mockResolvedValue({ results: [] })
+  ;(window as unknown as { electronAPI: unknown }).electronAPI = { invoke: invokeMock }
 })
-afterEach(() => cleanup())
 
-describe('WikiHomePage health card (3.0 §6.1.2)', () => {
-  it('hides health card when counts are all zero', () => {
-    const { container } = render(
-      <WikiHomePage {...minimal} reviewCounts={{ contradiction: 0, gap: 0 }} />
-    )
-    expect(container.textContent).not.toContain('project.wiki.homePage.healthTitle')
-  })
+afterEach(() => {
+  cleanup()
+  delete (window as unknown as { electronAPI?: unknown }).electronAPI
+})
 
-  it('hides health card when prop absent', () => {
+describe('WikiHomePage onboarding (引导卡不再是汇编入口)', () => {
+  it('shows onboarding steps for a first-time project (no pages & no source files)', () => {
     const { container } = render(<WikiHomePage {...minimal} />)
-    expect(container.textContent).not.toContain('project.wiki.homePage.healthTitle')
+    const text = container.textContent!
+    expect(text).toContain('project.wiki.homePage.onboardTitle')
+    expect(text).toContain('project.wiki.homePage.step3Hint')
+    // 引导卡自身无按钮——开始汇编 CTA 在目录区，且仅 pendingCount>0 时出现
+    expect(text).not.toContain('project.wiki.homePage.startCompile')
   })
 
-  it('renders trust signal chips (contradiction/gap/pending) with drill-down actions', () => {
-    const onOpenLint = vi.fn()
-    const onOpenCompile = vi.fn()
-    const { container, getByText } = render(
-      <WikiHomePage {...minimal}
-        reviewCounts={{ contradiction: 3, gap: 5 }} pendingCount={4}
-        onOpenLint={onOpenLint} onOpenCompile={onOpenCompile} />
-    )
-    const text = container.textContent!
-    expect(text).toContain('project.wiki.homePage.healthTitle')
-    // getByText 全串精确匹配:同时防两类污染——onboarding 步骤数字(1/2/3)误命中裸数字、子串前缀逃逸(3 vs 30)
-    getByText('project.wiki.homePage.healthContradiction 3')
-    getByText('project.wiki.homePage.healthGap 5')
-    // V2 E3:死链撤离封面(低危工程信号,体检面板分型保留);待汇编 chip 替补
-    expect(text).not.toContain('project.wiki.homePage.healthDeadLink')
-    getByText('project.wiki.homePage.healthPending 4')
-    fireEvent.click(getByText('project.wiki.homePage.healthGo'))
-    expect(onOpenLint).toHaveBeenCalledTimes(1)
-    fireEvent.click(getByText('project.wiki.homePage.healthPending 4'))
-    expect(onOpenCompile).toHaveBeenCalledTimes(1)
-  })
-
-  it('renders card for pending-only signal without healthGo button', () => {
-    const onOpenCompile = vi.fn()
-    const { container, getByText } = render(
-      <WikiHomePage {...minimal}
-        reviewCounts={{ contradiction: 0, gap: 0 }} pendingCount={2}
-        onOpenLint={vi.fn()} onOpenCompile={onOpenCompile} />
-    )
-    const text = container.textContent!
-    expect(text).toContain('project.wiki.homePage.healthTitle')
-    // 仅待汇编时头部「去处理」不渲染(chip 即入口,避免指向无发现的体检面板)
-    expect(text).not.toContain('project.wiki.homePage.healthGo')
-    getByText('project.wiki.homePage.healthPending 2')
-    fireEvent.click(getByText('project.wiki.homePage.healthPending 2'))
-    expect(onOpenCompile).toHaveBeenCalledTimes(1)
-  })
-
-  it('hides individual zero chips but keeps the card', () => {
-    const { container } = render(
-      <WikiHomePage {...minimal}
-        reviewCounts={{ contradiction: 1, gap: 0 }}
-        onOpenLint={vi.fn()} />
-    )
-    const text = container.textContent!
-    expect(text).toContain('project.wiki.homePage.healthContradiction')
-    expect(text).not.toContain('project.wiki.homePage.healthGap')
-    expect(text).not.toContain('project.wiki.homePage.healthDeadLink')
+  it('hides onboarding once any page or source file exists', () => {
+    const { container: c1 } = render(<WikiHomePage {...minimal} pagesTotal={2} />)
+    expect(c1.textContent!).not.toContain('project.wiki.homePage.onboardTitle')
+    const { container: c2 } = render(<WikiHomePage {...minimal} sourcePageCount={1} />)
+    expect(c2.textContent!).not.toContain('project.wiki.homePage.onboardTitle')
   })
 })
 
-describe('WikiHomePage schema completion (3.0 一期 Task 6)', () => {
-  it('renders schema completion bar with missing-page skeleton chips', () => {
-    const { container } = render(
-      <WikiHomePage {...minimal}
-        schemas={[
-          { page_key: 'enterprise_profile', title: '企业画像' },
-          { page_key: 'policy_ledger', title: '政策台账' },
-          { page_key: 'risk_ledger', title: '风险台账' },
-        ]}
-        // 完成度消费后端 missing_pages（全量口径，2026-10-22 起不再用分页 pages 复算）
-        missingPages={[{ page_key: 'risk_ledger', title: '风险台账' }]}
-        pages={[{ page_key: 'enterprise_profile' }, { page_key: 'policy_ledger' }] as never}
-      />
-    )
-    const text = container.textContent!
-    expect(text).toContain('project.wiki.homePage.completionTitle')
-    expect(text).toContain('2/3')                                  // 进度
-    expect(text).toContain('企业画像')                              // 已生成 chip
-    expect(text).toContain('风险台账')                              // 骨架占位 chip
-    // done/missing 视觉区分锁（CSS Proxy mock 下 class 名即字面量）
-    expect(container.querySelector('.completionChipDone')).not.toBeNull()
-    expect(container.querySelector('.completionChipMissing')).not.toBeNull()
-    // V2 E3:进度条升级为环形进度环
-    expect(container.querySelector('.completionRing')).not.toBeNull()
-    expect(container.querySelector('.completionRingFill')).not.toBeNull()
-  })
-
-  it('hides completion block when schemas empty', () => {
-    const { container } = render(<WikiHomePage {...minimal} schemas={[]} />)
-    expect(container.textContent).not.toContain('project.wiki.homePage.completionTitle')
-  })
-})
-
-describe('WikiHomePage ledger timeline card (3.0 四期)', () => {
-  const entries = [
-    { id: 'e1', page_key: 'milestones', entry_date: '2026-10', entry_type: 'milestone', content: '一期设备全部进场' },
-    { id: 'e2', page_key: 'risk_watchlist', entry_date: '2026-09', entry_type: 'risk', content: '企业被列入经营异常名录' },
-    { id: 'e3', page_key: 'milestones', entry_date: null, entry_type: 'milestone', content: '无日期条目' },
-  ]
-
-  it('hides card when entries empty or prop absent', () => {
-    const { container: c1 } = render(<WikiHomePage {...minimal} ledgerEntries={[]} />)
-    expect(c1.textContent).not.toContain('project.wiki.timeline.title')
-    const { container: c2 } = render(<WikiHomePage {...minimal} />)
-    expect(c2.textContent).not.toContain('project.wiki.timeline.title')
-  })
-
-  it('renders date-grouped entries and navigates on click', () => {
-    const onNavigateToPage = vi.fn()
-    const { getByText, container } = render(
-      <WikiHomePage {...minimal} ledgerEntries={entries} onNavigateToPage={onNavigateToPage} />)
-    const text = container.textContent!
-    expect(text).toContain('project.wiki.timeline.title')
-    expect(text).toContain('2026-10')
-    expect(text).toContain('一期设备全部进场')
-    expect(text).toContain('企业被列入经营异常名录')
-    expect(text).toContain('—')                                   // NULL 日期置尾组
-    // 条目行点击 → 直达台账页(标题找不到时显示 page_key 本身)
-    fireEvent.click(getByText('一期设备全部进场').closest('button')!)
-    expect(onNavigateToPage).toHaveBeenCalledWith('milestones')
-  })
-
-  it('shows parsing hint while keeping old entries visible', () => {
-    const { container } = render(
-      <WikiHomePage {...minimal} ledgerEntries={entries.slice(0, 1)} ledgerParsing />)
-    const text = container.textContent!
-    expect(text).toContain('project.wiki.timeline.parsing')
-    expect(text).toContain('一期设备全部进场')                       // 旧条目照常可读
-  })
-})
-
-describe('WikiHomePage ledger index group (V2 E3)', () => {
+describe('WikiHomePage 目录分组 (内容索引 → 页面视图 → 首页，逻辑迁移非重写)', () => {
   const indexPages = [
     { page_key: 'enterprise_profile', title: '企业画像', content: '画像内容', page_type: 'structure', status: 'generated' },
     { page_key: 'policy_ledger', title: '政策台账', content: '台账内容', page_type: 'structure', status: 'generated' },
-  ] as never[]
+  ]
   const indexSchemas = [
     { page_key: 'enterprise_profile', title: '企业画像' },
     { page_key: 'policy_ledger', title: '政策台账', is_ledger: true },
@@ -182,7 +85,8 @@ describe('WikiHomePage ledger index group (V2 E3)', () => {
   it('pins ledger group on top and greys missing framework pages', () => {
     const onNavigateToPage = vi.fn()
     const { container } = render(
-      <WikiHomePage {...minimal} pages={indexPages} schemas={indexSchemas}
+      <WikiHomePage {...minimal} pages={indexPages as never}
+        schemas={indexSchemas} pagesTotal={2}
         missingPages={[{ page_key: 'missing_frame', title: '缺失框架页' }, { page_key: 'risk_ledger', title: '风险台账' }]}
         onNavigateToPage={onNavigateToPage} />
     )
@@ -201,9 +105,11 @@ describe('WikiHomePage ledger index group (V2 E3)', () => {
     // 已生成台账页仍可点(置顶组内第一行)
     fireEvent.click(container.querySelector('.homeIndexItem')!)
     expect(onNavigateToPage).toHaveBeenCalledWith('policy_ledger')
+    // 总数行(pagesCountLine,全量口径)
+    expect(text).toContain('project.wiki.homePage.pagesCount')
   })
 
-  it('renders structure group with pending rows only when no structure page generated', () => {
+  it('renders a pending-only structure group when no structure page generated', () => {
     const { container } = render(
       <WikiHomePage {...minimal}
         pages={[{ page_key: 'topic_a', title: '主题页', content: '', page_type: 'topic', status: 'generated' }] as never}
@@ -214,5 +120,131 @@ describe('WikiHomePage ledger index group (V2 E3)', () => {
     // 无已生成结构页,但缺失定义仍以纯置灰组呈现
     expect(text).toContain('框架页X')
     expect(container.querySelector('.homeIndexItemPending')).not.toBeNull()
+  })
+})
+
+describe('WikiHomePage 空态 CTA (待汇编即启动,经 startCompileMaybe 契约)', () => {
+  it('pending pages offer the start-compile CTA wired to onCompile', () => {
+    const onCompile = vi.fn()
+    const { getByText, container } = render(
+      <WikiHomePage {...minimal} pendingCount={3} onCompile={onCompile} />
+    )
+    expect(container.textContent).toContain('project.wiki.homePage.pendingCta')
+    fireEvent.click(getByText('project.wiki.homePage.startCompile'))
+    expect(onCompile).toHaveBeenCalledTimes(1)
+  })
+
+  it('disabled CTA while compiling; plain placeholder when nothing pending', () => {
+    const { container } = render(
+      <WikiHomePage {...minimal} pendingCount={3} compiling />
+    )
+    const btn = container.querySelector('.retryBtn') as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    expect(container.textContent).toContain('project.wiki.homePage.compiling')
+
+    const { container: c2 } = render(
+      <WikiHomePage {...minimal} pendingCount={0} />
+    )
+    expect(c2.textContent).toContain('project.wiki.homePage.emptyIndex')
+  })
+})
+
+describe('WikiHomePage 搜索态 (自 WikiPagesView 迁入,原 WikiSearchView 降级)', () => {
+  const getInput = (container: HTMLElement) =>
+    container.querySelector('.searchInput') as HTMLInputElement
+
+  it('searches on Enter and renders results that navigate on click', async () => {
+    const onNavigateToPage = vi.fn()
+    invokeMock.mockResolvedValue({
+      results: [
+        { page_key: 'alpha', title: 'Alpha', content: 'alpha 内容', page_type: 'topic', _score: 0.92, _source: 'fts' },
+      ],
+    })
+    const { container } = render(
+      <WikiHomePage {...minimal} onNavigateToPage={onNavigateToPage} />
+    )
+    fireEvent.change(getInput(container), { target: { value: 'alpha' } })
+    fireEvent.keyDown(getInput(container), { key: 'Enter' })
+    await flush()
+
+    expect(invokeMock).toHaveBeenCalledWith('wiki:search', {
+      projectId: 'p1', query: 'alpha', topK: 20,
+    })
+    expect(container.querySelector('.searchResultItem')).not.toBeNull()
+    expect(container.textContent).toContain('Alpha')
+    fireEvent.click(container.querySelector('.searchResultItem')!)
+    expect(onNavigateToPage).toHaveBeenCalledWith('alpha')
+  })
+
+  it('hides overview and index sections while searching (搜索态聚焦结果)', async () => {
+    const { container } = render(<WikiHomePage {...minimal} overview="摘要内容" pagesTotal={3} />)
+    expect(container.textContent).toContain('project.wiki.overview')
+    fireEvent.change(getInput(container), { target: { value: 'alpha' } })
+    fireEvent.keyDown(getInput(container), { key: 'Enter' })
+    await flush()
+
+    expect(container.textContent).not.toContain('project.wiki.overview')
+    expect(container.textContent).not.toContain('project.wiki.homePage.pagesCount')
+  })
+
+  it('shows a dedicated failure state distinct from no-results (后端错误透出)', async () => {
+    invokeMock.mockRejectedValue(new Error('boom'))
+    const { container } = render(<WikiHomePage {...minimal} />)
+    fireEvent.change(getInput(container), { target: { value: 'alpha' } })
+    fireEvent.keyDown(getInput(container), { key: 'Enter' })
+    await flush()
+
+    expect(container.textContent).toContain('project.wiki.searchFailed')
+  })
+})
+
+describe('WikiHomePage 成册进度轻量条 (进度环压缩,2026-10-26)', () => {
+  const schemas = [
+    { page_key: 'enterprise_profile', title: '企业画像' },
+    { page_key: 'policy_ledger', title: '政策台账' },
+    { page_key: 'risk_ledger', title: '风险台账' },
+  ]
+
+  it('renders a one-line lite bar and navigates to schema view on click', () => {
+    const onOpenSchema = vi.fn()
+    const { container, getByText } = render(
+      <WikiHomePage {...minimal}
+        schemas={schemas}
+        // 完成度消费后端 missing_pages（全量口径，2026-10-22 起不再用分页 pages 复算）
+        missingPages={[{ page_key: 'risk_ledger', title: '风险台账' }]}
+        pagesTotal={2}
+        onOpenSchema={onOpenSchema} />
+    )
+    const text = container.textContent!
+    expect(text).toContain('project.wiki.homePage.completionTitle')
+    expect(text).toContain('2/3')                                  // generated/total
+    // 轻量条形态锁:进度环与 chips 清单均已删（同一信息不在两处维护）
+    expect(container.querySelector('.progressLiteFill')).not.toBeNull()
+    expect(container.querySelector('.completionRing')).toBeNull()
+    expect(container.querySelector('.completionChipDone')).toBeNull()
+    fireEvent.click(getByText('project.wiki.homePage.completionTitle'))
+    expect(onOpenSchema).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the lite bar when schemas empty or prop absent', () => {
+    const { container: c1 } = render(<WikiHomePage {...minimal} schemas={[]} />)
+    expect(c1.textContent!).not.toContain('project.wiki.homePage.completionTitle')
+    const { container: c2 } = render(<WikiHomePage {...minimal} />)
+    expect(c2.textContent!).not.toContain('project.wiki.homePage.completionTitle')
+  })
+})
+
+describe('WikiHomePage stats bar', () => {
+  it('reports totals from pagesTotal (全量口径) and source file count', () => {
+    const { container } = render(<WikiHomePage {...minimal} pagesTotal={7} sourcePageCount={3} />)
+    const text = container.textContent!
+    expect(text).toContain('7')
+    expect(text).toContain('project.wiki.wikiPages')
+    expect(text).toContain('project.wiki.sourceFiles')
+  })
+
+  it('hides the stats bar for a fully empty project', () => {
+    const { container } = render(<WikiHomePage {...minimal} />)
+    expect(container.querySelector('.homeStats')).toBeNull()
   })
 })

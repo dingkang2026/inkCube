@@ -122,6 +122,27 @@
   color: var(--text-primary);
 }
 
+/* 通知铃铛（2.11 §6.1）：角标徽章挂按钮右上角（顶栏 32px 高，徽章缩小档） */
+.notifBtn {
+  position: relative;
+}
+
+.notifBadge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+
 .windowControls {
   display: flex;
   height: 100%;

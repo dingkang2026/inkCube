@@ -5,6 +5,7 @@
   "version": "1.0",
   "project_types": ["investment", "general"],
   "stage": "before",
+  "subject_anchored": false,
   "output_format": "docx",
   "role_hint": "资深行业研究分析师，客观中立，数据驱动",
   "audience": "内部研究团队和投资决策层",

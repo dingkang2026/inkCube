@@ -187,6 +187,13 @@ export function WikiPageReader({
       const result: any = await window.electronAPI.invoke('wiki:enrichWikilinks', {
         projectId, pageKey: page.page_key,
       })
+      if (result?.reason === 'content_changed') {
+        // 内容级 CAS 拒绝（复审 Major 2026-10-27）：读-改-写窗口内他方已写，
+        // LLM 建议整批丢弃——刷新让用户看到现行内容后再试
+        toast(t('project.wiki.enrichContentChanged', { defaultValue: '页面内容刚被其他操作修改，已放弃本次补全，请刷新后重试' }), 'warning')
+        onRefresh?.()
+        return
+      }
       const added = result?.links_added ?? 0
       if (added > 0) {
         toast(t('project.wiki.enrichDone', { count: added, defaultValue: '已补全 {{count}} 个链接' }), 'success')

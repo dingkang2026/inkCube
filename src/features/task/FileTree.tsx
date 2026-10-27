@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FilePreview } from './FilePreview'
-import { ImportTargetDialog } from './ImportTargetDialog'
-import { Folder, Loader2, RefreshCw, Upload } from 'lucide-react'
+import { Folder, Loader2, RefreshCw } from 'lucide-react'
 import { fileIcon, formatSize } from './utils'
 import styles from './FileTree.module.css'
 
@@ -105,7 +104,6 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
   const [tree, setTree] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null)
-  const [importing, setImporting] = useState(false)
 
   const handleFileClick = useCallback((file: SelectedFile) => {
     setSelectedFile(file)
@@ -188,14 +186,6 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
       <div className={styles.treePanel} style={{ width: treeWidth, flexShrink: 0 }}>
         <div className={styles.header}>
           <span className={styles.headerTitle}>{t('task.workspace')}</span>
-          <button
-            className={styles.iconBtn}
-            disabled={!selectedFile}
-            onClick={() => setImporting(true)}
-            title={t('task.import.title')}
-          >
-            <Upload size={14} />
-          </button>
           <button className={styles.iconBtn} onClick={loadTree} title={t('task.refresh')}>
             {loading ? <Loader2 size={14} className={styles.spinning} /> : <RefreshCw size={14} />}
           </button>
@@ -231,16 +221,6 @@ export function FileTree({ taskId, treeWidth = 200, previewWidth = 350, onFileSe
             />
           </div>
         </>
-      )}
-
-      {importing && selectedFile && taskId && (
-        <ImportTargetDialog
-          taskId={taskId}
-          path={selectedFile.path}
-          filename={selectedFile.name}
-          onDone={() => setImporting(false)}
-          onClose={() => setImporting(false)}
-        />
       )}
     </div>
   )

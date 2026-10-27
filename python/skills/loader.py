@@ -12,6 +12,7 @@ import os
 import sys
 from typing import Any
 
+from paths import get_data_dir
 from skills.context import SkillContext
 from skills.protocol import BaseSkill
 from tools.base import BaseTool
@@ -398,6 +399,11 @@ class AgentSkillAdapter(BaseSkill):
             spawn_env = os.environ.copy()
             if context.task_id:
                 spawn_env["INKCUBE_TASK_ID"] = context.task_id
+            # B7 dev 锚定修复：dev 下后端进程无 INKCUBE_DATA_DIR（仅生产由
+            # Electron spawn 注入），技能脚本 extract 回退 cwd/fetched（任务
+            # 工作区），产物随归档清盘蒸发且数据管理面板不可见。此处补注
+            # paths.get_data_dir 解析值，setdefault 不覆盖 Electron 注入值。
+            spawn_env.setdefault("INKCUBE_DATA_DIR", get_data_dir())
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

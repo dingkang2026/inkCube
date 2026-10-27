@@ -659,6 +659,11 @@ async def update_project(project_id: str, body: ProjectUpdate):
     """Update project name, description, type, stage, and/or company fields."""
     try:
         db = get_db()
+        # kind 守门：基础库（预置/自定义）不可经项目端点改写——预置库禁改，
+        # 自定义库改写唯一入口为 PATCH /base-libs/{id}
+        _proj = db.get_project(project_id)
+        if not _proj or _proj.get("kind") != "project":
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
         if (body.name is None and body.description is None and body.type is None
                 and body.stage is None and body.company_name is None
                 and body.credit_code is None and body.industry_profile is None
@@ -1529,6 +1534,158 @@ async def list_base_libs(
             "SELECT COUNT(*) AS cnt FROM projects WHERE kind = 'base_lib'"
         ).fetchone()["cnt"]
         return {"base_libs": libs, "has_more": has_more, "total": total}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BaseLibCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+
+class BaseLibUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+def _base_lib_active_work(db, lib_id: str) -> list[str]:
+    """基础库删除守门：库内在途活动清单（文件解析/图片描述；基础库无报告/
+    填表/Wiki/PPT 活动，订阅产出是独立副本不写库，见 2.11）。空表 = 可删。"""
+    checks = [
+        ("文件解析", "SELECT COUNT(*) AS c FROM files "
+                     "WHERE project_id = ? AND status IN ('pending', 'parsing')"),
+        ("图片描述", "SELECT COUNT(*) AS c FROM images "
+                      "JOIN files ON images.file_id = files.id "
+                      "WHERE files.project_id = ? AND images.status IN ('pending', 'processing')"),
+    ]
+    return [label for label, sql in checks
+            if db.conn.execute(sql, (lib_id,)).fetchone()["c"] > 0]
+
+
+@router.post("/base-libs")
+async def create_base_lib(body: BaseLibCreate):
+    """创建自定义基础库（lib_type='custom'）。"""
+    try:
+        db = get_db()
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Base library name is required")
+        lib = db.create_base_lib(name=name, description=(body.description or "").strip())
+        logger.info("Created custom base lib %s (%s)", lib["id"], name)
+        return lib
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/base-libs/{lib_id}")
+async def update_base_lib(lib_id: str, body: BaseLibUpdate):
+    """改名/改描述（仅自定义库；预置库 403）。"""
+    try:
+        db = get_db()
+        lib = db.get_base_lib(lib_id)
+        if not lib:
+            raise HTTPException(status_code=404, detail="Base library not found")
+        if db.is_preset_base_lib(lib):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "预置基础库不可改名或改描述",
+                         "code": "BASE_LIB_PRESET_PROTECTED"},
+            )
+        name = body.name.strip() if body.name is not None else None
+        if name is not None and not name:
+            raise HTTPException(status_code=400, detail="Base library name cannot be empty")
+        if body.name is None and body.description is None:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        if not db.update_base_lib(lib_id, name=name, description=body.description):
+            raise HTTPException(status_code=404, detail="Base library not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/base-libs/{lib_id}")
+async def delete_base_lib(lib_id: str):
+    """删除自定义基础库（预置库 403；在途活动 409）。
+
+    清理链对齐删项目（2.1 §11.4）：Chroma 集合 → FTS → 磁盘 files/{id}/ →
+    指向该库的订阅去向置空+通知（clear_schedules_target 对称置空）→ DB 行
+    （级联 files/images/project_base_libs）。订阅历史期次副本存
+data/schedules/ 与库无涉，不清理。"""
+    try:
+        db = get_db()
+        data_dir = get_data_dir()
+        lib = db.get_base_lib(lib_id)
+        if not lib:
+            raise HTTPException(status_code=404, detail="Base library not found")
+        if db.is_preset_base_lib(lib):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "预置基础库不可删除",
+                         "code": "BASE_LIB_PRESET_PROTECTED"},
+            )
+        active = _base_lib_active_work(db, lib_id)
+        if active:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"基础库尚有进行中的活动（{'、'.join(active)}），完成后再删除",
+                    "code": "BASE_LIB_HAS_ACTIVE_WORK",
+                },
+            )
+
+        # 清理前复查（对齐删项目防线）：守门与破坏链的间隙内新落入的解析/描述
+        # 活动不放行——放行会让 worker 向刚被删掉的 Chroma 集合写入，复活出
+        # 无人清理的孤儿集合；409 时数据未动，客户端稍后重试即可
+        active_after = _base_lib_active_work(db, lib_id)
+        if active_after:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": f"基础库尚有进行中的活动（{'、'.join(active_after)}），完成后再删除",
+                    "code": "BASE_LIB_HAS_ACTIVE_WORK",
+                },
+            )
+
+        vector_store = VectorStore(str(Path(data_dir) / "chroma"))
+        vector_store.delete_project(lib_id)
+        FTSStore(db).delete_project_chunks(lib_id)
+
+        files_dir = Path(data_dir) / "files" / lib_id
+        if files_dir.exists():
+            shutil.rmtree(files_dir, ignore_errors=True)
+            if files_dir.exists():
+                # 磁盘删除失败（Windows 文件锁/杀软占用）不静默留孤儿：记录
+                # 残留路径供排查；不阻断（库行/索引已不可达，残留可手动清）
+                logger.warning("Base lib %s files dir not fully removed: %s",
+                               lib_id, files_dir)
+
+        # 订阅去向联动（与删项目同构）：指向本库的订阅 target 置空 + 合并通知，
+        # 否则订阅每期 archive_failed 幽灵警告（产出无处沉淀根因不可见）
+        affected = db.clear_schedules_target("baselib", lib_id)
+
+        if not db.delete_base_lib(lib_id):
+            raise HTTPException(status_code=404, detail="Base library not found")
+
+        if affected:
+            names = "、".join(r["name"] for r in affected)
+            # container/project_id 取项目删除同款安全值：点击不导航到已删库
+            # （container='baselib' 会选中不存在的基础库跳 notFound）
+            activity_events.notify(
+                db, entity_type="schedule",
+                entity_id=f"target_removed_{lib_id}",
+                project_id=None, container="project", kind="info",
+                entity_title="定时订阅",
+                detail=(f"基础库「{lib['name']}」已删除，{len(affected)} 个订阅"
+                        f"（{names}）的去向已重置为不沉淀"))
+
+        logger.info("Deleted custom base lib %s (%s)", lib_id, lib["name"])
+        return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

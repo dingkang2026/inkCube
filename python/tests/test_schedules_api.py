@@ -61,12 +61,14 @@ def test_create_returns_schedule_with_contract(client_and_db):
 
 def test_create_with_explicit_name_and_target(client_and_db):
     client, db, _td = client_and_db
+    # body 保留 autoImport: False：锁定版本倾斜兼容契约——旧版本前端仍发送
+    # 该字段时 Pydantic 忽略未知字段不 422；且新库无列、白名单不认，不入行
     body = {**_CREATE_BODY, "name": "华润舆情周报",
             "targetType": "project", "targetId": "p1", "autoImport": False}
     s = client.post("/schedules", json=body).json()["schedule"]
     assert s["name"] == "华润舆情周报"
     assert s["target_type"] == "project" and s["target_id"] == "p1"
-    assert s["auto_import"] == 0
+    assert "auto_import" not in s
 
 
 def test_create_invalid_interval_400(client_and_db):
@@ -109,11 +111,10 @@ def test_patch_clears_target_with_null(client_and_db):
     s = client.post("/schedules", json={
         **_CREATE_BODY, "targetType": "project", "targetId": "p1"}).json()["schedule"]
     r = client.patch(f"/schedules/{s['id']}",
-                     json={"targetType": None, "targetId": None, "autoImport": False})
+                     json={"targetType": None, "targetId": None})
     assert r.status_code == 200
     row = r.json()["schedule"]
     assert row["target_type"] is None and row["target_id"] is None
-    assert row["auto_import"] == 0
     # null 对非去向字段无清空语义：name=null 保持现值
     r2 = client.patch(f"/schedules/{s['id']}", json={"name": None})
     assert r2.status_code == 200

@@ -155,6 +155,16 @@ def _emit_compile(db, task_id: str, kind: str, detail: str | None) -> None:
         logger.warning("compile terminal event failed for %s", task_id, exc_info=True)
 
 
+def governance_wiki(db, task_id: str, detail: str) -> None:
+    """Wiki 自动治理完成（E3-2026-10）：写 governance 通知。
+
+    复用 wiki_compile 通道（entity_type/task_id 导航均一致，点击落知识 Tab）；
+    kind='governance' 区别于编译终态，前端标题文案独立（i18n
+    activity.wiki_compile.governance）。仅在治理有实际动作时调用。
+    """
+    _emit_compile(db, task_id, "governance", (detail or "")[:200] or None)
+
+
 # ── task / model_download（E2 收尾，v3.9）─────────────────────
 
 def complete_task(db, task_id: str) -> None:

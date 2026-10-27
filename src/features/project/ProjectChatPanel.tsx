@@ -1,13 +1,10 @@
 /** src/features/project/ProjectChatPanel.tsx — Right-side resizable chat panel with real RAG Q&A */
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { MessageCircle, X, Send, FileText, Search, ArrowLeft, Trash2, BookPlus, Check } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { UsageText } from '../usage/UsageText'
-import { TaskTemplatePanel } from '../task/TaskTemplatePanel'
-import { usePlaceholderFill } from '../task/usePlaceholderFill'
-import { hasUnfilledPlaceholders } from '../task/promptTemplate'
-import { useToast } from '../knowledge/Toast'
+import { useDrawerWidth } from '../../hooks/useDrawerWidth'
 import type { UsageSummary } from '../../types'
 import s from './ProjectChatPanel.module.css'
 
@@ -48,12 +45,9 @@ interface ProjectChatPanelProps {
   onClose?: () => void
 }
 
-const DEFAULT_WIDTH = 720
+/** 宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth；
+ *  2026-10-26 由固定 720px 改比例，抽屉六处收编） */
 const MIN_WIDTH = 260
-const MAX_WIDTH = 720
-
-/** 企业类占位符（zh/en 模板各一）：项目对话场景自动预填项目名（0.5 §4.4） */
-const COMPANY_PH_RE = /\{(企业名|company)\}/g
 
 export function ProjectChatPanel({ projectId, projectName, selectedFileId, selectedFilename, onClearFileScope, chatIpcChannel = 'knowledge:chat', isOpen: controlledIsOpen, onOpen, onClose }: ProjectChatPanelProps) {
   const { t } = useTranslation()
@@ -67,21 +61,12 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
       setInternalIsOpen(value)
     }
   }
-  // 输入框 + 占位符表单联动（0.5 §4.4）：模板预填后企业类占位符自动填项目名，
-  // 其余变量按名去重、填一次全量替换；手动编辑文本框即接管
-  const phForm = usePlaceholderFill()
-  const inputValue = phForm.text
-  const showToast = useToast()
-  // 未填占位符首次发送 → toast 警示不发送，再次点击放行（与任务聊天同款守卫）
-  const placeholderWarnedRef = useRef(false)
+  const [inputValue, setInputValue] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
-  const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH)
-  const [isDraggingState, setIsDraggingState] = useState(false)
+  // 宽度/拖宽/防误关守卫统一契约（抽屉六处收编，2026-10-26）
+  const dr = useDrawerWidth({ min: MIN_WIDTH })
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const isDragging = useRef(false)
-  const startX = useRef(0)
-  const startWidth = useRef(DEFAULT_WIDTH)
   const archiveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const archiveErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -113,51 +98,12 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
     if (archiveErrorTimerRef.current) clearTimeout(archiveErrorTimerRef.current)
   }, [projectId])
 
-  // ── Drag resize logic ──
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    isDragging.current = true
-    setIsDraggingState(true)
-    startX.current = e.clientX
-    startWidth.current = panelWidth
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-  }, [panelWidth])
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current) return
-      const delta = startX.current - e.clientX
-      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth.current + delta))
-      setPanelWidth(newWidth)
-    }
-    const handleMouseUp = () => {
-      if (isDragging.current) {
-        isDragging.current = false
-        setIsDraggingState(false)
-        document.body.style.cursor = ''
-        document.body.style.userSelect = ''
-      }
-    }
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [])
+  // 拖宽逻辑统一由 useDrawerWidth 承担（2026-10-26 收编，含卸载复位防护）
 
   const handleSend = async () => {
     if (!inputValue.trim() || loading) return
-    // 未填占位符首次发送 → toast 警示不发送；再次点击放行（与任务聊天同款守卫）
-    if (hasUnfilledPlaceholders(inputValue) && !placeholderWarnedRef.current) {
-      placeholderWarnedRef.current = true
-      showToast(t('task.placeholderWarn'), 'error')
-      return
-    }
-    placeholderWarnedRef.current = false
     const userMsg = inputValue.trim()
-    phForm.reset()
+    setInputValue('')
 
     setMessages(prev => [...prev, {
       id: `m-${Date.now()}`,
@@ -215,13 +161,6 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
     setArchiveSuccessId(null)
     setArchiveErrorMsgId(null)
   }
-
-  // 0.5 §4.4:点模板卡预填；企业类占位符(zh/en)预填项目名，其余变量在占位符
-  // 表单按名去重填写、一次替换全文（usePlaceholderFill 联动）
-  const handlePick = useCallback((prompt: string) => {
-    phForm.start(prompt.replace(COMPANY_PH_RE, projectName))
-    placeholderWarnedRef.current = false
-  }, [projectName, phForm])
 
   // ── Archive to Wiki ──
   const handleArchiveStart = (msgId: string, defaultTitle: string) => {
@@ -281,16 +220,17 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
         </div>
       )}
 
-      {/* Backdrop — 模板管理 drawer 同款：展开时点击面板外任意处收起（遮罩不透传点击） */}
-      {isOpen && <div className={s.backdrop} onClick={() => setIsOpen(false)} />}
+      {/* Backdrop — 模板管理 drawer 同款：展开时点击面板外任意处收起（遮罩不透传点击；
+          拖宽/选字松手落遮罩的合成 click 由守卫吞掉不误关） */}
+      {isOpen && <div className={s.backdrop} onClick={() => { if (!dr.suppressClick.current) setIsOpen(false) }} />}
 
       {/* Panel — absolute, positioned relative to .page (full page height) */}
       {isOpen && (
-        <div className={s.panel} style={{ width: panelWidth }}>
+        <div className={s.panel} style={{ width: dr.width }} onMouseDown={dr.onPanelMouseDown}>
           {/* Drag handle */}
           <div
-            className={`${s.dragHandle} ${isDraggingState ? s.dragHandleActive : ''}`}
-            onMouseDown={handleMouseDown}
+            className={`${s.dragHandle} ${dr.dragging ? s.dragHandleActive : ''}`}
+            onMouseDown={dr.onHandleMouseDown}
           />
 
           {/* Header */}
@@ -328,7 +268,6 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
             {messages.length === 0 && (
               <div className={s.emptyChat}>
                 <p>{t('project.chat.emptyHint')}</p>
-                <TaskTemplatePanel scope="project" projectId={projectId} onPick={handlePick} />
               </div>
             )}
             {messages.map((msg) => (
@@ -398,7 +337,9 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
                           msg.id,
                           (msg.sourceQuestion || '').slice(0, 30) || 'Chat 归档',
                         )}
-                        title={t('project.wiki.archiveToWiki', { defaultValue: '保存为 Wiki 页面' })}
+                        title={t('project.wiki.archiveToWikiHint', {
+                          defaultValue: '把这条回答存为知识册页面；后续汇编会引用它，让知识册记住这次问答',
+                        })}
                       >
                         <BookPlus size={12} />
                         {t('project.wiki.archiveToWiki', { defaultValue: '保存为 Wiki' })}
@@ -419,28 +360,11 @@ export function ProjectChatPanel({ projectId, projectName, selectedFileId, selec
           </div>
 
           {/* Input */}
-          {/* 占位符表单(0.5 §4.4,模板预填+未接管):变量按名去重,填一次全量替换 */}
-          {!phForm.manual && phForm.names.length > 0 && (
-            <div className={s.phForm}>
-              {phForm.names.map((name) => (
-                <label key={name} className={s.phItem}>
-                  <span className={s.phName}>{name}</span>
-                  <input
-                    className={s.phInput}
-                    value={phForm.values[name] ?? ''}
-                    aria-label={name}
-                    onChange={(e) => phForm.setValue(name, e.target.value)}
-                  />
-                </label>
-              ))}
-              <span className={s.phHint}>{t('task.phFormHint')}</span>
-            </div>
-          )}
           <div className={s.inputRow}>
             <input
               className={s.input}
               value={inputValue}
-              onChange={(e) => phForm.onInputEdit(e.target.value)}
+              onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={t('knowledge.chatInputPlaceholder')}
               disabled={loading}

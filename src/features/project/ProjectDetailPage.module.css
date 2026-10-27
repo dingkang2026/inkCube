@@ -113,6 +113,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;   /* 阶段 pills 并入同行（2026-10-26）：窄窗口时换行不溢出 */
   flex-shrink: 0;
 }
 
@@ -132,11 +133,11 @@
   border-color: var(--accent);
 }
 
-.stageRow {
-  display: flex;
+/* pills 连体组容器（2026-10-26 自独立 stageRow 并入 headerActions）：
+   内部 :first-child/:last-child 圆角与 border-left 合并逻辑不变 */
+.stagePillGroup {
+  display: inline-flex;
   align-items: center;
-  gap: 0;
-  margin-top: 12px;
 }
 
 /* Stage pills — clickable, bidirectional */

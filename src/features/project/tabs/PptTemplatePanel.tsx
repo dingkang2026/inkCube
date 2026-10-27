@@ -13,6 +13,7 @@ import {
   Eye, Trash2, RefreshCw, Plus, Loader2, AlertCircle, Download, ChevronDown, ChevronUp, FileText,
 } from 'lucide-react'
 import s from './TemplateManagement.module.css'
+import { useDrawerWidth } from '../../../hooks/useDrawerWidth'
 import { useToast } from '../../knowledge/Toast'
 import { useConfirm } from '../../../components/ConfirmDialog'
 import { Markdown } from '../../../components/Markdown'
@@ -41,16 +42,22 @@ interface TplEntry {
 
 interface JobRow {
   id: string
+  task_id: string        // tasks 行 id：拉取 agent 消息（brief 提案/时间线）的查询键
   title: string
   status: string          // running / awaiting_input / paused / completed / failed / cancelled
   stage: string | null    // intake / strategy / authoring / export
   error: string | null
+  /** 工作区模板包是否完整（failed 行展示「重试收录」的判定，后端富化） */
+  package_ready?: boolean
   template_kind: string | null
   template_id: string | null
 }
 
 const KINDS = ['brand', 'style', 'layout', 'deck'] as const
 const JOBS_PAGE_SIZE = 50
+
+/** 详情抽屉宽度下限（默认 60vw 随视口、上限 92vw 随视口，见 useDrawerWidth；与 CSS min-width 兜底同值） */
+const DRAWER_MIN_DETAIL = 460
 
 /** 本地文件 → inkcube:// 协议 URL（与 PptWizard/ImageGallery 同规则，CSP img-src 已放行） */
 function localFileUrl(filePath: string): string {
@@ -89,12 +96,12 @@ function JobCard({ job, onChanged }: { job: JobRow; onChanged: () => void }) {
 
   const loadMessages = useCallback(async () => {
     try {
-      const res: any = await window.electronAPI.invoke('tasks:getMessages', job.id)
+      const res: any = await window.electronAPI.invoke('tasks:getMessages', job.task_id)
       if (!res?.error) setMessages(res.messages || [])
     } catch (err) {
       console.error('Failed to load template job messages:', err)
     }
-  }, [job.id])
+  }, [job.task_id])
 
   useEffect(() => {
     if (expanded && messages.length === 0) void loadMessages()
@@ -194,6 +201,20 @@ function JobCard({ job, onChanged }: { job: JobRow; onChanged: () => void }) {
                 onClick={() => act(() => window.electronAPI.invoke('ppt:resume', job.id))}
               >{t('project.pptTpl.job.resume')}</button>
             )}
+            {/* 失败态重试（P2-3/P2-4）：工作区包完整 → 重试收录（纯本地幂等，
+                不跑 agent）；否则 → 继续（agent 从历史重建上下文续跑） */}
+            {job.status === 'failed' && (job.package_ready ? (
+              <button
+                className={s.primaryBtn} disabled={acting}
+                title={t('project.pptTpl.job.retryCollectTip')}
+                onClick={() => act(() => window.electronAPI.invoke('ppt:retryCollect', job.id), 'project.pptTpl.job.collected')}
+              >{t('project.pptTpl.job.retryCollect')}</button>
+            ) : (
+              <button
+                className={s.primaryBtn} disabled={acting}
+                onClick={() => act(() => window.electronAPI.invoke('ppt:resume', job.id))}
+              >{t('project.pptTpl.job.resume')}</button>
+            ))}
             {/* 取消（running/awaiting_input）与删除（终态/paused）；后端 delete 对
                 在跑任务 bounded 等待取消后再删，paused 直接删 */}
             {(job.status === 'running' || job.status === 'awaiting_input') && (
@@ -228,6 +249,9 @@ export function PptTemplatePanel() {
   const [jobsLoadingMore, setJobsLoadingMore] = useState(false)
   const jobsLimitRef = useRef(JOBS_PAGE_SIZE)
   const [viewing, setViewing] = useState<TplEntry | null>(null)
+  // 详情抽屉宽度/拖宽/防误关守卫统一契约（2026-10-26 由 CSS 固定 46% 不可拖改统一契约，
+  // 下限对齐原 min-width 460）
+  const dr = useDrawerWidth({ min: DRAWER_MIN_DETAIL })
   const [rescanning, setRescanning] = useState(false)
   const [wizardOpen, setWizardOpen] = useState(false)
   // 模板规范（design_spec.md 正文）：抽屉打开时按需拉取，Brand/Style 的主体内容
@@ -453,11 +477,15 @@ export function PptTemplatePanel() {
         )
       })}
 
-      {/* 模板详情抽屉（复用同页 drawer 视觉） */}
+      {/* 模板详情抽屉（复用同页 drawer 视觉；宽度/拖宽/守卫统一契约） */}
       {viewing && (
         <>
-          <div className={s.drawerBackdrop} onClick={() => setViewing(null)} />
-          <div className={s.drawer}>
+          <div className={s.drawerBackdrop} onClick={() => { if (!dr.suppressClick.current) setViewing(null) }} />
+          <div className={s.drawer} style={{ width: dr.width }} onMouseDown={dr.onPanelMouseDown}>
+            <div
+              className={`${s.dragHandle} ${dr.dragging ? s.dragHandleActive : ''}`}
+              onMouseDown={dr.onHandleMouseDown}
+            />
             <div className={s.drawerHeader}>
               <h4>{viewing.id}</h4>
               <button className={s.closeBtn} onClick={() => setViewing(null)} title={t('common.close')}>×</button>

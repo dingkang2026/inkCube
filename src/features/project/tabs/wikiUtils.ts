@@ -70,6 +70,7 @@ export const ACTION_LABEL_KEYS: Record<string, string> = {
   ingest: 'project.wiki.actionIngest',
   enriched: 'project.wiki.actionEnriched',
   dedup_merge: 'project.wiki.actionDedupMerge',
+  governance: 'project.wiki.actionGovernance',
   overview_updated: 'project.wiki.actionOverviewUpdated',
 }
 

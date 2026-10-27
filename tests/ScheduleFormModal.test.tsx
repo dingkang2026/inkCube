@@ -55,7 +55,7 @@ vi.mock('../src/features/settings/useSettings', () => ({
 const ROW = {
   id: 'sch_1', name: '华润舆情', prompt: '扫描并输出报告', category: 'corporate',
   interval_type: 'daily', interval_value: '09:00',
-  target_type: null, target_id: null, auto_import: 1, enabled: 1,
+  target_type: null, target_id: null, enabled: 1,
   next_run_at: null, last_run_at: null, consecutive_failures: 0,
   scope: null, digest_schedule_ids: null,
   archive_last_run_id: null, archive_file_id: null, is_running: false,
@@ -141,7 +141,6 @@ describe('ScheduleFormModal（2.11 §12 收敛：两类订阅类型）', () => {
       category: 'general',
       targetType: null,
       targetId: null,
-      autoImport: false,
     })
     expect((call![1] as { prompt: string }).prompt)
       .toBe('汇总各订阅期次\n{sections}\n\n此外，用户特别要求：\n重点关注融资')

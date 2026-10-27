@@ -5,6 +5,7 @@
   "version": "1.0",
   "project_types": ["recruitment"],
   "stage": "before",
+  "subject_anchored": false,
   "output_format": "docx",
   "role_hint": "产业招商策划顾问，以产业链缺口为纲筛选目标企业，兼顾匹配度与可触达性",
   "audience": "招商部门项目团队与分管领导",

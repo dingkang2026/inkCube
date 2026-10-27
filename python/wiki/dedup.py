@@ -119,9 +119,10 @@ async def merge_pages(
     """Stage 3: Merge duplicate pages into canonical page.
 
     - LLM merges content (deduplicated)
-    - Code merges tags/refs/sources (union)
+    - Code merges tags/refs/sources (union, persisted to canonical)
     - Rewrites all wiki-links pointing to duplicates → canonical
-    - Deletes duplicate pages
+      （canonical 自身的 [[dup]] 引用在内存中同步改写）
+    - Deletes duplicate pages（canonical CAS 写成功之后，失配时保留可重试）
     - Records change log
 
     Returns:
@@ -129,6 +130,8 @@ async def merge_pages(
          "failed": [{"page_key", "reason"}], "truncated": [page_key]}
 
     合并失败（LLM 异常/超时）的 dup 页保留不删，通过 failed 上报；
+    canonical 在合并窗口内被并发改写时全组拒绝（M-1 同款内容级 CAS，
+    reason=content_changed），dup 页同样保留待重试；
     超出 _MAX_MERGE_CHARS 截断的页面通过 truncated 上报。
     """
     canonical = db.get_wiki_page(project_id, canonical_key)
@@ -136,9 +139,11 @@ async def merge_pages(
         return {"merged": 0, "canonical": canonical_key, "rewritten_links": 0,
                 "failed": [], "truncated": []}
 
-    canonical_content = canonical.get("content", "")
+    canonical_content = canonical.get("content") or ""
+    canonical_snapshot = canonical_content  # CAS 快照：写回前 canonical 不得被改动
     merged_tags = set(_safe_json_loads(canonical.get("tags", "[]")))
     merged_refs = set(_safe_json_loads(canonical.get("refs", "[]")))
+    merged_sources = set(_safe_json_loads(canonical.get("sources", "[]")))
     rewritten = 0
     merged_keys: list[str] = []
     failed_merges: list[dict] = []
@@ -149,7 +154,7 @@ async def merge_pages(
         if not dup_page:
             continue
 
-        dup_content = dup_page.get("content", "")
+        dup_content = dup_page.get("content") or ""
 
         # LLM merge content。合并失败（LLM 异常/超时）时保留 dup 页：删除不可逆，
         # dup 的独特内容不能因一次瞬时失败而静默丢失。
@@ -171,31 +176,59 @@ async def merge_pages(
         canonical_content = merged_content
         merged_keys.append(dup_key)
 
-        # Union tags and refs
+        # Union tags/refs/sources
         merged_tags.update(_safe_json_loads(dup_page.get("tags", "[]")))
         merged_refs.update(_safe_json_loads(dup_page.get("refs", "[]")))
+        merged_sources.update(_safe_json_loads(dup_page.get("sources", "[]")))
 
-        # Rewrite wiki-links in all pages pointing to this duplicate
-        rewritten += _rewrite_wikilinks(db, project_id, dup_key, canonical_key)
+    if not merged_keys:
+        return {
+            "merged": 0, "canonical": canonical_key, "rewritten_links": 0,
+            "failed": failed_merges, "truncated": truncated,
+        }
 
-        # Delete duplicate page
-        db.delete_wiki_page(project_id, dup_key)
-        logger.info("Dedup: merged '%s' into '%s'", dup_key, canonical_key)
+    # canonical 自身对 dup 的引用在内存中同步改写——旧实现经 _rewrite_wikilinks
+    # 写库后又被 merged_content 覆盖回去，canonical 残留 [[dup]] 死链。
+    for dup_key in merged_keys:
+        canonical_content = _rewrite_in_text(canonical_content, dup_key, canonical_key)
 
-    # Update canonical page with merged content
-    db.update_wiki_page_content(
+    # M-1 同款内容级 CAS（复审 Warning 2026-10-27）：治理链在编译终态后运行，
+    # 合并的 409 门拦不住本函数；窗口内 canonical 被并发改写（用户编辑/他组合并
+    # 先行写入）时拒绝整组覆盖——dup 保留待重试，merged=0 → 端点不置组 merged，
+    # 组保持 pending；失败路径零副作用。
+    write_result = db.update_wiki_page_content(
         page_id=canonical["id"],
         content=canonical_content,
         status=canonical.get("status", "compiled"),
+        tags=sorted(merged_tags),
+        refs=sorted(merged_refs),
+        sources=sorted(merged_sources),
+        expected_content=canonical_snapshot,
     )
+    if not write_result.get("success"):
+        logger.warning(
+            "Dedup: canonical '%s' changed during merge window, rejected %d duplicates",
+            canonical_key, len(merged_keys),
+        )
+        for dup_key in merged_keys:
+            failed_merges.append({"page_key": dup_key, "reason": "content_changed"})
+        return {
+            "merged": 0, "canonical": canonical_key, "rewritten_links": 0,
+            "failed": failed_merges, "truncated": [],
+        }
+
+    # CAS 提交成功后才改链 + 删 dup（失败路径不产生部分状态）
+    for dup_key in merged_keys:
+        rewritten += _rewrite_wikilinks(db, project_id, dup_key, canonical_key)
+        db.delete_wiki_page(project_id, dup_key)
+        logger.info("Dedup: merged '%s' into '%s'", dup_key, canonical_key)
 
     # Record change log (只记录实际发生的合并)
-    if merged_keys:
-        db.add_wiki_change_log(
-            project_id=project_id,
-            action="dedup_merge",
-            summary=f"合并 {len(merged_keys)} 个重复页面到 {canonical_key}: {', '.join(merged_keys)}",
-        )
+    db.add_wiki_change_log(
+        project_id=project_id,
+        action="dedup_merge",
+        summary=f"合并 {len(merged_keys)} 个重复页面到 {canonical_key}: {', '.join(merged_keys)}",
+    )
 
     return {
         "merged": len(merged_keys),
@@ -291,29 +324,55 @@ async def _llm_merge_content(
         return ""
 
 
+def _rewrite_in_text(content: str, old_key: str, new_key: str) -> str:
+    """Rewrite [[old_key]]/[[old_key|alias]] → [[new_key]]/[[new_key|alias]] in one text."""
+    pattern = re.compile(r"\[\[" + re.escape(old_key) + r"(?:\|([^\]]+))?\]\]")
+    return pattern.sub(
+        lambda m: f"[[{new_key}|{m.group(1)}]]" if m.group(1) else f"[[{new_key}]]",
+        content,
+    )
+
+
 def _rewrite_wikilinks(db: Any, project_id: str, old_key: str, new_key: str) -> int:
     """Rewrite all [[old_key]] references to [[new_key]] across all pages.
 
     Returns count of pages modified.
+    逐页内容级 CAS（复审 Warning 2026-10-27，与 merge 写回同族）：以读取
+    原文为写回条件，快照失配时重读最新内容重做一次（链接替换幂等，重读
+    安全）；仍失配说明该页正被并发编辑，跳过本轮并记日志——漏改的死链由
+    下一轮治理发现，不与用户写路径互相覆盖。
     """
     pages = db.list_wiki_pages(project_id)
     rewritten = 0
-    pattern = re.compile(r"\[\[" + re.escape(old_key) + r"(?:\|([^\]]+))?\]\]")
 
     for p in pages:
         if p["page_key"] == old_key:
             continue
-        content = p.get("content", "")
-        if f"[[{old_key}]]" not in content and f"[[{old_key}|" not in content:
-            continue
-
-        new_content = pattern.sub(lambda m: f"[[{new_key}|{m.group(1)}]]" if m.group(1) else f"[[{new_key}]]", content)
-        if new_content != content:
-            db.update_wiki_page_content(
+        for attempt in range(2):
+            content = p.get("content") or ""
+            if f"[[{old_key}]]" not in content and f"[[{old_key}|" not in content:
+                break
+            new_content = _rewrite_in_text(content, old_key, new_key)
+            if new_content == content:
+                break
+            result = db.update_wiki_page_content(
                 page_id=p["id"],
                 content=new_content,
                 status=p.get("status", "compiled"),
+                expected_content=content,
             )
-            rewritten += 1
+            if result.get("success"):
+                rewritten += 1
+                break
+            if attempt == 0:
+                refreshed = db.get_wiki_page(project_id, p["page_key"])
+                if not refreshed:
+                    break
+                p = refreshed
+            else:
+                logger.warning(
+                    "Dedup: wikilink rewrite skipped for '%s' (concurrently edited)",
+                    p["page_key"],
+                )
 
     return rewritten

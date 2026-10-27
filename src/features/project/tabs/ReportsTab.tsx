@@ -39,9 +39,11 @@ interface PptRow {
 interface ReportsTabProps {
   projectId: string
   projectType: ProjectType
+  /** 视图态上报（OutputTab 二级分区条仅在列表态显示，详情/向导占据全部内容区，2026-10-27） */
+  onViewModeChange?: (mode: ViewMode) => void
 }
 
-export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
+export function ReportsTab({ projectId, projectType, onViewModeChange }: ReportsTabProps) {
   const { t } = useTranslation()
   const confirmDialog = useConfirm()
   const showToast = useToast()
@@ -49,6 +51,11 @@ export function ReportsTab({ projectId, projectType }: ReportsTabProps) {
   const [previewReport, setPreviewReport] = useState<Report | null>(null)
   const [selectedPptId, setSelectedPptId] = useState<string | null>(null)
   const [enhancing, setEnhancing] = useState(false)  // 增强入队防抖（卡片/导入两入口共用）
+
+  // 视图态上报（挂载即报 'list'，切换即随上报；父级据此显隐二级分区条）
+  useEffect(() => {
+    onViewModeChange?.(viewMode)
+  }, [viewMode, onViewModeChange])
 
   // 列表分页（0.1dev-guide 统一约定）：50/页「加载更多」；projectId 变化经 params 自动重拉首页
   const {

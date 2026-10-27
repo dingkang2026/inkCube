@@ -18,8 +18,10 @@ export type NotificationEntityType = ActiveEntityType | 'affair' | 'schedule_run
  *  paused（报告级暂停，2.5 §3.1 修订）/ awaiting_input（PPT 门禁等待确认，2.3 §3.4）；
  *  信息类 file_changed（模板源文件变更，2.11 §3.3）/ due / overdue（事务到期提醒，2.11 §3.2）
  *  / archive_failed（订阅档案合并失败：产出已生成待下期补并，2.11 §6）
- *  / missed（>24h 未运行跳过，2.11 §5.4）/ interrupted（进程中断启动清扫，review P0-1） */
-export type NotificationKind = 'completed' | 'failed' | 'paused' | 'awaiting_input' | 'file_changed' | 'due' | 'overdue' | 'archive_failed' | 'missed' | 'interrupted'
+ *  / missed（>24h 未运行跳过，2.11 §5.4）/ interrupted（进程中断启动清扫，review P0-1）
+ *  / governance（编译终态自动治理链汇总通知，E3-2026-10；review M-2 2026-10-27 补登记——
+ *  后端 activity_events.governance_wiki 已写入此值而前端联合类型漏项，消费时才暴露） */
+export type NotificationKind = 'completed' | 'failed' | 'paused' | 'awaiting_input' | 'file_changed' | 'due' | 'overdue' | 'archive_failed' | 'missed' | 'interrupted' | 'governance'
 
 /** 活动挂载容器（0.4 §3.6）：活动所属 projects 行的 kind，基础库活动导航分流用；
  *  'templates' = 模板类全局资产（PPT 模板任务，2.3 §4.2，无项目实体） */

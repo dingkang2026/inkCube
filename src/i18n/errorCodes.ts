@@ -65,6 +65,9 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   // ── knowledge ──
   FILE_DUPLICATE: { msg: 'fileDuplicate' },
   MANUALLY_ARCHIVED: { msg: 'manuallyArchived' },
+  // ── base libs（自定义库 CRUD，2.1 §7 / 2.7 §7 重建）──
+  BASE_LIB_PRESET_PROTECTED: { msg: 'baseLibPresetProtected' },
+  BASE_LIB_HAS_ACTIVE_WORK: { msg: 'baseLibHasActiveWork' },
   // ── projects（归档 2.1 §归档）──
   PROJECT_HAS_ACTIVE_WORK: { msg: 'projectHasActiveWork' },
   PROJECT_NOT_ARCHIVED: { msg: 'projectNotArchived' },
@@ -118,6 +121,10 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   TEMPLATE_NOT_FOUND: { msg: 'pptTemplateNotFound' },
   BUILTIN_TEMPLATE: { msg: 'pptBuiltinTemplate' },
   SPEC_NOT_FOUND: { msg: 'pptSpecNotFound' },
+  NOT_TEMPLATE_JOB: { msg: 'pptNotTemplateJob' },
+  TEMPLATE_JOB_NOT_FAILED: { msg: 'pptTemplateJobNotFailed' },
+  TEMPLATE_PACKAGE_INCOMPLETE: { msg: 'pptTemplatePackageIncomplete' },
+  TEMPLATE_COLLECT_FAILED: { msg: 'pptTemplateCollectFailed' },
   LIB_NOT_FOUND: { msg: 'pptLibNotFound' },
   SCRIPT_NOT_FOUND: { msg: 'pptScriptNotFound' },
   // ── InkCubeError（errors.py 落库链路）──

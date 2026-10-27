@@ -278,9 +278,20 @@ async def pause_ppt(ppt_id: str):
 
 @router.post("/ppts/{ppt_id}/resume")
 async def resume_ppt(ppt_id: str):
-    """手动继续（paused / awaiting_input 状态的用户显式推进）。"""
+    """手动继续（paused / awaiting_input / failed 重试的用户显式推进）。"""
     logger.info("Resuming ppt: %s", ppt_id)
     return ppt_service.service.answer(deps.db, ppt_id, None)
+
+
+@router.post("/ppts/{ppt_id}/retry-collect")
+async def retry_collect_ppt(ppt_id: str):
+    """模板收录重试（P2-3）：包已产出但收录失败的行，幂等重收录
+    （纯本地 IO，不跑 agent、不耗模型；前端仅在工作区包完整时暴露入口）。"""
+    logger.info("Retrying ppt template collect: ppt=%s", ppt_id)
+    # 收录含工作区包拷贝（images/exports 大文件可达 30s+），线程池执行
+    # 防阻塞事件循环（对齐 create/enhance 的 prepare 线程化惯例）
+    return await asyncio.to_thread(
+        ppt_service.service.retry_collect, deps.db, ppt_id)
 
 
 @router.post("/ppts/{ppt_id}/cancel")

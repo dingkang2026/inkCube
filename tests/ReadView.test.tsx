@@ -1,11 +1,13 @@
 /**
  * tests/ReadView.test.tsx — 2.11 E3 T8: ReadView 期次阅读页单测（§8.2）。
  *
- * 覆盖：挂载即 readReport + markRead（打开即已读，规则 10）；摘要卡（run.summary
- * 直读）+ Markdown 全文；失败态（error 文案 + 重跑 → schedules:runNow）；
- * 头部动作条（返回 → onBack 关抽屉 / 执行过程 → onReplay，2026-10-22 上移自底部）；
- * 底部动作条（订阅设置 → 编辑弹层）；已沉淀态
- * （target 绑定 → 「已沉淀至 {目标名}·档案」，目标名经列表通道解析）。
+ * 覆盖：挂载即 readReport + markRead（打开即已读，规则 10）；markRead 成功
+ * 后广播 app:schedules-changed 已读边沿（2026-10-26 抽屉化反馈链，E3b ③：
+ * 徽章/收件箱/首页卡区红点即时收敛的信号源；失败静默不广播）；
+ * 摘要卡（run.summary 直读）+ Markdown 全文；失败态（error 文案 + 重跑 →
+ * schedules:runNow）；头部动作条（返回 → onBack 关抽屉 / 执行过程 →
+ * onReplay，2026-10-22 上移自底部）；底部动作条（订阅设置 → 编辑弹层）；
+ * 已沉淀态（target 绑定 → 「已沉淀至 {目标名}·档案」，目标名经列表通道解析）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
@@ -101,11 +103,15 @@ afterEach(() => {
 })
 
 describe('ReadView（2.11 §8.2）', () => {
-  it('渲染摘要卡与 Markdown 全文，挂载即 readReport + markRead 一次', async () => {
+  it('渲染摘要卡与 Markdown 全文，挂载即 readReport + markRead 一次，成功后广播已读边沿', async () => {
     const invoke = wireInvoke()
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    let changed = 0
+    const onChanged = () => { changed += 1 }
+    window.addEventListener('app:schedules-changed', onChanged)
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
+    window.removeEventListener('app:schedules-changed', onChanged)
     // 摘要卡与 Markdown 正文同文本（mock content 与 summary 重叠）→ 计数断言
     expect(screen.getAllByText('要点A').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('要点B').length).toBeGreaterThanOrEqual(1)
@@ -113,6 +119,9 @@ describe('ReadView（2.11 §8.2）', () => {
     const marks = invoke.mock.calls.filter((c) => c[0] === 'schedules:markRead')
     expect(marks).toHaveLength(1)
     expect(marks[0][1]).toBe('run_1')
+    // 已读边沿恰一次广播（2026-10-26）：dispatch 在 markRead then 链内，落库
+    // 先于广播，消费方重拉才能拿到新 read_at（E3b ③「红点/徽章计数同步消失」）
+    expect(changed).toBe(1)
   })
 
   it('摘要缺失（未按模板产出）→ 显示占位文案不阻塞阅读（§8.3）', async () => {
@@ -221,15 +230,41 @@ describe('ReadView（2.11 §8.2）', () => {
       run: { ...RUN_DONE, status: 'running', report_path: null, summary: null, finished_at: null },
     })
     ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    let changed = 0
+    const onChanged = () => { changed += 1 }
+    window.addEventListener('app:schedules-changed', onChanged)
     render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
     await flush()
+    window.removeEventListener('app:schedules-changed', onChanged)
     expect(screen.getByText('schedule.read.state.running')).toBeTruthy()
     expect(screen.getByText('schedule.read.runningHint')).toBeTruthy()
     // 仅 done 标已读：running 不调 markRead（否则吞掉终态后的未读点与新产出计数）
     expect(invoke.mock.calls.some((c) => c[0] === 'schedules:markRead')).toBe(false)
+    // 无 markRead 即无已读边沿广播（2026-10-26；防广播错挂 readReport 时机后 running 误广播）
+    expect(changed).toBe(0)
     // 无失败卡；头部「执行过程」（task_id 存在）可达 → 实时回放
     expect(screen.queryByText('schedule.read.rerun')).toBeNull()
     expect(screen.getByTestId('read-open-replay')).toBeTruthy()
+  })
+
+  it('markRead 失败静默不广播（阅读不受影响，下次边沿自然对齐，2026-10-26）', async () => {
+    const invoke = vi.fn((channel: string) => {
+      if (channel === 'schedules:readReport') {
+        return Promise.resolve({ run: RUN_DONE, schedule: SCHEDULE, content: CONTENT })
+      }
+      if (channel === 'schedules:markRead') return Promise.reject(new Error('backend down'))
+      return Promise.resolve({ ok: true })
+    })
+    ;(window as { electronAPI?: unknown }).electronAPI = { invoke, on: () => () => {} }
+    let changed = 0
+    const onChanged = () => { changed += 1 }
+    window.addEventListener('app:schedules-changed', onChanged)
+    render(<ReadView runId="run_1" onBack={onBack} onReplay={() => {}} />)
+    await flush()
+    window.removeEventListener('app:schedules-changed', onChanged)
+    // markRead 已调用但 reject → catch 静默，不广播（各消费面红点保持，下次边沿对齐）
+    expect(invoke.mock.calls.some((c) => c[0] === 'schedules:markRead')).toBe(true)
+    expect(changed).toBe(0)
   })
 
   it('聚合简报期次 → 标题行「聚合简报」徽标（2.11 §12.4）；情报订阅无', async () => {

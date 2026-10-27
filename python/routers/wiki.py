@@ -47,6 +47,11 @@ class PageEditRequest(BaseModel):
     title: Optional[str] = None
 
 
+class PageWikilinkFixRequest(BaseModel):
+    dead_key: str    # 死链目标 key（不带 [[]]）
+    target_key: str  # 建议链接到的现存页面 key
+
+
 class PurposeRequest(BaseModel):
     purpose: str
 
@@ -99,6 +104,7 @@ class SchemaUpdateRequest(BaseModel):
 class DedupMergeRequest(BaseModel):
     canonical_key: str
     duplicate_keys: list[str]
+    group_id: Optional[str] = None  # 检测组 id：合并成功后标记组 merged（E3-2026-10）
 
 
 class EnrichWikilinksRequest(BaseModel):
@@ -258,6 +264,43 @@ async def edit_wiki_page(project_id: str, page_key: str, req: PageEditRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/projects/{project_id}/pages/{page_key}/fix-wikilink")
+async def fix_page_wikilink(project_id: str, page_key: str, req: PageWikilinkFixRequest):
+    """机械死链修复（§5.4 link-fix 写路径，E3-2026-10）。
+
+    服务端正则替换 [[dead]]/[[dead|别名]] → [[target…]]：保留页面原状态
+    （不置 user_edited——修链接不冻结汇编更新，enrich 同款）+ 版本快照
+    （可回退）+ 时间线。替代旧的「前端读→改正则→editPage 整页写回」
+    链路（后者会整页冻结且有丢失更新窗口）。编译进行中拒绝（与
+    adjudicate 同一互斥口径）。一键修复与自动治理链共用同一 db 方法。
+    """
+    try:
+        db = get_db()
+        if not db.get_project(project_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        latest_task = db.get_latest_compile_task(project_id)
+        if latest_task and latest_task["status"] in ("queued", "ingesting", "storing"):
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"编译进行中({latest_task['status']})，请等待完成后再修复", "code": "COMPILING_IN_PROGRESS"},
+            )
+        result = db.fix_wiki_page_wikilink(
+            project_id=project_id,
+            page_key=page_key,
+            dead_key=req.dead_key.strip(),
+            target_key=req.target_key.strip(),
+        )
+        if not result.get("success"):
+            # 404 页面 / text_not_found 发现项已过时：不产生写操作，返回明细供前端处置
+            return JSONResponse(status_code=200, content=result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to fix wikilink: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/projects/{project_id}/pages/{page_key}")
 async def delete_wiki_page(project_id: str, page_key: str):
     """Delete a Wiki page with full cascade cleanup."""
@@ -330,7 +373,11 @@ async def trigger_compile(project_id: str, req: CompileRequest):
             cleared["source_pages"] = db.conn.execute(
                 "DELETE FROM wiki_source_pages WHERE project_id = ?", (project_id,)
             ).rowcount
-            # 6. Reset auto-generated overview (keep user-set purpose)
+            # 6. wiki_dedup_groups（E3-2026-10 重复检测组落库）
+            cleared["dedup_groups"] = db.conn.execute(
+                "DELETE FROM wiki_dedup_groups WHERE project_id = ?", (project_id,)
+            ).rowcount
+            # 7. Reset auto-generated overview (keep user-set purpose)
             db.conn.execute(
                 "UPDATE projects SET wiki_overview = '' WHERE id = ?", (project_id,)
             )
@@ -383,6 +430,10 @@ async def stop_compile(project_id: str):
                 db.request_compile_stop(task["id"])
         except Exception:
             db.request_compile_stop(task["id"])
+        # 2.6 §4.1 路径 A：手动停止 → 该项目 30 分钟自动点火冷却（防「停止后
+        # 下一文件解析完立刻重燃」使停止形同虚设；人工触发不受冷却限制）
+        from wiki.auto_compile import mark_user_stop
+        mark_user_stop(project_id)
         return {"success": True, "task_id": task["id"]}
     except HTTPException:
         raise
@@ -537,12 +588,87 @@ async def resolve_review(project_id: str, review_id: str, req: ReviewResolveRequ
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _relocate_quote(db, project_id: str, page_key: str,
+                          old_quote: str, new_text: str) -> dict:
+    """失配侧 LLM 重定位（§5.5，E3-2026-10）：原文精确替换失败时，在页面
+
+    当前内容中定位表达同一信息的（可能已被改写的）段落原文，供调用方做
+    确定性替换。LLM 只干「找到那段旧话」的机械活，替换仍是确定性的。
+
+    返回 {"status": "found" | "not_found" | "unavailable", "text"}：
+      - found: text 为页面中精确定位到的原文（已过存在性校验，防幻觉盲改）
+      - not_found: LLM 已看到完整内容并确认不存在 → 调用方标 vanished
+        （矛盾大概率已随编辑消失）
+      - unavailable: LLM 不可用/异常，或内容超长未见全貌 → 调用方标
+        manual_needed（未见全貌的 NOT_FOUND 不可信，宁可留待人工）
+    """
+    try:
+        page = db.get_wiki_page(project_id, page_key)
+        if not page:
+            return {"status": "not_found", "text": None}  # 页面已删，矛盾自然消失
+        content = page.get("content") or ""
+        if not content.strip():
+            return {"status": "not_found", "text": None}
+        truncated = len(content) > _RELOCATE_CONTENT_LIMIT
+        from llm import LLMClient
+        from llm.routing import get_task_settings
+        settings = get_task_settings(db.get_settings(), "lint")
+        client = LLMClient(settings)
+        system = (
+            "你是文本定位助手。给定页面当前内容和一段旧原文，找出当前内容中"
+            "表达同一信息的那段文字（它可能已被改写、措辞不同）。\n"
+            "要求：\n"
+            "- 只输出那段文字在当前内容中的精确原文（逐字复制，包括标点），"
+            "不要代码块标记、引号或任何解释\n"
+            "- 若当前内容中不存在表达该信息的段落，只输出 NOT_FOUND"
+        )
+        user = (
+            f"## 页面当前内容\n{content[:_RELOCATE_CONTENT_LIMIT]}\n\n"
+            f"## 旧原文\n{old_quote}\n\n"
+            "（旧原文将被替换为其他说法，仅供理解语义，不要输出它）"
+        )
+        with push_context(UsageContext(
+                source="wiki", purpose="adjudicate", project_id=project_id)):
+            output = (await client.chat_full([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]))["content"]
+    except Exception as e:
+        logger.warning("adjudicate relocate LLM failed for %s/%s: %s",
+                       project_id, page_key, e)
+        return {"status": "unavailable", "text": None}
+    text = output.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    # 剥成对包裹引号（LLM 常见习惯，逐层剥防嵌套）
+    for _ in range(2):
+        if len(text) >= 2 and text[0] in "\"'“”«" and text[-1] in "\"'“”«":
+            text = text[1:-1].strip()
+    if not text or text.upper().startswith("NOT_FOUND"):
+        # 超长页只给了 LLM 前段：未见全貌的 NOT_FOUND 不可信，降级留人工
+        if truncated:
+            return {"status": "unavailable", "text": None}
+        return {"status": "not_found", "text": None}
+    # 存在性校验：定位文本必须在当前内容中逐字存在，否则视为幻觉放弃
+    if text not in content:
+        return {"status": "unavailable", "text": None}
+    return {"status": "found", "text": text}
+
+
+# 重定位喂给 LLM 的内容上限（字符）：绝大多数知识页远小于此；超长页 LLM 只见
+# 前段，定位失败时降级 manual_needed 而非 vanished（避免误判矛盾已消失）
+_RELOCATE_CONTENT_LIMIT = 12000
+
+
 @router.post("/projects/{project_id}/reviews/{review_id}/adjudicate")
 async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudicateRequest):
     """矛盾裁决（§5.5，E2-2026-10）：以 chosen 侧为准，对其余各侧页面执行
 
-    quote → 选中侧 quote 的确定性替换（不经 LLM）；替换侧 status=user_edited
-    （编译保护）+ 版本快照；全部替换成功才归档，任一侧失配保留待处理。
+    quote → 选中侧 quote 的确定性替换；替换侧 status=user_edited（编译保护）
+    + 版本快照。原文精确失配时先经 LLM 重定位改写后的对应段落再替换
+    （_relocate_quote，E3-2026-10）；仍失败按逐侧 status 保留待处理，
+    全部成功才归档。LLM 不可用不影响确定性主路径（降级 manual_needed）。
     """
     try:
         db = get_db()
@@ -587,15 +713,14 @@ async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudica
             return JSONResponse(status_code=400, content={"error": "选中侧证据缺少引用原文", "code": "EVIDENCE_QUOTE_MISSING"})
 
         details = []
-        all_ok = True
         for idx, ev in enumerate(evidence):
             if idx == req.chosen:
                 continue
             page_key = (ev.get("page_key") or "").strip()
             quote = (ev.get("quote") or "").strip()
             if not page_key or not quote:
-                all_ok = False
-                details.append({"page_key": page_key, "success": False, "reason": "invalid_evidence"})
+                details.append({"page_key": page_key, "success": False,
+                                "status": "manual_needed", "reason": "invalid_evidence"})
                 continue
             result = db.replace_wiki_page_text(
                 project_id=project_id,
@@ -604,15 +729,43 @@ async def adjudicate_review(project_id: str, review_id: str, req: ReviewAdjudica
                 new_text=chosen_quote,
                 change_summary=f"矛盾裁决: 以 [[{chosen_key}]] 为准",
             )
+            if result.get("success"):
+                # 直接替换成功（含 already_applied 重试语义：上轮已替换达成）
+                result["status"] = "replaced"
+                details.append(result)
+                continue
+            # 失配纵深（§5.5 E3-2026-10）：原文精确失配（含 review M-1 2026-10-27
+            # CAS 后的 content_changed——读-改-写间内容已被他方修改）→ LLM 读
+            # 最新内容重定位改写后的对应段落再替换。vanished = 矛盾大概率已随
+            # 编辑消失（终态卡）；manual_needed = LLM 不可用/异常，宁可留待
+            # 人工不误归档
+            if result.get("reason") == "page_not_found":
+                result["status"] = "vanished"
+                details.append(result)
+                continue
+            relocated = await _relocate_quote(db, project_id, page_key, quote, chosen_quote)
+            if relocated["status"] == "found":
+                result2 = db.replace_wiki_page_text(
+                    project_id=project_id,
+                    page_key=page_key,
+                    old_text=relocated["text"],
+                    new_text=chosen_quote,
+                    change_summary=f"矛盾裁决(LLM重定位): 以 [[{chosen_key}]] 为准",
+                )
+                result2["status"] = "relocated" if result2.get("success") else "manual_needed"
+                details.append(result2)
+                continue
+            result["status"] = "vanished" if relocated["status"] == "not_found" else "manual_needed"
             details.append(result)
-            if not result.get("success"):
-                all_ok = False
 
+        all_ok = all(d.get("success") for d in details)
         if all_ok:
             db.resolve_wiki_review(project_id, review_id, "adjudicated")
             return {"success": True, "details": details}
 
-        # 部分失配：保留发现项待人工，返回逐侧明细供前端提示（§4.4 宁可留待人工不误归档）
+        # 部分失配：保留发现项待人工，返回逐侧明细（status: replaced /
+        # relocated / vanished / manual_needed）供前端呈现
+        # （§4.4 宁可留待人工不误归档）
         return {"success": False, "reason": "partial_or_failed", "details": details}
     except HTTPException:
         raise
@@ -721,44 +874,11 @@ async def trigger_lint(project_id: str, req: LintRequest = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Review Sweep (§12.2.8) ──
-
-
-@router.post("/projects/{project_id}/sweep-reviews")
-async def sweep_project_reviews(project_id: str):
-    """Run two-stage review sweep: rule matching + optional LLM judgment."""
-    try:
-        db = get_db()
-        project = db.get_project(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        from wiki.sweep_reviews import sweep_reviews
-
-        # Try to use LLM for Stage 2 if available
-        llm_client = None
-        try:
-            from llm import LLMClient
-            from llm.routing import resolve_model
-            # 档位制：Stage 2 LLM 判断用标准档（无专用路由键，2026-10-20 补齐——
-            # 旧直构缺 model 键，此 client 被 sweep_reviews 直接消费无内建重建）
-            settings = db.get_settings()
-            settings["model"] = resolve_model(settings, "standard")
-            llm_client = LLMClient(settings)
-        except Exception as e:
-            logger.info("Sweep reviews: LLM not available for Stage 2: %s", e)
-
-        # 2.10 §4.3: 用量环境（source=wiki / purpose=sweep；llm_client 为 None
-        # 时无 LLM 调用，push 无副作用）
-        with push_context(UsageContext(
-                source="wiki", purpose="sweep", project_id=project_id)):
-            result = await sweep_reviews(db, project_id, llm_client)
-        return {"success": True, **result}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to sweep reviews: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+# ── Review Sweep (§12.2.8, E3-2026-10 起改由编译终态自动触发) ──
+#
+# 手动端点 /sweep-reviews 与前端按钮已删（auto_governance.on_compile_complete_sync
+# 是唯一触发路径，经 task_queue run_in_executor 后台化）；sweep_reviews 模块
+# 函数保留供自动链复用。
 
 
 # ── Wiki Graph (§12.2.2) ──
@@ -1107,47 +1227,41 @@ async def get_page_version(project_id: str, version_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Duplicate Detection (§12.2.10) ──
+# ── Duplicate Groups (§12.2.10，E3-2026-10 检测改自动、组落库) ──
 
 
-@router.get("/projects/{project_id}/dedup/detect")
-async def detect_duplicate_pages(project_id: str):
-    """Detect duplicate pages using LLM.
-
-    Returns groups of pages that appear to cover the same topic.
-    """
-    # 事前准入（§7.3 第三层 v3.7）：LLM 必需，try 块外调用
-    ensure_ready("wiki_compile")
+@router.get("/projects/{project_id}/dedup/groups")
+async def list_dedup_groups(project_id: str):
+    """待确认重复页面组（检测由编译终态自动执行，结果落库后在此浮现）。"""
     try:
         db = get_db()
         project = db.get_project(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-
-        from wiki.dedup import extract_entity_summaries, detect_duplicates
-        from llm.routing import get_task_settings
-        from llm import LLMClient
-
-        settings = db.get_settings()
-        summaries = extract_entity_summaries(db, project_id)
-        if len(summaries) < 2:
-            return {"groups": [], "summaries_count": len(summaries)}
-
-        # 档位制：先解析后构造一次（旧「先建全局 client 再比较重建」依赖
-        # settings 缺 model 键的 None≠名字比较，恒重建且首构是死对象——
-        # 2026-10-20 档位制漏网清理）
-        effective_settings = get_task_settings(settings, "dedup")
-        llm = LLMClient(effective_settings)
-
-        # 2.10 §4.3: 用量环境（source=wiki / purpose=dedup）
-        with push_context(UsageContext(
-                source="wiki", purpose="dedup", project_id=project_id)):
-            groups = await detect_duplicates(summaries, llm)
-        return {"groups": groups, "summaries_count": len(summaries)}
+        return {"groups": db.list_dedup_groups(project_id)}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Failed to detect duplicates: %s", e)
+        logger.error("Failed to list dedup groups: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/dedup/groups/{group_id}/dismiss")
+async def dismiss_dedup_group(project_id: str, group_id: str):
+    """忽略一组重复提案（status=dismissed；重检测同组不再回滚为 pending）。"""
+    try:
+        db = get_db()
+        project = db.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        ok = db.set_dedup_group_status(project_id, group_id, "dismissed")
+        if not ok:
+            raise HTTPException(status_code=404, detail="Dedup group not found")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to dismiss dedup group: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1156,6 +1270,9 @@ async def merge_duplicate_pages(project_id: str, req: DedupMergeRequest):
     """Merge duplicate pages into a canonical page.
 
     User must specify which page to keep (canonical) and which to merge.
+    合并是最重写操作（删页 + 全库链接重写），编译进行中拒绝——与
+    fix-wikilink/adjudicate 同一互斥口径（review s-2 2026-10-27 补齐：
+    原最重写操作反而无门）。
     """
     # 事前准入（§7.3 第三层 v3.7）：LLM 必需，try 块外调用
     ensure_ready("wiki_compile")
@@ -1164,6 +1281,12 @@ async def merge_duplicate_pages(project_id: str, req: DedupMergeRequest):
         project = db.get_project(project_id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
+        latest_task = db.get_latest_compile_task(project_id)
+        if latest_task and latest_task["status"] in ("queued", "ingesting", "storing"):
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"编译进行中({latest_task['status']})，请等待完成后再合并", "code": "COMPILING_IN_PROGRESS"},
+            )
 
         from wiki.dedup import merge_pages
         from llm.routing import get_task_settings
@@ -1183,6 +1306,9 @@ async def merge_duplicate_pages(project_id: str, req: DedupMergeRequest):
                 duplicate_keys=req.duplicate_keys,
                 llm_client=llm,
             )
+        # 合并成功标记检测组 merged（E3-2026-10：组落库后状态闭环）
+        if req.group_id and result.get("merged", 0) > 0:
+            db.set_dedup_group_status(project_id, req.group_id, "merged")
         return result
     except HTTPException:
         raise
@@ -1212,6 +1338,15 @@ async def enrich_page_wikilinks(project_id: str, req: EnrichWikilinksRequest):
         if not page:
             raise HTTPException(status_code=404, detail="Wiki page not found")
 
+        # 编译互斥（复审 Major 2026-10-27 补口，fix-wikilink/adjudicate/merge
+        # 同口径）：补链是整页写路径，不得与编译 ingest 并发读写同页
+        latest_task = db.get_latest_compile_task(project_id)
+        if latest_task and latest_task["status"] in ("queued", "ingesting", "storing"):
+            return JSONResponse(
+                status_code=409,
+                content={"error": f"编译进行中({latest_task['status']})，请等待完成后再补全链接", "code": "COMPILING_IN_PROGRESS"},
+            )
+
         from wiki.wiki_enrich import enrich_wikilinks
         from llm import LLMClient
         from llm.routing import get_task_settings
@@ -1227,19 +1362,26 @@ async def enrich_page_wikilinks(project_id: str, req: EnrichWikilinksRequest):
                 source="wiki", purpose="enrich", project_id=project_id,
                 entity_id=page["id"])):
             enriched_content, link_count = await enrich_wikilinks(
-                content=page.get("content", ""),
+                content=page.get("content") or "",
                 page_key=req.page_key,
                 all_pages=all_pages_brief,
                 llm_client=llm_client,
             )
 
-        # Save enriched content if links were added
+        # Save enriched content if links were added（复审 Major 2026-10-27：
+        # LLM 补链是秒级读-改-写窗口，写回以读取原文作内容级 CAS 条件——
+        # 窗口内用户编辑/治理链先行写入则拒绝整页覆盖，LLM 建议整批丢弃）
         if link_count > 0:
-            db.update_wiki_page_content(
+            # or ""：content 列为 NULL 时 .get(key, "") 仍返回 None，会把 CAS
+            # 静默降级为无条件写（复审建议 2026-10-27）
+            write_result = db.update_wiki_page_content(
                 page_id=page["id"],
                 content=enriched_content,
                 status=page.get("status", "compiled"),
+                expected_content=page.get("content") or "",
             )
+            if not write_result.get("success"):
+                return {"success": False, "reason": "content_changed", "links_added": 0}
             db.add_wiki_change_log(
                 project_id=project_id,
                 action="enriched",

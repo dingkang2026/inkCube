@@ -2,7 +2,7 @@
 
 职责（四步，均确定性程序修改，不依赖 LLM）：
   1. 引用全局校验 → 幻觉修复 → 未引用清理 + 重排
-  2. ◆ 小标题转 Markdown 四级标题
+  2. ◆ 小标题转下一级标题（上下文感知：无子节章内→H3，子节内→H4）
   3. 衔接润色（规则驱动，各节首尾段轻量改写）
   4. 目录 + 尾注生成，组装最终报告
 
@@ -93,26 +93,36 @@ def finalize_report(
 
 
 def _convert_subheads(text: str) -> str:
-    """将 ◆ 小标题转换为三级标题（章内小节，编号 `章号.节号`，§3.5）。
+    """将 ◆ 小标题转换为下一级标题（上下文感知，§3.5，2026-10-27）。
 
-    章号取自组装层注入的章节标题（`## 3 产品与服务` → 3），节号在章内
-    递增、遇新章重置；层级由原四级收敛为三级（章 H2 → 小节 H3），
-    避免标题层级空跳（§3.5 标题层级：H1 文档题 / H2 章 / H3 小节）。
+    装配层两级化后标题形态：`## n 章题`（无子节章）与
+    `### n.m 节题`（有子节章的子节）。◆ 行按最近标题上下文转换：
+      - 章上下文（无子节章，旧形态兼容）→ `### n.k 节题`
+      - 子节上下文 → `#### n.m.k 小节题`（避免与装配注入的子节
+        编号冲突）；子节号遇新章/新子节重置
     """
-    pattern = re.compile(r"^(## .+|[ \t\u3000]*◆\s*.+)$", re.MULTILINE)
-    state = {"section": 0, "sub": 0}
+    pattern = re.compile(r"^(## .+|### .+|[ \t\u3000]*◆\s*.+)$", re.MULTILINE)
+    state = {"prefix": "", "sub": 0}
 
     def repl(m: re.Match) -> str:
         line = m.group(1)
         if line.startswith("## "):
             num = re.match(r"^## (\d+)[\s\u3000]", line)
-            if num:
-                state["section"] = int(num.group(1))
+            state["prefix"] = num.group(1) if num else ""
             state["sub"] = 0
+            return line
+        if line.startswith("### "):
+            num = re.match(r"^### (\d+\.\d+)[\s\u3000]", line)
+            if num:
+                state["prefix"] = num.group(1)
+                state["sub"] = 0
             return line
         state["sub"] += 1
         title = line.strip().lstrip("◆").strip()
-        return f"### {state['section']}.{state['sub']} {title}"
+        prefix = state["prefix"] or "0"
+        if "." in prefix:
+            return f"#### {prefix}.{state['sub']} {title}"
+        return f"### {prefix}.{state['sub']} {title}"
 
     return pattern.sub(repl, text)
 
@@ -122,8 +132,10 @@ def _smooth_transitions(text: str) -> str:
 
     处理项：
       - 清除悬空过渡词：节尾出现“如下：”“包括：”等但后面没有内容
-      - 清除节首重复标题：节首重复了章节标题
       - 去除连续空行超过 2 行的情况
+
+    （节首重复标题剥离已上移至装配层 _assemble_full_text：该处持有
+    节题上下文逐节执行，2026-10-27 两级装配时迁移。）
 
     结构不变量：## 标题必须独立成行。re.split 的标题捕获组（$）不含
     行尾换行（由下一内容块开头的换行提供），内容块节尾的 --- 分隔符
@@ -169,43 +181,41 @@ def _smooth_transitions(text: str) -> str:
                 body,
             )
 
-            # 规则 2：清除节首重复标题（节首第一行与上一节标题相同；双方剥去
-            # 组装层注入的前导序号再比较——LLM 节首重复标题必为无编号裸文本，
-            # 不剥号则带号标题永不相等、规则永不生效）
-            lines = body.split("\n")
-            prev_title = re.sub(
-                r"^\d+\s+", "",
-                section_parts[i - 1].replace("## ", "").strip(),
-            )
-            if lines and re.sub(r"^\d+\s+", "", lines[0].strip()) == prev_title:
-                body = "\n".join(lines[1:]).lstrip("\n")
-
             smoothed.append(head + body + trailing)
 
     text = "".join(smoothed)
 
-    # 规则 3：连续空行压缩为最多 2 行
+    # 规则 2：连续空行压缩为最多 2 行
     text = re.sub(r"\n{3,}", "\n\n\n", text)
 
     return text
 
 
 def _build_toc(text: str) -> str:
-    """扫描装配后正文的 ## 章节标题，按出现顺序生成目录。
+    """扫描装配后正文的 ## 章节标题与 ### 子节标题，按出现顺序生成两级目录。
 
     目录顺序与正文严格一致：正文经 _assemble_full_text 重排
     （post_body(front) 前置），故不能按大纲原序生成。
 
-    目录行保留 `idx.` 列表序号（Markdown 有序列表语法，预览/导出
-    渲染为列表），标题文本剥去组装层注入的前导序号（`1 标题` →
-    `标题`）避免双号；序号语义与正文标题编号同源一致（§3.5）。
+    章条目保留 `idx.` 列表序号（Markdown 有序列表语法），标题文本剥去
+    装配层注入的前导序号（`1 标题` → `标题`）避免双号，序号语义与正文
+    标题编号同源一致；子节条目缩进挂靠章条目（`   - n.m 标题`），n.m
+    直接采用装配层注入的编号（§3.5，2026-10-27 两级装配）。
     """
     lines = ["## 目录", ""]
     idx = 1
-    for m in re.finditer(r"^## (.+)$", text, flags=re.MULTILINE):
-        bare = re.sub(r"^\d+\s+", "", m.group(1).strip())
-        lines.append(f"{idx}. {bare}")
-        idx += 1
+    for m in re.finditer(r"^(##|###) (.+)$", text, flags=re.MULTILINE):
+        level, raw = m.group(1), m.group(2).strip()
+        if level == "##":
+            bare = re.sub(r"^\d+\s+", "", raw)
+            lines.append(f"{idx}. {bare}")
+            idx += 1
+        else:
+            num = re.match(r"^(\d+\.\d+)\s+", raw)
+            if num:
+                lines.append(f"   - {num.group(1)} {raw[num.end():]}")
+            else:
+                lines.append(f"   - {raw}")
     return "\n".join(lines)
 
 

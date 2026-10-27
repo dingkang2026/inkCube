@@ -9,7 +9,6 @@ import { useSchedules } from '../schedule/useSchedules'
 import { TodayTodo, type HomeTab } from './TodayTodo'
 import { UpcomingCalendar } from './UpcomingCalendar'
 import { MorningHero, type OverviewAnchor } from './MorningHero'
-import { QuickActions } from './QuickActions'
 import { ProjectCardWall, type LatestEntry } from './ProjectCardWall'
 import { StageLaneView } from './StageLaneView'
 import { useRecentOutputs } from './useRecentOutputs'
@@ -44,12 +43,8 @@ interface HomePageProps {
   loadingMoreProjects?: boolean
   onLoadMoreProjects?: () => void
   onSelectProject: (id: string) => void
-  /** 0.5 E1 T4:新建任务(App.handleCreateTask,与任务侧栏「新建」同链) */
-  onCreateTask: () => void
-  /** 0.5 E1 T4:新建项目(切项目导航 + 打开创建模态) */
+  /** 0.5 E1 T4:新建项目(切项目导航 + 打开创建模态);泳道空态引导仍消费 */
   onCreateProject: () => void
-  /** 0.6 §3.2 V2-E1a:新建订阅(情报中心管理台 tab + 直开弹层，App.openIntelAdmin 同链) */
-  onCreateSchedule: () => void
   /** 3.0 三期:今日工作台单一数据快照(App 下发;null/undefined = 未就绪或降级,区块隐藏) */
   dueData?: { tasks: DueTask[]; reviews_counts: ReviewTypedCounts } | null
   healthByProject?: Record<string, ProjectHealthSummary>
@@ -62,9 +57,7 @@ export function HomePage({
   loadingMoreProjects,
   onLoadMoreProjects,
   onSelectProject,
-  onCreateTask,
   onCreateProject,
-  onCreateSchedule,
   dueData,
   healthByProject,
 }: HomePageProps) {
@@ -250,7 +243,7 @@ export function HomePage({
         onJump={handleJump}
       />
 
-      {/* ── Dashboard grid:主列(进行中/今日待办+日历/卡片墙) + 侧列(动态流/快捷动作) ── */}
+      {/* ── Dashboard grid:主列(情报/进行中/卡片墙) + 侧列(动态流/今日待办+日历) ── */}
       <div className={s.grid}>
         <div className={s.main}>
           {/* 情报卡区（0.6 §3.2 V2-E1a T10：主列顶部第一区块，原侧列速览上移；
@@ -278,12 +271,6 @@ export function HomePage({
                 })}
               </div>
             )}
-          </section>
-
-          {/* Today todo + calendar (空态保留——Ruling 4;概览「逾期/今日」锚点) */}
-          <section ref={todoRef} className={s.block}>
-            <TodayTodo tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
-            <UpcomingCalendar tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
           </section>
 
           {/* Project card wall / stage lanes (概览「项目」锚点;V2-E4 §3.7 同一数据快照两种视图) */}
@@ -374,10 +361,11 @@ export function HomePage({
             </div>
           </section>
 
-          {/* Quick actions (0.5 §4.2:动作化——新建任务/新建项目/新建订阅 0.6 §3.2) */}
-          <section className={s.block}>
-            <div className={s.sectionTitle}>{t('home.quickTitle')}</div>
-            <QuickActions onCreateTask={onCreateTask} onCreateProject={onCreateProject} onCreateSchedule={onCreateSchedule} />
+          {/* Today todo + calendar (2026-10-26 自主列移入侧列,项目卡片墙上提;
+              空态保留——Ruling 4;概览「逾期/今日」锚点) */}
+          <section ref={todoRef} className={s.block}>
+            <TodayTodo tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
+            <UpcomingCalendar tasks={todoTasks} onOpenProject={handleOpenProjectTab} />
           </section>
         </aside>
       </div>
