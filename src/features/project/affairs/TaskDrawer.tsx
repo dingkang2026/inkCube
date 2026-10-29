@@ -5,7 +5,7 @@
  *  与 Chat 互斥由父级 onPanelOpenChange 处理(§6.4-7)。
  *  动作:完成/跳过/恢复/编辑/删除(useConfirm danger)/发起报告(report 类,裁决 7);
  *  material 类 v1 显示上传引导文案(裁决 9 延伸:闭环挂解析终态,不内置上传);
- *  关联文件名不显示(裁决 9);完成规则文案含 auto_done 来源标注。
+ *  关联文件名不显示(裁决 9);完成时间在 meta 行统一显示(manual/auto 同口径,auto 叠加来源标注)。
  */
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -84,6 +84,10 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
   const ruleText = (): string => {
     const ac = task.auto_complete
     if (ac?.on === 'file_parsed') return t('affairs.drawer.ruleFile', { match: ac.match ?? '' })
+    // 产出闭环(2026-10-28 产出维度):title~ 前缀防御性剥离,与 ruleReport 同口径
+    if (ac?.on === 'output_completed') {
+      return t('affairs.drawer.ruleOutput', { match: (ac.match ?? '').replace(/^title~/, '') })
+    }
     if (ac?.on === 'report_completed') {
       return t('affairs.drawer.ruleReport', { match: (ac.match ?? '').replace(/^title~/, '') })
     }
@@ -125,15 +129,18 @@ export function TaskDrawer({ task, projectId, onClose, onChanged, onEdit, onOpen
                     : t('affairs.drawer.dueAt', { date: task.due_date.slice(0, 10) })
                 : t('affairs.drawer.noDue')}
             </span>
+            {/* 完成时间:done 且有 completed_at 才显示,manual/auto 统一口径,auto 叠加来源标注 */}
+            {task.status === 'done' && task.completed_at && (
+              <span className={s.doneAt}>
+                {task.completed_by === 'auto'
+                  ? t('affairs.doneAtAuto', { date: task.completed_at.slice(0, 10) })
+                  : t('affairs.doneAt', { date: task.completed_at.slice(0, 10) })}
+              </span>
+            )}
           </div>
           <div className={s.rule}>
             <span className={s.ruleLabel}>{t('affairs.drawer.ruleLabel')}</span>
             <span>{ruleText()}</span>
-            {task.completed_by === 'auto' && task.completed_at && (
-              <span className={s.autoDone}>
-                {t('affairs.drawer.autoDone', { date: task.completed_at.slice(0, 10) })}
-              </span>
-            )}
           </div>
           {task.task_type === 'material' && task.status === 'open' && (
             <p className={s.uploadHint}>{t('affairs.drawer.uploadHint')}</p>

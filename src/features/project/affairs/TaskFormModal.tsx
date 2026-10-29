@@ -2,7 +2,9 @@
  *  新建:归当前时期(服务端 POST 按项目 stage 推导,表单不出现时期字段);
  *  编辑:时期可改(PATCH 白名单 phase),类型禁改(白名单无 task_type)。
  *  recurring 类型切换为节奏字段(频率 + due_day:1-31|end|MM-DD),隐藏截止日;
- *  完成匹配词(§6.1.7):资料/周期事务均可自动完成(file_parsed),新建与编辑均可设,
+ *  完成匹配词(§6.1.7):资料/周期事务均可自动完成,新建与编辑均可设;匹配来源
+ *  二选一(2026-10-28 产出维度):上传文件名(file_parsed)/项目产出标题
+ *  (output_completed,报告/PPT/填表完成后按标题匹配);
  *  清空=移除自动完成(2026-10-22 放开手动新建资料任务入口,消除「模板任务能自动
  *  完成、手动任务不能」的不对称);
  *  模板带入的 auto_complete 不可改场景原样保留回传(实例与模板解耦,§6.4-1)。
@@ -40,11 +42,18 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
   const [freq, setFreq] = useState<RecurrenceRule['freq']>(initial?.recurrence_rule?.freq ?? 'monthly')
   const [dueDay, setDueDay] = useState<string>(
     initial?.recurrence_rule ? String(initial.recurrence_rule.due_day) : '15')
-  // 完成匹配词(§6.1.7,2026-10-22 放开 material):资料/周期事务均走 file_parsed
-  // 闭环,新建与编辑均可设;清空保存 = 移除自动完成规则(null,退回手动完成);
+  // 完成匹配词(§6.1.7,2026-10-22 放开 material):资料/周期事务均可自动闭环,
+  // 新建与编辑均可设;匹配来源二选一(2026-10-28 产出维度):上传文件名
+  // (file_parsed)/项目产出标题(output_completed,报告/PPT/填表完成时匹配);
+  // 清空保存 = 移除自动完成规则(null,退回手动完成);
   // report_completed 规则(报告类)不在表单展示、原样透传(§6.4-1)
   const showMatch = isRecurring || taskType === 'material'
-  const [matchInput, setMatchInput] = useState(initial?.auto_complete?.match ?? '')
+  const [matchSource, setMatchSource] = useState<'file' | 'output'>(
+    initial?.auto_complete?.on === 'output_completed' ? 'output' : 'file')
+  // 回填剥 title~ 前缀(后端 _match_hit 兼容两种形态,展示/再保存落纯关键词,
+  // 防手工改库的存量规则在输入框裸显前缀)
+  const [matchInput, setMatchInput] = useState(
+    (initial?.auto_complete?.match ?? '').replace(/^title~/, ''))
   const [dueDayError, setDueDayError] = useState(false)
   const [saveError, setSaveError] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -72,12 +81,13 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
     if (!title.trim() || saving) return
     let recurrenceRule: RecurrenceRule | null = null
     let due: string | null = dueDate || null
-    // 自动完成规则(§6.1.7):showMatch 场景按输入落 file_parsed(清空=移除);
-    // 切类型即清空残留输入(type onChange),隐藏场景不产生新规则
+    // 自动完成规则(§6.1.7):showMatch 场景按来源落 file_parsed/output_completed
+    // (清空=移除);切类型即清空残留输入与来源(type onChange),隐藏场景不产生新规则
     const match = matchInput.trim()
+    const ruleOn = matchSource === 'output' ? 'output_completed' : 'file_parsed'
     const autoComplete: PhaseTask['auto_complete'] = initial
-      ? (showMatch ? (match ? { on: 'file_parsed', match } : null) : initial.auto_complete)
-      : (showMatch && match ? { on: 'file_parsed', match } : null)
+      ? (showMatch ? (match ? { on: ruleOn, match } : null) : initial.auto_complete)
+      : (showMatch && match ? { on: ruleOn, match } : null)
     if (isRecurring) {
       const day = parseDueDay(freq, dueDay)
       if (day == null) { setDueDayError(true); return }
@@ -130,7 +140,7 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
         <div className={s.fieldRow}>
           <label className={s.label}>{t('affairs.form.typeLabel')}</label>
           <select className={s.input} value={taskType} disabled={!!initial}
-            onChange={(e) => { setTaskType(e.target.value as PhaseTaskType); setDueDayError(false); setMatchInput('') }}>
+            onChange={(e) => { setTaskType(e.target.value as PhaseTaskType); setDueDayError(false); setMatchInput(''); setMatchSource('file') }}>
             {TASK_TYPES.map((tt) => <option key={tt} value={tt}>{t(`affairs.type.${tt}`)}</option>)}
           </select>
         </div>
@@ -164,9 +174,15 @@ export function TaskFormModal({ projectId, stage, initial, prefillDueDate, onClo
         {showMatch && (
           <div className={s.fieldRow}>
             <label className={s.label}>{t('affairs.form.matchLabel')}</label>
-            <input className={s.input} value={matchInput}
+            <select className={s.freqSelect} value={matchSource}
+              onChange={(e) => setMatchSource(e.target.value as 'file' | 'output')}>
+              <option value="file">{t('affairs.form.matchSourceFile')}</option>
+              <option value="output">{t('affairs.form.matchSourceOutput')}</option>
+            </select>
+            <input className={s.dayInput} value={matchInput}
               onChange={(e) => setMatchInput(e.target.value)}
-              placeholder={t('affairs.form.matchPlaceholder')} />
+              placeholder={t(matchSource === 'output'
+                ? 'affairs.form.matchPlaceholderOutput' : 'affairs.form.matchPlaceholder')} />
           </div>
         )}
         {dueDayError && <p className={s.error}>{t('affairs.form.dueDayInvalid')}</p>}

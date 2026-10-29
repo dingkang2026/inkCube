@@ -1,13 +1,12 @@
-/** src/features/project/tabs/PptDetail.tsx — PPT 详情页（2.3 §7.1 PptDetail + PptConfirmCard）
- *  状态条（阶段四段 + 页数进度）+ 门禁摘要条（awaiting 时：Generate 内嵌原生
- *  confirm_ui iframe 方案 A；Enhance 为结构化确认卡 §7.2）+ 创作页 SVG 预览网格
- *  + 执行时间线（缩小的任务 agent：TaskHistoryReplay 全量回放）
- *  + 操作组（含 E3 成品增强入口：deck + completed → 发起增强）。
+/** src/features/project/tabs/PptDetail.tsx — PPT 详情页（2.3 §7.1 PptDetail）
+ *  状态条（阶段四段 + 页数进度）+ 门禁摘要条（awaiting 时内嵌原生
+ *  confirm_ui iframe 方案 A）+ 创作页 SVG 预览网格
+ *  + 执行时间线（缩小的任务 agent：TaskHistoryReplay 全量回放）。
  *  活跃期经 useActivity('ppt') 心跳驱动 3s 轮询；终态自动停轮（0.4 §6.2）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, Download, FolderOpen, Pause, Play, Square, Trash2, AlertCircle, Wand2 } from 'lucide-react'
+import { ArrowLeft, Download, FolderOpen, Pause, Play, Square, Trash2, AlertCircle } from 'lucide-react'
 import s from './ppt.module.css'
 import { useToast } from '../../knowledge/Toast'
 import { useConfirm } from '../../../components/ConfirmDialog'
@@ -43,11 +42,9 @@ interface PptDetailProps {
   pptId: string
   onBack: () => void
   onDeleted: () => void
-  /** E3 成品增强：从此交付物发起增强成功后回调（父组件切到新任务详情跟踪） */
-  onEnhanced?: (newPptId: string) => void
 }
 
-export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailProps) {
+export function PptDetail({ pptId, onBack, onDeleted }: PptDetailProps) {
   const { t } = useTranslation()
   const showToast = useToast()
   const confirmDialog = useConfirm()
@@ -57,9 +54,27 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
   // 页面预览缓存：path → data URL；已拉取的页在轮询中不重复读
   const pageUrlsRef = useRef<Map<string, string>>(new Map())
   const [pageUrls, setPageUrls] = useState<Map<string, string>>(new Map())
-  // E3 增强门禁卡：调整意见输入 + 发起中防抖
-  const [gateNotes, setGateNotes] = useState('')
-  const [enhancing, setEnhancing] = useState(false)
+  // 最新 pptId 快照：loadMessages 迟到响应丢弃（快速切换详情时旧任务
+  // 在飞 IPC 不得回写新详情的时间线，review 2026-10-28）
+  const pptIdRef = useRef(pptId)
+  // 执行时间线默认展开态按任务阶段区分（2026-10-28 用户反馈）：进行中
+  // （running/awaiting/paused/failed）默认展开便于跟踪，终态（completed/
+  // cancelled）默认收起；null = 待首次拿到 ppt 状态后定初值，此后用户切换
+  // 自由、状态翻转不再改写（避免正在查看时被强制收起打断）
+  const [timelineOpen, setTimelineOpen] = useState<boolean | null>(null)
+
+  // 执行时间线消息拉取：任务消息只增不减，按条数判变化（相等时返回原引用，
+  // TaskHistoryReplay 的 useMemo 不重算）；失败不阻断主数据，下次轮询重试
+  const loadMessages = async (taskId: string) => {
+    try {
+      const result: any = await window.electronAPI.invoke('tasks:getMessages', taskId)
+      if (taskId !== pptIdRef.current) return // 已切走：迟到响应丢弃
+      const next: TaskMessage[] = result?.messages || []
+      setMessages((prev) => (next.length === prev.length ? prev : next))
+    } catch (err) {
+      console.error('Failed to load ppt messages:', err)
+    }
+  }
 
   const load = async () => {
     try {
@@ -67,6 +82,10 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
       if (result?.ppt) {
         setPpt(result.ppt)
         setLoadError(false)
+        // 执行时间线随本页轮询刷新（2026-10-28 复盘：原实现仅依赖
+        // [task_id, status]，running 回合中时间线静止被误读为卡死；
+        // 现每次 load 顺带拉消息，终态停轮后由 useEdgeRefetch 补拉兼底）
+        if (result.ppt.task_id) await loadMessages(result.ppt.task_id)
       } else {
         setLoadError(true)
       }
@@ -84,22 +103,6 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
   usePolling({ name: 'ppt-detail', enabled: isActive, interval: 3000, task: () => load() })
   // 终态边沿补拉：心跳停轮可能早于最后一次状态翻转
   useEdgeRefetch(isActive, () => { void load() })
-
-  // 执行时间线（TaskHistoryReplay 全量渲染；依赖 [task_id, status]，running 中途
-  // 不随心跳刷新——增量以 JobCard 面板为准，状态跃迁/重进页面时重拉）
-  useEffect(() => {
-    if (!ppt?.task_id) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const result: any = await window.electronAPI.invoke('tasks:getMessages', ppt.task_id)
-        if (!cancelled) setMessages(result.messages || [])
-      } catch (err) {
-        console.error('Failed to load ppt messages:', err)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [ppt?.task_id, ppt?.status])
 
   // 新页出现（pages 增长）→ 拉取未缓存的页（SVG 内容 base64 已由后端编码）
   useEffect(() => {
@@ -129,11 +132,20 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
     return () => { cancelled = true }
   }, [ppt?.pages, ppt?.task_id])
 
-  // 删除时清预览缓存（不同 ppt 的 task workspace 不同）
+  // 切换 ppt：清预览缓存（不同 ppt 的 task workspace 不同）+ 重置时间线展开态
+  // + 同步 pptId 快照（迟到响应守卫基准）
   useEffect(() => {
+    pptIdRef.current = pptId
     pageUrlsRef.current = new Map()
     setPageUrls(new Map())
+    setTimelineOpen(null)
   }, [pptId])
+
+  // 首次拿到 ppt 状态时定时间线初始展开态（详见 timelineOpen 注释）
+  useEffect(() => {
+    if (!ppt || timelineOpen !== null) return
+    setTimelineOpen(ppt.status !== 'completed' && ppt.status !== 'cancelled')
+  }, [ppt, timelineOpen])
 
   const stageIndex = useMemo(
     () => Math.max(0, STAGE_ORDER.indexOf((ppt?.stage || 'intake') as typeof STAGE_ORDER[number])),
@@ -206,31 +218,6 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
     })
   }
 
-  // E3 成品增强：以此 deck 交付物为源创建增强任务，成功后切换到新任务详情
-  const handleEnhance = async () => {
-    if (enhancing) return
-    if (!(await confirmDialog({
-      title: t('project.ppt.detail.enhanceBtn'),
-      message: t('project.ppt.detail.enhanceConfirm'),
-    }))) return
-    setEnhancing(true)
-    try {
-      const result: any = await window.electronAPI.invoke('ppt:enhance', { pptId })
-      if (result?.ppt?.id) {
-        showToast(t('project.ppt.toast.enhanceStarted'), 'success')
-        onEnhanced?.(result.ppt.id)
-      } else {
-        showToast(t('project.ppt.toast.enhanceFailed', {
-          error: apiErrorText(result?.code, result?.error || 'unknown', t),
-        }), 'error')
-      }
-    } catch (err: any) {
-      showToast(t('project.ppt.toast.enhanceFailed', { error: String(err?.message || err) }), 'error')
-    } finally {
-      setEnhancing(false)
-    }
-  }
-
   if (loadError) {
     return (
       <div className={s.detail}>
@@ -254,8 +241,28 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
       <div className={s.detailHeader}>
         <button className={s.backBtn} onClick={onBack}><ArrowLeft size={16} /> {t('project.ppt.detail.back')}</button>
         <h3 className={s.detailTitle}>{ppt.title}</h3>
-        {ppt.kind === 'enhanced' && <span className={s.kindBadge}>{t('project.ppt.enhancedBadge')}</span>}
         <span className={`${s.statusChip} ${s[`status_${ppt.status}`] || ''}`}>{t(statusKey)}</span>
+        {/* 操作组随头部常驻（2026-10-28：原沉底，长页滚动后不可达） */}
+        <div className={s.detailActions}>
+          {(ppt.status === 'paused' || ppt.status === 'failed' || awaiting) && (
+            <button className={s.primaryBtn} onClick={handleResume}><Play size={14} /> {t('project.ppt.detail.resume')}</button>
+          )}
+          {ppt.status === 'running' && (
+            <button className={s.secondaryBtn} onClick={handlePause} title={t('project.ppt.detail.pauseTip')}>
+              <Pause size={14} /> {t('project.ppt.detail.pause')}
+            </button>
+          )}
+          {(ppt.status === 'running' || ppt.status === 'paused' || awaiting) && (
+            <button className={s.dangerBtn} onClick={handleCancel}><Square size={14} /> {t('project.ppt.detail.cancel')}</button>
+          )}
+          {ppt.status === 'completed' && ppt.export_path && (
+            <>
+              <button className={s.primaryBtn} onClick={handleDownload}><Download size={14} /> {t('project.ppt.detail.download')}</button>
+              <button className={s.secondaryBtn} onClick={handleReveal}><FolderOpen size={14} /> {t('project.ppt.detail.reveal')}</button>
+            </>
+          )}
+          <button className={s.dangerBtn} onClick={handleDelete}><Trash2 size={14} /> {t('project.ppt.detail.delete')}</button>
+        </div>
       </div>
 
       {/* 状态条：阶段四段 + 页数进度（2.3 §7.2 running 行） */}
@@ -270,68 +277,31 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
             </div>
           ))}
         </div>
+        {/* 进度行：页数已规划（authoring）显示页码+百分比；其余阶段显示阶段语义文案
+            ——progress 语义为 authoring 按页计（2.3 §5.1），intake/strategy/export 恒 0，
+            裸展示 0% 会被读作卡死（2026-10-28 复盘） */}
         <div className={s.progressLine}>
-          {!!ppt.page_count && (
-            <span className={s.pageProgress}>
-              {t('project.ppt.pageProgress', { done: ppt.page_done || 0, count: ppt.page_count })}
-            </span>
-          )}
           {(ppt.status === 'running' || ppt.status === 'paused') && (
-            <span className={s.progressPercent}>
-              {t('project.ppt.progressPercent', { percent: Math.round((ppt.progress || 0) * 100) })}
-            </span>
+            !!ppt.page_count ? (
+              <>
+                <span className={s.pageProgress}>
+                  {t('project.ppt.pageProgress', { done: ppt.page_done || 0, count: ppt.page_count })}
+                </span>
+                <span className={s.progressPercent}>
+                  {t('project.ppt.progressPercent', { percent: Math.round((ppt.progress || 0) * 100) })}
+                </span>
+              </>
+            ) : (
+              <span className={s.pageProgress}>
+                {t(`project.ppt.stageHint.${ppt.stage || 'intake'}`)}
+              </span>
+            )
           )}
         </div>
       </div>
 
-      {/* 门禁摘要条（2.3 §7.1 PptConfirmCard）：Generate=内嵌确认页；
-          Enhance=结构化确认卡（stage 区分门禁类型，§7.2 awaiting 行） */}
-      {awaiting && ppt.kind === 'enhanced' && (
-        <div className={s.confirmBanner}>
-          <p className={s.confirmBannerText}>
-            {ppt.stage === 'authoring'
-              ? t('project.ppt.detail.gateAudioDesc')
-              : t('project.ppt.detail.gatePlanDesc')}
-          </p>
-          <input
-            className={s.gateNotes}
-            value={gateNotes}
-            onChange={(e) => setGateNotes(e.target.value)}
-            placeholder={t('project.ppt.detail.gatePlaceholder')}
-          />
-          <div className={s.gateActions}>
-            <button
-              className={s.primaryBtn}
-              onClick={() => {
-                setGateNotes('')
-                action(
-                  () => window.electronAPI.invoke('ppt:answer', { pptId, text: null }),
-                  t('project.ppt.toast.resumed'), t('project.ppt.toast.resumeFailed'),
-                )
-              }}
-            >
-              {ppt.stage === 'authoring'
-                ? t('project.ppt.detail.gateAudioConfirm')
-                : t('project.ppt.detail.gatePlanConfirm')}
-            </button>
-            <button
-              className={s.secondaryBtn}
-              disabled={!gateNotes.trim()}
-              onClick={() => {
-                const text = gateNotes.trim()
-                setGateNotes('')
-                action(
-                  () => window.electronAPI.invoke('ppt:answer', { pptId, text }),
-                  t('project.ppt.toast.resumed'), t('project.ppt.toast.resumeFailed'),
-                )
-              }}
-            >
-              {t('project.ppt.detail.gateSendNotes')}
-            </button>
-          </div>
-        </div>
-      )}
-      {awaiting && ppt.kind !== 'enhanced' && (
+      {/* 门禁摘要条（2.3 §7.1 PptConfirmCard）：awaiting 时内嵌确认页 */}
+      {awaiting && (
         <div className={s.confirmBanner}>
           <p className={s.confirmBannerText}>{showIframe ? t('project.ppt.detail.confirmBanner') : t('project.ppt.detail.confirmClosed')}</p>
           {showIframe && (
@@ -366,11 +336,23 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
         </div>
       )}
 
-      {/* 执行时间线（2.3 §7.1，缩小的任务 agent：全量迭代卡回放） */}
+      {/* 执行时间线（2.3 §7.1，缩小的任务 agent：全量迭代卡回放）——
+          进行中默认展开/终态默认收起（状态感知初值，见 timelineOpen 注释），
+          展开后 70vh 内滚（规模无关布局，2026-10-28） */}
       <div className={s.sectionTitle}>{t('project.ppt.detail.timeline')}</div>
       {messages.length === 0 ? (
         <div className={s.emptyHint}>{t('project.ppt.detail.noTimeline')}</div>
       ) : (
+        <button
+          type="button"
+          className={s.timelineSummary}
+          onClick={() => setTimelineOpen((v) => !v)}
+        >
+          <span className={`${s.timelineChevron} ${timelineOpen ? s.timelineChevronOpen : ''}`}>▸</span>
+          {t('project.ppt.detail.timelineSummary', { count: messages.length })}
+        </button>
+      )}
+      {timelineOpen && messages.length > 0 && (
         <div className={s.timeline}>
           <TaskHistoryReplay messages={messages} />
         </div>
@@ -382,38 +364,6 @@ export function PptDetail({ pptId, onBack, onDeleted, onEnhanced }: PptDetailPro
           <div className={s.errorText}>{translateStoredError(ppt.error, t)}</div>
         </div>
       )}
-
-      {/* 操作组 */}
-      <div className={s.detailActions}>
-        {(ppt.status === 'paused' || ppt.status === 'failed' || awaiting) && (
-          <button className={s.primaryBtn} onClick={handleResume}><Play size={14} /> {t('project.ppt.detail.resume')}</button>
-        )}
-        {ppt.status === 'running' && (
-          <button className={s.secondaryBtn} onClick={handlePause} title={t('project.ppt.detail.pauseTip')}>
-            <Pause size={14} /> {t('project.ppt.detail.pause')}
-          </button>
-        )}
-        {(ppt.status === 'running' || ppt.status === 'paused' || awaiting) && (
-          <button className={s.dangerBtn} onClick={handleCancel}><Square size={14} /> {t('project.ppt.detail.cancel')}</button>
-        )}
-        {ppt.status === 'completed' && ppt.export_path && (
-          <>
-            <button className={s.primaryBtn} onClick={handleDownload}><Download size={14} /> {t('project.ppt.detail.download')}</button>
-            <button className={s.secondaryBtn} onClick={handleReveal}><FolderOpen size={14} /> {t('project.ppt.detail.reveal')}</button>
-            {ppt.kind === 'deck' && (
-              <button
-                className={s.secondaryBtn}
-                onClick={handleEnhance}
-                disabled={enhancing}
-                title={t('project.ppt.detail.enhanceTip')}
-              >
-                <Wand2 size={14} /> {t('project.ppt.detail.enhanceBtn')}
-              </button>
-            )}
-          </>
-        )}
-        <button className={s.dangerBtn} onClick={handleDelete}><Trash2 size={14} /> {t('project.ppt.detail.delete')}</button>
-      </div>
 
       {/* MIT 归因说明（2.3 §1.3 合规） */}
       <div className={s.mitNote}>{t('project.ppt.detail.mitNote')}</div>

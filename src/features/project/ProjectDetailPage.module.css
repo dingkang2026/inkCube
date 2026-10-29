@@ -270,6 +270,24 @@
   overflow: hidden;
 }
 
+/* ── 素材 Tab 容器（下体承载 KnowledgePage compact；草稿提示条/新建钮已随
+   2.14 纪要中心迁出至独立纪要 Tab，样式同步删除）── */
+.materialsWrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.materialsBody {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ── Immersive mode: hide header + tab bar, maximize content ── */
 .page.expanded .header,
 .page.expanded .tabBar {

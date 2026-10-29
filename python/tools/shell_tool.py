@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from tools.base import BaseTool
-from tools.proc_priority import low_priority_kwargs
+from tools.proc_priority import hidden_window_kwargs, low_priority_kwargs
 from tools.venv_manager import get_venv_bin_dir
 
 logger = logging.getLogger(__name__)
@@ -232,6 +232,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 capture_output=True,
                 timeout=10,
+                **hidden_window_kwargs(),  # 无控制台父进程下 taskkill 闪窗（2026-10-28）
             )
         else:
             import signal

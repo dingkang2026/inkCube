@@ -1,8 +1,15 @@
 """python/wiki/auto_compile.py — 事件驱动自动汇编（2.6 §4.1 路径 A）.
 
-文件解析完成（files.status='done'）边沿自动点火 Wiki 增量编译，缝合
+文件解析完成（files.status='done'）边沿自动触发 Wiki 增量编译，缝合
 「解析完成 → 无人触发 → 知识沉睡」的复利断点：设计理念是每次新资料
 输入都增量编译（§1.1 知识复利），此前唯一触发路径是人工点击（通知模式）。
+
+点火聚合（2026-10-28 A1）：解析边沿只登记点火意图（schedule_auto_compile），
+由 5s QueueScanner 周期检查到期（DELAY_SECONDS）执行 try_auto_compile——
+窗口内后续完成的文件由到期时守卫③的待编译集合一次性吸收，消除
+「编译比解析快」时批量上传被拆成多次小编译的碎片化（重复 Stage 2 注入
+已有页面 + UI 噪音 + 编译后挂点多次触发）。首完成起算不重置（最坏延迟
+有界）；登记为进程内存态，重启丢失 = 该批次退化为手动入口（与冷却同语义）。
 
 守卫六重（全过才创建任务，任一不过静默跳过并记日志）：
   ① 全局开关 settings.auto_wiki_compile（默认 True）
@@ -29,12 +36,43 @@ logger = logging.getLogger(__name__)
 # 停止后自动点火冷却（秒）：会话级抑制，防止「停止 → 下一文件解析完 → 立刻重燃」
 COOLDOWN_SECONDS = 30 * 60
 
+# 点火聚合延迟（秒）：本地批量文件解析通常秒级完成，60s 足以聚合一波上传；
+# 单文件自动汇编延后 60s 无感（增量编译非实时需求）。不暴露设置（避免
+# 设置膨胀），后续有需求再开放。
+DELAY_SECONDS = 60
+
+# project_id -> 点火截止 epoch（time.time()）；首完成登记，到期由 scanner
+# 执行后移除。进程内存态（重启清零），量级 = 项目数
+_SCHEDULED: dict[str, float] = {}
+
 # project_id -> 冷却截止 epoch（time.time()）；懒清理，量级 = 项目数，无需定时器
 _COOLDOWN_UNTIL: dict[str, float] = {}
 
 # 活跃编译状态（与 routers/wiki.py trigger_compile 409 判定同口径；字面量
 # 本地副本，防 router → wiki 服务层反向依赖成环）
 _ACTIVE_STATUSES = ("queued", "ingesting", "storing")
+
+
+def schedule_auto_compile(project_id: str) -> None:
+    """解析完成边沿登记点火意图（同步、幂等）。
+
+    已登记不重置——首触发起算，窗口最坏延迟有界；到期执行由 QueueScanner
+    调 pop_due_projects 取出后走 try_auto_compile（六重守卫原样）。"""
+    if project_id in _SCHEDULED:
+        return
+    _SCHEDULED[project_id] = time.time() + DELAY_SECONDS
+    logger.info("auto_compile: scheduled for %s (delay %ds)",
+                project_id, DELAY_SECONDS)
+
+
+def pop_due_projects(now: float | None = None) -> list[str]:
+    """scanner 每轮调用：取出到期项目（取出即移除登记，失败不重试——
+    错过退化手动入口）。now 参数供测试注入时钟。"""
+    now = time.time() if now is None else now
+    due = [pid for pid, until in _SCHEDULED.items() if now >= until]
+    for pid in due:
+        _SCHEDULED.pop(pid, None)
+    return due
 
 
 def mark_user_stop(project_id: str) -> None:
@@ -73,7 +111,7 @@ def _readiness_ready(feature: str) -> bool:
 
 
 def try_auto_compile(db, project_id: str) -> dict | None:
-    """解析完成边沿的自动点火入口（同步；入队由调用方 enqueue_compile）。
+    """到期点火意图的执行入口（同步；入队由调用方 enqueue_compile）。
 
     守卫①-⑥逐层判定，任一不过返回 None（跳过原因分记 debug/info 日志，
     便于「为什么没自动编」的日志溯源）；全过则创建 trigger_type='auto'

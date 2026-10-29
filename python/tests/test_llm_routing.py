@@ -90,6 +90,7 @@ def test_task_type_keys_complete_and_unique():
         "ingest", "lint", "dedup", "ledger_parse", "enrich",
         "report", "report_extract", "form_analyze", "form_fill", "rag",
         "ppt", "profile",  # 2.6 §4.8 产业画像提取
+        "meeting_note",  # 2.13 拜访/会议纪要结构化
     }
     assert len(_TASK_MODEL_KEYS) == len(set(_TASK_MODEL_KEYS.values()))
 
@@ -98,6 +99,7 @@ def test_setting_key_mapping_samples():
     assert _TASK_MODEL_KEYS["enrich"] == "wiki_enrich_model"
     assert _TASK_MODEL_KEYS["report"] == "report_model"
     assert _TASK_MODEL_KEYS["ppt"] == "ppt_model"
+    assert _TASK_MODEL_KEYS["meeting_note"] == "meeting_note_model"
 
 
 def test_db_defaults_level_semantics():
@@ -113,7 +115,7 @@ def test_db_defaults_level_semantics():
                 "wiki_ledger_parse_model", "wiki_enrich_model",
                 "report_model", "report_extract_model",
                 "form_analyze_model", "form_fill_model", "rag_model",
-                "wiki_profile_model"):
+                "wiki_profile_model", "meeting_note_model"):
         assert s[key] == "standard", key
     # 档位槽开箱默认（2026-10-19 用户指定：glm-5.3-flash / glm-5.3）
     assert s["standard_model"] == "glm-5.3-flash"
@@ -125,7 +127,7 @@ def test_db_defaults_level_semantics():
 @pytest.mark.parametrize("task_type", [
     "ingest", "lint", "dedup", "ledger_parse", "enrich",
     "report", "report_extract", "form_analyze", "form_fill", "rag", "ppt",
-    "profile",
+    "profile", "meeting_note",
 ])
 def test_every_task_type_routes(task_type):
     settings = {

@@ -90,7 +90,7 @@ from knowledge.model_manager import ModelManager
 from scheduler import ScheduleScheduler
 from watchdog import start_watchdog
 from maintenance import run_storage_maintenance
-from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs, forms, usage, ppts, ppt_templates, task_templates, schedules, leads
+from routers import settings, models, knowledge, activities, health, system, tasks, skills, reports, wiki, web_logins, affairs, forms, usage, ppts, ppt_templates, task_templates, schedules, leads, sticky_notes, meeting_notes
 
 
 @asynccontextmanager
@@ -285,6 +285,18 @@ async def lifespan(app: FastAPI):
             len(_seeded_forms), len(_stale_tpl), len(_stale_fills))
     forms.resume_pending_work(deps.db, data_dir)
 
+    # ── 纪要向导：启动清扫（2.13 §2 崩溃恢复）── structuring 残留回 draft
+    # （LLM 随进程中断，行可重试；前端经 last_error=interrupted 提示）
+    try:
+        _reset_notes = deps.db.reset_interrupted_meeting_notes()
+        if _reset_notes:
+            logging.getLogger(__name__).info(
+                "Meeting notes startup: %d interrupted structuring row(s) "
+                "reset to draft", _reset_notes)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Meeting notes recovery failed", exc_info=True)
+
     # ── PPT 交付物：启动恢复（2.3 §6）── 泵随进程消失，active 行按 workspace
     # 产物落位（exports→completed / pending→awaiting / running→paused），不发新泵。
     # 线程池执行：模板分支含收录拷贝、deck 分支含 confirm_ui 关停子进程，
@@ -372,6 +384,8 @@ app.include_router(ppt_templates.router)
 app.include_router(task_templates.router)
 app.include_router(schedules.router)
 app.include_router(leads.router)
+app.include_router(sticky_notes.router)
+app.include_router(meeting_notes.router)
 
 
 # ── Global Exception Handlers ──

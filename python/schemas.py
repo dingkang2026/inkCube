@@ -54,6 +54,7 @@ class SettingsModel(BaseModel):
     rag_model: str = "standard"  # 知识库问答
     wiki_enrich_model: str = "standard"  # wiki 链接补全（轻量结构化）
     ppt_model: str = "high"  # PPT 生成（逐页 SVG 创作，唯一默认高配）
+    meeting_note_model: str = "standard"  # 拜访/会议纪要结构化（2.13）
     task_timeout: int = 30  # seconds；ppt 长命令由 ORIGIN_PRESETS 落地 600（2.3 §3.2）
     task_max_iterations: int = 60  # FC loop max iterations (TaskSettings UI)
     task_auto_confirm_shell: bool = False  # legacy, kept for backward compat

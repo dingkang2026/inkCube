@@ -101,11 +101,7 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   FORM_TEMPLATE_MISSING: { msg: 'formTemplateMissing' },
   FORM_FILL_RUNNING: { msg: 'formFillRunning' },
   FORM_FILL_CONCURRENT_LIMIT: { msg: 'formFillConcurrentLimit' },
-  // ── ppt（2.3 §6.3 E2/E3）──
-  NOT_ENHANCEABLE: { msg: 'pptNotEnhanceable' },
-  SOURCE_NOT_FOUND: { msg: 'pptSourceNotFound' },
-  ENHANCE_IN_PROGRESS: { msg: 'pptEnhanceInProgress' },
-  ENHANCE_CREATE_FAILED: { msg: 'pptEnhanceCreateFailed' },
+  // ── ppt（2.3 §6.3 E2）──
   LAUNCH_FAILED: { msg: 'pptLaunchFailed' },
   PPT_NOT_FOUND: { msg: 'pptNotFound' },
   PPT_FINISHED: { msg: 'pptFinished' },
@@ -115,6 +111,7 @@ export const ERROR_CODE_I18N: Record<string, ErrorI18nEntry> = {
   INVALID_TEMPLATE_KIND: { msg: 'pptInvalidTemplateKind' },
   INVALID_TEMPLATE_NAME: { msg: 'pptInvalidTemplateName' },
   INVALID_TEMPLATE_REF: { msg: 'pptInvalidTemplateRef' },
+  SOURCE_REPORT_UNREADABLE: { msg: 'pptSourceReportUnreadable' },
   TEMPLATE_ID_EXISTS: { msg: 'pptTemplateIdExists' },
   TEMPLATE_JOB_ACTIVE: { msg: 'pptTemplateJobActive' },
   TEMPLATE_DELETE_FAILED: { msg: 'pptTemplateDeleteFailed' },

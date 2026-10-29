@@ -26,6 +26,9 @@ vi.mock('../src/features/activity/ActivityContext', () => ({
         : kind === 'profile_extract'
           ? { items: profileItems }
           : {
+            // 未专门 mock 的 kind 兜底（页面子组件已全 mock 不渲染，防御未来新增消费者）：
+            // 兜底必须带 items 否则 undefined.some 崩
+            items: [] as Array<{ project_id?: string; count?: number; entity_id?: string }>,
             status: null,
             summary: {},
             byProject,
@@ -53,6 +56,7 @@ vi.mock('../src/features/project/tabs/WikiTab', () => ({ WikiTab: () => null }))
 vi.mock('../src/features/project/tabs/ReportsTab', () => ({ ReportsTab: () => null }))
 vi.mock('../src/features/project/tabs/FormsTab', () => ({ FormsTab: () => null }))
 vi.mock('../src/features/project/affairs/AffairsTab', () => ({ AffairsTab: () => null }))
+vi.mock('../src/features/notes/NotesTab', () => ({ NotesTab: () => null }))
 vi.mock('../src/features/project/ProjectChatPanel', () => ({ ProjectChatPanel: () => null }))
 vi.mock('../src/features/project/PulseBar', () => ({
   PulseBar: (props: { reviews?: { contradiction: number; gap: number }; pendingCompile?: number;
@@ -173,10 +177,11 @@ describe('ProjectDetailPage wiki compile heartbeat wiring', () => {
     const tabs = Array.from(container.querySelectorAll('button'))
     const active = tabs.find((b) => b.className.includes('tabActive'))
     expect(active?.textContent).toContain('project.tab.affairs')
-    // 顺序不变量（0.6 §6.3 规则 4）：事务恒第一（E1a plan T11 原定序，实施偏差 2026-10-24 补正）
+    // 顺序不变量（0.6 §6.3 规则 4）：事务恒第一（E1a plan T11 原定序，实施偏差 2026-10-24 补正）；
+    // notes 第二位（2.14 纪要独立 Tab）
     const tabBtns = tabs.filter((b) => b.textContent?.startsWith('project.tab.'))
     expect(tabBtns.map((b) => b.textContent)).toEqual([
-      'project.tab.affairs', 'project.tab.wiki', 'project.tab.output', 'project.tab.materials',
+      'project.tab.affairs', 'project.tab.notes', 'project.tab.wiki', 'project.tab.output', 'project.tab.materials',
     ])
   })
 

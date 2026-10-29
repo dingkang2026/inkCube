@@ -425,6 +425,10 @@ async def _run_form_fill(fill_id: str, data_dir: str) -> None:
                     fill_id, filled_n, len(report))
         activity_events.complete_form_fill(
             db, fill_id, detail=f"已填 {filled_n}/{len(report)} 个字段")
+        # 3.0 二期完成闭环(§5.4,2026-10-28 产出维度):终态声明点旁直调;
+        # 服务层自身 try/except 仅记日志不阻塞填表流
+        import affairs_service
+        affairs_service.on_form_fill_completed(db, fill_id)
     except Exception as e:
         from errors import actionable
         msg = actionable(e)

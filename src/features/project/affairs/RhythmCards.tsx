@@ -89,6 +89,14 @@ export function RhythmCards({ tasks, onOpenDrawer, onEditRhythm }: RhythmCardsPr
     if (/^\d{4}-Q\d$/.test(key)) return key.slice(5)                                   // Q4
     return key
   }
+  // hover 语义补充:done 期次带完成时间(格内仅期次短键,完成时间经 title 呈现)
+  const occTitle = (task: PhaseTask): string => {
+    const key = task.occurrence_key ?? '—'
+    if (task.status === 'done' && task.completed_at) {
+      return `${key} · ${t('affairs.doneAt', { date: task.completed_at.slice(0, 10) })}`
+    }
+    return key
+  }
 
   return (
     <div className={s.container}>
@@ -107,7 +115,7 @@ export function RhythmCards({ tasks, onOpenDrawer, onEditRhythm }: RhythmCardsPr
               <button key={task.id}
                 className={`${s.occCell} ${occCellClass(task)}`}
                 onClick={() => onOpenDrawer(task)}
-                title={task.occurrence_key ?? undefined}>
+                title={occTitle(task)}>
                 <span className={s.occKey}>{occShort(task.occurrence_key)}</span>
                 <span className={s.occDot} />
               </button>

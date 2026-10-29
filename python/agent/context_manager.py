@@ -20,6 +20,7 @@ import uuid
 from typing import Any
 
 from llm.budget import count_tokens
+from tools.proc_priority import hidden_window_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -431,22 +432,26 @@ def build_git_context(workspace_path: str) -> str:
     Returns empty string if not a git repository or git is unavailable.
     """
     try:
+        # hidden_window_kwargs：无控制台父进程下 git 闪窗（2026-10-28）
         # Current branch
         branch = subprocess.run(
             ["git", "branch", "--show-current"],
             capture_output=True, encoding="utf-8", errors="replace", cwd=workspace_path, timeout=5,
+            **hidden_window_kwargs(),
         ).stdout.strip()
 
         # Recent 5 commits
         log = subprocess.run(
             ["git", "log", "--oneline", "-5"],
             capture_output=True, encoding="utf-8", errors="replace", cwd=workspace_path, timeout=5,
+            **hidden_window_kwargs(),
         ).stdout.strip()
 
         # Uncommitted changes summary
         status = subprocess.run(
             ["git", "status", "--short"],
             capture_output=True, encoding="utf-8", errors="replace", cwd=workspace_path, timeout=5,
+            **hidden_window_kwargs(),
         ).stdout.strip()
 
         if not branch and not log:

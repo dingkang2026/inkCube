@@ -232,8 +232,17 @@
 }
 
 /* ── Status filter segments ── */
+/* 筛选行：segments 为主体（flex:1 收缩），右侧动作槽（compact 嵌入：新建纪要等按钮） */
+.headerFilterRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .statusFilter {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

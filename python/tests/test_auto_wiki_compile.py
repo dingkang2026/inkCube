@@ -1,14 +1,16 @@
 """python/tests/test_auto_wiki_compile.py — 事件驱动自动汇编回归（2.6 §4.1 路径 A）.
 
-覆盖五组：
-  1. TestGuardMatrix  — 六重守卫条件矩阵（开关/项目门/待编译集/活跃任务/冷却/就绪）
-  2. TestCooldown     — 冷却写入（mark_user_stop）、过期懒清理、仅抑制自动路径
-  3. TestStopEndpoint — stop 端点成功写冷却；404（无任务）/409（非活跃）不写；
-                        冷却不拦手动触发
-  4. TestParseEdge    — _process_file 解析完成边沿端到端（点火入队、冷却抑制、
-                        触发失败不打断解析、磁盘缺失不点火）
-  5. TestSettingsKey  — auto_wiki_compile 键：kv 缺省即真（存量无迁移）、回读、
-                        SettingsModel 同构默认
+覆盖六组：
+  1. TestGuardMatrix     — 六重守卫条件矩阵（开关/项目门/待编译集/活跃任务/冷却/就绪）
+  2. TestCooldown        — 冷却写入（mark_user_stop）、过期懒清理、仅抑制自动路径
+  3. TestScheduledFiring — 点火聚合（A1，2026-10-28）：登记不直接点火、到期取出
+                           即移除、窗口内重复登记不重置、冷却在到期执行判定
+  4. TestStopEndpoint    — stop 端点成功写冷却；404（无任务）/409（非活跃）不写；
+                           冷却不拦手动触发
+  5. TestParseEdge       — _process_file 解析完成边沿端到端（仅登记点火意图、
+                           登记失败不打断解析、磁盘缺失不登记）
+  6. TestSettingsKey     — auto_wiki_compile 键：kv 缺省即真（存量无迁移）、回读、
+                           SettingsModel 同构默认
 """
 import asyncio
 import os
@@ -25,11 +27,13 @@ from db.database import Database
 
 
 @pytest.fixture(autouse=True)
-def _reset_cooldown():
-    """冷却为模块级进程内存态，用例间必须清零防串扰。"""
+def _reset_memory_state():
+    """冷却与点火登记均为模块级进程内存态，用例间必须清零防串扰。"""
     auto_compile._COOLDOWN_UNTIL.clear()
+    auto_compile._SCHEDULED.clear()
     yield
     auto_compile._COOLDOWN_UNTIL.clear()
+    auto_compile._SCHEDULED.clear()
 
 
 @pytest.fixture()
@@ -145,6 +149,54 @@ class TestCooldown:
         assert auto_compile.try_auto_compile(db, pid) is not None
 
 
+class TestScheduledFiring:
+    """点火聚合（A1，2026-10-28）：边沿登记 → scanner 到期取出 → 守卫点火。"""
+
+    def test_schedule_then_due_fires(self, db, monkeypatch):
+        """登记后未到期不取出；拨快 DELAY_SECONDS 到期取出且登记移除，
+        执行走六重守卫创建任务。"""
+        _ready(monkeypatch)
+        pid = _project_with_done_file(db)
+        auto_compile.schedule_auto_compile(pid)
+        assert auto_compile.pop_due_projects() == []  # 未到期
+        assert auto_compile.pop_due_projects(
+            time.time() + auto_compile.DELAY_SECONDS + 1) == [pid]  # 到期取出
+        assert pid not in auto_compile._SCHEDULED  # 取出即移除（失败不重试）
+        task = auto_compile.try_auto_compile(db, pid)
+        assert task is not None and task["trigger_type"] == "auto"
+
+    def test_repeated_schedule_no_reset(self, db):
+        """窗口内重复解析完成不重置截止时刻——首触发起算，最坏延迟有界。"""
+        pid = _project_with_done_file(db)
+        t0 = 1000.0
+        auto_compile._SCHEDULED[pid] = t0 + auto_compile.DELAY_SECONDS  # 模拟 t0 首登
+        auto_compile.schedule_auto_compile(pid)  # 窗口内再次解析完成
+        assert auto_compile._SCHEDULED[pid] == t0 + auto_compile.DELAY_SECONDS
+
+    def test_cooldown_blocks_due_firing(self, db, monkeypatch):
+        """冷却判定发生在到期执行（守卫⑤）：登记不查冷却（边沿零成本），
+        到期 try_auto_compile 被冷却拦下——语义与旧边沿直调一致。"""
+        _ready(monkeypatch)
+        pid = _project_with_done_file(db)
+        auto_compile.schedule_auto_compile(pid)
+        auto_compile.mark_user_stop(pid)
+        due = auto_compile.pop_due_projects(
+            time.time() + auto_compile.DELAY_SECONDS + 1)
+        assert due == [pid]
+        assert auto_compile.try_auto_compile(db, pid) is None
+
+    def test_pop_only_returns_due(self, db):
+        """多项目并存：仅到期者被取出，未到期保留登记。"""
+        pid_a = _project_with_done_file(db, "项目A")
+        pid_b = _project_with_done_file(db, "项目B")
+        auto_compile.schedule_auto_compile(pid_a)
+        now = time.time()
+        auto_compile._SCHEDULED[pid_b] = now + auto_compile.DELAY_SECONDS + 5
+        due = auto_compile.pop_due_projects(now + auto_compile.DELAY_SECONDS + 1)
+        assert due == [pid_a]
+        assert pid_b in auto_compile._SCHEDULED
+
+
 @pytest.fixture()
 def wiki_client_and_db(monkeypatch, tmp_path):
     """单 router 挂载 + deps.db 注入（test_knowledge_archive_api 同款口径，
@@ -256,46 +308,35 @@ def _seed_pending_file_on_disk(db, data_dir):
 
 
 class TestParseEdge:
-    """解析完成边沿端到端：_process_file 成功分支自动点火并入队。"""
+    """解析完成边沿端到端：_process_file 成功分支仅登记点火意图（A1）。"""
 
-    def test_parse_done_fires_and_enqueues(self, worker_and_db, monkeypatch):
+    def test_parse_done_schedules_not_fires(self, worker_and_db, monkeypatch):
+        """边沿只登记：无任务创建、无入队——到期执行由 QueueScanner 承担。"""
         worker, db = worker_and_db
         _ready(monkeypatch)
         pid, fid = _seed_pending_file_on_disk(db, worker.data_dir)
         asyncio.run(worker._process_file(fid))
         assert db.get_file(fid)["status"] == "done"
-        task = db.get_latest_compile_task(pid)
-        assert task is not None
-        assert task["trigger_type"] == "auto"
-        assert worker._compile_queue.qsize() == 1
-
-    def test_cooldown_suppresses_edge_fire(self, worker_and_db, monkeypatch):
-        """冷却抑制边沿点火：解析照常落 done，但不创建任务不入队。"""
-        worker, db = worker_and_db
-        _ready(monkeypatch)
-        pid, fid = _seed_pending_file_on_disk(db, worker.data_dir)
-        auto_compile.mark_user_stop(pid)
-        asyncio.run(worker._process_file(fid))
-        assert db.get_file(fid)["status"] == "done"
+        assert pid in auto_compile._SCHEDULED
         assert db.get_latest_compile_task(pid) is None
         assert worker._compile_queue.qsize() == 0
 
-    def test_trigger_failure_does_not_break_parse(self, worker_and_db, monkeypatch):
-        """触发链路异常仅告警：解析主流程不受影响（旁路隔离不变量）。"""
+    def test_schedule_failure_does_not_break_parse(self, worker_and_db, monkeypatch):
+        """登记链路异常仅告警：解析主流程不受影响（旁路隔离不变量）。"""
         worker, db = worker_and_db
         _ready(monkeypatch)
         pid, fid = _seed_pending_file_on_disk(db, worker.data_dir)
 
-        def _boom(db_, project_id):
-            raise RuntimeError("trigger exploded")
+        def _boom(project_id):
+            raise RuntimeError("schedule exploded")
 
-        monkeypatch.setattr(auto_compile, "try_auto_compile", _boom)
+        monkeypatch.setattr(auto_compile, "schedule_auto_compile", _boom)
         asyncio.run(worker._process_file(fid))
         assert db.get_file(fid)["status"] == "done"
         assert db.get_latest_compile_task(pid) is None
 
     def test_disk_missing_marks_error_no_trigger(self, worker_and_db, monkeypatch):
-        """磁盘缺失前置守卫：文件标 error，无点火（失败边沿不在触发范围）。"""
+        """磁盘缺失前置守卫：文件标 error，无登记（失败边沿不在触发范围）。"""
         worker, db = worker_and_db
         _ready(monkeypatch)
         pid = db.create_project("缺盘项目")["id"]
@@ -303,6 +344,7 @@ class TestParseEdge:
         asyncio.run(worker._process_file(fid))
         assert db.get_file(fid)["status"] == "error"
         assert db.get_latest_compile_task(pid) is None
+        assert pid not in auto_compile._SCHEDULED
 
 
 class TestSettingsKey:

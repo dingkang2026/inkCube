@@ -19,6 +19,10 @@
  *    纯标识符不落别名分支 → const 通道常量表 + invoke(标识符) 查表；
  *  - Channel 类 prop/默认值：JSX chatIpcChannel="baseLib:chat" 与签名默认值
  *    chatIpcChannel = 'knowledge:chat' → 「\w*[Cc]hannel\w*」形态收编；
+ *  v3.2 补 TS 泛型调用盲区：invoke<{...}>('ns:name' 泛型夹在 invoke( 与字面量间，
+ *  逐行与 v3.1 全文补扫的正则（\binvoke\(）皆要求紧邻失明 → 补扫正则放宽为
+ *  \binvoke\b[^('\n]*\(（NoteWizardDrawer meetingNotes:create/confirm 曾误报；
+ *  排除类含 \n 禁跨行——注释 invoke 一词跨行拼接下一行 on 曾误报 BootGate）。
  *  另 renderer 侧 on 收窄为 electronAPI.on（WikiGraphView 的 sigma 图库 DOM 事件
  *  同名 on 曾误报 C4；src 全部 IPC on 已核实均为 electronAPI.on 形态）。
  *  ⚠ 嵌入教训：exec 循环条件里禁止内联正则字面量——字面量每次求值重建、
@@ -127,8 +131,13 @@ function scanSupplemental(files) {
     return null
   }
   const RES = [
-    [/\binvoke\(\s*['"]([a-z][\w-]*:[\w/-]+)['"]/g, false], // 字面量（含跨行）
-    [/\binvoke\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)/g, true], // 成员表达式→别名
+    // v3.2：\binvoke\( → \binvoke\b[^('\n]*\( —— TS 泛型调用形态 invoke<{...}>('ns:name'
+    // 泛型夹在 invoke( 与通道字面量之间，逐行与 v3.1 补扫皆失明（NoteWizardDrawer
+    // meetingNotes:create/confirm 曾误报孤儿）。排除类含 \n 禁跨行：注释里的 invoke 一词
+    // 曾跨行拼接下一行 .on('app:boot-stage' 误报 B 组（BootGate L77）；泛型跨行仍漏
+    // （宽松口径宁漏报不误报；括号之后的换行由 \s* 覆盖，实参跨行不受影响）。
+    [/\binvoke\b[^('\n]*\(\s*['"]([a-z][\w-]*:[\w/-]+)['"]/g, false], // 字面量（含同行泛型）
+    [/\binvoke\b[^('\n]*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)/g, true], // 成员表达式→别名
     [/\b\w*[Cc]hannel\w*\s*[:=]\s*['"]([a-z][\w-]*:[\w/-]+)['"]/g, false], // channel:/xxxChannel= prop
   ]
   for (const f of files) {

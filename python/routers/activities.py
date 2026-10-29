@@ -21,6 +21,7 @@ from pydantic import BaseModel
 import activities_registry as registry
 import activity_events
 import deps
+import meeting_notes_service
 import ppt_service
 import scheduler
 from routers import forms
@@ -232,6 +233,9 @@ registry.register(registry.FunctionSource("ppt",
 # schedule（2.11 §5）：fetch 实现在 scheduler（业务模块归属）
 registry.register(registry.FunctionSource("schedule",
                                           lambda: scheduler.fetch_active(deps.db)))
+# note_structuring（2.13 §3）：fetch 实现在 meeting_notes_service（业务模块归属）
+registry.register(registry.FunctionSource("note_structuring",
+                                          lambda: meeting_notes_service.fetch_active(deps.db)))
 
 
 @router.get("/activities/status")

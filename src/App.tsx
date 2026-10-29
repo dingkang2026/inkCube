@@ -21,6 +21,7 @@ import { useTasks } from './features/task/useTasks'
 import { useTaskChat } from './features/task/useTaskChat'
 import { TaskStatusMonitor } from './features/task/TaskStatusMonitor'
 import { ScheduleDrawer, type ScheduleView } from './features/schedule/ScheduleDrawer'
+import { StickyDrawer } from './features/sticky/StickyDrawer'
 import { useSettings } from './features/settings/useSettings'
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard'
 import { PersonaPicker, type Persona } from './features/onboarding/PersonaPicker'
@@ -1089,6 +1090,9 @@ export default function App() {
           onViewChange={setScheduleView}
         />
       )}
+      {/* 便签全局轻抽屉（2.12 §4）：自含 open state，侧栏动作按钮 /
+          Ctrl+Shift+N 经 window 事件调起，宿主页不卸载 */}
+      <StickyDrawer />
       {/* 内嵌浏览器面板（2.8 §8）：App 级常驻，三态由 store 驱动 */}
       <BrowserPanel />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />

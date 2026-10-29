@@ -107,6 +107,18 @@ describe('PhaseBoard', () => {
     expect(dues.indexOf('—')).toBeGreaterThan(dues.indexOf('10-05'))  // 无 due 殿后(主键位排序)
   })
 
+  it('done 行日期列显示完成时间;存量缺 completed_at 回落原口径(2026-10-28 补齐)', () => {
+    const { container } = render(
+      <PhaseBoard {...base} tasks={[
+        mk({ id: 'd1', status: 'done', due_date: '2026-10-01', completed_at: '2026-10-08T14:30:00' }),
+        mk({ id: 'd2', status: 'done', due_date: '2026-10-02' }),   // 存量防御:无 completed_at
+      ]} />
+    )
+    const dues = Array.from(container.querySelectorAll('.row .due')).map((el) => el.textContent)
+    expect(dues[0]).toBe('affairs.doneAtShort:{"date":"10-08"}')   // 完成时间优先于截止日
+    expect(dues[1]).toBe('10-02')                                   // 回落显示截止日,不产碎片
+  })
+
   // ── 3.0 拉齐补丁(§6.1.3)──
 
   it('filters recurring instances out of the board (边界:周期事务唯一入口在节奏视图)', () => {

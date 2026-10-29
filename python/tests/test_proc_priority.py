@@ -1,13 +1,18 @@
-"""python/tests/test_proc_priority.py — 2.11 §5.6 R3 子进程低优先级回归。
+"""python/tests/test_proc_priority.py — 2.11 §5.6 R3 子进程低优先级回归
++ 无控制台窗口（2026-10-28 闪窗修复）。
 
 任务执行链 spawn 的 venv shell/python/uv 子进程必须以低优先级启动
-（Windows BELOW_NORMAL_PRIORITY_CLASS / POSIX nice 10）：定时采集或
-重装包运行中，前台交互天然抢占（验收「前台无可感知卡顿」）。
+（Windows BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW / POSIX nice 10）：
+定时采集或重装包运行中，前台交互天然抢占（验收「前台无可感知卡顿」）；
+无控制台父进程（PyCharm/Electron spawn）下 CREATE_NO_WINDOW 消除子进程
+控制台闪窗。hidden_window_kwargs 供任务链外瞬时 CLI（git/pandoc/soffice
+等）只隐藏窗口不降级。
 
-覆盖两层：
-  1. helper 本体：low_priority_kwargs() 按平台返回正确键；
+覆盖三层：
+  1. helper 本体：low_priority_kwargs() / hidden_window_kwargs() 按平台返回正确键；
   2. 接线断言：五个 spawn 点（shell/code_executor/package_manager/
-     venv_manager/skill loader）确实把低优先级 kwargs 传给 spawn 调用。
+     venv_manager/skill loader）确实把低优先级 kwargs 传给 spawn 调用；
+  3. hidden_window_kwargs()：Windows CREATE_NO_WINDOW / POSIX 空 dict。
 用户前台主动操作（skill 安装 git clone）不降级，不在断言范围。
 """
 import asyncio
@@ -19,14 +24,30 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from tools.proc_priority import low_priority_kwargs
+from tools.proc_priority import hidden_window_kwargs, low_priority_kwargs
+
+# Windows 接线断言期望值：低优先级 + 隐藏控制台窗口（2026-10-28 闪窗修复）
+_EXPECTED_FLAGS = (subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                   | subprocess.CREATE_NO_WINDOW)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows priority class")
 def test_windows_kwargs_use_below_normal_class():
     kw = low_priority_kwargs()
-    assert kw["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert kw["creationflags"] == _EXPECTED_FLAGS
     assert "preexec_fn" not in kw          # Windows 不接受 preexec_fn
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows CREATE_NO_WINDOW")
+def test_windows_hidden_window_kwargs():
+    kw = hidden_window_kwargs()
+    assert kw == {"creationflags": subprocess.CREATE_NO_WINDOW}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX no-op")
+def test_posix_hidden_window_kwargs_noop(monkeypatch):
+    monkeypatch.setattr(os, "name", "posix")
+    assert hidden_window_kwargs() == {}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX nice")
@@ -77,7 +98,7 @@ def test_shell_tool_spawns_low_priority(monkeypatch):
 
     monkeypatch.setattr(st.subprocess, "Popen", fake_popen)
     st._run_shell_sync("echo hi", 10, ".", {})
-    assert captured["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert captured["creationflags"] == _EXPECTED_FLAGS
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows creationflags 接线断言")
@@ -88,7 +109,7 @@ def test_code_executor_spawns_low_priority(monkeypatch, tmp_path):
     monkeypatch.setattr(ce.subprocess, "run", _fake_run(captured))
     ex = ce.CodeExecutorTool(workspace_dir=str(tmp_path))
     asyncio.run(ex.execute("print(1)"))
-    assert captured["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert captured["creationflags"] == _EXPECTED_FLAGS
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows creationflags 接线断言")
@@ -101,7 +122,7 @@ def test_package_manager_spawns_low_priority(monkeypatch, tmp_path):
                                  venv_path=str(tmp_path / ".venv"))
     monkeypatch.setattr(tool, "_find_uv", lambda: str(tmp_path / "uv.exe"))
     asyncio.run(tool.execute(action="list"))
-    assert captured["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert captured["creationflags"] == _EXPECTED_FLAGS
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows creationflags 接线断言")
@@ -112,7 +133,7 @@ def test_venv_manager_spawns_low_priority(monkeypatch, tmp_path):
     monkeypatch.setattr(vm.subprocess, "run", _fake_run(captured))
     monkeypatch.setattr(vm, "_find_uv", lambda: str(tmp_path / "uv.exe"))
     vm.create_venv(str(tmp_path / "task"))
-    assert captured["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert captured["creationflags"] == _EXPECTED_FLAGS
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows creationflags 接线断言")
@@ -148,4 +169,4 @@ def test_skill_loader_spawns_low_priority(tmp_path, monkeypatch):
                        venv_python=sys.executable, task_id="t1", settings={})
     asyncio.run(adapter._run_script(
         str(skill_dir / "scripts" / "main.py"), "", ctx))
-    assert captured["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert captured["creationflags"] == _EXPECTED_FLAGS

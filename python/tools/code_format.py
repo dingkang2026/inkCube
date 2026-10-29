@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from tools.base import BaseTool
+from tools.proc_priority import hidden_window_kwargs
 from tools.tool_resolver import resolve_tool
 
 
@@ -94,6 +95,7 @@ class CodeFormatTool(BaseTool):
             result = await asyncio.to_thread(
                 subprocess.run,
                 cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30, cwd=str(workspace),
+                **hidden_window_kwargs(),  # 无控制台父进程下 ruff 闪窗（2026-10-28）
             )
 
             # Parse ruff format output

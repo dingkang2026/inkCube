@@ -20,17 +20,22 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
+import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import activity_events
 from readiness import ensure_ready
 from tools.mermaid_bridge import cleanup_temp_dir, preprocess_mermaid
+from tools.proc_priority import hidden_window_kwargs
 
 logger = logging.getLogger(__name__)
 
-# 任务 workspace 内的 ppt-master 项目目录名（固定，前端/服务共享）
+# 任务 workspace 内 ppt-master 项目目录名前缀（init 时追加 _<format>_<YYYYMMDD>，
+# 见 _init_project_skeleton；前端只消费 ppts.workspace_path，不感知此前缀）
 PROJECT_DIR_NAME = "ppt_project"
 # 进度聚合周期（秒）：任务执行期的伴随协程，非全局轮询端点（0.4 §3）
 _PROGRESS_INTERVAL_S = 3.0
@@ -38,11 +43,45 @@ _PROGRESS_INTERVAL_S = 3.0
 _STAGES = ("intake", "strategy", "authoring", "export")
 
 
-def _project_dir(workspace_path: str) -> Path:
-    """仅写入端用：在任务工作区内建 ppt-master 项目目录。
-    读取端（sync/finalize/cancel/delete/recover）必须直读行内 workspace_path，
-    禁止二次套用——行内存的已是项目目录本身，双套曾致 deck 全链路读空。"""
-    return Path(workspace_path) / PROJECT_DIR_NAME
+def _init_project_skeleton(workspace: str, *, canvas_format: str = "ppt169") -> Path:
+    """系统执行 ppt-master init 建项目骨架（deck/template 共用，prepare 前置）。
+
+    目录锚定契约：InkCube 全链路（ppts.workspace_path、门禁检测、confirm_ui_port、
+    终态判定）锚定任务 workspace 下的固定项目目录；若让 agent 首轮自行执行 init，
+    cli 会给目录名追加 <format>_<date> 后缀（产出 ppt_project_ppt169_YYYYMMDD），
+    锚定落空 → 门禁/确认页端口全链读空，Stage 1 确认页打不开（2026-10-28 复盘）。
+    现改为 prepare 阶段系统调 init：项目名预先带 `_<format>_<YYYYMMDD>` 后缀
+    （cli 对已带后缀名原样采用，不再重复追加），目录名可预测且与锚定一致。
+    init 要求目标目录不存在（存在即 FileExistsError），故不再预 mkdir。
+    失败向上抛（prepare 回滚 task/ppt 行），禁止静默吞掉。
+    canvas_format 仅接受规范键 ppt169（InkCube 报告场景固定；别名格式经
+    cli 归一化后与名字后缀错位，见下方入参校验）。
+    """
+    # 入参先于外部依赖校验：cli 侧先 normalize_canvas_format 归一别名（xhs→
+    # xiaohongshu）再匹配 `_<format>_<8位日期>$` 后缀——名字里带别名时不命中
+    # 「已带后缀」分支，cli 会追加第二后缀致 target 锚定落空（误导性报错）。
+    # 当前唯一调用方固定 ppt169，非规范键在入口即拦截，报错直指根因。
+    if canvas_format != "ppt169":
+        raise ValueError(f"不支持的画布格式：{canvas_format}（当前固定 ppt169）")
+    skill = _skill_install_dir()
+    if not skill:
+        raise RuntimeError("ppt-master skill 未安装，无法初始化 PPT 项目骨架")
+    date = datetime.now().strftime("%Y%m%d")
+    name = f"{PROJECT_DIR_NAME}_{canvas_format}_{date}"
+    target = Path(workspace) / name
+    result = subprocess.run(
+        [sys.executable, str(Path(skill) / "scripts" / "project_manager.py"),
+         "init", name, "--dir", workspace, "--format", canvas_format],
+        capture_output=True, encoding="utf-8", errors="replace", timeout=120,
+        **hidden_window_kwargs(),  # hidden_window_kwargs：无控制台父进程下 python 闪窗（2026-10-28）
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()[-500:]
+        raise RuntimeError(
+            f"ppt-master init 失败 (exit={result.returncode}): {detail}")
+    if not target.is_dir():
+        raise RuntimeError(f"ppt-master init 未产出预期目录：{target}")
+    return target
 
 
 def _read_json(path: Path) -> dict | None:
@@ -53,12 +92,47 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def _affairs_on_ppt_completed(db, ppt_id: str) -> None:
+    """3.0 §5.4 产出完成闭环(2026-10-28 产出维度):completed 终态声明点旁
+    直调(与 reports 终态先例同模式),项目任务按 output_completed 标题规则
+    闭环;服务层自身 try/except 仅记日志,不阻塞 PPT 流。"""
+    import affairs_service
+    affairs_service.on_ppt_completed(db, ppt_id)
+
+
 # ── 素材就位（intake 前置：后端只放原始素材，import-sources 由 agent 执行）──
 
-def _stage_materials(db, workspace: str, source_report_id: str | None,
+def _report_md_path(db, source_report_id: str | None) -> str | None:
+    """报告正文 md 路径（reports.content_path 目录契约对齐）。
+
+    content_path 全系统契约为报告目录（routers/reports.py 创建即落
+    report_dir，导出/预览/删除均按 <dir>/content.md 消费）；本模块历史
+    isfile 直判使目录恒不命中 → 素材静默跳过、brief 降级「自由主题」
+    跑题生成（2026-10-28 实证）。兼容两形态：文件直用，目录拼 content.md。
+    """
+    if not source_report_id:
+        return None
+    row = db.conn.execute(
+        "SELECT content_path FROM reports WHERE id = ?",
+        (source_report_id,),
+    ).fetchone()
+    cp = row["content_path"] if row else None
+    if not cp:
+        return None
+    if os.path.isfile(cp):
+        return cp
+    if os.path.isdir(cp):
+        md = os.path.join(cp, "content.md")
+        return md if os.path.isfile(md) else None
+    return None
+
+
+def _stage_materials(db, workspace: str, report_md: str | None,
                      image_ids: list[str]) -> dict:
     """把报告 md（mermaid 预重绘）与图片库选中图拷入 workspace/staging/。
 
+    report_md 为 _report_md_path 解析出的正文路径；source_report_id 有值
+    而正文不可读属创建前拦截（SourceReportError），不在此静默跳过。
     返回 {"report": 相对路径|None, "images": [相对路径], "image_count": int}。
     mermaid 块经现有图表执行器桥重绘为 PNG 并替换引用（2.3 §4.1）；
     桥不可用时降级保留原始 md（LLM 按 mermaid 源码创作示意）。
@@ -67,24 +141,19 @@ def _stage_materials(db, workspace: str, source_report_id: str | None,
     staging.mkdir(parents=True, exist_ok=True)
     info: dict = {"report": None, "images": [], "image_count": 0}
 
-    if source_report_id:
-        row = db.conn.execute(
-            "SELECT title, content_path FROM reports WHERE id = ?",
-            (source_report_id,),
-        ).fetchone()
-        if row and row["content_path"] and os.path.isfile(row["content_path"]):
-            staged = staging / "report.md"
-            shutil.copyfile(row["content_path"], staged)
-            try:
-                # PNG 持久化到 staging/mermaid（工作区内）：staged md 的引用随
-                # 工作区长期有效；缺省临时目录模式会泄漏目录且清理后引用断裂
-                processed, _tmp = preprocess_mermaid(staged, image_dir=staging / "mermaid")
-                if processed and processed != staged:
-                    shutil.move(str(processed), staged)
-                cleanup_temp_dir(_tmp)
-            except Exception:
-                logger.warning("mermaid preprocess failed, keep raw md", exc_info=True)
-            info["report"] = "staging/report.md"
+    if report_md:
+        staged = staging / "report.md"
+        shutil.copyfile(report_md, staged)
+        try:
+            # PNG 持久化到 staging/mermaid（工作区内）：staged md 的引用随
+            # 工作区长期有效；缺省临时目录模式会泄漏目录且清理后引用断裂
+            processed, _tmp = preprocess_mermaid(staged, image_dir=staging / "mermaid")
+            if processed and processed != staged:
+                shutil.move(str(processed), staged)
+            cleanup_temp_dir(_tmp)
+        except Exception:
+            logger.warning("mermaid preprocess failed, keep raw md", exc_info=True)
+        info["report"] = "staging/report.md"
 
     if image_ids:
         images_dir = staging / "images"
@@ -111,18 +180,12 @@ def _stage_materials(db, workspace: str, source_report_id: str | None,
 _IMAGE_POOL_CAP = 120
 
 
-def _report_text(db, source_report_id: str | None) -> str | None:
+def _report_text(report_md: str | None) -> str | None:
     """报告正文前段（向量排序 query 语义源；无报告/不可读返回 None）。"""
-    if not source_report_id:
-        return None
-    row = db.conn.execute(
-        "SELECT content_path FROM reports WHERE id = ?",
-        (source_report_id,),
-    ).fetchone()
-    if not row or not row["content_path"] or not os.path.isfile(row["content_path"]):
+    if not report_md:
         return None
     try:
-        with open(row["content_path"], "r", encoding="utf-8") as f:
+        with open(report_md, "r", encoding="utf-8") as f:
             return f.read(4000)
     except OSError:
         return None
@@ -208,6 +271,14 @@ class TemplateRefError(ValueError):
     """向导模板选择引用非法（格式错/不存在/同 kind 重复）——创建前拦截。"""
 
 
+class SourceReportError(ValueError):
+    """来源报告素材不可读（content_path 缺失/正文文件丢失）——创建前拦截。
+
+    用户显式选择报告作素材时静默降级「自由主题」= agent 按品牌模板脑补
+    主题跑完整管线（2026-10-28 实证），token 全烧在跑题产出上，比创建
+    失败更糟——宁可不创建。"""
+
+
 # 向导选择标识：kind:id（kind 与 _TEMPLATE_KIND_DIRS 对齐；id 允许中文，
 # 与用户库/内置 id 同域，禁冒号/空白防歧义）
 _TEMPLATE_REF_RE = re.compile(r"^(brand|style|layout|deck):([^:\s]+)$")
@@ -265,35 +336,40 @@ def _resolve_template_refs(refs: str) -> list[dict]:
     return roots
 
 
-def _build_first_message(workspace: str, staging: dict, style_ref: str | None,
-                         notes: str | None,
+def _build_first_message(project: str, workspace: str, staging: dict,
+                         style_ref: str | None, notes: str | None,
                          template_roots: list[dict] | None = None) -> str:
     """首条工作流指令（2.3 §4.1/§6.2：Generate Default 唯一管线 + 门禁纪律）。
 
+    project = _init_project_skeleton 产出的项目目录（正斜杠绝对路径）：init 已由
+    系统执行（曾因 agent 自行 init 追加目录名后缀致锚定错位，2026-10-28），
+    首条消息只声明目录并禁止重复初始化。
     template_roots = _resolve_template_refs 结果（向导显式选择的模板包根）：
     以 explicit root 契约（2.3.1 §6 显式根表述）告知 agent 在 Stage 1 Step 3
     写 template_options.json 时写入 explicit_workspace_roots；不选则不出现
     本段，由内置候选自主决定（默认行为不变）。
     """
-    project = f"{workspace}/{PROJECT_DIR_NAME}".replace("\\", "/")
     skill = _skill_install_dir() or "<ppt-master 安装目录>"
     lines = [
         "[InkCube PPT 任务 — Generate PPTX]",
         "请严格按 ppt-master 的 Generate PPTX 工作流（Default 全质量管线；禁止 quick 降级）执行。",
-        f"项目目录：{project}（bash/命令路径请用此正斜杠形式）。",
+        f"项目目录：{project}（bash/命令路径请用此正斜杠形式；系统已初始化项目骨架，"
+        "禁止重复执行 init 或另建目录）。",
         "ppt-master skill 安装目录：" + skill + "，其 scripts/ 下命令用它拼绝对路径调用。",
         "",
         "第一步（intake）：",
-        "1. python <skill>/scripts/project_manager.py init <上述项目目录> --format ppt169",
     ]
+    step = 1  # 运行时计数器连续编号（素材组合变化时无跳号）
     if staging.get("report"):
-        lines.append(f"2. python <skill>/scripts/project_manager.py import-sources <项目目录> <workspace>/{staging['report']}")
+        lines.append(f"{step}. python <skill>/scripts/project_manager.py import-sources <项目目录> <workspace>/{staging['report']}")
+        step += 1
     else:
-        lines.append("2. 自由主题：以本任务标题为选题，直接进入 Stage 1 方案构思（无 sources 导入）")
+        lines.append(f"{step}. 自由主题：以本任务标题为选题，直接进入 Stage 1 方案构思（无 sources 导入）")
+        step += 1
     if staging["images"]:
-        lines.append(f"3. python <skill>/scripts/project_manager.py import-sources <项目目录> "
+        lines.append(f"{step}. python <skill>/scripts/project_manager.py import-sources <项目目录> "
                      f"<workspace>/staging/images/*（共 {staging['image_count']} 张项目图片库选中图，image_usage 含 provided）")
-    step = 4
+        step += 1
     if template_roots:
         lines.append(
             f"{step}. 显式模板选择（Stage 1 Step 3 产出 template_options.json 时，"
@@ -311,12 +387,13 @@ def _build_first_message(workspace: str, staging: dict, style_ref: str | None,
     lines += [
         "",
         "门禁纪律（最重要，必须遵守）：",
-        "- 启动确认服务：python <skill>/scripts/confirm_ui/server.py <项目目录> --daemon --no-browser --timeout 0",
+        "- 确认页服务由系统自动启动与关停：不要用 shell 启动或关停 "
+        "confirm_ui/server.py（系统在你写出 recommendations 后拉起服务，门禁结束后系统释放端口）。",
         "- 写完 recommendations.stage1.json 后【立即结束你的回合】：不要用 --wait-only，"
         "不要轮询任何文件等待用户。系统检测到用户提交后会自动唤醒你并附回执说明。",
         "- Stage 2 同理：写完 recommendations.stage2.json 后立即结束回合。",
-        "- 拿到 final 回执（result.json stage=final）后：先执行 "
-        "python <skill>/scripts/confirm_ui/server.py <项目目录> --shutdown 释放端口，再继续后续阶段。",
+        "- 拿到 final 回执（result.json stage=final）后直接继续后续阶段，"
+        "无需任何确认页清理动作。",
         "",
         "导出要求：三命令串行（total_md_split 仅备注启用时 → finalize_svg → svg_to_pptx，"
         "建议附 --native-charts-and-tables），完成后报告 exports/ 下 PPTX 文件名并结束。",
@@ -583,122 +660,14 @@ def _stage_ref_files(workspace: str, ref_paths: list[str]) -> list[str]:
     return staged
 
 
-# ── 成品增强（2.3 §4.3，E3：native_enhance_pptx 工作流）──────────────
-
-# init --project-dir 目标目录名（区别于 deck 的 ppt_project；ppt 行
-# workspace_path 直接指向它，进度/终态判定不再套 _project_dir）
-ENHANCE_PROJECT_DIR_NAME = "enhance_project"
-
-
-def _enhance_project_dir(workspace: str) -> Path:
-    return Path(workspace) / ENHANCE_PROJECT_DIR_NAME
-
-
-def _stage_enhance_source(workspace: str, src: str | Path) -> str:
-    """源 PPTX 拷入 workspace/staging/sources/（init 输入；重名加序号防覆盖）。"""
-    src = Path(src)
-    src_dir = Path(workspace) / "staging" / "sources"
-    src_dir.mkdir(parents=True, exist_ok=True)
-    name = src.name
-    stem, suffix = os.path.splitext(name)
-    n = 1
-    while (src_dir / name).exists():
-        name = f"{stem}_{n}{suffix}"
-        n += 1
-    shutil.copyfile(src, src_dir / name)
-    return f"staging/sources/{name}"
-
-
-def _build_enhance_message(workspace: str, staged: str,
-                           notes: str | None) -> str:
-    """增强首条工作流指令（native-enhance-pptx.md 固定入口 + 两处确认门纪律）。"""
-    project = _enhance_project_dir(workspace)
-    skill = _skill_install_dir() or "<ppt-master 安装目录>"
-    lines = [
-        "[InkCube PPT 任务 — Enhance Native PPTX]",
-        "请严格按 ppt-master 的 Enhance Native PPTX 工作流"
-        "（workflows/native-enhance-pptx.md）执行：对既有 PPTX 直接 OOXML 补丁，"
-        "不重生成页面。",
-        f"ppt-master skill 安装目录：{skill}（scripts/ 在其下，命令用绝对路径调用）。",
-        f"项目目录（init 时用 --project-dir 显式指定，路径用正斜杠形式）："
-        f"{str(project).replace(chr(92), '/')}。",
-        "第一步执行初始化：python \"" + skill
-        + "/scripts/native_enhance_pptx.py\" init \""
-        + f"{workspace}/{staged}".replace(chr(92), "/")
-        + f"\" --name enhance --project-dir \"{str(project).replace(chr(92), '/')}\"。",
-        f"源 PPTX（相对项目工作区）：{staged}。",
-    ]
-    if notes:
-        lines.append(f"用户补充要求：{notes}")
-    lines += [
-        "",
-        "执行契约（最重要，必须遵守）：",
-        "- 禁止 SVG 管线：pptx_template_import / finalize_svg / svg_to_pptx "
-        "均不得运行；产物 = exports/ 下新 PPTX，不得覆盖源文件。",
-        "- init 完成后读 analysis/enhancement_plan.json，向用户逐项提出增强计划"
-        "（notes / audio / timings / transitions 模块开关与推荐默认值）后"
-        "【立即结束你的回合】等待确认；确认前不得生成 notes/audio 或打补丁。",
-        "- 音频配置确认（仅用户确认启用配音后）：provider/音色/语速一次性提案，"
-        "提案后立即结束回合等待确认，一条消息不要拆多轮。",
-        "- 两处确认通过后：写 notes/00N.md（口播稿，忠实幻灯片不加戏）→ "
-        "validate --materials notes → 音频生成 → validate → apply，"
-        "exports/ 产出后报告文件名并结束回合。",
-        "- 收到修改意见时：按意见更新提案重新确认，不要跳过确认直接执行。",
-    ]
-    return "\n".join(lines)
-
-
-def _enhance_notes_coverage(project: Path) -> tuple[int, int]:
-    """notes 覆盖（present, total）：slide_index 每页 note_file 存在且非空。"""
-    idx = _read_json(project / "analysis" / "slide_index.json")
-    slides = (idx or {}).get("slides") or []
-    total = len(slides)
-    present = 0
-    for s in slides:
-        rel = s.get("note_file") if isinstance(s, dict) else None
-        if rel:
-            p = project / rel
-            try:
-                if p.is_file() and p.stat().st_size > 0:
-                    present += 1
-            except OSError:
-                continue
-    return present, total
-
-
-def _enhance_gate(project: Path) -> str | None:
-    """增强确认门判定（产物状态即状态机，native-enhance-pptx.md §4-§7）。
-
-    'plan' = enhancement_plan.json 仍为 draft 且 notes 未开始（模块计划门）；
-    'audio' = notes 全覆盖且 audio 启用但 provider 未配置（音频配置门）；
-    None = 无门禁（进行中 / 已导出 / 状态不可判定）。
-    """
-    plan = _read_json(project / "analysis" / "enhancement_plan.json")
-    if not plan:
-        return None
-    present, total = _enhance_notes_coverage(project)
-    if str(plan.get("status") or "").lower() != "confirmed" and present == 0:
-        return "plan"
-    audio = (plan.get("modules") or {}).get("audio") or {}
-    pj = _read_json(project / "project.json") or {}
-    provider = ((pj.get("audio") or {}).get("provider") or "").strip()
-    if total > 0 and present >= total and audio.get("enabled") and not provider:
-        return "audio"
-    return None
-
-
-def _enhance_exports(project: Path) -> list[Path]:
-    exports = project / "exports"
-    return sorted(exports.glob("*.pptx"), key=os.path.getmtime) \
-        if exports.is_dir() else []
-
-
-def _build_template_message(workspace: str, kind: str, template_id: str,
-                            template_name: str, staged: list[str],
-                            notes: str | None) -> str:
+def _build_template_message(project: str, workspace: str, kind: str,
+                            template_id: str, template_name: str,
+                            staged: list[str], notes: str | None) -> str:
     """模板创建首条工作流指令（Create Template 固定入口 + 文字确认门纪律；
-    E2：输出 scope 固定 project——模板包留在任务工作区，由系统收录进用户库）。"""
-    project = f"{workspace}/{PROJECT_DIR_NAME}".replace("\\", "/")
+    E2：输出 scope 固定 project——模板包留在任务工作区，由系统收录进用户库）。
+
+    project = _init_project_skeleton 产出的项目目录（正斜杠绝对路径）：init 已由
+    系统执行，首条消息只声明目录并禁止重复初始化（与 deck 同款，2026-10-28）。"""
     skill = _skill_install_dir() or "<ppt-master 安装目录>"
     lines = [
         "[InkCube PPT 任务 — Create Template]",
@@ -708,10 +677,8 @@ def _build_template_message(workspace: str, kind: str, template_id: str,
         f"模板 id：{template_id}（project scope 的 spec 限定名组成，已定）。",
         f"显示名：{template_name}。",
         f"ppt-master skill 安装目录：{skill}（scripts/ 在其下，命令用绝对路径调用）。",
-        f"项目目录（输出 scope 固定 project，即 <target_project>；"
-        f"bash/命令路径请用此正斜杠形式）：{project}。",
-        "第一步先初始化项目骨架：python \"" + skill
-        + "/scripts/project_manager.py\" init \"" + project + "\" --format ppt169。",
+        f"项目目录（输出 scope 固定 project，即 <target_project>；系统已初始化项目骨架，"
+        f"禁止重复执行 init 或另建目录；bash/命令路径请用此正斜杠形式）：{project}。",
     ]
     if staged:
         lines.append("参考素材已就位于工作目录下（类型可能混合，逐个分析）：")
@@ -770,21 +737,43 @@ def confirm_ui_port(project_dir: Path) -> int | None:
     return None
 
 
-def list_pages(project_dir: Path) -> list[str]:
-    """创作页清单（svg_output/page_*.svg 相对路径，按页号升序；预览网格数据源）。"""
-    svg_dir = project_dir / "svg_output"
+def _iter_page_svgs(svg_dir: Path) -> list[Path]:
+    """创作页 SVG 文件（按文件名中的页号数字升序，无数字沉底）。
+    兼容官方自由命名：generate-pptx 工作流不规定文件名、官方导出链
+    glob('*.svg') 全收，page_N.svg 与 NN.svg / NN_<type>.svg 等数字前缀
+    形态同权——2026-10-28：曾硬编码 glob('page_*.svg')，agent 按官方
+    姿态产 NN.svg → 预览空 / page_done=0 / progress 恒 0 三者同源。"""
     if not svg_dir.is_dir():
         return []
     def _page_no(p: Path) -> int:
+        m = re.search(r"\d+", p.stem)
+        return int(m.group()) if m else 10**9
+    return sorted(svg_dir.glob("*.svg"), key=_page_no)
+
+
+def list_pages(project_dir: Path) -> list[str]:
+    """创作页清单（svg_output 相对路径，按页号升序；预览网格数据源）。"""
+    return [
+        str(p.relative_to(project_dir)).replace("\\", "/")
+        for p in _iter_page_svgs(project_dir / "svg_output")
+    ]
+
+
+def pages_for_workspace(project: Path, workspace: str | None) -> list[str]:
+    """创作页清单（任务 workspace 相对路径，前端 tasks:readFile 可直读）。
+    list_pages 相对项目目录，而 readFile 以任务 workspace 为基准解析 path——
+    补齐项目目录层（2026-10-28：基准错位致预览网格恒占位、内容不可见）。"""
+    pages = list_pages(project)
+    if not workspace:
+        return pages
+    ws = Path(workspace).resolve()
+    converted: list[str] = []
+    for rel in pages:
         try:
-            return int(p.stem.split("_", 1)[1])
-        except (IndexError, ValueError):
-            return 10**9  # 非标准命名沉底，保持稳定顺序
-    return sorted(
-        (str(p.relative_to(project_dir)).replace("\\", "/")
-         for p in svg_dir.glob("page_*.svg")),
-        key=lambda rel: _page_no(Path(rel)),
-    )
+            converted.append((project / rel).resolve().relative_to(ws).as_posix())
+        except ValueError:
+            converted.append(rel)
+    return converted
 
 
 def _shutdown_confirm_ui(venv_python: str, project: Path) -> None:
@@ -796,9 +785,72 @@ def _shutdown_confirm_ui(venv_python: str, project: Path) -> None:
         subprocess.run(
             [venv_python, str(server), str(project), "--shutdown"],
             capture_output=True, timeout=15,
+            **hidden_window_kwargs(),  # hidden_window_kwargs：无控制台父进程下 python 闪窗（2026-10-28）
         )
     except Exception:
         logger.warning("confirm_ui shutdown failed: %s", project, exc_info=True)
+
+
+def _confirm_ui_alive(project: Path) -> bool:
+    """lock 端口 TCP 探活（lock 残留但进程已死 → False → 触发重拉）。"""
+    port = confirm_ui_port(project)
+    if port is None:
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_confirm_ui(venv_python: str, project: Path) -> None:
+    """门禁期系统拉起确认页服务（S1 系统接管，2026-10-28）：server 生命周期
+    归系统管理，agent 不再 shell 手动启动——shell 工具 10s 超时会把前台启动
+    误判为失败（exit=1）诱导重复拉起（实测单会话 3-4 次，端口漂移+lock 覆盖）。
+    幂等：探活成功即跳过（sync_progress 泵心跳高频调用）；死/无 lock 先
+    --shutdown 清残留再分离拉起（DETACHED：--daemon wrapper 退出后 server
+    常驻不随父亡）。失败自吞留日志（与 _shutdown_confirm_ui 对称）：拉起不成
+    不炸泵，门禁通知照发，iframe 打不开可从日志定位。"""
+    if _confirm_ui_alive(project):
+        return
+    server = Path(_skill_install_dir() or "") / "scripts" / "confirm_ui" / "server.py"
+    if not venv_python or not server.is_file():
+        logger.warning("confirm_ui launch skipped (python/server missing): %s", project)
+        return
+    _shutdown_confirm_ui(venv_python, project)  # 幂等：清残留 lock/半死进程
+    log_path = project / "confirm_ui" / "server.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(log_path, "ab") as fh:
+            extra: dict = {}
+            if sys.platform == "win32":
+                # DETACHED：父子生命周期解耦 + 无控制台窗；新进程组防信号传播
+                extra["creationflags"] = (subprocess.DETACHED_PROCESS
+                                          | subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                extra["start_new_session"] = True  # POSIX 脱离进程组，父退出不杀
+            subprocess.Popen(
+                [venv_python, str(server), str(project),
+                 "--daemon", "--no-browser", "--timeout", "0"],
+                stdin=subprocess.DEVNULL, stdout=fh,
+                stderr=subprocess.STDOUT, cwd=str(project), **extra)
+    except Exception:
+        logger.warning("confirm_ui launch failed: %s", project, exc_info=True)
+        return
+    logger.info("confirm_ui launched (system-managed): %s", project)
+
+
+def _venv_python_from_task(db, task_id: str | None) -> str:
+    """任务 venv 解释器路径（PptService._venv_python 同源逻辑提为模块级，
+    供 sync_progress 门禁拉起与类方法共用）；拿不到返回空串（调用方 skip）。"""
+    task = db.get_task(task_id or "")
+    venv = (task or {}).get("venv_path") or ""
+    if venv:
+        py = os.path.join(venv, "Scripts" if os.name == "nt" else "bin",
+                          "python.exe" if os.name == "nt" else "python")
+        if os.path.isfile(py):
+            return py
+    return ""
 
 
 # ── 进度聚合（§9.1 信号映射）──
@@ -821,18 +873,15 @@ def sync_progress(db, ppt: dict) -> None:
     if ppt.get("kind") == "template":
         _sync_template_progress(db, ppt)
         return
-    if ppt.get("kind") == "enhanced":
-        _sync_enhance_progress(db, ppt)
-        return
-    # 契约：deck 行 workspace_path 即项目目录本身（prepare() 写入端已套
-    # _project_dir，读取端直读，曾因二次套用进度/门禁/终态全链路读空）
+    # 契约：deck 行 workspace_path 即项目目录本身（prepare() 写入端由
+    # _init_project_skeleton 直存，读取端直读，曾因二次套用进度/门禁/终态全链路读空）
     project = Path(ppt["workspace_path"])
     if not project.is_dir():
         return
 
     gate = _gate_state(project)
     svg_dir = project / "svg_output"
-    page_done = len(list(svg_dir.glob("page_*.svg"))) if svg_dir.is_dir() else 0
+    page_done = len(_iter_page_svgs(svg_dir))
     exports = sorted((project / "exports").glob("*.pptx"), key=os.path.getmtime) \
         if (project / "exports").is_dir() else []
 
@@ -861,6 +910,9 @@ def sync_progress(db, ppt: dict) -> None:
         return
     if gate["pending"] and cur["status"] == "running" and not _task_running(cur["task_id"]):
         db.update_ppt_status(cur["id"], "awaiting_input")
+        # S1 系统接管：置位同时确保确认页服务在跑（探活幂等），取代 agent
+        # shell 手动启动（首条消息指引已同步删除，2026-10-28）
+        _ensure_confirm_ui(_venv_python_from_task(db, cur["task_id"]), project)
         activity_events.gate_ppt(
             db, cur["id"],
             "等待你在确认页完成 " + ("Stage 1" if gate["pending"] == "stage1" else "Stage 2") + " 确认",
@@ -887,22 +939,6 @@ def _sync_template_progress(db, ppt: dict) -> None:
         stage = "export"
     elif spec and (spec.is_file() or any(spec.parent.glob("*.svg"))):
         stage = "authoring"
-    else:
-        stage = "intake"
-    db.update_ppt_progress(ppt["id"], stage=stage)
-
-
-def _sync_enhance_progress(db, ppt: dict) -> None:
-    """增强任务阶段推进（2.3 §4.3）：产物都在 enhance_project 下。
-    intake（init 前）→ strategy（plan 草案）→ authoring（notes 产出）→
-    export（exports 产物）。页级进度不适用；两处确认门由 _finalize_enhanced 置位。"""
-    project = Path(ppt["workspace_path"])
-    if _enhance_exports(project):
-        stage = "export"
-    elif _enhance_notes_coverage(project)[0]:
-        stage = "authoring"
-    elif (project / "analysis" / "enhancement_plan.json").is_file():
-        stage = "strategy"
     else:
         stage = "intake"
     db.update_ppt_progress(ppt["id"], stage=stage)
@@ -943,8 +979,8 @@ class PptService:
         template_refs = 向导模板选择标识串（"kind:id,..."，None = 不选，
         由 Stage 1 内置候选自主决定）：解析为显式根写入首条消息，
         ppts.style_ref 列存选择标识（拍板口径：kind:id 串或 legacy 文本）。
-        纯同步重活（mermaid 重绘为 headless Electron 同步子进程，秒级×块数），
-        由调用方放线程池执行；不启动泵——launch() 须在事件循环线程调用。
+        纯同步重活（init 子进程 + mermaid 重绘为 headless Electron 同步子进程，
+        秒级×块数），由调用方放线程池执行；不启动泵——launch() 须在事件循环线程调用。
         """
         from paths import get_data_dir
         # mode 显式锁定 coding：chat 默认改 general（2026-10-21）后不吃 db 默认——
@@ -955,14 +991,17 @@ class PptService:
         workspace, task_id = task["workspace_path"], task["id"]
         ppt: dict | None = None
         try:
+            report_md = _report_md_path(db, source_report_id)
+            if source_report_id and not report_md:
+                raise SourceReportError(
+                    f"来源报告正文不可读（content.md 缺失或已清理）：{source_report_id}")
             template_roots = (_resolve_template_refs(template_refs)
                               if template_refs else None)
             pool_ids = _resolve_image_pool(
                 db, project_id, image_selection,
-                _report_text(db, source_report_id))
-            staging = _stage_materials(db, workspace, source_report_id, pool_ids)
-            project = _project_dir(workspace)
-            project.mkdir(parents=True, exist_ok=True)
+                _report_text(report_md))
+            staging = _stage_materials(db, workspace, report_md, pool_ids)
+            project = _init_project_skeleton(workspace)
             ppt = db.create_ppt(
                 project_id=project_id, task_id=task_id, title=title,
                 source_report_id=source_report_id, source_images=pool_ids,
@@ -970,8 +1009,8 @@ class PptService:
                 workspace_path=str(project),
             )
             message = _build_first_message(
-                workspace, staging, style_ref, notes,
-                template_roots=template_roots)
+                str(project).replace("\\", "/"), workspace, staging, style_ref,
+                notes, template_roots=template_roots)
         except Exception:
             # 创建原子性：素材就位/建行/首条消息任一失败即回滚已建资源——
             # origin='ppt' 任务不进任务 Tab，孤儿 task/ppt 行泄漏后完全不可见
@@ -1006,15 +1045,15 @@ class PptService:
         ppt: dict | None = None
         try:
             staged = _stage_ref_files(workspace, ref_paths or [])
-            project = _project_dir(workspace)
-            project.mkdir(parents=True, exist_ok=True)
+            project = _init_project_skeleton(workspace)
             ppt = db.create_ppt(
                 project_id="", task_id=task_id, title=template_name,
                 kind="template", workspace_path=str(project),
                 template_kind=kind, template_id=template_id,
             )
             message = _build_template_message(
-                workspace, kind, template_id, template_name, staged, notes)
+                str(project).replace("\\", "/"), workspace, kind, template_id,
+                template_name, staged, notes)
         except Exception:
             # 创建原子性：同 prepare——origin='ppt' 任务不进任务 Tab，孤儿行不可见
             if ppt is not None:
@@ -1027,49 +1066,6 @@ class PptService:
                 db.delete_task(task_id)
             except Exception:
                 logger.warning("template prepare rollback: delete_task failed task=%s",
-                               task_id, exc_info=True)
-            raise
-        return db.get_ppt(ppt["id"]), message  # type: ignore[return-value]
-
-    def prepare_enhance(self, db, *, project_id: str, title: str,
-                        source_pptx: str,
-                        notes: str | None = None) -> tuple[dict, str]:
-        """成品增强任务（2.3 §4.3，E3）：origin='ppt' + ppts 行(kind='enhanced')。
-
-        source_pptx = 源 PPTX 绝对路径（项目内交付物或本机导入文件），拷入
-        workspace/staging/sources/；enhance_project 由 init --project-dir 建于
-        任务 workspace 下（workspace_path 直接指向它，不套 ppt_project）。
-        纯同步轻活（单文件拷贝）；不启动泵——launch() 须在事件循环线程调用。
-        """
-        from paths import get_data_dir
-        task = db.create_task(
-            title=f"[PPT增强] {title}", data_dir=get_data_dir(), origin="ppt", mode="coding",
-        )
-        workspace, task_id = task["workspace_path"], task["id"]
-        ppt: dict | None = None
-        try:
-            staged = _stage_enhance_source(workspace, source_pptx)
-            project = _enhance_project_dir(workspace)
-            project.mkdir(parents=True, exist_ok=True)
-            ppt = db.create_ppt(
-                project_id=project_id, task_id=task_id, title=title,
-                kind="enhanced", workspace_path=str(project),
-                enhance_source_path=staged,
-            )
-            message = _build_enhance_message(workspace, staged, notes)
-        except Exception:
-            # 创建原子性：同 prepare/prepare_template——origin='ppt' 任务不进
-            # 任务 Tab，孤儿行不可见（running 行还会被 fetch_active 永久轮询）
-            if ppt is not None:
-                try:
-                    db.delete_ppt(ppt["id"])
-                except Exception:
-                    logger.warning("enhance prepare rollback: delete_ppt failed task=%s",
-                                   task_id, exc_info=True)
-            try:
-                db.delete_task(task_id)
-            except Exception:
-                logger.warning("enhance prepare rollback: delete_task failed task=%s",
                                task_id, exc_info=True)
             raise
         return db.get_ppt(ppt["id"]), message  # type: ignore[return-value]
@@ -1167,8 +1163,7 @@ class PptService:
             return
         if cur["status"] == "failed":
             await self._shutdown_confirm_ui_safe(db, cur)
-        elif cur["status"] == "awaiting_input" \
-                and cur.get("kind") not in ("template", "enhanced"):
+        elif cur["status"] == "awaiting_input" and cur.get("kind") != "template":
             try:
                 self.auto_resume_if_receipt(db, cur)
             except Exception:
@@ -1178,9 +1173,9 @@ class PptService:
 
     async def _shutdown_confirm_ui_safe(self, db, ppt: dict) -> None:
         """best-effort 关停 confirm_ui daemon（P2-2 泄漏封堵）：仅 deck 行持有
-        确认页进程（template/enhanced 无 confirm_ui）；_shutdown_confirm_ui
+        确认页进程（template 无 confirm_ui）；_shutdown_confirm_ui
         幂等且自吞异常，此处仅防行字段缺失等意外，不阻断主流程。"""
-        if ppt.get("kind") in ("template", "enhanced"):
+        if ppt.get("kind") == "template":
             return
         try:
             await asyncio.to_thread(
@@ -1197,7 +1192,11 @@ class PptService:
             if not ppt:
                 return
             try:
-                sync_progress(db, ppt)
+                # 线程池执行：S1 后门禁置位会同步拉起确认页服务（探活+shutdown
+                # 子进程+Popen，最长可阻塞 ~16s），直调会冻结事件循环——与
+                # cancel/delete 的 to_thread(_shutdown_confirm_ui) 同理；
+                # auto_resume 留事件循环（内部 _start_drive 需 loop）
+                await asyncio.to_thread(sync_progress, db, ppt)
                 self.auto_resume_if_receipt(db, ppt)
             except Exception:
                 logger.warning("PPT progress sync failed: ppt=%s", ppt_id, exc_info=True)
@@ -1230,9 +1229,8 @@ class PptService:
         if gate["confirmed_final"]:
             return (
                 "[系统] 用户已完成 Stage 2 最终确认（confirm_ui/result.json stage=final，"
-                "这是后续所有阶段的唯一输入契约）。请先执行 "
-                f"python \"{skill}/scripts/confirm_ui/server.py\" \"{project}\" --shutdown 释放确认服务端口，"
-                "然后按回执继续：产出 design_spec.md 与 spec_lock.md，逐页创作 SVG 至 svg_output/，"
+                "这是后续所有阶段的唯一输入契约）。确认页服务已由系统自动关停，"
+                "请按回执继续：产出 design_spec.md 与 spec_lock.md，逐页创作 SVG 至 svg_output/，"
                 "最后完成导出三连并报告 exports/ 下 PPTX 文件名。"
             )
         return (
@@ -1272,9 +1270,6 @@ class PptService:
         if ppt.get("kind") == "template":
             self._finalize_template(db, ppt)
             return
-        if ppt.get("kind") == "enhanced":
-            self._finalize_enhanced(db, ppt)
-            return
         project = Path(ppt["workspace_path"])
         gate = _gate_state(project)
         sync_progress(db, ppt)
@@ -1287,6 +1282,7 @@ class PptService:
             rel = str(exports[-1].relative_to(project)).replace("\\", "/")
             db.update_ppt_status(ppt_id, "completed", export_path=rel)
             activity_events.complete_ppt(db, ppt_id, rel)
+            _affairs_on_ppt_completed(db, ppt_id)
             return
         cur = db.get_ppt(ppt_id)
         if not cur:
@@ -1330,6 +1326,7 @@ class PptService:
             if ok:
                 db.update_ppt_status(ppt_id, "completed")
                 activity_events.complete_ppt(db, ppt_id, ppt.get("template_id") or "")
+                _affairs_on_ppt_completed(db, ppt_id)
             else:
                 # 包已产出但收录不成（IO/索引写坏）：用户无法自助推进，置 failed 显式暴露
                 db.update_ppt_status(ppt_id, "failed", error=reason)
@@ -1346,35 +1343,6 @@ class PptService:
         db.update_ppt_status(ppt_id, "paused")
         activity_events.pause_ppt(
             db, ppt_id, "本回合已结束但模板包尚未产出，可在模板分区继续")
-
-    def _finalize_enhanced(self, db, ppt: dict) -> None:
-        """增强任务回合结束终态：completed（exports 产物）/ awaiting（两处确认门）
-        / paused。产物状态机判定（_enhance_gate），不依赖 agent 消息标记。"""
-        ppt_id = ppt["id"]
-        # 终态写前统一让位（P1-1）：收尾窗口内新泵接棒则终态归其收尾
-        if self._superseded(db, ppt_id, ppt["status"]):
-            return
-        project = Path(ppt["workspace_path"])
-        exports = _enhance_exports(project)
-        if exports:
-            rel = str(exports[-1].relative_to(project)).replace("\\", "/")
-            db.update_ppt_status(ppt_id, "completed", export_path=rel)
-            activity_events.complete_ppt(db, ppt_id, rel)
-            return
-        gate = _enhance_gate(project)
-        if gate == "plan":
-            db.update_ppt_progress(ppt_id, stage="strategy")
-            db.update_ppt_status(ppt_id, "awaiting_input")
-            activity_events.gate_ppt(db, ppt_id, "增强计划已就绪，等待你确认")
-            return
-        if gate == "audio":
-            db.update_ppt_progress(ppt_id, stage="authoring")
-            db.update_ppt_status(ppt_id, "awaiting_input")
-            activity_events.gate_ppt(db, ppt_id, "音频配置已就绪，等待你确认")
-            return
-        db.update_ppt_status(ppt_id, "paused")
-        activity_events.pause_ppt(
-            db, ppt_id, "本回合已结束但尚未导出，可在详情页继续")
 
     # -- 交互操作 --
 
@@ -1414,35 +1382,6 @@ class PptService:
                                "提案已完成的，请继续 Step 4 及后续步骤"
                                "（禁止注册全局索引，校验通过后报告模板包位置，"
                                "系统会负责收录）。")
-        elif ppt.get("kind") == "enhanced":
-            # 产物状态机应答（native-enhance-pptx.md §5/§7 门禁契约）：
-            # 空文本 = 确认推进；非空 = 修改意见（agent 更新提案再等确认）
-            gate = _enhance_gate(Path(ppt["workspace_path"]))
-            if gate == "plan":
-                if text:
-                    message = ("[系统] 用户对增强计划提出修改意见：" + text
-                               + "。请按意见更新 analysis/enhancement_plan.json，"
-                                 "向用户重新逐项提出计划后再次结束回合等待确认。")
-                else:
-                    message = ("[系统] 用户已确认增强计划（确认门①通过，把 plan status "
-                               "置为 confirmed）。请继续：写 notes/00N.md 口播稿"
-                               "（忠实幻灯片不加戏）→ validate --materials notes → "
-                               "（audio 启用时）一次性提出 provider/音色/语速配置提案后"
-                               "立即结束回合等待确认。")
-            elif gate == "audio":
-                if text:
-                    message = ("[系统] 用户对音频配置提出修改意见：" + text
-                               + "。请按意见调整提案，重新一次性提出后"
-                                 "再次结束回合等待确认。")
-                else:
-                    message = ("[系统] 用户已确认音频配置（确认门②通过）。请把确认的 "
-                               "provider/voice/rate 写入 project.json，然后继续："
-                               "生成音频 → validate → apply，exports/ 产出后"
-                               "报告文件名并结束回合。")
-            else:
-                message = "[系统] 用户请求继续执行 PPT 增强任务。"
-                if text:
-                    message += f"用户补充意见：{text}"
         else:
             # deck 门禁感知续跑：回执在场时复用 _resume_message（与自动续跑同源，
             # 附回执文件指引）——用户确认内容只存在于 confirm_ui/*.json 文件、
@@ -1484,6 +1423,7 @@ class PptService:
         if ok:
             db.update_ppt_status(ppt_id, "completed")
             activity_events.complete_ppt(db, ppt_id, ppt.get("template_id") or "")
+            _affairs_on_ppt_completed(db, ppt_id)
             return {"ok": True}
         db.update_ppt_status(ppt_id, "failed", error=reason)
         activity_events.fail_ppt(db, ppt_id, reason)
@@ -1554,15 +1494,7 @@ class PptService:
 
     @staticmethod
     def _venv_python(db, ppt: dict) -> str:
-        task = db.get_task(ppt.get("task_id") or "")
-        venv = (task or {}).get("venv_path") or ""
-        if venv:
-            py = os.path.join(venv, "Scripts", "python.exe")
-            if os.name != "nt":
-                py = os.path.join(venv, "bin", "python")
-            if os.path.isfile(py):
-                return py
-        return ""
+        return _venv_python_from_task(db, ppt.get("task_id"))
 
     # -- 启动恢复 --
 
@@ -1580,34 +1512,13 @@ class PptService:
                         db.update_ppt_status(ppt["id"], "completed")
                         activity_events.complete_ppt(
                             db, ppt["id"], ppt.get("template_id") or "")
+                        _affairs_on_ppt_completed(db, ppt["id"])
                     else:
                         db.update_ppt_status(ppt["id"], "failed", error=reason)
                         activity_events.fail_ppt(db, ppt["id"], reason)
                 else:
                     db.update_ppt_status(ppt["id"], "paused")
                     activity_events.pause_ppt(db, ppt["id"], "应用重启，可在模板分区继续")
-                continue
-            if ppt.get("kind") == "enhanced":
-                # 增强任务产物在 enhance_project 下（workspace_path 直接指向）
-                project = Path(ppt["workspace_path"])
-                exports = _enhance_exports(project)
-                if exports and ppt["status"] != "completed":
-                    rel = str(exports[-1].relative_to(project)).replace("\\", "/")
-                    db.update_ppt_status(ppt["id"], "completed", export_path=rel)
-                    activity_events.complete_ppt(db, ppt["id"], rel)
-                    continue
-                gate = _enhance_gate(project)
-                if gate in ("plan", "audio"):
-                    # 门禁恢复与 _finalize_enhanced 对齐 stage（plan→strategy /
-                    # audio→authoring）：详情首拉前前端按 stage 选门禁卡不误显
-                    db.update_ppt_progress(
-                        ppt["id"], stage="strategy" if gate == "plan" else "authoring")
-                    db.update_ppt_status(ppt["id"], "awaiting_input")
-                    activity_events.gate_ppt(db, ppt["id"], "应用重启，请继续完成确认")
-                    continue
-                if ppt["status"] == "running":
-                    db.update_ppt_status(ppt["id"], "paused")
-                    activity_events.pause_ppt(db, ppt["id"], "应用重启，可在详情页继续")
                 continue
             project = Path(ppt["workspace_path"])
             exports = sorted((project / "exports").glob("*.pptx"), key=os.path.getmtime) \
@@ -1616,6 +1527,7 @@ class PptService:
                 rel = str(exports[-1].relative_to(project)).replace("\\", "/")
                 db.update_ppt_status(ppt["id"], "completed", export_path=rel)
                 activity_events.complete_ppt(db, ppt["id"], rel)
+                _affairs_on_ppt_completed(db, ppt["id"])
                 # 确认页会话随行落位关闭（P2-2 泄漏封堵）：进程态与行态一致；
                 # _shutdown_confirm_ui 幂等且自吞异常（recover_orphans 由
                 # main.py lifespan 放线程池执行，同步调用不阻塞事件循环）
@@ -1624,6 +1536,9 @@ class PptService:
             gate = _gate_state(project)
             if gate["pending"] and not gate["receipt_stage1"] and not gate["confirmed_final"]:
                 db.update_ppt_status(ppt["id"], "awaiting_input")
+                # S1 系统接管：重启恢复同语义确保服务在跑（daemon 存活则探活
+                # 跳过；已死则重拉，消灭重启后确认页死链）
+                _ensure_confirm_ui(self._venv_python(db, ppt), project)
                 activity_events.gate_ppt(db, ppt["id"], "应用重启，请继续完成确认")
                 continue  # awaiting 行保留 daemon——用户还要在确认页操作
             if ppt["status"] == "running":

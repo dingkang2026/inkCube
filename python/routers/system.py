@@ -17,6 +17,7 @@ from fastapi import APIRouter
 
 import deps
 from paths import get_data_dir
+from tools.proc_priority import hidden_window_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +473,10 @@ _RESET_TABLES = (
     "project_base_libs", "projects", "tasks", "notifications",
     "llm_usage", "model_downloads", "web_logins", "task_agent_state",
     "task_templates", "settings",
+    # 便签（2.12）：无 FK 独立表，「真·全清」必须覆盖，否则重置后残留
+    "sticky_notes",
+    # 纪要向导中间态（2.13）：同理无 FK，重置后残留即死行
+    "meeting_notes",
 )
 
 
@@ -616,6 +621,7 @@ async def check_external_deps():
             proc = await asyncio.to_thread(
                 subprocess.run, [git_path, "--version"],
                 capture_output=True, encoding="utf-8", errors="replace", timeout=5,
+                **hidden_window_kwargs(),  # hidden_window_kwargs：无控制台父进程下 git 闪窗（2026-10-28）
             )
             version_line = proc.stdout.strip() if proc.stdout else ""
             deps_status["git"] = {"available": True, "path": git_path, "version": version_line}

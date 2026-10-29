@@ -172,124 +172,136 @@ export function PptWizard({ projectId, onCreated, onBack }: PptWizardProps) {
       </div>
 
       <div className={s.form}>
-        <label className={s.formLabel}>
-          {t('project.ppt.wizard.titleLabel')}
-          <input
-            className={s.formInput}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder={t('project.ppt.wizard.titlePlaceholder')}
-            autoFocus
-          />
-        </label>
+        {/* 顶部基础字段：两列与下方 .formCols 同轴（3fr/2fr），纵向对齐 */}
+        <div className={s.formTop}>
+          <label className={s.formLabel}>
+            {t('project.ppt.wizard.titleLabel')}
+            <input
+              className={s.formInput}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={t('project.ppt.wizard.titlePlaceholder')}
+              autoFocus
+            />
+          </label>
 
-        <label className={s.formLabel}>
-          {t('project.ppt.wizard.sourceLabel')}
-          <select
-            className={s.formInput}
-            value={sourceReportId}
-            onChange={(e) => setSourceReportId(e.target.value)}
-          >
-            <option value="">{t('project.ppt.wizard.sourceNone')}</option>
-            {reports.map((r) => (
-              <option key={r.id} value={r.id}>{r.title}</option>
-            ))}
-          </select>
-        </label>
+          <label className={s.formLabel}>
+            {t('project.ppt.wizard.sourceLabel')}
+            <select
+              className={s.formInput}
+              value={sourceReportId}
+              onChange={(e) => setSourceReportId(e.target.value)}
+            >
+              <option value="">{t('project.ppt.wizard.sourceNone')}</option>
+              {reports.map((r) => (
+                <option key={r.id} value={r.id}>{r.title}</option>
+              ))}
+            </select>
+          </label>
+        </div>
 
-        <div className={s.formLabel}>
-          {t('project.ppt.wizard.imagesLabel')}
-          {images.length === 0 ? null : (
-            <>
-              <p className={s.formHint}>{t('project.ppt.wizard.imagesHint', { cap: IMAGE_POOL_CAP })}</p>
-              {Object.keys(categoryCounts).length > 0 && (
+        {/* 主体两栏（左配图右参数）：各自内部滚动，右栏生成参数常驻可视 */}
+        <div className={s.formCols}>
+          {/* 左栏：配图选择（图格吃满剩余高度、内部滚动，chips/提示常驻） */}
+          <div className={s.colImages}>
+            <div className={s.formLabel}>
+              {t('project.ppt.wizard.imagesLabel')}
+              {images.length === 0 ? null : (
                 <>
-                  <p className={s.formHint}>{t('project.ppt.wizard.catsLabel')}</p>
-                  <div className={s.chipRow}>
-                    {Object.entries(categoryCounts)
-                      .filter(([, n]) => n > 0)
-                      .map(([cat, n]) => (
-                        <button
-                          key={cat}
-                          className={`${s.chip} ${selectedCats.has(cat) ? s.chipActive : ''}`}
-                          onClick={() => toggleCat(cat)}
-                        >
-                          {t(`knowledge.category_${cat}`)} ({n})
-                        </button>
-                      ))}
+                  <p className={s.formHint}>{t('project.ppt.wizard.imagesHint', { cap: IMAGE_POOL_CAP })}</p>
+                  {Object.keys(categoryCounts).length > 0 && (
+                    <>
+                      <p className={s.formHint}>{t('project.ppt.wizard.catsLabel')}</p>
+                      <div className={s.chipRow}>
+                        {Object.entries(categoryCounts)
+                          .filter(([, n]) => n > 0)
+                          .map(([cat, n]) => (
+                            <button
+                              key={cat}
+                              className={`${s.chip} ${selectedCats.has(cat) ? s.chipActive : ''}`}
+                              onClick={() => toggleCat(cat)}
+                            >
+                              {t(`knowledge.category_${cat}`)} ({n})
+                            </button>
+                          ))}
+                      </div>
+                    </>
+                  )}
+                  <label className={s.hdToggle}>
+                    <input
+                      type="checkbox"
+                      checked={hdOnly}
+                      onChange={(e) => setHdOnly(e.target.checked)}
+                    />
+                    {t('project.ppt.wizard.hdOnly')}
+                  </label>
+                  <div className={s.imageGrid}>
+                    {images.map((img) => (
+                      <button
+                        key={img.id}
+                        className={`${s.imageCell} ${pinnedImages.has(img.id) ? s.imageCellSelected : ''}`}
+                        onClick={() => togglePin(img.id)}
+                        title={img.vlm_description || img.id}
+                      >
+                        <img className={s.imageThumb} src={img.local_path ? localFileUrl(img.local_path) : ''} alt="" />
+                        <span className={s.imageCheck}>{pinnedImages.has(img.id) ? <Check size={12} /> : ''}</span>
+                      </button>
+                    ))}
                   </div>
+                  <p className={s.formHint}>{t('project.ppt.wizard.pinHint')}</p>
                 </>
               )}
-              <label className={s.hdToggle}>
-                <input
-                  type="checkbox"
-                  checked={hdOnly}
-                  onChange={(e) => setHdOnly(e.target.checked)}
-                />
-                {t('project.ppt.wizard.hdOnly')}
-              </label>
-              <div className={s.imageGrid}>
-                {images.map((img) => (
-                  <button
-                    key={img.id}
-                    className={`${s.imageCell} ${pinnedImages.has(img.id) ? s.imageCellSelected : ''}`}
-                    onClick={() => togglePin(img.id)}
-                    title={img.vlm_description || img.id}
+            </div>
+          </div>
+
+          {/* 右栏：生成参数（模板四类 + 风格 + 补充要求） */}
+          <div className={s.colMeta}>
+            <div className={s.formLabel}>
+              {t('project.ppt.wizard.templateLabel')}
+              <p className={s.formHint}>{t('project.ppt.wizard.templateHint')}</p>
+              {TEMPLATE_KINDS.map((kind) => (
+                <label key={kind} className={s.tplRow}>
+                  <span className={s.tplKind}>{t(`project.ppt.wizard.kind_${kind}`)}</span>
+                  <select
+                    className={s.formInput}
+                    value={tplByKind[kind] || ''}
+                    onChange={(e) =>
+                      setTplByKind((prev) => ({ ...prev, [kind]: e.target.value }))}
                   >
-                    <img className={s.imageThumb} src={img.local_path ? localFileUrl(img.local_path) : ''} alt="" />
-                    <span className={s.imageCheck}>{pinnedImages.has(img.id) ? <Check size={12} /> : ''}</span>
-                  </button>
-                ))}
-              </div>
-              <p className={s.formHint}>{t('project.ppt.wizard.pinHint')}</p>
-            </>
-          )}
-        </div>
+                    <option value="">{t('project.ppt.wizard.templateNone')}</option>
+                    {(templates[kind] || []).map((tp) => (
+                      <option key={tp.id} value={tp.id}>
+                        {tp.id} · {tp.builtin ? t('project.ppt.wizard.builtinBadge') + ' · ' : ''}
+                        {(tp.summary || '').slice(0, 48)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
 
-        <div className={s.formLabel}>
-          {t('project.ppt.wizard.templateLabel')}
-          <p className={s.formHint}>{t('project.ppt.wizard.templateHint')}</p>
-          {TEMPLATE_KINDS.map((kind) => (
-            <label key={kind} className={s.tplRow}>
-              <span className={s.tplKind}>{t(`project.ppt.wizard.kind_${kind}`)}</span>
-              <select
+            <label className={s.formLabel}>
+              {t('project.ppt.wizard.styleLabel')}
+              <input
                 className={s.formInput}
-                value={tplByKind[kind] || ''}
-                onChange={(e) =>
-                  setTplByKind((prev) => ({ ...prev, [kind]: e.target.value }))}
-              >
-                <option value="">{t('project.ppt.wizard.templateNone')}</option>
-                {(templates[kind] || []).map((tp) => (
-                  <option key={tp.id} value={tp.id}>
-                    {tp.id} · {tp.builtin ? t('project.ppt.wizard.builtinBadge') + ' · ' : ''}
-                    {(tp.summary || '').slice(0, 48)}
-                  </option>
-                ))}
-              </select>
+                value={styleRef}
+                onChange={(e) => setStyleRef(e.target.value)}
+                placeholder={t('project.ppt.wizard.stylePlaceholder')}
+              />
             </label>
-          ))}
+
+            <label className={s.formLabel}>
+              {t('project.ppt.wizard.notesLabel')}
+              <textarea
+                className={`${s.formInput} ${s.formTextarea}`}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder={t('project.ppt.wizard.notesPlaceholder')}
+                rows={3}
+              />
+            </label>
+          </div>
         </div>
-
-        <label className={s.formLabel}>
-          {t('project.ppt.wizard.styleLabel')}
-          <input
-            className={s.formInput}
-            value={styleRef}
-            onChange={(e) => setStyleRef(e.target.value)}
-            placeholder={t('project.ppt.wizard.stylePlaceholder')}
-          />
-        </label>
-
-        <label className={s.formLabel}>
-          {t('project.ppt.wizard.notesLabel')}
-          <textarea
-            className={`${s.formInput} ${s.formTextarea}`}
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder={t('project.ppt.wizard.notesPlaceholder')}
-            rows={3}
-          />
-        </label>
       </div>
 
       <div className={s.wizardActions}>

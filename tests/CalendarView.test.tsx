@@ -77,6 +77,17 @@ describe('CalendarView', () => {
     expect(container.querySelector('.evDone')).toBeTruthy()
   })
 
+  it('done 任务条 hover title 带完成时间;存量缺 completed_at 回落纯标题(2026-10-28 补齐)', () => {
+    const { container } = render(
+      <CalendarView {...base} tasks={[
+        task({ id: 'd1', title: '已完成项', due_date: month15, status: 'done', completed_at: '2026-10-16T09:00:00' }),
+        task({ id: 'd2', title: '存量完成', due_date: month15, status: 'done' }),
+      ]} />)
+    const bars = container.querySelectorAll('.evBtn')
+    expect((bars[0] as HTMLElement).title).toBe('已完成项 · affairs.doneAt:{"date":"2026-10-16"}')
+    expect((bars[1] as HTMLElement).title).toBe('存量完成')
+  })
+
   it('navigates months and back to today', () => {
     const { container, getByText } = render(<CalendarView {...base} tasks={[]} />)
     const before = container.querySelector('.calTitle')!.textContent

@@ -2,8 +2,9 @@
 
 职责:周期节奏滚动生成 / 阶段切换激活 / 终态事件自动完成匹配。
 惯例对齐 activity_events.py:模块级函数、自带 try/except 兜底仅记日志——
-闭环是增强不是依赖(§5.4 异常语义),任何失败不阻塞解析/报告主流程。
-不做 HTTP;路由层(routers/affairs.py)与终态声明点(pipeline/reports)直调。
+闭环是增强不是依赖(§5.4 异常语义),任何失败不阻塞解析/报告/产出主流程。
+不做 HTTP;路由层(routers/affairs.py)与终态声明点(pipeline/reports/
+ppt_service/forms)直调。
 """
 import calendar as _cal
 import json
@@ -330,6 +331,54 @@ def _match_hit(auto: dict, text: str) -> bool:
     return any(kw and kw in text for kw in m.split("|"))
 
 
+def _auto_of(raw) -> dict | None:
+    """auto_complete 列(str JSON 或已解码 dict)→ dict;无效返回 None。"""
+    try:
+        auto = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return auto if isinstance(auto, dict) else None
+
+
+def _complete_by_rule(db, project_id: str, text: str, rule_on: str,
+                      entity_type: str, entity_id: str,
+                      task_type: str | None = None) -> int:
+    """按规则类型扫描 open 任务,产出/事件文本命中即闭环;返回完成数。
+
+    output_completed(产出维度,2026-10-28)不限 task_type——材料/报告/节点/
+    周期任务均可挂产出闭环;report_completed 存量语义保持仅 report 类
+    (§3.3 模板种子契约,不动)。周期任务命中仅闭最早一期(裁决 5,与
+    on_file_parsed 同构)——roll 已预铺下期,全闭会误掉下期且不重铺。"""
+    sql = ("SELECT id, task_type, occurrence_key, auto_complete FROM phase_tasks "
+           "WHERE project_id=? AND status='open'")
+    params: list = [project_id]
+    if task_type:
+        sql += " AND task_type=?"
+        params.append(task_type)
+    hits = []
+    for r in db.conn.execute(sql, params).fetchall():
+        auto = _auto_of(r["auto_complete"])
+        if not auto or auto.get("on") != rule_on:
+            continue
+        if _match_hit(auto, text or ""):
+            hits.append(r)
+    done = 0
+    for r in hits:  # 一次性任务(material/report/milestone):命中实例全完成
+        if r["task_type"] == "recurring":
+            continue
+        _complete(db, r["id"], entity_type, entity_id)
+        done += 1
+    recurring_hits = [r for r in hits if r["task_type"] == "recurring"]
+    if recurring_hits:
+        # recurring:仅最早 open 期(裁决 5);NULL occurrence_key 脏行不参与选取
+        valid = [r for r in recurring_hits if r["occurrence_key"]]
+        if valid:
+            earliest = min(valid, key=lambda r: r["occurrence_key"])
+            _complete(db, earliest["id"], entity_type, entity_id)
+            done += 1
+    return done
+
+
 def _complete(db, task_id: str, entity_type: str, entity_id: str) -> None:
     db.conn.execute(
         """UPDATE phase_tasks SET status='done', completed_at=?, completed_by='auto',
@@ -379,25 +428,50 @@ def on_report_completed(db, report_id: str) -> int:
             "SELECT project_id, title FROM reports WHERE id = ?", (report_id,)).fetchone()
         if not rep or not rep["project_id"]:
             return 0  # 报告不存在/已删:静默
-        rows = db.conn.execute(
-            """SELECT id, auto_complete FROM phase_tasks
-               WHERE project_id=? AND status='open' AND task_type='report'""",
-            (rep["project_id"],)).fetchall()
-        done = 0
-        for r in rows:
-            try:
-                auto = (json.loads(r["auto_complete"])
-                        if isinstance(r["auto_complete"], str) else r["auto_complete"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if not isinstance(auto, dict) or auto.get("on") != "report_completed":
-                continue
-            if _match_hit(auto, rep["title"] or ""):
-                _complete(db, r["id"], "report", report_id)
-                done += 1
+        # 双扫:存量 report_completed 仅 report 类(§3.3 种子契约不动);
+        # 产出规则 output_completed 不限类型(2026-10-28 产出维度)
+        done = _complete_by_rule(db, rep["project_id"], rep["title"] or "",
+                                 "report_completed", "report", report_id,
+                                 task_type="report")
+        done += _complete_by_rule(db, rep["project_id"], rep["title"] or "",
+                                  "output_completed", "report", report_id)
         if done:
             db.conn.commit()
         return done
     except Exception:
         logger.warning("on_report_completed failed for %s", report_id, exc_info=True)
+        return 0
+
+
+def on_ppt_completed(db, ppt_id: str) -> int:
+    """PPT 交付完成闭环(产出维度):交付物标题命中 output_completed 规则即完成。"""
+    try:
+        ppt = db.conn.execute(
+            "SELECT project_id, title FROM ppts WHERE id = ?", (ppt_id,)).fetchone()
+        if not ppt or not ppt["project_id"]:
+            return 0  # 行不存在/已删:静默
+        done = _complete_by_rule(db, ppt["project_id"], ppt["title"] or "",
+                                 "output_completed", "ppt", ppt_id)
+        if done:
+            db.conn.commit()
+        return done
+    except Exception:
+        logger.warning("on_ppt_completed failed for %s", ppt_id, exc_info=True)
+        return 0
+
+
+def on_form_fill_completed(db, fill_id: str) -> int:
+    """填表完成闭环(产出维度):产物标题命中 output_completed 规则即完成。"""
+    try:
+        fill = db.conn.execute(
+            "SELECT project_id, title FROM form_fills WHERE id = ?", (fill_id,)).fetchone()
+        if not fill or not fill["project_id"]:
+            return 0  # 行不存在/已删:静默
+        done = _complete_by_rule(db, fill["project_id"], fill["title"] or "",
+                                 "output_completed", "form_fill", fill_id)
+        if done:
+            db.conn.commit()
+        return done
+    except Exception:
+        logger.warning("on_form_fill_completed failed for %s", fill_id, exc_info=True)
         return 0

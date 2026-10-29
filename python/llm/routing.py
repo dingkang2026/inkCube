@@ -33,6 +33,8 @@ _TASK_MODEL_KEYS: dict[str, str] = {
     "rag": "rag_model",                          # 知识库问答
     # PPT（2.3：ppt-master 工作流在任务对话内执行；唯一默认 high 的业务线）
     "ppt": "ppt_model",
+    # 拜访/会议纪要结构化（2.13）：未配置时 level 按 standard 走全局默认槽
+    "meeting_note": "meeting_note_model",
 }
 
 _SLOT_KEYS = {"standard": "standard_model", "high": "high_model"}

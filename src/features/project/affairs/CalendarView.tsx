@@ -81,8 +81,12 @@ export function CalendarView({ tasks, onOpenDrawer, onCreateTask }: CalendarView
               onClick={() => onCreateTask(ds)}>
               <span className={s.dayNum}>{day}</span>
               {shown.map((task) => (
+                // done 任务条 hover 补完成时间(格内仅标题,完成时间经 title 呈现)
                 <button key={task.id}
                   className={`${s.evBtn} ${task.status === 'done' ? s.evDone : isOverdue(task) ? s.evErr : ''}`}
+                  title={task.status === 'done' && task.completed_at
+                    ? `${task.title} · ${t('affairs.doneAt', { date: task.completed_at.slice(0, 10) })}`
+                    : task.title}
                   onClick={(e) => { e.stopPropagation(); onOpenDrawer(task) }}>
                   {task.title}
                 </button>

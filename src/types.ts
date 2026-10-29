@@ -44,6 +44,7 @@ export interface LLMSettings {
   form_fill_model: string
   rag_model: string
   ppt_model: string
+  meeting_note_model: string
   task_timeout: number
   task_max_iterations: number
   task_auto_confirm_shell: boolean

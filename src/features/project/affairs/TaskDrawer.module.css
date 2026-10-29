@@ -102,6 +102,9 @@
 }
 
 .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   font-size: var(--text-base);
   color: var(--text-secondary);
 }
@@ -127,7 +130,7 @@
   color: var(--text-primary);
 }
 
-.autoDone {
+.doneAt {
   color: var(--text-success);
 }
 

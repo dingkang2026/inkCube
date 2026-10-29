@@ -4,7 +4,7 @@
  *  展开对应组,不激活任务(§6.4-2)。行内类型徽章标注任务类型。
  *  （2026-10-25 裁决：顶部时期进度条撤下——当前期高亮与详情页 stage pills 重复）
  *  行状态色(§6.3):逾期 --error / 7 日内 --warning / 进行中 --accent /
- *  done 灰 / skipped 灰划线 / pending_activation 灰斜体「等待进入时期」。
+ *  done 灰(日期列显示完成时间) / skipped 灰划线 / pending_activation 灰斜体「等待进入时期」。
  *  头部计数 = 当前期任务数(默认视角,不含 skipped/pending 占位)+ 7 日内到期数;
  *  「显示已跳过」开关仅存在 skipped 实例时显示;存在 recurring 实例时显示提示条
  *  (§6.1.3 边界:recurring 不进看板,唯一管理入口在「周期节奏」,避免双入口漂移)。
@@ -72,6 +72,10 @@ export function PhaseBoard({ tasks, stage, projectType, onCreateTask, onOpenDraw
   }
   const dueText = (task: PhaseTask): string => {
     if (task.status === 'pending_activation') return t('affairs.pendingHint')
+    // done 行日期列显示完成时间(展开历史组回看即知何时完成);存量缺 completed_at 回落原口径
+    if (task.status === 'done' && task.completed_at) {
+      return t('affairs.doneAtShort', { date: task.completed_at.slice(5, 10) })
+    }
     if (!task.due_date) return '—'
     // 非 ISO 格式哨兵:API 直调坏值下显示原文,不产碎片文本/NaN 天数(Task 7 评审 C-2)
     if (!/^\d{4}-\d{2}-\d{2}/.test(task.due_date)) return task.due_date

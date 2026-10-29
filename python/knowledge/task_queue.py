@@ -380,17 +380,15 @@ class KnowledgeWorker:
                 # Wiki 待编译数不再事件累加：get_pending_compile_count 实时计算
                 # （解析 done 文件入集合由 SQL 口径自然覆盖，2026-10-22）
 
-                # 2.6 §4.1 路径 A：事件驱动自动汇编——解析 done 边沿点火增量编译
-                # （六重守卫在 try_auto_compile 内：开关/项目门/待编译集/无活跃/
-                #   冷却/就绪；入队失败由 QueueScanner 兜底重入队；触发失败仅告警，
-                #   绝不影响解析主流程）
+                # 2.6 §4.1 路径 A：事件驱动自动汇编——解析 done 边沿仅登记点火
+                # 意图，由 QueueScanner 到期（DELAY_SECONDS 聚合窗口）执行六重
+                # 守卫点火（开关/项目门/待编译集/无活跃/冷却/就绪）；登记失败仅
+                # 告警，绝不影响解析主流程
                 try:
-                    from wiki.auto_compile import try_auto_compile
-                    auto_task = try_auto_compile(self.db, project_id)
-                    if auto_task:
-                        await self.enqueue_compile(auto_task["id"])
+                    from wiki.auto_compile import schedule_auto_compile
+                    schedule_auto_compile(project_id)
                 except Exception as e:
-                    logger.warning("Auto compile trigger failed for %s: %s",
+                    logger.warning("Auto compile schedule failed for %s: %s",
                                    project_id, e)
             else:
                 logger.error("File %s parse failed: %s", file_id, result.get("error"))
@@ -506,6 +504,11 @@ class KnowledgeWorker:
         file_id = img["file_id"]
         project_id = img["project_id"]
         context_text = img.get("context_text")
+        if not (context_text or "").strip():
+            # 2.13 定稿驱动：纪要附图无文档前后文，描述注入纪要上下文（标题+正文；
+            # 定稿后行必已落库）。非纪要图查询不命中，行为不变
+            from meeting_notes_service import context_for_file
+            context_text = context_for_file(self.db, file_id) or context_text
 
         try:
             if img_path.exists():
@@ -801,6 +804,19 @@ class KnowledgeWorker:
                     logger.info("[QueueScanner] Found %d queued compile tasks", len(queued_compiles))
                 for tid in queued_compiles:
                     await self.enqueue_compile(tid)
+
+                # 到期的自动汇编点火意图（2.6 §4.1 路径 A，2026-10-28 聚合延迟）：
+                # 到期执行六重守卫点火；enqueue 失败由上方 queued compiles 拾取
+                # 下一轮兜底重入队；失败不重试（取出即移除，错过退化手动入口）
+                try:
+                    from wiki.auto_compile import pop_due_projects, try_auto_compile
+                    for pid in pop_due_projects():
+                        auto_task = try_auto_compile(self.db, pid)
+                        if auto_task:
+                            await self.enqueue_compile(auto_task["id"])
+                except Exception as e:
+                    logger.error("[QueueScanner] Auto compile firing error: %s",
+                                 e, exc_info=True)
 
             except asyncio.CancelledError:
                 return

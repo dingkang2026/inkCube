@@ -96,6 +96,15 @@ def _lib_root(tmp_path) -> Path:
     return tmp_path / "data" / "ppt-library" / "templates"
 
 
+def _fake_init_skeleton(workspace, *, canvas_format="ppt169"):
+    """_init_project_skeleton 测试替身：同款目录名契约（带后缀），建目录即返回
+    （prepare_template 编排链的系统 init 段替身，对齐 test_ppt_service）。"""
+    from datetime import datetime
+    target = Path(workspace) / f"ppt_project_{canvas_format}_{datetime.now():%Y%m%d}"
+    target.mkdir(parents=True)
+    return target
+
+
 # ── 素材就位 ──
 
 class TestStageRefFiles:
@@ -299,7 +308,9 @@ class TestRetryCollect:
 # ── prepare：行字段 / 素材 / 首条消息 / 回滚 ──
 
 class TestPrepareTemplate:
-    def test_row_fields_global_asset(self, db, tmp_path):
+    def test_row_fields_global_asset(self, db, tmp_path, monkeypatch):
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton",
+                            _fake_init_skeleton)
         ppt, message = ppt_service.service.prepare_template(
             db, kind="brand", template_id="co_blue",
             template_name="公司品牌蓝", ref_paths=[], notes=None)
@@ -313,7 +324,9 @@ class TestPrepareTemplate:
         assert task["origin"] == "ppt"
         assert task["title"].startswith("[PPT模板]")
 
-    def test_refs_staged(self, db, tmp_path):
+    def test_refs_staged(self, db, tmp_path, monkeypatch):
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton",
+                            _fake_init_skeleton)
         ref = tmp_path / "deck.pptx"
         ref.write_text("PK", encoding="utf-8")
         ppt, message = ppt_service.service.prepare_template(
@@ -327,6 +340,9 @@ class TestPrepareTemplate:
         """首条消息组装失败（如素材异常冒泡）：task/ppt 行全部回滚。"""
         def _boom(*a, **k):
             raise OSError("disk full")
+        # 系统先 init 再组装消息：init 用替身，让失败点落在消息组装
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton",
+                            _fake_init_skeleton)
         monkeypatch.setattr(ppt_service, "_build_template_message", _boom)
         with pytest.raises(OSError):
             ppt_service.service.prepare_template(
@@ -339,13 +355,16 @@ class TestPrepareTemplate:
 class TestTemplateMessageContract:
     def test_contract_keywords(self, tmp_path):
         msg = _build_template_message(
-            str(tmp_path / "ws"), "brand", "co_blue", "公司品牌蓝",
+            str(tmp_path / "ws" / "ppt_project"), str(tmp_path / "ws"),
+            "brand", "co_blue", "公司品牌蓝",
             ["staging/refs/logo.png"], "深蓝主色")
         # 固定入口与类型锁定
         assert "Create Template" in msg
         assert "brand" in msg
-        # project scope：init 骨架 + 限定名 spec + shared validator
-        assert "project_manager.py" in msg
+        # project scope：init 已由系统执行（声明目录 + 禁止重复 init）
+        # + 限定名 spec + shared validator
+        assert "系统已初始化项目骨架" in msg
+        assert "禁止重复执行 init" in msg
         assert "design_spec.brand.co_blue.md" in msg
         assert "svg_quality_checker.py" in msg
         assert "--template-mode" in msg
@@ -362,7 +381,8 @@ class TestTemplateMessageContract:
 
     def test_no_refs_type_e(self, tmp_path):
         msg = _build_template_message(
-            str(tmp_path / "ws"), "style", "s1", "S", [], None)
+            str(tmp_path / "ws" / "ppt_project"), str(tmp_path / "ws"),
+            "style", "s1", "S", [], None)
         assert "Type E" in msg
 
 

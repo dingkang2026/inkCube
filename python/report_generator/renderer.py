@@ -23,6 +23,7 @@ from pathlib import Path
 
 from tools.doc_template import resolve_reference_doc
 from tools.mermaid_bridge import cleanup_temp_dir, preprocess_mermaid
+from tools.proc_priority import hidden_window_kwargs
 from tools.tool_resolver import resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ def render_markdown_to_docx(
             cmd,
             capture_output=True, encoding="utf-8", errors="replace",
             timeout=_PANDOC_TIMEOUT if timeout is None else timeout,
+            **hidden_window_kwargs(),  # hidden_window_kwargs：无控制台父进程下 pandoc 闪窗（2026-10-28）
         )
         if result.returncode != 0:
             logger.error("pandoc md→docx failed (title=%s): %s", title, result.stderr.strip())

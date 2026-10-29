@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 import deps
 from paths import get_data_dir
+from tools.proc_priority import hidden_window_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,7 @@ async def _install_git(git_url: str, skills_dir: str) -> dict:
             "git", "clone", "--depth", "1", git_url, install_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **hidden_window_kwargs(),  # 无控制台父进程下 git clone 闪窗（2026-10-28）
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
         if proc.returncode != 0:

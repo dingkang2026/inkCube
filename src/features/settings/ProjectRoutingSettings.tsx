@@ -19,6 +19,7 @@ type RoutingKey =
   | 'form_fill_model'
   | 'rag_model'
   | 'ppt_model'
+  | 'meeting_note_model'
 
 /** 档位下拉（standard/high，2026-10-19 档位制）：后端 resolve_model 解析为对应槽位模型名 */
 function LevelSelect({
@@ -86,6 +87,7 @@ export function ProjectRoutingSettings({ form, onUpdate }: ProjectRoutingSetting
           <LevelSelect form={form} onUpdate={onUpdate} settingKey="form_fill_model" labelKey="settings.formFillModel" hintKey="settings.formFillModelHint" />
           <LevelSelect form={form} onUpdate={onUpdate} settingKey="rag_model" labelKey="settings.ragModel" hintKey="settings.ragModelHint" />
           <LevelSelect form={form} onUpdate={onUpdate} settingKey="ppt_model" labelKey="settings.pptModel" hintKey="settings.pptModelHint" />
+          <LevelSelect form={form} onUpdate={onUpdate} settingKey="meeting_note_model" labelKey="settings.meetingNoteModel" hintKey="settings.meetingNoteModelHint" />
         </div>
       </section>
     </>

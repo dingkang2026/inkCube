@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Bell } from 'lucide-react'
+import { Bell, StickyNote } from 'lucide-react'
 import { useActivity } from '../../features/activity/ActivityContext'
 import { buildMenuDef, type MenuItemDef } from './menuDefinition'
 import s from './TitleBar.module.css'
@@ -149,14 +149,24 @@ export function TitleBar({ onOpenSettings, onToggleSidebar, onShowAbout, onOpenN
 
       <div className={s.spacer} />
 
-      {/* 右上角工具区（no-drag）：侧栏开关 + 通知铃铛（2.11 §6.1，未读角标），
-          与窗口控制隔开避免误触；铃铛 2026-10-26 自 NavTabs 迁入 */}
+      {/* 右上角工具区（no-drag）：侧栏开关 + 便签 + 通知铃铛（2.11 §6.1，未读角标），
+          与窗口控制隔开避免误触；铃铛 2026-10-26 自 NavTabs 迁入；
+          便签 2026-10-27 自 NavTabs 迁入（用户裁决：与消息钮同区，
+          统一顶栏 actionBtn 形态）——经 window 事件调起全局轻抽屉 */}
       <div className={s.actions}>
         <button className={s.actionBtn} onClick={onToggleSidebar} title={t('nav.toggleSidebar')}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
             <rect x="1" y="2" width="12" height="10" rx="1" />
             <line x1="5" y1="2" x2="5" y2="12" />
           </svg>
+        </button>
+        <button
+          className={s.actionBtn}
+          title={t('nav.stickyNotes')}
+          data-testid="sticky-nav-btn"
+          onClick={() => window.dispatchEvent(new Event('sticky:toggle-drawer'))}
+        >
+          <StickyNote size={15} strokeWidth={1.8} />
         </button>
         <button className={`${s.actionBtn} ${s.notifBtn}`} onClick={onOpenNotifications} title={t('nav.notifications')}>
           <Bell size={15} strokeWidth={1.8} />

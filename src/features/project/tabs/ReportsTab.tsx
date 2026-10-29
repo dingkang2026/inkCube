@@ -1,8 +1,8 @@
 /** src/features/project/tabs/ReportsTab.tsx — Reports tab with kanban layout (4 columns by stage)
- *  含 PPT 交付物区块（2.3 §7.1 PptSection）：列表/新建/导入增强入口/详情入口（E3） */
+ *  含 PPT 交付物区块（2.3 §7.1 PptSection）：列表/新建/详情入口 */
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw, Pause, PauseCircle, Play, Presentation, Wand2 } from 'lucide-react'
+import { FileText, Plus, Clock, CheckCircle, AlertCircle, Trash2, RefreshCw, Pause, PauseCircle, Play, Presentation } from 'lucide-react'
 import type { ProjectType, ProjectStage, Report } from '../types'
 import { STAGE_COLUMNS } from '../types'
 import { ReportWizard } from './ReportWizard'
@@ -50,7 +50,6 @@ export function ReportsTab({ projectId, projectType, onViewModeChange }: Reports
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [previewReport, setPreviewReport] = useState<Report | null>(null)
   const [selectedPptId, setSelectedPptId] = useState<string | null>(null)
-  const [enhancing, setEnhancing] = useState(false)  // 增强入队防抖（卡片/导入两入口共用）
 
   // 视图态上报（挂载即报 'list'，切换即随上报；父级据此显隐二级分区条）
   useEffect(() => {
@@ -210,61 +209,6 @@ export function ReportsTab({ projectId, projectType, onViewModeChange }: Reports
     handleRetryReport(report, 'restart')
   }
 
-  // E3 成品增强：发起后切换到新任务详情跟踪（两入口共用导航；structured 契约判 res.ok）
-  const openEnhanceDetail = async (res: any) => {
-    if (res?.ok && res?.ppt?.id) {
-      showToast(t('project.ppt.toast.enhanceStarted'), 'success')
-      await reloadPpts()
-      setSelectedPptId(res.ppt.id)
-      setViewMode('pptDetail')
-    } else {
-      showToast(t('project.ppt.toast.enhanceFailed', {
-        error: apiErrorText(res?.code, res?.error || 'unknown', t),
-      }), 'error')
-    }
-  }
-
-  // 入口 ①：从已完成的 deck 交付物卡片发起增强（旁白/转场补丁，产物为新文件）
-  const handleEnhancePpt = async (ppt: PptRow) => {
-    if (enhancing) return
-    if (!(await confirmDialog({
-      title: t('project.ppt.enhance'),
-      message: t('project.ppt.detail.enhanceConfirm'),
-    }))) return
-    setEnhancing(true)
-    try {
-      await openEnhanceDetail(await window.electronAPI.invoke('ppt:enhance', { pptId: ppt.id }))
-    } catch (err: any) {
-      showToast(t('project.ppt.toast.enhanceFailed', { error: String(err?.message || err) }), 'error')
-    } finally {
-      setEnhancing(false)
-    }
-  }
-
-  // 入口 ②：导入本机 pptx 创建增强任务（dialog:openFile 直传路径，2.3 §6.3）
-  const handleImportEnhance = async () => {
-    if (enhancing) return
-    try {
-      const result: any = await window.electronAPI.invoke('dialog:openFile', {
-        filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
-        properties: ['openFile'],
-      })
-      const filePath: string | undefined = result?.filePaths?.[0]
-      if (!filePath) return
-      const fileName = filePath.replace(/^.*[\\/]/, '').replace(/\.pptx$/i, '')
-      setEnhancing(true)
-      await openEnhanceDetail(await window.electronAPI.invoke('ppt:enhanceImport', {
-        projectId,
-        title: fileName,
-        sourcePath: filePath,
-      }))
-    } catch (err: any) {
-      showToast(t('project.ppt.toast.enhanceFailed', { error: String(err?.message || err) }), 'error')
-    } finally {
-      setEnhancing(false)
-    }
-  }
-
   // ── Wizard view ──
   if (viewMode === 'wizard') {
     return (
@@ -293,7 +237,6 @@ export function ReportsTab({ projectId, projectType, onViewModeChange }: Reports
         pptId={selectedPptId}
         onBack={() => { void reloadPpts(); setViewMode('list') }}
         onDeleted={() => { void reloadPpts(); setSelectedPptId(null); setViewMode('list') }}
-        onEnhanced={(newId) => { setSelectedPptId(newId); setViewMode('pptDetail') }}
       />
     )
   }
@@ -341,15 +284,6 @@ export function ReportsTab({ projectId, projectType, onViewModeChange }: Reports
         >
           <Presentation size={16} />
           {t('project.ppt.new')}
-        </button>
-        <button
-          className={p.secondaryBtn}
-          onClick={handleImportEnhance}
-          disabled={enhancing}
-          title={t('project.ppt.enhanceImportTip')}
-        >
-          <Wand2 size={16} />
-          {t('project.ppt.enhanceImport')}
         </button>
       </div>
 
@@ -503,9 +437,6 @@ export function ReportsTab({ projectId, projectType, onViewModeChange }: Reports
                   <div className={p.pptCardHeader}>
                     <Presentation size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                     <span className={p.pptCardTitle}>{ppt.title}</span>
-                    {ppt.kind === 'enhanced' && (
-                      <span className={p.kindBadge}>{t('project.ppt.enhancedBadge')}</span>
-                    )}
                   </div>
                   <div className={p.pptCardMeta}>
                     <span className={`${p.statusChip} ${p[`status_${ppt.status}`] || ''}`}>
@@ -524,16 +455,6 @@ export function ReportsTab({ projectId, projectType, onViewModeChange }: Reports
                       <span>{t('project.ppt.pageProgress', { done: ppt.page_done || 0, count: ppt.page_count })}</span>
                     )}
                     <span>{new Date(ppt.created_at).toLocaleDateString()}</span>
-                    {ppt.kind === 'deck' && ppt.status === 'completed' && ppt.export_path && (
-                      <button
-                        className={p.chipBtn}
-                        disabled={enhancing}
-                        onClick={(e) => { e.stopPropagation(); void handleEnhancePpt(ppt) }}
-                        title={t('project.ppt.detail.enhanceTip')}
-                      >
-                        <Wand2 size={12} /> {t('project.ppt.enhance')}
-                      </button>
-                    )}
                   </div>
                 </div>
               )

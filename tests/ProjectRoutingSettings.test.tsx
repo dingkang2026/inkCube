@@ -1,6 +1,6 @@
 /** tests/ProjectRoutingSettings.test.tsx — 项目模型路由档位化（0.3 §4.4 五组导航 2026-10-19）。
  *  用例自 ModelRoutingSettings.test.tsx 迁入并改造为档位制：
- *  11 个路由键下拉选档（standard/high），resolved 槽位名作副文本。 */
+ *  12 个路由键下拉选档（standard/high），resolved 槽位名作副文本。 */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.mock('react-i18next', () => ({
@@ -31,13 +31,14 @@ const baseForm = {
   report_model: 'standard', report_extract_model: 'standard',
   form_analyze_model: 'standard', form_fill_model: 'standard', rag_model: 'standard',
   ppt_model: 'high',
+  meeting_note_model: 'standard',
   task_timeout: 300, task_max_iterations: 60, task_auto_confirm_shell: false,
   task_shell_confirm_mode: 'auto', task_shell_domain_whitelist: '',
   task_show_execution_log: true, task_workspace_max_mb: 1024,
   task_max_count: 50, task_auto_archive_days: 30,
 } as LLMSettings
 
-describe('ProjectRoutingSettings — 11 键档位下拉', () => {
+describe('ProjectRoutingSettings — 12 键档位下拉', () => {
   it('renders both routing sections', () => {
     const { container } = render(<ProjectRoutingSettings form={baseForm} onUpdate={vi.fn()} />)
     expect(container.textContent).toContain('settings.wikiRoutingSection')
@@ -45,12 +46,14 @@ describe('ProjectRoutingSettings — 11 键档位下拉', () => {
     expect(container.textContent).toContain('settings.routingFallbackHint')
   })
 
-  it('renders 11 level selects with tier values from form', () => {
+  it('renders 12 level selects with tier values from form', () => {
     const { container } = render(<ProjectRoutingSettings form={baseForm} onUpdate={vi.fn()} />)
     const selects = container.querySelectorAll('select')
-    expect(selects).toHaveLength(11)
-    // ppt 默认高配：第 11 个 select（业务管线末位）值为 high
+    expect(selects).toHaveLength(12)
+    // ppt 默认高配：第 11 个 select（业务管线末位第二）值为 high
     expect((selects[10] as HTMLSelectElement).value).toBe('high')
+    // meeting_note（末位，2.13）默认 standard
+    expect((selects[11] as HTMLSelectElement).value).toBe('standard')
     // 其余默认 standard
     expect((selects[0] as HTMLSelectElement).value).toBe('standard')
   })

@@ -11,6 +11,7 @@ import tempfile
 import subprocess
 
 from knowledge.office_media import extract_office_images
+from tools.proc_priority import hidden_window_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +438,9 @@ class DocumentParser:
                 str(input_path.absolute()),
             ]
             
-            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            result = subprocess.run(
+                cmd, capture_output=True, timeout=120,
+                **hidden_window_kwargs())  # hidden_window_kwargs：无控制台父进程下 soffice 闪窗（2026-10-28）
             stderr_text = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
             
             # LibreOffice may return 0 even on failure — check stderr

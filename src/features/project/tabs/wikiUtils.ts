@@ -72,6 +72,7 @@ export const ACTION_LABEL_KEYS: Record<string, string> = {
   dedup_merge: 'project.wiki.actionDedupMerge',
   governance: 'project.wiki.actionGovernance',
   overview_updated: 'project.wiki.actionOverviewUpdated',
+  source_removed: 'project.wiki.actionSourceRemoved',
 }
 
 /** Format a timestamp for changelog display (locale-aware relative time) */

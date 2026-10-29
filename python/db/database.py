@@ -12,6 +12,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# 便签 update 的「字段缺席」哨兵（2.12）：None = 显式清除、STICKY_UNSET = 不改；
+# 路由层经 pydantic model_fields_set 区分后传入，模块级单例保证跨模块 is 判定一致
+STICKY_UNSET = object()
+
 
 class _LockedConnection:
     """Serialize access to the shared sqlite3 connection.
@@ -375,6 +379,48 @@ class Database:
         """)
         self.conn.commit()
 
+        # Sticky notes table (2.12 §2)：全局速记收件箱——纯文本 + 固定色板，
+        # 自由留存无提醒；归档落 project_id（素材 md 同步经上传链落盘），
+        # 项目删除时行回收件箱（全局用户资产不销毁，见 detach 函数）。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sticky_notes (
+                id          TEXT PRIMARY KEY,
+                content     TEXT NOT NULL,
+                color       TEXT,               -- 固定色板：yellow/red/blue/green/purple；NULL = 默认无色
+                project_id  TEXT,               -- 归档后落定的目标项目；NULL = 收件箱未归档
+                archived_at TEXT,               -- NULL = 未归档
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sticky_notes_updated ON sticky_notes(updated_at DESC);
+            -- 部分索引（2.12 §2）：仅归档行走 project_id 维度（detach 联动/已归档视图）
+            CREATE INDEX IF NOT EXISTS idx_sticky_notes_project ON sticky_notes(project_id) WHERE project_id IS NOT NULL;
+        """)
+        self.conn.commit()
+
+        # Meeting notes table (2.13 §2)：纪要向导中间态——行 = draft→structuring→structured
+        # 进行中产物，confirm 分步落 saved_refs 幂等重试，完整即删行（终态自清理，
+        # 无长期留存）；项目删除级联删行（纪要草稿是项目内资产，与便签全局资产相反）。
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS meeting_notes (
+                id             TEXT PRIMARY KEY,
+                project_id     TEXT NOT NULL,
+                title          TEXT NOT NULL,      -- 默认「拜访-YYYYMMDD」可改
+                occurred_at    TEXT,               -- 拜访/会议日期（ISO），NULL = 今天
+                raw_text       TEXT,               -- 原始文本输入（含粘贴转写稿），重试期间零丢失保底
+                image_file_ids TEXT,               -- JSON ["<file_id>", ...]，引用 files 表
+                draft_md       TEXT,               -- LLM 结构化产物 JSON：{content_md, action_items:[{title}]}
+                saved_refs     TEXT,               -- JSON：{file_id, task_ids[]}——confirm 分步落引用幂等键
+                last_error     TEXT,               -- 最近一次结构化失败原因（i18n 错误码），NULL = 无
+                status         TEXT NOT NULL DEFAULT 'draft',
+                    -- draft / structuring / structured（confirm 成功即删行）
+                created_at     TEXT NOT NULL,
+                updated_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_meeting_notes_project ON meeting_notes(project_id, status);
+        """)
+        self.conn.commit()
+
         # ── Token usage ledger (2.10 §3.1) ──
         # append-only：client 收口层单点写入（llm/usage.py sink → insert_llm_usage），
         # 聚合查询现算（无缓存层，刷新机制因此无需失效管理，§5.4）
@@ -442,7 +488,7 @@ class Database:
                 project_id TEXT NOT NULL,
                 task_id TEXT NOT NULL,               -- 引擎句柄：tasks.id（origin='ppt'）
                 title TEXT NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'deck',   -- deck=生成 / enhanced=增强
+                kind TEXT NOT NULL DEFAULT 'deck',   -- deck=生成 / template=模板工坊
                 status TEXT NOT NULL DEFAULT 'running',
                     -- running / awaiting_input / paused / completed / failed / cancelled
                 stage TEXT,                          -- intake / strategy / authoring / export
@@ -469,9 +515,14 @@ class Database:
         self._migrate_add_column("ppts", "template_kind", "TEXT")
         self._migrate_add_column("ppts", "template_id", "TEXT")
 
-        # Migrate: ppts — 成品增强源（2.3 §4.3，E3）：kind='enhanced' 行记录
-        # staging 后的源 PPTX 相对路径（init 的输入，apply 产物在 exports/）
-        self._migrate_add_column("ppts", "enhance_source_path", "TEXT")
+        # 迁移反转（2026-10-28）：成品增强功能（E3）全链下线，enhance_source_path
+        # 列删列（存量行均 deck、该列全 NULL，零数据风险；SQLite ≥3.35，
+        # 同 wiki pending_compile_count 先例），新库本就无此列。
+        try:
+            self.conn.execute("ALTER TABLE ppts DROP COLUMN enhance_source_path")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 列不存在（新库/已迁移）
 
         # ── Wiki tables (§3 of 2.6wiki-design.md) ──
         self.conn.executescript("""
@@ -1219,6 +1270,7 @@ class Database:
             "rag_model": "standard",  # 知识库问答
             "wiki_enrich_model": "standard",  # wiki 链接补全（轻量结构化）
             "ppt_model": "high",  # PPT 生成（逐页 SVG 创作，唯一默认高配）
+            "meeting_note_model": "standard",  # 拜访/会议纪要结构化（2.13）
             # 队列暂停开关（0.4 §队列暂停）：持久化于 settings，重启保持；
             # 经 POST /knowledge/queue/pause 写入（set_flag），运行时由 worker 闸门消费。
             # wiki 编译无队列暂停（0.4 §6.7 修订）：任务级「停止」+ 断点续传已覆盖；
@@ -2677,6 +2729,226 @@ class Database:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    # ── Sticky Notes (2.12 §2) ──
+
+    _STICKY_COLORS = ("yellow", "red", "blue", "green", "purple")
+
+    def _check_color(self, color):
+        if color is None or color is STICKY_UNSET:
+            return
+        if color not in self._STICKY_COLORS:
+            raise ValueError(f"invalid sticky color: {color}")
+
+    def create_sticky_note(self, content: str, color: str | None) -> dict:
+        self._check_color(color)
+        nid, now = self._uuid(), self._now()
+        self.conn.execute(
+            "INSERT INTO sticky_notes (id, content, color, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (nid, content, color, now, now),
+        )
+        self.conn.commit()
+        return self.get_sticky_note(nid)
+
+    def list_sticky_notes(self, view: str, limit: int = 0, offset: int = 0) -> list[dict]:
+        """view='inbox' 未归档 / 'archived' 已归档；updated_at 倒序。
+        limit=0 → 全量；limit>0 → 至多 limit 行（路由层传 limit+1 探测 has_more）。
+        rowid DESC 次级键：快速连记时 Windows 时钟分辨率下 updated_at 可能相同，
+        以插入顺序兜底确定性（后记的在前）。"""
+        where = "WHERE archived_at IS NULL" if view == "inbox" else "WHERE archived_at IS NOT NULL"
+        sql = f"SELECT * FROM sticky_notes {where} ORDER BY updated_at DESC, rowid DESC"
+        params: list = []
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def get_sticky_note(self, note_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM sticky_notes WHERE id = ?", (note_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_sticky_note(self, note_id: str, content: str | None,
+                           color) -> dict | None:
+        """部分更新：None = 显式清除（如选「无色」）、STICKY_UNSET = 不改该字段。
+        两字段均「不改」时空转返回现值。"""
+        self._check_color(color)
+        if content is None and color is STICKY_UNSET:
+            return self.get_sticky_note(note_id)
+        sets, params = [], []
+        if content is not None:
+            sets.append("content = ?")
+            params.append(content)
+        if color is not STICKY_UNSET:
+            sets.append("color = ?")
+            params.append(color)
+        sets.append("updated_at = ?")
+        params.extend([self._now(), note_id])
+        cur = self.conn.execute(
+            f"UPDATE sticky_notes SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+        return self.get_sticky_note(note_id) if cur.rowcount else None
+
+    def delete_sticky_note(self, note_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM sticky_notes WHERE id = ?", (note_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def archive_sticky_note(self, note_id: str, project_id: str) -> dict | None:
+        """归档落项目（project_id/archived_at 落定）；行不存在或已归档返回 None。
+        条件更新（WHERE archived_at IS NULL）把幂等从「检查后行动」变为
+        「行动时判定」，并发双请求（双窗口）只有一方胜出（路由层判负 → 409）。"""
+        now = self._now()
+        cur = self.conn.execute(
+            "UPDATE sticky_notes SET project_id = ?, archived_at = ?, updated_at = ?"
+            " WHERE id = ? AND archived_at IS NULL",
+            (project_id, now, now, note_id),
+        )
+        self.conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_sticky_note(note_id)
+
+    def detach_sticky_notes_for_project(self, project_id: str) -> int:
+        """项目删除联动：归档行回收件箱（project_id/archived_at 置 NULL），
+        便签是全局用户资产不随项目销毁（2.12 §2）。"""
+        cur = self.conn.execute(
+            "UPDATE sticky_notes SET project_id = NULL, archived_at = NULL, updated_at = ?"
+            " WHERE project_id = ?",
+            (self._now(), project_id),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    # ── Meeting Notes (2.13 §2) ──
+
+    _MEETING_NOTE_FIELDS = (
+        "title", "occurred_at", "raw_text", "image_file_ids",
+        "draft_md", "saved_refs", "last_error", "status",
+    )
+    # archived 为终态（2.14 纪要中心）：confirm 完整后置 archived 保留行（原删行），
+    # 正文留存纪要行供归档列表回溯；不出现在 pending/活动/清扫任何路径
+    _MEETING_NOTE_STATUSES = ("draft", "structuring", "structured", "archived")
+
+    @staticmethod
+    def _decode_meeting_note(row: dict) -> dict:
+        """image_file_ids JSON → list（坏数据容错 decay []，对齐 list_due_phase_tasks）。"""
+        raw = row.get("image_file_ids")
+        if raw:
+            try:
+                decoded = json.loads(raw)
+                row["image_file_ids"] = decoded if isinstance(decoded, list) else []
+            except (json.JSONDecodeError, TypeError):
+                row["image_file_ids"] = []
+        else:
+            row["image_file_ids"] = []
+        return row
+
+    def create_meeting_note(self, project_id: str, title: str,
+                            occurred_at: str | None, raw_text: str | None,
+                            image_file_ids: list[str] | None = None) -> dict:
+        nid, now = self._uuid(), self._now()
+        self.conn.execute(
+            "INSERT INTO meeting_notes (id, project_id, title, occurred_at, raw_text,"
+            " image_file_ids, status, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)",
+            (nid, project_id, title, occurred_at, raw_text,
+             json.dumps(image_file_ids or [], ensure_ascii=False), now, now),
+        )
+        self.conn.commit()
+        return self.get_meeting_note(nid)
+
+    def get_meeting_note(self, note_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM meeting_notes WHERE id = ?", (note_id,)).fetchone()
+        return self._decode_meeting_note(dict(row)) if row else None
+
+    def list_pending_meeting_notes(self, project_id: str) -> list[dict]:
+        """向导恢复数据源：该项目未完成纪要（draft/structuring/structured 待确认；
+        structured 必须在列——本查询是前端唯一数据源，缺席则生成成功后确认步无法
+        恢复、行永久泄漏；终态为 confirm 全量成功后删行），updated_at 倒序
+        （rowid 次级键兜底确定性，同 list_sticky_notes）。"""
+        rows = self.conn.execute(
+            "SELECT * FROM meeting_notes WHERE project_id = ?"
+            " AND status IN ('draft', 'structuring', 'structured')"
+            " ORDER BY updated_at DESC, rowid DESC",
+            (project_id,),
+        ).fetchall()
+        return [self._decode_meeting_note(dict(r)) for r in rows]
+
+    def list_meeting_notes_by_status(self, status: str) -> list[dict]:
+        """跨项目按状态查（Activity FunctionSource 数据源：structuring 行 → 心跳）。"""
+        rows = self.conn.execute(
+            "SELECT * FROM meeting_notes WHERE status = ?"
+            " ORDER BY updated_at DESC, rowid DESC", (status,)).fetchall()
+        return [self._decode_meeting_note(dict(r)) for r in rows]
+
+    def list_meeting_notes_archived(self, project_id: str,
+                                    limit: int = 50, offset: int = 0) -> dict:
+        """归档纪要分页（2.14 §3，分页契约 0.1 §16）：拜访日期为业务主序
+        （缺省回落记录日期）；limit=0 全量（选择器场景）且 has_more 恒 False。"""
+        total = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM meeting_notes"
+            " WHERE project_id = ? AND status = 'archived'",
+            (project_id,)).fetchone()["c"]
+        sql = ("SELECT * FROM meeting_notes WHERE project_id = ? AND status = 'archived'"
+               " ORDER BY COALESCE(occurred_at, date(created_at)) DESC, rowid DESC")
+        params: list = [project_id]
+        if limit > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params += [limit, offset]
+        rows = self.conn.execute(sql, params).fetchall()
+        notes = [self._decode_meeting_note(dict(r)) for r in rows]
+        return {"notes": notes, "limit": limit, "offset": offset,
+                "has_more": (offset + len(notes)) < total if limit > 0 else False,
+                "total": total}
+
+    def update_meeting_note(self, note_id: str, fields: dict) -> dict | None:
+        """白名单部分更新：未知键忽略（路由层同样过滤，双保险防拼写误写）；
+        image_file_ids 传 list 时 JSON 编码；status 仅接受合法枚举（ValueError）。"""
+        allowed = {k: v for k, v in (fields or {}).items()
+                   if k in self._MEETING_NOTE_FIELDS}
+        if not allowed:
+            return self.get_meeting_note(note_id)
+        if "status" in allowed and allowed["status"] not in self._MEETING_NOTE_STATUSES:
+            raise ValueError(f"invalid meeting note status: {allowed['status']}")
+        if "image_file_ids" in allowed and allowed["image_file_ids"] is not None:
+            allowed["image_file_ids"] = json.dumps(
+                allowed["image_file_ids"], ensure_ascii=False)
+        sets, params = [], []
+        for k, v in allowed.items():
+            sets.append(f"{k} = ?")
+            params.append(v)
+        sets.append("updated_at = ?")
+        params.extend([self._now(), note_id])
+        cur = self.conn.execute(
+            f"UPDATE meeting_notes SET {', '.join(sets)} WHERE id = ?", params)
+        self.conn.commit()
+        return self.get_meeting_note(note_id) if cur.rowcount else None
+
+    def delete_meeting_note(self, note_id: str) -> bool:
+        cur = self.conn.execute("DELETE FROM meeting_notes WHERE id = ?", (note_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_meeting_notes_for_project(self, project_id: str) -> int:
+        """项目删除级联：纪要草稿是项目内资产（与便签全局资产相反），随项目销毁
+        （已保存产物走素材/事务现有级联，2.13 §2）。"""
+        cur = self.conn.execute(
+            "DELETE FROM meeting_notes WHERE project_id = ?", (project_id,))
+        self.conn.commit()
+        return cur.rowcount
+
+    def reset_interrupted_meeting_notes(self) -> int:
+        """启动清扫：进程中断遗留的 structuring 行回 draft（可重试），记 interrupted；
+        幂等可重入（随 main 启动恢复序列，2.13 §2 崩溃恢复）。"""
+        cur = self.conn.execute(
+            "UPDATE meeting_notes SET status='draft', last_error='interrupted', updated_at=?"
+            " WHERE status='structuring'", (self._now(),))
+        self.conn.commit()
+        return cur.rowcount
+
     # ── Token Usage (2.10 §3.1/§4.5) ──
 
     _USAGE_AGG = (
@@ -3113,19 +3385,17 @@ class Database:
         workspace_path: str | None = None,
         template_kind: str | None = None,
         template_id: str | None = None,
-        enhance_source_path: str | None = None,
     ) -> dict:
         now = self._now()
         ppt_id = self._uuid()
         self.conn.execute(
             """INSERT INTO ppts (id, project_id, task_id, title, kind, status,
                source_report_id, source_images_json, style_ref, workspace_path,
-               template_kind, template_id, enhance_source_path, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               template_kind, template_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ppt_id, project_id, task_id, title, kind, source_report_id,
              json.dumps(source_images or [], ensure_ascii=False),
-             style_ref, workspace_path, template_kind, template_id,
-             enhance_source_path, now, now),
+             style_ref, workspace_path, template_kind, template_id, now, now),
         )
         self.conn.commit()
         return self.get_ppt(ppt_id)  # type: ignore[return-value]
@@ -5702,10 +5972,17 @@ class Database:
           - wiki_source_pages (ingestion tracking) — reads pages_touched first
           - wiki_page_sources (page ↔ file provenance links)
           - wiki_reviews.source_file_id → set to NULL (keep review, detach file)
-          - Marks affected wiki_pages as 'draft' (need recompilation)
+          - Deletes affected wiki_pages that lose ALL sources (single-source
+            compiled pages; B2 2026-10-28, replaces the old 'draft' marking)
 
-        Does NOT delete wiki_pages themselves — they may aggregate multiple sources.
-        All operations run in a single transaction to prevent partial failures.
+        Multi-source pages keep compiled status (remaining sources still valid;
+        content refreshes on next compile); user_edited pages are never touched.
+        Page deletion reuses delete_wiki_page cascade (broken wikilink refs,
+        orphan reviews); a source_removed change_log entry is added after the
+        page is gone (delete_wiki_page cascades the page's own log entries,
+        so the trace must be recorded with wiki_page_id=NULL).
+        Note: delete_wiki_page commits internally (SQLite same-connection
+        transaction promotes steps 1-3); rollback window is per-page.
         Returns counts of cleaned records for logging.
         """
         counts: dict[str, int] = {}
@@ -5739,28 +6016,36 @@ class Database:
             )
             counts["reviews_detached"] = cur.rowcount
 
-            # 4. Mark affected wiki_pages as 'draft' (need recompilation)
-            #    Only mark pages that are currently 'compiled' and have no other source files
-            pages_marked = 0
+            # 4. Remove affected wiki_pages that lose ALL sources（B2 2026-10-28，
+            #    替代原置 draft——draft 无消费方与重编译路径（删除不点火、前端零
+            #    消费、报告/Chat 不采信），滞留即死状态且内容残留可读；单来源
+            #    compiled 页删除即净。user_edited 永不动；多来源页不动（剩余来源
+            #    仍有效，内容随下次编译自然更新）。复用 delete_wiki_page 级联
+            #    （死链 refs 剥离/孤儿 review 清理）；change_log 记 source_removed
+            #    须在删页后（delete_wiki_page 级联清该页日志，wiki_page_id=None
+            #    留时间线痕迹）；summary 后端中文与 ingest 同风格，action 走 i18n
+            pages_removed = 0
             for page_key in touched_page_keys:
                 page_row = self.conn.execute(
-                    "SELECT id FROM wiki_pages WHERE project_id = ? AND page_key = ?",
+                    "SELECT id, title, status FROM wiki_pages WHERE project_id = ? AND page_key = ?",
                     (project_id, page_key),
                 ).fetchone()
                 if not page_row:
                     continue
-                page_id = page_row["id"]
                 remaining = self.conn.execute(
                     "SELECT COUNT(*) as cnt FROM wiki_page_sources WHERE wiki_page_id = ?",
-                    (page_id,),
+                    (page_row["id"],),
                 ).fetchone()
-                if remaining and remaining["cnt"] == 0:
-                    self.conn.execute(
-                        "UPDATE wiki_pages SET status = 'draft', updated_at = ? WHERE id = ? AND status = 'compiled'",
-                        (self._now(), page_id),
-                    )
-                    pages_marked += self.conn.execute("SELECT changes()").fetchone()[0]
-            counts["pages_marked_draft"] = pages_marked
+                if remaining and remaining["cnt"] == 0 and page_row["status"] == "compiled":
+                    removed_title = page_row["title"]
+                    if self.delete_wiki_page(project_id, page_key):
+                        self.add_wiki_change_log(
+                            project_id, "source_removed", wiki_page_id=None,
+                            summary=f"源文件删除，页面「{removed_title}」已随之清除",
+                            affected_page_keys=[page_key],
+                        )
+                        pages_removed += 1
+            counts["pages_removed"] = pages_removed
 
             self.conn.commit()
         except Exception:

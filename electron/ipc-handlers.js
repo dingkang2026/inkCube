@@ -376,7 +376,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' +
       'Get-CimInstance -Namespace root/SecurityCenter2 ' +
       '-ClassName AntiVirusProduct | Select-Object -ExpandProperty displayName'],
-    { timeout: 15000 })
+    { timeout: 15000, windowsHide: true }) // 无控制台父进程下避免 powershell 闪窗（2026-10-28）
     let out = ''
     p.stdout.on('data', (d) => { out += d })
     p.on('error', () => { thirdPartyAvCache = null })
@@ -483,7 +483,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       const { spawn: spawnPs } = require('child_process')
       const p = spawnPs('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
         "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status -eq 'Running'"],
-      { timeout: 15000 })
+      { timeout: 15000, windowsHide: true }) // 无控制台父进程下避免 powershell 闪窗（2026-10-28）
       let out = ''
       p.stdout.on('data', (d) => { out += d })
       p.on('error', () => resolve(true))
@@ -552,7 +552,7 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     const result = await new Promise((resolve) => {
       const p = spawn('powershell.exe',
         ['-NoProfile', '-NonInteractive', '-Command', elevate],
-        { timeout: 120000 })
+        { timeout: 120000, windowsHide: true }) // 无控制台父进程下避免 powershell 闪窗（2026-10-28）
       let out = ''
       p.stdout.on('data', (d) => { out += d })
       p.stderr.on('data', (d) => { out += '\n[spawn stderr] ' + d })
@@ -2048,31 +2048,6 @@ function registerIpcHandlers(ipcMain, pythonManager) {
     return handlePythonResponse(res)
   })
 
-  // 成品增强（2.3 §4.3 E3）：从项目内交付物 / 本机导入 pptx 两条入口，全 HTTP 转发；
-  // structured 透传错误码（NOT_ENHANCEABLE/ENHANCE_IN_PROGRESS 等），渲染层判 res.ok
-  ipcMain.handle('ppt:enhance', async (_event, { pptId, notes }) => {
-    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/ppts/${pptId}/enhance`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes: notes || null }),
-    }, 120000) // prepare 同步拷源 pptx 到任务 staging，放宽对齐 ppt:create
-    return structuredPythonResponse(res)
-  })
-
-  ipcMain.handle('ppt:enhanceImport', async (_event, { projectId, title, sourcePath, notes }) => {
-    const res = await fetchWithTimeout(
-      `${pythonManager.getBaseUrl()}/projects/${projectId}/ppts/enhance-import`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        source_path: sourcePath,
-        notes: notes || null,
-      }),
-    }, 120000)
-    return structuredPythonResponse(res)
-  })
-
   // 另存为导出：workspacePath+exportPath（详情返回的本机路径）拷到用户选定位置
   ipcMain.handle('ppt:downloadExport', async (_event, { workspacePath, exportPath, title }) => {
     const { dialog, BrowserWindow } = require('electron')
@@ -2754,6 +2729,206 @@ function registerIpcHandlers(ipcMain, pythonManager) {
       { method: 'DELETE' }
     )
     return handlePythonResponse(res)
+  })
+
+  // ── 便签（2.12）：六通道直代理 python /sticky 端点，StickyDrawer 消费 ──
+
+  ipcMain.handle('sticky:list', async (_event, { view, limit, offset } = {}) => {
+    const params = new URLSearchParams()
+    params.set('view', view || 'inbox')
+    params.set('limit', String(limit ?? 50))
+    params.set('offset', String(offset ?? 0))
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/sticky/notes?${params}`)
+    return handlePythonResponse(res)
+  })
+
+  // 动作五通道用 structuredPythonResponse（返回值透传错误，不 throw——跨进程异常
+  // 仅保留 message，Electron #24427）；sticky:list 保持 throw 型（usePagedList catch 链消费）
+  ipcMain.handle('sticky:create', async (_event, payload) => {
+    const res = await fetchWithTimeout(`${pythonManager.getBaseUrl()}/sticky/notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: payload?.content ?? '', color: payload?.color ?? null }),
+    })
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('sticky:update', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/sticky/notes/${encodeURIComponent(payload?.id ?? '')}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: payload?.content ?? null, color: payload?.color ?? null }),
+      }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('sticky:delete', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/sticky/notes/${encodeURIComponent(payload?.id ?? '')}`,
+      { method: 'DELETE' }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('sticky:archiveToProject', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/sticky/notes/${encodeURIComponent(payload?.id ?? '')}/archive`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: payload?.projectId ?? '' }),
+      }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('sticky:toAffair', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/sticky/notes/${encodeURIComponent(payload?.id ?? '')}/to-affair`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: payload?.projectId ?? '', due_date: payload?.dueDate ?? null }),
+      }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // ── 纪要（2.13 + 2.14 纪要中心）：十通道直代理 python /projects/{pid}/notes
+  // 端点，NoteWizardDrawer/NotesTab 消费；全部 structuredPythonResponse
+  // （含 202 受理：res.ok 覆盖 2xx，structure 回 {ok, accepted}）──
+
+  ipcMain.handle('meetingNotes:create', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: payload?.title ?? null,
+          occurred_at: payload?.occurredAt ?? null,
+          raw_text: payload?.rawText ?? null,
+          image_file_ids: payload?.imageFileIds ?? [],
+        }),
+      }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // pending 草稿个位数（用户显式创建），无分页 UI——全量返回；消费方为
+  // 草稿提示条计数与向导恢复，非 usePagedList 表格
+  ipcMain.handle('meetingNotes:listPending', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes`
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // 缺席=不改、显式 null=清除（python model_fields_set 分流）——仅转发
+  // payload 实际携带的键，禁用 ?? 兜底（会把「未传」误成「清除」）
+  ipcMain.handle('meetingNotes:update', async (_event, payload) => {
+    const body = {}
+    if (payload && 'title' in payload) body.title = payload.title
+    if (payload && 'occurredAt' in payload) body.occurred_at = payload.occurredAt
+    if (payload && 'rawText' in payload) body.raw_text = payload.rawText
+    if (payload && 'imageFileIds' in payload) body.image_file_ids = payload.imageFileIds
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('meetingNotes:delete', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}`,
+      { method: 'DELETE' }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // 发起 LLM 结构化：python 202 受理后 run_in_executor 后台执行，进度由
+  // useActivity('note_structuring') 心跳驱动（0.4 统一骨架）
+  ipcMain.handle('meetingNotes:structure', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}/structure`,
+      { method: 'POST' }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  ipcMain.handle('meetingNotes:confirm', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}/confirm`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content_md: payload?.contentMd ?? '',
+          action_items: (payload?.actionItems ?? []).map((it) => ({
+            title: it?.title ?? '',
+            selected: it?.selected !== false,
+            due_date: it?.dueDate ?? null,
+          })),
+          save_to_materials: payload?.saveToMaterials !== false, // 2.14：默认入库，可退出
+        }),
+      },
+      60000 // md 落盘 + 事务逐建，放宽超时
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // 归档列表（2.14）：分页契约 0.1 §16（limit/offset/has_more/total），
+  // NotesTab 时间线「加载更多」数据源
+  ipcMain.handle('meetingNotes:listArchived', async (_event, payload) => {
+    const params = new URLSearchParams()
+    if (payload?.limit !== undefined && payload?.limit !== null) params.set('limit', String(payload.limit))
+    if (payload?.offset) params.set('offset', String(payload.offset))
+    const qs = params.toString()
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/archived${qs ? `?${qs}` : ''}`
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // 事后补入素材（2.14）：archived only，已入库幂等不重传
+  ipcMain.handle('meetingNotes:materialize', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}/materialize`,
+      { method: 'POST' }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // 事后移出素材（2.14）：完整级联删文件，纪要行保留可重新加入
+  ipcMain.handle('meetingNotes:dematerialize', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}/material`,
+      { method: 'DELETE' }
+    )
+    return structuredPythonResponse(res)
+  })
+
+  // 归档正文编辑（2.14 补）：行内 draft_md 与素材 md 联动（后端内容比对删旧传新），
+  // NotesTab 详情浮层编辑模式消费；重传含解析，放宽超时同 confirm
+  ipcMain.handle('meetingNotes:updateContent', async (_event, payload) => {
+    const res = await fetchWithTimeout(
+      `${pythonManager.getBaseUrl()}/projects/${encodeURIComponent(payload?.projectId ?? '')}/notes/${encodeURIComponent(payload?.id ?? '')}/content`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content_md: payload?.contentMd ?? '' }),
+      },
+      60000
+    )
+    return structuredPythonResponse(res)
   })
 
   // ── Usage: token 用量统计（2.10 §4.5/§5.2）。StatusBar / 设置-用量统计 /

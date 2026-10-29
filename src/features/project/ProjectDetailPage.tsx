@@ -1,10 +1,11 @@
-/** src/features/project/ProjectDetailPage.tsx — 项目详情页：事务置首四 Tab + PulseBar（0.6 §3.4 V2 翻转决议 + 3.0 一期+二期） */
+/** src/features/project/ProjectDetailPage.tsx — 项目详情页：事务置首五 Tab + PulseBar（0.6 §3.4 V2 翻转决议 + 3.0 一期+二期 + 2.14 纪要中心） */
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FolderOpen, Library, FileText, CalendarDays, Pencil } from 'lucide-react'
+import { FolderOpen, Library, FileText, CalendarDays, ClipboardList, Pencil } from 'lucide-react'
 import { KnowledgePage } from '../knowledge/KnowledgePage'
 import { useToast } from '../knowledge/Toast'
 import { useActivity } from '../activity/ActivityContext'
+import { NotesTab } from '../notes/NotesTab'
 import { WikiTab } from './tabs/WikiTab'
 import type { WikiCompileData } from './tabs/WikiTab'
 import { usePolling } from '../../hooks/usePolling'
@@ -32,13 +33,14 @@ interface ProjectDetailPageProps {
   onProjectDataChanged?: () => void
 }
 
-type TabKey = 'materials' | 'wiki' | 'affairs' | 'output'
+type TabKey = 'materials' | 'wiki' | 'affairs' | 'output' | 'notes'
 
 // 事务置首（0.6 §3.4 V2 翻转决议，用户认可 2026-10-23：四支柱排序生命周期 > 知识，
 // 显式翻转 3.0 一期「知识置首」；E1a plan T11 原定序，实施偏差 2026-10-24 补正）；
-// 产出合并 reports/forms（0.6 §3.2 V2-E1a T11）
+// 产出合并 reports/forms（0.6 §3.2 V2-E1a T11）；纪要独立 Tab（2.14，事务之后第二位）
 const TABS: { key: TabKey; labelKey: string; Icon: typeof FolderOpen }[] = [
   { key: 'affairs', labelKey: 'project.tab.affairs', Icon: CalendarDays },
+  { key: 'notes', labelKey: 'project.tab.notes', Icon: ClipboardList },
   { key: 'wiki', labelKey: 'project.tab.wiki', Icon: Library },
   { key: 'output', labelKey: 'project.tab.output', Icon: FileText },
   { key: 'materials', labelKey: 'project.tab.materials', Icon: FolderOpen },
@@ -519,13 +521,20 @@ export function ProjectDetailPage({ project, tabSignal, onOpenSettings, onProjec
       <div className={s.contentArea}>
         <div className={s.tabContent}>
           {activeTab === 'materials' && (
-            <KnowledgePage
-              selectedProject={project}
-              onOpenSettings={onOpenSettings}
-              onProjectDataChanged={onProjectDataChanged}
-              compact
-              onFileSelect={(fileId, filename) => { setChatFileId(fileId); setChatFilename(filename) }}
-            />
+            <div className={s.materialsWrap}>
+              <div className={s.materialsBody}>
+                <KnowledgePage
+                  selectedProject={project}
+                  onOpenSettings={onOpenSettings}
+                  onProjectDataChanged={onProjectDataChanged}
+                  compact
+                  onFileSelect={(fileId, filename) => { setChatFileId(fileId); setChatFilename(filename) }}
+                />
+              </div>
+            </div>
+          )}
+          {activeTab === 'notes' && (
+            <NotesTab key={project.id} projectId={project.id} />
           )}
           {activeTab === 'wiki' && (
             <WikiTab

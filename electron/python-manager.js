@@ -138,6 +138,7 @@ class PythonManager {
       cwd,
       env: spawnEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true, // 无控制台父进程下避免子进程闪控制台窗口（2026-10-28）
     })
 
     this.process.stdout.on('data', (data) => {
@@ -240,7 +241,7 @@ class PythonManager {
     try {
       if (process.platform === 'win32') {
         const { execSync } = require('child_process')
-        const output = execSync('netstat -ano | findstr LISTENING', { encoding: 'utf8', timeout: 3000 })
+        const output = execSync('netstat -ano | findstr LISTENING', { encoding: 'utf8', timeout: 3000, windowsHide: true })
         const lines = output.split('\n')
         const killedPids = new Set()
         for (const line of lines) {
@@ -285,7 +286,7 @@ class PythonManager {
     try {
       const out = execSync(
         `wmic process where processid=${pid} get commandline /value`,
-        { encoding: 'utf8', timeout: 3000 }
+        { encoding: 'utf8', timeout: 3000, windowsHide: true }
       )
       const m = out.match(/CommandLine=(.*)/i)
       cmdline = m ? m[1] : ''
@@ -293,7 +294,7 @@ class PythonManager {
       try {
         cmdline = execSync(
           `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
-          { encoding: 'utf8', timeout: 5000 }
+          { encoding: 'utf8', timeout: 5000, windowsHide: true }
         ).trim()
       } catch {
         return false

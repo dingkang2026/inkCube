@@ -41,18 +41,6 @@ class PptAnswerRequest(BaseModel):
     text: str | None = None
 
 
-class PptEnhanceRequest(BaseModel):
-    """从项目内已完成的 PPT 交付物发起成品增强（2.3 §4.3 E3）。"""
-    notes: str | None = None
-
-
-class PptEnhanceImportRequest(BaseModel):
-    """导入本机 PPTX 发起成品增强（2.3 §4.3 E3；路径由文件选择对话框给出）。"""
-    title: str
-    source_path: str
-    notes: str | None = None
-
-
 @router.get("/projects/{project_id}/ppts")
 async def list_ppts(
     project_id: str,
@@ -104,6 +92,11 @@ async def create_ppt(project_id: str, req: PptCreateRequest):
         # 不让 agent 跑到 Stage 1 才发现路径无效
         return JSONResponse(status_code=400,
                             content={"error": str(e), "code": "INVALID_TEMPLATE_REF"})
+    except ppt_service.SourceReportError as e:
+        # 来源报告正文不可读（content.md 缺失/已清理）：创建前拦截，禁止
+        # 静默降级「自由主题」跑题生成（2026-10-28 复盘）
+        return JSONResponse(status_code=400,
+                            content={"error": str(e), "code": "SOURCE_REPORT_UNREADABLE"})
     except Exception as e:
         logger.error("Create ppt failed: %s", e, exc_info=True)
         return JSONResponse(status_code=500,
@@ -115,7 +108,7 @@ async def create_ppt(project_id: str, req: PptCreateRequest):
 
 
 def _launch_or_rollback(ppt: dict, message: str):
-    """launch + 失败回滚（create/enhance 两入口共用）：ppts 行已以 running 落库
+    """launch + 失败回滚：ppts 行已以 running 落库
     （prepare 段），launch 失败回滚为 failed——否则无泵僵尸行永久占据活动中心
     与前端轮询，重试创建再双份资源。返回 (ppt, error_response|None)。"""
     try:
@@ -142,95 +135,6 @@ def _launch_or_rollback(ppt: dict, message: str):
                                            "code": "LAUNCH_FAILED"})
 
 
-# 增强同源去重锁（per-project，防 TOCTOU）：检查与 prepare 之间的 await 会让出
-# 事件循环，enhance / enhance-import 两入口交叉可双过 409——按项目串行化
-# 「检查 → 建行 → 入槽」全程。锁对象随项目常驻（量级 = 项目数，不回收）：
-# 回收会引入「A 持锁中条目被删、C 重建新锁」的新竞态
-_enhance_locks: dict[str, asyncio.Lock] = {}
-
-
-async def _run_enhance(db, project_id: str, title: str,
-                       source_abs: str, notes: str | None):
-    """enhance 两入口共用执行链：同源去重 → prepare（staging+建行）→ launch（失败回滚）。"""
-    async with _enhance_locks.setdefault(project_id, asyncio.Lock()):
-        # 同源去重：同项目已有进行中的增强（running/awaiting 门禁）时拒绝重复入队——
-        # 否则两个增强 agent 并发跑，双倍 LLM/音频成本且产出两张几乎相同的交付物
-        active = [r for r in db.list_ppts(project_id)
-                  if r.get("kind") == "enhanced"
-                  and r.get("status") in ("running", "awaiting_input")]
-        if active:
-            return JSONResponse(status_code=409, content={
-                "error": "该项目已有进行中的增强任务，请等待其完成或先取消",
-                "code": "ENHANCE_IN_PROGRESS"})
-        try:
-            # 源拷贝为同步轻活，与 create 段对齐放线程池，避免阻塞事件循环
-            ppt, message = await asyncio.to_thread(
-                ppt_service.service.prepare_enhance, db,
-                project_id=project_id, title=title,
-                source_pptx=source_abs, notes=notes,
-            )
-        except Exception as e:
-            logger.error("Enhance ppt failed: %s", e, exc_info=True)
-            return JSONResponse(status_code=500,
-                                content={"error": f"创建增强任务失败: {e}",
-                                         "code": "ENHANCE_CREATE_FAILED"})
-        # launch 在事件循环线程执行，锁内仅串行化同项目创建，不阻塞他项
-        ppt, err = _launch_or_rollback(ppt, message)
-        if err:
-            return err
-        return {"ppt": _detail(db, ppt)}
-
-
-@router.post("/ppts/{ppt_id}/enhance")
-async def enhance_ppt(ppt_id: str, req: PptEnhanceRequest):
-    """从项目内已有 PPT 交付物发起成品增强（源 = 该交付物 export 产物）。"""
-    ensure_ready("task")
-    src = deps.db.get_ppt(ppt_id)
-    if not src:
-        return JSONResponse(status_code=404,
-                            content={"error": "PPT 不存在", "code": "PPT_NOT_FOUND"})
-    if (src.get("kind") != "deck" or src.get("status") != "completed"
-            or not src.get("export_path")):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "仅已完成的 PPT 交付物可发起增强",
-                     "code": "NOT_ENHANCEABLE"})
-    source_abs = str(Path(src["workspace_path"]) / src["export_path"])
-    # 与 enhance-import 入口对齐的源文件预检：workspace 被清理/文件移动后
-    # 缺失时归 400 SOURCE_NOT_FOUND，而非穿透到拷贝阶段的 500
-    if not os.path.isfile(source_abs):
-        return JSONResponse(status_code=400,
-                            content={"error": "源 PPTX 文件不存在",
-                                     "code": "SOURCE_NOT_FOUND"})
-    logger.info("Enhancing ppt from deliverable: src=%s project=%s",
-                ppt_id, src["project_id"])
-    return await _run_enhance(
-        deps.db, src["project_id"], f"{src['title']} · 增强", source_abs,
-        (req.notes or "").strip() or None)
-
-
-@router.post("/projects/{project_id}/ppts/enhance-import")
-async def enhance_import_ppt(project_id: str, req: PptEnhanceImportRequest):
-    """导入本机 PPTX 发起成品增强（路径由前端 dialog:openFile 直传）。"""
-    ensure_ready("task")
-    title = (req.title or "").strip()
-    source = (req.source_path or "").strip()
-    if not title:
-        return JSONResponse(status_code=400,
-                            content={"error": "标题不能为空", "code": "INVALID_TITLE"})
-    if not source.lower().endswith(".pptx"):
-        return JSONResponse(status_code=400,
-                            content={"error": "仅支持 .pptx 文件",
-                                     "code": "UNSUPPORTED_PPTX_FORMAT"})
-    if not os.path.isfile(source):
-        return JSONResponse(status_code=400,
-                            content={"error": "源 PPTX 文件不存在", "code": "SOURCE_NOT_FOUND"})
-    logger.info("Enhancing ppt from import: project=%s source=%s", project_id, source)
-    return await _run_enhance(
-        deps.db, project_id, title, source,
-        (req.notes or "").strip() or None)
-
-
 def _detail(db, ppt: dict) -> dict:
     """详情聚合：任务态 + confirm_ui 端口 + 创作页清单（SVG 预览网格数据源）。
     页面内容前端复用 tasks:readFile（task_id 随详情返回），不另设转发端点。"""
@@ -240,7 +144,8 @@ def _detail(db, ppt: dict) -> dict:
     if ppt.get("workspace_path"):
         project = Path(ppt["workspace_path"])
         port = ppt_service.confirm_ui_port(project)
-        pages = ppt_service.list_pages(project)
+        # workspace 相对路径：前端复用 tasks:readFile 直读（基准对齐）
+        pages = ppt_service.pages_for_workspace(project, task.get("workspace_path"))
     return {**ppt, "task_status": task.get("status"),
             "confirm_ui_port": port, "pages": pages}
 
@@ -289,7 +194,7 @@ async def retry_collect_ppt(ppt_id: str):
     （纯本地 IO，不跑 agent、不耗模型；前端仅在工作区包完整时暴露入口）。"""
     logger.info("Retrying ppt template collect: ppt=%s", ppt_id)
     # 收录含工作区包拷贝（images/exports 大文件可达 30s+），线程池执行
-    # 防阻塞事件循环（对齐 create/enhance 的 prepare 线程化惯例）
+    # 防阻塞事件循环（对齐 create 的 prepare 线程化惯例）
     return await asyncio.to_thread(
         ppt_service.service.retry_collect, deps.db, ppt_id)
 

@@ -5,11 +5,15 @@ list_pages 排序沉底、sync_progress 阶段映射与门禁置位、ppts CRUD�
 夹取 / error 截断 / 活跃过滤）、recover_orphans 落位、fetch_active 形状、
 _build_first_message 门禁纪律契约、向导模板选择解析与 explicit root 契约
 （2.3 §4.1）、ORIGIN_PRESETS 应用语义、自动续跑与 answer 路由、
-finalize 回执竞态与终态防护（review 修复回归）。
+finalize 回执竞态与终态防护（review 修复回归）、系统 init 骨架目录锚定契约与
+init 失败回滚（2026-10-28 目录错位复盘）、素材 content_path 目录契约与正文
+缺失 fail-fast（2026-10-28 素材静默丢失复盘）、confirm_ui 系统拉起三态与
+门禁置位/重启恢复挂点（2026-10-28 S1 系统接管复盘）。
 """
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -26,11 +30,15 @@ from ppt_service import (
     PptService,
     TemplateRefError,
     _build_first_message,
+    _confirm_ui_alive,
+    _ensure_confirm_ui,
     _gate_state,
     _page_count_from_result,
     _resolve_template_refs,
+    _venv_python_from_task,
     confirm_ui_port,
     list_pages,
+    pages_for_workspace,
     sync_progress,
 )
 
@@ -74,6 +82,14 @@ def _w(path: Path, obj) -> Path:
     else:
         path.write_text(str(obj), encoding="utf-8")
     return path
+
+
+def _fake_init_skeleton(workspace, *, canvas_format="ppt169"):
+    """_init_project_skeleton 测试替身：同款目录名契约（带后缀），建目录即返回。"""
+    from datetime import datetime
+    target = Path(workspace) / f"ppt_project_{canvas_format}_{datetime.now():%Y%m%d}"
+    target.mkdir(parents=True)
+    return target
 
 
 # ── 门禁两阶段判定（2.3.1 §5.1 文件契约）──
@@ -172,6 +188,18 @@ class TestListPages:
             "svg_output/page_1.svg", "svg_output/page_2.svg", "svg_output/page_10.svg",
         ]
 
+    def test_official_free_naming(self, tmp_path):
+        """官方自由命名（agent 实产形态）：NN.svg 数字前缀升序——曾硬编码
+        page_*.svg 致预览空/进度恒 0（2026-10-28 修订回归）。"""
+        svg = tmp_path / "svg_output"
+        svg.mkdir(parents=True)
+        for name in ("01.svg", "10.svg", "02.svg", "11_cover.svg"):
+            (svg / name).write_text("<svg/>", encoding="utf-8")
+        assert list_pages(tmp_path) == [
+            "svg_output/01.svg", "svg_output/02.svg",
+            "svg_output/10.svg", "svg_output/11_cover.svg",
+        ]
+
     def test_nonstandard_sinks(self, tmp_path):
         svg = tmp_path / "svg_output"
         svg.mkdir(parents=True)
@@ -183,6 +211,31 @@ class TestListPages:
 
     def test_missing_dir(self, tmp_path):
         assert list_pages(tmp_path) == []
+
+
+class TestPagesForWorkspace:
+    """详情端点预览清单基准转换（readFile 以任务 workspace 为基准）。"""
+
+    def test_converts_to_workspace_relative(self, tmp_path):
+        """补齐项目目录层——基准错位曾致预览网格恒占位（2026-10-28 修订回归）。"""
+        ws = tmp_path / "workspace"
+        project = ws / "ppt_project_x"
+        _w(project / "svg_output" / "01.svg", "<svg/>")
+        assert pages_for_workspace(project, str(ws)) == [
+            "ppt_project_x/svg_output/01.svg",
+        ]
+
+    def test_no_workspace_falls_back(self, tmp_path):
+        project = tmp_path / "p"
+        _w(project / "svg_output" / "01.svg", "<svg/>")
+        assert pages_for_workspace(project, "") == ["svg_output/01.svg"]
+
+    def test_outside_workspace_keeps_rel(self, tmp_path):
+        project = tmp_path / "elsewhere" / "p"
+        _w(project / "svg_output" / "01.svg", "<svg/>")
+        assert pages_for_workspace(project, str(tmp_path / "ws")) == [
+            "svg_output/01.svg",
+        ]
 
 
 # ── 进度聚合（§9.1 信号映射 + 门禁置位）──
@@ -197,6 +250,16 @@ def _agent_idle(monkeypatch):
 def _agent_busy(monkeypatch):
     """任务侧 agent 回合仍在跑 → 门禁不打扰。"""
     monkeypatch.setattr(ppt_service, "_task_running", lambda tid: True)
+
+
+@pytest.fixture(autouse=True)
+def _no_confirm_ui_launch(monkeypatch):
+    """S1 系统拉起默认拦截：门禁置位/重启恢复测试不真启 server；yield 的记录
+    列表供挂点断言。专项测试引用 import 快照的真函数，不受本 mock 影响。"""
+    launches: list = []
+    monkeypatch.setattr(ppt_service, "_ensure_confirm_ui",
+                        lambda vp, proj: launches.append((vp, proj)))
+    yield launches
 
 
 class TestSyncProgress:
@@ -238,6 +301,18 @@ class TestSyncProgress:
         assert cur["page_done"] == 3
         assert cur["progress"] == pytest.approx(0.3)
 
+    def test_progress_counts_free_naming(self, db, tmp_path, _agent_busy):
+        """页计数同源兼容：NN.svg 形态计入 page_done/progress（同 list_pages）。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        _w(proj / "confirm_ui" / "result.json", {"stage": "final", "page_count": 3})
+        for name in ("01.svg", "02.svg", "03.svg"):
+            _w(proj / "svg_output" / name, "<svg/>")
+        sync_progress(db, db.get_ppt(ppt["id"]))
+        cur = db.get_ppt(ppt["id"])
+        assert cur["stage"] == "authoring"
+        assert cur["page_done"] == 3
+        assert cur["progress"] == pytest.approx(1.0)
+
     def test_gate_sets_awaiting_and_notifies(self, db, tmp_path, _agent_idle):
         ppt, proj = _mk_ppt(db, tmp_path)  # create_ppt 初始 running
         _w(proj / "confirm_ui" / "recommendations.stage1.json", {})
@@ -268,12 +343,110 @@ class TestSyncProgress:
         ]
         assert len(gate_notes) == 1
 
+    def test_gate_launches_confirm_ui(self, db, tmp_path, _agent_idle, _no_confirm_ui_launch):
+        """S1 挂点：门禁置位同时拉起确认页服务（venv 解析自任务行）。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        _w(proj / "confirm_ui" / "recommendations.stage1.json", {})
+        sync_progress(db, db.get_ppt(ppt["id"]))
+        assert _no_confirm_ui_launch == [(_venv_python_from_task(db, ppt["task_id"]), proj)]
+
     def test_no_project_dir_noop(self, db, tmp_path, _agent_busy):
         import shutil
         ppt, proj = _mk_ppt(db, tmp_path)
         shutil.rmtree(proj)
         sync_progress(db, db.get_ppt(ppt["id"]))  # 不抛
         assert db.get_ppt(ppt["id"])["stage"] is None
+
+
+# ── confirm_ui 系统拉起（S1 系统接管，2026-10-28）──
+
+class TestConfirmUiAlive:
+    def test_no_lock(self, tmp_path):
+        assert _confirm_ui_alive(tmp_path) is False
+
+    def test_lock_dead_port(self, tmp_path):
+        """lock 残留但端口无人监听（进程已死）→ False → 触发重拉。"""
+        _w(tmp_path / ".confirm_ui.lock", {"port": 59999})
+        assert _confirm_ui_alive(tmp_path) is False
+
+    def test_lock_live_port(self, tmp_path):
+        import socket as _socket
+        srv = _socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        try:
+            _w(tmp_path / ".confirm_ui.lock", {"port": srv.getsockname()[1]})
+            assert _confirm_ui_alive(tmp_path) is True
+        finally:
+            srv.close()
+
+
+class TestEnsureConfirmUi:
+    """拉起三态：活跳过 / 死重拉（先清残留）/ 缺解释器跳过。"""
+
+    def test_skips_when_alive(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ppt_service, "_confirm_ui_alive", lambda p: True)
+        pops, shutdowns = [], []
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pops.append(a))
+        monkeypatch.setattr(ppt_service, "_shutdown_confirm_ui",
+                            lambda vp, p: shutdowns.append(p))
+        _ensure_confirm_ui("py", tmp_path)
+        assert not pops and not shutdowns
+
+    def test_relaunches_when_dead(self, tmp_path, monkeypatch):
+        skill = tmp_path / "_skill"
+        _w(skill / "scripts" / "confirm_ui" / "server.py", "#")
+        monkeypatch.setattr(ppt_service, "_skill_install_dir", lambda: str(skill))
+        monkeypatch.setattr(ppt_service, "_confirm_ui_alive", lambda p: False)
+        shutdowns = []
+        monkeypatch.setattr(ppt_service, "_shutdown_confirm_ui",
+                            lambda vp, p: shutdowns.append(p))
+        pops = []
+
+        def fake_popen(cmd, **kw):
+            pops.append((cmd, kw))
+            return SimpleNamespace()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        _ensure_confirm_ui("py", tmp_path)
+        assert shutdowns == [tmp_path]  # 拉起前先幂等清残留
+        assert len(pops) == 1
+        cmd = pops[0][0]
+        assert cmd[:2] == ["py", str(skill / "scripts" / "confirm_ui" / "server.py")]
+        assert cmd[2:] == [str(tmp_path), "--daemon", "--no-browser", "--timeout", "0"]
+        assert pops[0][1]["stdin"] == subprocess.DEVNULL
+
+    def test_skips_when_python_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ppt_service, "_confirm_ui_alive", lambda p: False)
+        pops = []
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pops.append(a))
+        _ensure_confirm_ui("", tmp_path)
+        assert not pops
+
+    def test_venv_python_from_task(self, tmp_path):
+        """venv_path 有效 → 解释器路径；目录缺 python / 行缺 venv → 空串。"""
+        venv = tmp_path / "venv"
+        py = venv / ("Scripts" if os.name == "nt" else "bin") / \
+            ("python.exe" if os.name == "nt" else "python")
+        py.parent.mkdir(parents=True)
+        py.write_text("", encoding="utf-8")
+        assert _venv_python_from_task(
+            SimpleNamespace(get_task=lambda tid: {"venv_path": str(venv)}), "t1") == str(py)
+        assert _venv_python_from_task(
+            SimpleNamespace(get_task=lambda tid: {"venv_path": str(tmp_path / "nope")}), "t1") == ""
+        assert _venv_python_from_task(
+            SimpleNamespace(get_task=lambda tid: None), "t1") == ""
+
+
+class TestRecoverOrphansGateLaunch:
+    def test_pending_gate_relaunches(self, db, tmp_path, _no_confirm_ui_launch):
+        """重启恢复门禁行：daemon 存活则探活跳过、已死则重拉（消灭死链）。"""
+        ppt, proj = _mk_ppt(db, tmp_path)
+        _w(proj / "confirm_ui" / "recommendations.stage1.json", {})
+        PptService().recover_orphans(db)
+        assert db.get_ppt(ppt["id"])["status"] == "awaiting_input"
+        assert len(_no_confirm_ui_launch) == 1
+        assert _no_confirm_ui_launch[0][1] == proj
 
 
 # ── ppts CRUD ──
@@ -407,11 +580,15 @@ class TestFetchActive:
 class TestFirstMessage:
     def test_gate_discipline_keywords(self, tmp_path):
         msg = _build_first_message(
-            str(tmp_path), {"report": None, "images": [], "image_count": 0}, None, None)
-        # 门禁纪律：daemon 启动、写完即收工（禁 --wait-only）、final 后关停、导出命令
-        assert "--daemon --no-browser --timeout 0" in msg
+            str(tmp_path).replace("\\", "/"), str(tmp_path),
+            {"report": None, "images": [], "image_count": 0}, None, None)
+        # 门禁纪律：确认页由系统启停（S1 接管，agent 禁 shell 启停）、
+        # 写完即收工（禁 --wait-only）、导出命令
+        assert "由系统自动启动与关停" in msg
+        assert "不要用 shell 启动或关停" in msg
+        assert "--daemon" not in msg  # S1 后不再教 agent 启动参数
         assert "不要用 --wait-only" in msg
-        assert "--shutdown" in msg
+        assert "--shutdown" not in msg
         assert "svg_to_pptx" in msg
         # Default 全质量管线纪律
         assert "Generate PPTX" in msg
@@ -421,6 +598,11 @@ class TestFirstMessage:
         assert "import-sources" not in msg
         # 项目目录以正斜杠形式写入
         assert str(tmp_path).replace("\\", "/") in msg
+        # init 已由系统执行：消息只声明目录并禁止 agent 重复初始化
+        # （2026-10-28 回归：曾因 agent 自行 init 追加后缀致目录锚定错位）
+        assert "系统已初始化项目骨架" in msg
+        assert "禁止重复执行 init" in msg
+        assert "init <" not in msg
 
     def test_with_report_and_extras(self, tmp_path):
         staging = {
@@ -428,7 +610,9 @@ class TestFirstMessage:
             "images": ["staging/images/a.png"],
             "image_count": 1,
         }
-        msg = _build_first_message(str(tmp_path), staging, "商务深蓝", "每页不超过 5 条要点")
+        msg = _build_first_message(
+            str(tmp_path).replace("\\", "/"), str(tmp_path), staging,
+            "商务深蓝", "每页不超过 5 条要点")
         assert "import-sources" in msg
         assert "staging/report.md" in msg
         assert "staging/images/*" in msg
@@ -445,8 +629,8 @@ class TestFirstMessage:
             {"kind": "brand", "id": "b1", "builtin": True,
              "root": "D:/res/skills/ppt-master/templates/brands/b1"},
         ]
-        msg = _build_first_message(str(tmp_path), staging, "商务蓝", None,
-                                   template_roots=roots)
+        msg = _build_first_message(str(tmp_path).replace("\\", "/"), str(tmp_path),
+                                   staging, "商务蓝", None, template_roots=roots)
         # explicit root 契约（2.3.1 §6 显式根表述）：写 template_options.json 的指令
         assert "explicit_workspace_roots" in msg
         assert "default_mode 固定 templates" in msg
@@ -459,7 +643,8 @@ class TestFirstMessage:
     def test_without_template_roots_default(self, tmp_path):
         """不选模板：显式模板段不出现，默认行为（Stage 1 内置候选自主决定）不变。"""
         staging = {"report": None, "images": [], "image_count": 0}
-        msg = _build_first_message(str(tmp_path), staging, None, None)
+        msg = _build_first_message(
+            str(tmp_path).replace("\\", "/"), str(tmp_path), staging, None, None)
         assert "explicit_workspace_roots" not in msg
         assert "显式模板选择" not in msg
 
@@ -1075,6 +1260,8 @@ class TestCreateRollback:
         monkeypatch.setattr(ppts_router, "ensure_ready", lambda *a, **k: None)
         monkeypatch.setattr(deps_mod, "db", db, raising=False)
         monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+        # prepare 编排链里的系统 init 用替身（本测试只验证 launch 失败回滚语义）
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton", _fake_init_skeleton)
 
         def _boom(*a, **k):
             raise RuntimeError("TASK_LIMIT_REACHED")
@@ -1097,7 +1284,7 @@ class TestCreateRollback:
         monkeypatch.setattr(deps_mod, "db", db, raising=False)
         monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
 
-        def _boom(db_, ws, rid, iids):
+        def _boom(db_, ws, report_md, iids):
             raise OSError("disk full")
 
         monkeypatch.setattr(ppt_service, "_stage_materials", _boom)
@@ -1105,6 +1292,26 @@ class TestCreateRollback:
         res = asyncio.run(ppts_router.create_ppt(
             pid, ppts_router.PptCreateRequest(title="T")))
         assert res.status_code == 500
+        assert db.list_ppts(pid) == []
+        task_rows, _ = db.list_tasks(origin="ppt")
+        assert task_rows == []
+
+    def test_create_unreadable_report_400(self, db, tmp_path, monkeypatch):
+        """来源报告正文缺失：创建前拦截 400 SOURCE_REPORT_UNREADABLE，
+        行回滚（禁静默降级「自由主题」跑题生成，2026-10-28 复盘）。"""
+        import deps as deps_mod
+        from routers import ppts as ppts_router
+        monkeypatch.setattr(ppts_router, "ensure_ready", lambda *a, **k: None)
+        monkeypatch.setattr(deps_mod, "db", db, raising=False)
+        monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+        pid = db.create_project("P", seed_playbook=False)["id"]
+        rep = db.create_report(pid, "t", "T",
+                               content_path=str(tmp_path / "gone"))
+        res = asyncio.run(ppts_router.create_ppt(
+            pid, ppts_router.PptCreateRequest(title="T",
+                                              source_report_id=rep["id"])))
+        assert res.status_code == 400
+        assert json.loads(res.body)["code"] == "SOURCE_REPORT_UNREADABLE"
         assert db.list_ppts(pid) == []
         task_rows, _ = db.list_tasks(origin="ppt")
         assert task_rows == []
@@ -1196,15 +1403,31 @@ class TestImagePool:
         assert pool[0] == ids[2]
         assert len(pool) == 2
 
-    def test_report_text_reads_content(self, db, tmp_path):
+    def test_report_md_path_dir_contract(self, db, tmp_path):
+        """content_path 目录契约（2026-10-28 素材静默丢失复盘回归）：
+        目录形态拼 content.md 命中；文件形态直用；缺失返回 None；
+        _report_text 从解析路径读前 4000 字符。"""
         pid = db.create_project("P", seed_playbook=False)["id"]
-        md = tmp_path / "r.md"
-        md.write_text("X" * 5000, encoding="utf-8")
-        rep = db.create_report(pid, "t", "T", content_path=str(md))
-        text = ppt_service._report_text(db, rep["id"])
-        assert len(text) == 4000
-        assert ppt_service._report_text(db, None) is None
-        assert ppt_service._report_text(db, "gone") is None
+        # 目录形态（生产契约：routers/reports.py 创建即落 report_dir）
+        rep_dir = tmp_path / "rep1"
+        rep_dir.mkdir()
+        (rep_dir / "content.md").write_text("X" * 5000, encoding="utf-8")
+        rep = db.create_report(pid, "t", "T", content_path=str(rep_dir))
+        md = ppt_service._report_md_path(db, rep["id"])
+        assert md == str(rep_dir / "content.md")
+        assert len(ppt_service._report_text(md)) == 4000
+        # 文件形态（历史/测试直指 md）
+        md_file = tmp_path / "r.md"
+        md_file.write_text("Y" * 10, encoding="utf-8")
+        rep2 = db.create_report(pid, "t2", "T2", content_path=str(md_file))
+        assert ppt_service._report_md_path(db, rep2["id"]) == str(md_file)
+        # 缺失形态：无 id / id 不存在 / 目录无 content.md
+        assert ppt_service._report_md_path(db, None) is None
+        assert ppt_service._report_md_path(db, "gone") is None
+        empty_dir = tmp_path / "rep2"
+        empty_dir.mkdir()
+        rep3 = db.create_report(pid, "t3", "T3", content_path=str(empty_dir))
+        assert ppt_service._report_md_path(db, rep3["id"]) is None
 
 
 # ── prepare 端到端契约（防写入端/读取端路径契约再漂移）──
@@ -1216,11 +1439,12 @@ class TestPrepareContract:
         产物写进该目录后 sync_progress 必须能读到（曾因夹具存工作区本身
         掩盖读取端二次套用 _project_dir 的 P0）。"""
         monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton", _fake_init_skeleton)
         proj_id = db.create_project("P", seed_playbook=False)["id"]
         ppt, _message = svc.prepare(db, proj_id, "契约演示")
         project = Path(ppt["workspace_path"])
-        assert project.name == "ppt_project"   # 行内存的是项目目录，非任务工作区
-        assert project.is_dir()                # prepare 已建目录
+        assert project.name.startswith("ppt_project_ppt169_")  # 行内存 init 产出项目目录
+        assert project.is_dir()                # 系统 init 已产出骨架
         (project / "svg_output").mkdir(parents=True)
         (project / "svg_output" / "page_1.svg").write_text("s", encoding="utf-8")
         sync_progress(db, db.get_ppt(ppt["id"]))
@@ -1233,6 +1457,7 @@ class TestPrepareContract:
         """template_refs → style_ref 列存选择标识（拍板口径：kind:id 串或
         legacy 文本）+ 首条消息带显式根契约与用户库正斜杠路径。"""
         monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton", _fake_init_skeleton)
         ws = (tmp_path / "data" / "ppt-library" / "templates"
               / "styles" / "my_s" / "templates")
         ws.mkdir(parents=True)
@@ -1242,3 +1467,112 @@ class TestPrepareContract:
         assert "explicit_workspace_roots" in message
         assert "style:my_s → " in message
         assert str(ws.parent).replace("\\", "/") in message
+
+    def test_prepare_report_materials_dir_contract(self, db, tmp_path, svc,
+                                                    monkeypatch, _agent_busy):
+        """来源报告 content_path 目录形态（生产契约）→ 素材入 staging +
+        首条消息走 import-sources 分支（2026-10-28 静默丢失复盘回归）。"""
+        monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton", _fake_init_skeleton)
+        proj_id = db.create_project("P", seed_playbook=False)["id"]
+        rep_dir = tmp_path / "rep"
+        rep_dir.mkdir()
+        (rep_dir / "content.md").write_text("# 报告正文", encoding="utf-8")
+        rep = db.create_report(proj_id, "t", "T", content_path=str(rep_dir))
+        ppt, message = svc.prepare(db, proj_id, "T",
+                                   source_report_id=rep["id"])
+        assert ppt["source_report_id"] == rep["id"]
+        # staging 建在任务工作区（workspace_path 存 init 产出的项目子目录，
+        # 其 parent 才是 _stage_materials 的 workspace 参数）
+        assert (Path(ppt["workspace_path"]).parent / "staging" / "report.md").is_file()
+        assert "import-sources" in message
+        assert "自由主题" not in message
+
+    def test_prepare_unreadable_report_fails_fast(self, db, tmp_path, svc,
+                                                    monkeypatch, _agent_busy):
+        """来源报告正文缺失 → SourceReportError 且 task/ppt 行回滚（禁静默降级）。"""
+        monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton", _fake_init_skeleton)
+        proj_id = db.create_project("P", seed_playbook=False)["id"]
+        rep = db.create_report(proj_id, "t", "T",
+                               content_path=str(tmp_path / "gone"))
+        with pytest.raises(ppt_service.SourceReportError, match="不可读"):
+            svc.prepare(db, proj_id, "T", source_report_id=rep["id"])
+        assert db.list_ppts(proj_id) == []
+        task_rows, _ = db.list_tasks(origin="ppt")
+        assert task_rows == []
+
+
+# ── 系统 init 骨架（2.3 §4.1 目录锚定契约；2026-10-28 错位复盘回归）──
+
+class TestInitProjectSkeleton:
+    def _repo_skill(self) -> Path:
+        return (Path(__file__).resolve().parents[2] / "resources"
+                / "skills" / "ppt-master")
+
+    def test_real_init_anchored_dirname(self, tmp_path, monkeypatch):
+        """真跑仓库内 ppt-master init：产出目录名 = ppt_project_ppt169_<date>
+        （cli 对已带后缀名原样采用），与 InkCube 全链锚定一致——曾因 agent 首轮
+        自行 init 产出同名后缀目录而锚定空目录，Stage 1 确认页打不开。"""
+        repo_skill = self._repo_skill()
+        if not (repo_skill / "scripts" / "project_manager.py").is_file():
+            pytest.skip("ppt-master 内置源不存在")
+        monkeypatch.setattr(ppt_service, "_skill_install_dir",
+                            lambda: str(repo_skill))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        from datetime import datetime
+        target = ppt_service._init_project_skeleton(str(ws))
+        assert target == ws / f"ppt_project_ppt169_{datetime.now():%Y%m%d}"
+        assert (target / "svg_output").is_dir()      # init 骨架子目录
+        assert (target / "exports").is_dir()
+
+    def test_skill_missing_raises(self, tmp_path, monkeypatch):
+        """skill 未安装 → RuntimeError 向上抛（prepare 回滚），不静默吞。"""
+        monkeypatch.setattr(ppt_service, "_skill_install_dir", lambda: None)
+        with pytest.raises(RuntimeError, match="未安装"):
+            ppt_service._init_project_skeleton(str(tmp_path))
+
+    def test_rejects_non_canonical_format(self, tmp_path):
+        """别名格式入口即拦截（ValueError，入参先于 skill 依赖检查）：cli 会
+        先归一别名（xhs→xiaohongshu）再匹配名字后缀——名字带别名不命中
+        「已带后缀」分支，会被追加第二后缀致锚定落空。入口拦截使报错直指
+        根因，而非误导性的「未产出预期目录」。"""
+        with pytest.raises(ValueError, match="不支持的画布格式"):
+            ppt_service._init_project_skeleton(str(tmp_path), canvas_format="xhs")
+
+    def test_reinit_same_target_rejected(self, tmp_path, monkeypatch):
+        """init 要求目标目录不存在（cli FileExistsError）→ 二次 init 报错向上抛
+        （同 workspace 仅一次 init，目录名带日期不会跨任务冲突）。"""
+        repo_skill = self._repo_skill()
+        if not (repo_skill / "scripts" / "project_manager.py").is_file():
+            pytest.skip("ppt-master 内置源不存在")
+        monkeypatch.setattr(ppt_service, "_skill_install_dir",
+                            lambda: str(repo_skill))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        ppt_service._init_project_skeleton(str(ws))
+        with pytest.raises(RuntimeError, match="init 失败"):
+            ppt_service._init_project_skeleton(str(ws))
+
+
+class TestPrepareInitRollback:
+    def test_init_failure_cleans_orphan_rows(self, db, tmp_path, monkeypatch):
+        """系统 init 失败：task/ppt 行回滚，不留不可见孤儿（deck 与 template 同契约）。"""
+        monkeypatch.setenv("INKCUBE_DATA_DIR", str(tmp_path / "data"))
+
+        def _boom(workspace, *, canvas_format="ppt169"):
+            raise RuntimeError("ppt-master init 失败 (exit=1): disk full")
+
+        monkeypatch.setattr(ppt_service, "_init_project_skeleton", _boom)
+        proj_id = db.create_project("P", seed_playbook=False)["id"]
+        with pytest.raises(RuntimeError, match="init 失败"):
+            PptService().prepare(db, proj_id, "T")
+        assert db.list_ppts(proj_id) == []
+        task_rows, _ = db.list_tasks(origin="ppt")
+        assert task_rows == []
+        with pytest.raises(RuntimeError, match="init 失败"):
+            PptService().prepare_template(
+                db, kind="style", template_id="s1", template_name="S1")
+        task_rows, _ = db.list_tasks(origin="ppt")
+        assert task_rows == []

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { BookOpen, FileText, Wrench, Download, Table, FolderOutput, FolderInput, Presentation, Radio, LayoutGrid, Kanban } from 'lucide-react'
+import { BookOpen, ClipboardList, FileText, Wrench, Download, Table, FolderOutput, FolderInput, Presentation, Radio, LayoutGrid, Kanban } from 'lucide-react'
 import type { Project } from '../knowledge/types'
 import { useActivity } from '../activity/ActivityContext'
 import { navigateToNotification } from '../activity/ActivityMonitor'
@@ -32,6 +32,7 @@ const ONGOING_ICONS = {
   project_import: FolderInput,
   ppt: Presentation,
   schedule: Radio,
+  note_structuring: ClipboardList,
 } as const
 
 interface HomePageProps {
@@ -162,9 +163,10 @@ export function HomePage({
     } else if (item.project_id) {
       // ledger_parse / profile_extract 是编译下游(台账解析/画像提取),点击同样归 wiki Tab
       // (3.0 四期 / 2.6 §4.8);填表实例归 forms Tab(2.4);
-      // 导出/导入(2.9)主体是项目数据资料,归 materials Tab
+      // 导出/导入(2.9)与纪要结构化(2.13)主体在素材 Tab,归 materials
       const tab = item.entity_type === 'file'
-        || item.entity_type === 'project_export' || item.entity_type === 'project_import' ? 'materials'
+        || item.entity_type === 'project_export' || item.entity_type === 'project_import'
+        || item.entity_type === 'note_structuring' ? 'materials'
         : item.entity_type === 'wiki_compile' || item.entity_type === 'ledger_parse'
           || item.entity_type === 'profile_extract' ? 'wiki'
         : item.entity_type === 'form_fill' ? 'forms' : 'reports'
@@ -198,6 +200,10 @@ export function HomePage({
         return t('activity.ongoing.ledger_parse', { project: item.project_name })
       case 'profile_extract':
         return t('activity.ongoing.profile_extract', { project: item.project_name })
+      case 'note_structuring':
+        return t('activity.ongoing.note_structuring', {
+          project: item.project_name, title: item.entity_title,
+        })
       case 'form_template':
         return t('activity.ongoing.form_template', {
           title: item.entity_title,

@@ -902,6 +902,14 @@ async def delete_project(project_id: str):
         # 死链跳空态页；与上方 clear_schedules_target 同构
         db.detach_leads_for_project(project_id)
 
+        # 便签归档行联动（2.12 §2）：project_id 置 NULL 回收件箱——便签是
+        # 全局用户资产不随项目销毁，与上方 detach_leads 同构
+        db.detach_sticky_notes_for_project(project_id)
+
+        # 纪要向导草稿级联（2.13 §2）：纪要草稿是项目内资产（与便签相反），
+        # 随项目销毁；已保存产物走素材/事务现有级联
+        db.delete_meeting_notes_for_project(project_id)
+
         # 报告产物目录补清（2026-10-20 存储审计）：reports 行随项目级联删，
         # 但磁盘目录仅在单报告删除端点清理——级联删行后目录变孤儿。
         # 级联删行前按 project_id 收集 content_path 逐个删除。

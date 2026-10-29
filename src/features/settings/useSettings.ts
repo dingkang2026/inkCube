@@ -45,6 +45,7 @@ const DEFAULT_SETTINGS: LLMSettings = {
   form_fill_model: 'standard',
   rag_model: 'standard',
   ppt_model: 'high',
+  meeting_note_model: 'standard',  // 拜访/会议纪要结构化（2.13）
   task_timeout: 30,
   task_max_iterations: 60,
   task_auto_confirm_shell: false,

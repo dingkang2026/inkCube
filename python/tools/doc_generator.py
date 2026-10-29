@@ -25,6 +25,7 @@ from typing import Any
 from tools.base import BaseTool
 from tools.doc_template import resolve_reference_doc
 from tools.mermaid_bridge import cleanup_temp_dir, preprocess_mermaid
+from tools.proc_priority import hidden_window_kwargs
 from tools.tool_resolver import resolve_tool
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,7 @@ class DocGeneratorTool(BaseTool):
                 cmd_pandoc += ["--reference-doc", reference_doc]
             result = subprocess.run(
                 cmd_pandoc, capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+                **hidden_window_kwargs(),  # 无控制台父进程下 pandoc 闪窗（2026-10-28）
             )
             if result.returncode != 0:
                 return json.dumps({
@@ -268,7 +270,10 @@ class DocGeneratorTool(BaseTool):
             if reference_doc:
                 cmd += ["--reference-doc", reference_doc]
 
-            result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
+            result = subprocess.run(
+                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+                **hidden_window_kwargs(),
+            )
             if result.returncode != 0:
                 return json.dumps({
                     "error": f"pandoc 转换失败: {result.stderr.strip()}",

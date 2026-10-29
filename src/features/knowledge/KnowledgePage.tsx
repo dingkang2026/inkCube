@@ -187,7 +187,7 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
           }
           // Refresh file list after each upload so the new file appears immediately;
           // 读 ref 对准当前项目（M3-1）：上传中用户切走项目时刷新跟随新视图而非旧闭包，
-          // 文件本身仍归属发起上传的项目；响应侧由 loadFiles 代际守卫兑底
+          // 文件本身仍归属发起上传的项目；响应侧由 loadFiles 代际守卫兜底
           const refreshPid = activePidRef.current
           if (refreshPid) loadFiles(refreshPid, 1, filenameSearchRef.current)
         }
@@ -519,19 +519,21 @@ function KnowledgePageInner({ selectedProject, onOpenSettings: _onOpenSettings, 
                 )}
               </div>
             </form>
-            <div className={s.statusFilter}>
-              {STATUS_FILTERS.map(f => (
-                <button
-                  key={f.key}
-                  className={`${s.statusFilterBtn} ${statusFilter === f.key ? s.statusFilterBtnActive : ''}`}
-                  onClick={() => {
-                    setStatusFilter(f.key)
-                    loadFiles(selectedProject.id, 1, filenameSearch, f.key)
-                  }}
-                >
-                  {t(f.labelKey)}{filterCount(f.key) > 0 ? ` (${filterCount(f.key)})` : ''}
-                </button>
-              ))}
+            <div className={s.headerFilterRow}>
+              <div className={s.statusFilter}>
+                {STATUS_FILTERS.map(f => (
+                  <button
+                    key={f.key}
+                    className={`${s.statusFilterBtn} ${statusFilter === f.key ? s.statusFilterBtnActive : ''}`}
+                    onClick={() => {
+                      setStatusFilter(f.key)
+                      loadFiles(selectedProject.id, 1, filenameSearch, f.key)
+                    }}
+                  >
+                    {t(f.labelKey)}{filterCount(f.key) > 0 ? ` (${filterCount(f.key)})` : ''}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           {/* Upload zone — always visible（点击入口；拖拽已提升至整页，反馈见 dropOverlay） */}
